@@ -1,0 +1,40 @@
+{
+  "name": "monchu",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "check": "pnpm typecheck && pnpm lint && oxfmt --check"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "typescript": "7.0.2"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.8.1",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.8.1",
+  "dependencies": {
+    "@earendil-works/chord": "^1.0.0",
+    "@earendil-works/pi-ai": "^1.0.0",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-durable": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.31.0"
+  }
+}

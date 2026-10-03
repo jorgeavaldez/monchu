@@ -1,0 +1,21 @@
+[tools]
+node = "26.10.0"
+pnpm = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = ['pnpm']
+
+[env]
+NODE_ENV = { default = "development" }
+_.path = ['{{config_root}}/node_modules/.bin']
+
+[tasks.pnpm-install]
+description = 'Installs dependencies with pnpm'
+run = 'pnpm install'
+sources = ['package.json', 'pnpm-lock.yaml', 'mise.toml']
+outputs = ['node_modules/.pnpm/lock.yaml']
+
+[tasks.dev]
+description = 'Calls your dev script in `package.json`'
+run = 'node --run dev'
+depends = ['pnpm-install']
