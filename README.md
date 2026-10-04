@@ -1,61 +1,109 @@
 # Monchu
 
 A personal everything agent built around [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable).
-The first goal: fast conversation that can start background work without making you wait to keep talking.
+Luna handles conversation; named Sol workers can run in the background while chat stays available.
 
 ## Canonical project context
 
-The roadmap, primer, open decisions, and tasks live in Jorge's Obsidian vault, not this repo:
+Product intent, decisions, roadmap, and tasks live in Jorge's Obsidian vault:
 
-- Project home: `projects/monchu.md`
-- Primer and PoC/MVP handoff: `projects/monchu/foundation.md`
-- Active task: `projects/tasks.md`, tag `#monchu`
+- `projects/monchu.md`
+- `projects/monchu/foundation.md`
+- `projects/tasks.md`, tag `#monchu`
 
-Resolve the vault through `OBSIDIAN_VAULT_PATH` and read its `AGENTS.md` before editing notes.
-The repo contains code-specific documentation; it should not grow a second roadmap.
+Resolve the vault through `OBSIDIAN_VAULT_PATH` and read its live `AGENTS.md` before editing notes.
+This repo owns implementation documentation, not a second roadmap.
 
-## Current scaffold
+## Run
 
-`src/main.ts` creates Pi's `ModelRuntime` from the existing agent configuration directory, opens a Durable Harness, submits a hard-coded question, prints JSON diagnostics, and closes.
-It uses **in-memory storage**, an empty extension registry, and a hard-coded Sol model.
-It is not yet an interactive assistant, background-worker service, or phone client.
-
-The declared Durable dependency is `^1.0.0`; the inspected installed version is `1.0.0`.
-Its API is experimental, so implement against the installed declarations and lockfile.
-Pi source is available locally at `~/proj/pi`.
-
-## Run the existing demo
-
-Use the toolchain pinned in `mise.toml` and the package manager declared in `package.json`.
-Dependencies can be installed with `pnpm install --frozen-lockfile`.
+Use npm **12.2.0 or newer** and Node **22.19 or newer**.
+`mise.toml` pins the preferred toolchain.
+TypeScript 6 is used because TypeScript 7's native compiler does not ship an Android binary.
 
 ```sh
-pnpm dev       # watch mode; executes the hard-coded model request
-pnpm start     # executes dist/main.js after a build
+npm ci
+npm run build
+npm start
+# or, with source watching:
+npm run dev
 ```
 
-These commands make a live model request using Pi's existing credentials.
-They are not a smoke check for the planned app.
-Do not copy credentials into this repository or create a new provider setup just for Monchu.
+The runtime reuses Pi's agent configuration directory through `getAgentDir()` and `ModelRuntime`.
+Configure/login to `openai-codex` through Pi; do not copy credentials into this repo.
+The front uses `openai-codex/gpt-6-luna` with low thinking.
+Workers use `openai-codex/gpt-6.1-sol` with high thinking.
+There is no silent model/provider fallback.
+
+Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
+`owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
+Crashes release the lock automatically.
+Do not sync a live database or open it from multiple devices.
+
+## Terminal
+
+Just type a message. Receipt means the input was committed, not that the model has answered.
+Replies stream from committed Durable events.
+
+```text
+/work reader summarize a subject using the available local files
+/tell reader focus on the unresolved questions
+/workers
+/stop reader
+/abort
+/cd ~/proj/monchu
+/cd-worker reader ~/proj/pi
+/help
+/quit
+```
+
+Workers can also be started, messaged, inspected, and stopped through model tools.
+All roles receive the installed tools: read, write, edit, bash, and worker management.
+A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
+
+`/abort` (or interactive Ctrl-C) stops the front only.
+`/stop` explicitly cancels a worker, its pending deliveries, and nested work; its conversation remains reusable.
+`/quit` or SIGTERM closes storage without cancelling accepted work.
+On the next launch, attach the terminal first, then resume unfinished work.
+Worker results are committed directly into the parent transcript and displayed without an extra front-model turn.
+Reports do not authorize new actions.
+
+`~/.monchu` is the default home and execution directory, independent of launch cwd.
+Each conversation stores its own cwd.
+Persistent directory changes require an idle conversation with no pending worker deliveries, so running calls do not silently change environments.
+Tools can use explicit paths or shell `cd` for work elsewhere during a run.
+
+## Backend boundary
+
+- `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
+- `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
+- `src/classifier.ts`: explicit disabled placeholder called on front input admission. No classifier API calls, routing decisions, or fallback provider.
+- `src/terminal.ts`: stdin, commands, and rendering only.
+- `src/main.ts`: lifecycle wiring.
+
+The backend imports no terminal code and writes nothing to stdout.
+Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
+Events use Durable's serializable event protocol; a future interface can consume the same backend.
+This slice has no HTTP server, daemon transport, phone UI, codemode adapter, scheduling, or memory backend.
+
+Submission and worker delivery IDs prevent duplicate admission.
+Result append and reporter completion share one Durable commit.
+Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
+SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
+
+## Checks
 
 ```sh
-pnpm typecheck
-pnpm lint
-pnpm build
-pnpm check
+npm run typecheck
+npm run lint
+npm run build
+npm run check
 ```
 
-`pnpm check` runs typechecking, lint, and a formatting check.
+No test suite or mocks are added for this slice.
+These static checks do not prove live provider, interaction, background, or restart behavior.
 
-## Intended first slice
-
-Persist conversations under `~/.monchu`, stream a fast model's response, install basic tools with an explicit environment, and start a restart-safe background worker that reports back while chat stays available.
-The phone surface, model choices, and initial classifier path remain discussion decisions in the vault handoff.
-No implementation or deployment is implied by these docs.
-
-## SDK starting points
-
-- [Durable README](https://github.com/earendil-works/pi/blob/main/packages/durable/README.md)
-- [Persistent background subagents](https://github.com/earendil-works/pi/blob/main/packages/durable/test/examples/23-subagent-background.ts)
-- [Reload and restart](https://github.com/earendil-works/pi/blob/main/packages/durable/test/examples/31-reload-and-restart.ts)
-- [Codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md), which needs an integration seam rather than assuming coding-agent extensions are Durable extensions
+Durable is experimental.
+The npm lockfile pins Pi/Durable **1.0.0**; inspect installed declarations before adapting it.
+Local Pi source is at `~/proj/pi`.
+The persistent background subagent example (23) is the ownership reference.
+Coding-agent extensions, skills, MCP, and codemode require a deliberate Durable integration.

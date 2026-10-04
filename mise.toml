@@ -1,21 +1,18 @@
 [tools]
 node = "26.10.0"
-pnpm = "latest"
-
-[settings]
-idiomatic_version_file_enable_tools = ['pnpm']
+"npm:npm" = "12.2.0"
 
 [env]
 NODE_ENV = { default = "development" }
 _.path = ['{{config_root}}/node_modules/.bin']
 
-[tasks.pnpm-install]
-description = 'Installs dependencies with pnpm'
-run = 'pnpm install'
-sources = ['package.json', 'pnpm-lock.yaml', 'mise.toml']
-outputs = ['node_modules/.pnpm/lock.yaml']
+[tasks.npm-install]
+description = 'Installs locked dependencies with npm'
+run = 'npm ci'
+sources = ['package.json', 'package-lock.json', 'mise.toml']
+outputs = ['node_modules/.package-lock.json']
 
 [tasks.dev]
 description = 'Calls your dev script in `package.json`'
-run = 'node --run dev'
-depends = ['pnpm-install']
+run = 'npm run dev'
+depends = ['npm-install']

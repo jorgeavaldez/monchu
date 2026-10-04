@@ -1,12 +1,12 @@
 {
   "name": "monchu",
   "version": "1.0.0",
+  "private": true,
   "description": "",
   "keywords": [],
   "license": "ISC",
   "author": "",
   "type": "module",
-  "main": "index.js",
   "scripts": {
     "dev": "node --watch src/main.ts",
     "typecheck": "tsc --noEmit",
@@ -14,27 +14,32 @@
     "start": "node dist/main.js",
     "lint": "oxlint",
     "format": "oxfmt",
-    "check": "pnpm typecheck && pnpm lint && oxfmt --check"
+    "check": "npm run typecheck && npm run lint && oxfmt --check"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.0",
+    "@modelcontextprotocol/sdk": "^1.31.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
-    "typescript": "7.0.2"
+    "typescript": "6.0.3"
   },
   "devEngines": {
     "packageManager": {
-      "name": "pnpm",
-      "version": "12.8.1",
-      "onFail": "download"
+      "name": "npm",
+      "version": ">=12.2.0",
+      "onFail": "error"
     }
   },
-  "packageManager": "pnpm@12.8.1",
-  "dependencies": {
-    "@earendil-works/chord": "^1.0.0",
-    "@earendil-works/pi-ai": "^1.0.0",
-    "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@earendil-works/pi-durable": "^1.0.0",
-    "@modelcontextprotocol/sdk": "^1.31.0"
+  "packageManager": "npm@12.2.0",
+  "allowScripts": {
+    "@google/genai@2.21.0": true,
+    "esbuild@0.28.2": true,
+    "protobufjs@7.6.6": true
   }
 }

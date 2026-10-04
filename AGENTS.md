@@ -62,7 +62,7 @@ Ask when scope or a design decision materially changes the outcome.
   Publish source changes only when explicitly authorized; vault delivery follows its own standing authorization.
 - Use native `agent_browser` when browser automation is needed.
   Existing homelab browser ownership/takeover rules remain authoritative; never blindly replay uncertain submissions.
-- After code changes run the relevant tests, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm check`.
+- After code changes run the relevant tests, `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run check`.
   Report what actually ran and any pre-existing failures; do not claim an interactive, restart, or phone flow works from static checks alone.
 - Update the canonical vault handoff when approved work changes the project state.
   Keep shared filenames portable across Windows, macOS, Linux, and Android.
