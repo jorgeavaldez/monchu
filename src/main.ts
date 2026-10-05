@@ -9,6 +9,6 @@ try {
     await backend.close();
   }
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(`system · error · ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

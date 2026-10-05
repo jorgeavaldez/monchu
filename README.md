@@ -34,6 +34,17 @@ The front uses `openai-codex/gpt-6-luna` with low thinking.
 Workers use `openai-codex/gpt-6.1-sol` with high thinking.
 There is no silent model/provider fallback.
 
+Before starting, set the account ID in `~/.monchu/config.json`:
+
+```json
+{ "cloudflareAccountId": "your-32-character-cloudflare-account-id" }
+```
+
+Clef Flash uses Pi's native `cloudflare-workers-ai` provider.
+`MONCHU_CF_WORKERS_AI_TOKEN`, when present, is a request-scoped token override; otherwise Pi's configured credentials apply.
+Supply it through your existing secret manager/environment, never this config file or source code.
+The account ID is non-secret host configuration and is loaded at startup.
+
 Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
 Crashes release the lock automatically.
@@ -43,6 +54,10 @@ Do not sync a live database or open it from multiple devices.
 
 Just type a message. Receipt means the input was committed, not that the model has answered.
 Replies stream from committed Durable events.
+Live input and restored history use `you>`; answers use `monchu · response`.
+Receipts, routing, loading/thinking, and tool activity use `system ·`; background results use `worker · <name>`.
+Thinking content stays hidden; the terminal shows an indicator when the provider emits thinking events.
+Indicators are event-driven text, not animations or a new TUI framework.
 
 ```text
 /work reader summarize a subject using the available local files
@@ -76,7 +91,7 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 
 - `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
 - `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
-- `src/classifier.ts`: explicit disabled placeholder called on front input admission. No classifier API calls, routing decisions, or fallback provider.
+- `src/classifier.ts`: Clef Flash classification as a Durable child task before front model requests. Typed reply/background/clarify and light/deep advice includes confidence, probabilities, and reported usage; it never grants permission or creates topic threads.
 - `src/terminal.ts`: stdin, commands, and rendering only.
 - `src/main.ts`: lifecycle wiring.
 
@@ -86,6 +101,10 @@ Events use Durable's serializable event protocol; a future interface can consume
 This slice has no HTTP server, daemon transport, phone UI, codemode adapter, scheduling, or memory backend.
 
 Submission and worker delivery IDs prevent duplicate admission.
+Receipt does not wait for Clef or the chat model.
+Classification tasks are cached per accepted input; classifier output and task completion share one Durable commit, so continuations/recovery reuse a committed result.
+Routing advice stays with the front; substantial authorized work still uses Sol workers.
+Provider failures are visible and carry uncertainty into the front request, with no fallback classifier.
 Result append and reporter completion share one Durable commit.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
@@ -103,7 +122,7 @@ No test suite or mocks are added for this slice.
 These static checks do not prove live provider, interaction, background, or restart behavior.
 
 Durable is experimental.
-The npm lockfile pins Pi/Durable **1.0.0**; inspect installed declarations before adapting it.
+The npm lockfile pins Pi/Durable **1.0.2**, including Clef's direct-response support; inspect installed declarations before adapting it.
 Local Pi source is at `~/proj/pi`.
 The persistent background subagent example (23) is the ownership reference.
 Coding-agent extensions, skills, MCP, and codemode require a deliberate Durable integration.
