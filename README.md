@@ -120,7 +120,13 @@ Its public methods admit messages/work using caller-supplied retry IDs, attach a
 Events use Durable's serializable event protocol; a future interface can consume the same backend.
 This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
 
-Submission and worker delivery IDs prevent duplicate admission.
+Submission IDs prevent duplicate admission.
+Worker delivery bookkeeping retains all active requests and the latest 200 completed request IDs for retries; older completed IDs may be admitted again.
+Reported answer bookkeeping keeps 200 recent IDs per worker plus any answers still needed by active deliveries.
+These windows bound the materialized worker bookkeeping, not Durable's stored tasks or transcript.
+The latest-history worker document checkpoints every 32 changed commits, retaining one base and at most 31 deltas rather than an ever-growing revision tail.
+An existing v2 tail above that limit is reclaimed on its next changed commit.
+This bounds worker revision count, not total SQLite-file size; active work and the worker registry can still grow.
 Neither receipt nor the front's reply waits for Clef.
 Each admitted message gets one assessment task (keyed by submission) in `monchu.assessments`; recovery reuses its committed result.
 An escalation is skipped when the front started or messaged a worker for that message, when a newer message arrived, or when Clef is unsure.
@@ -129,6 +135,15 @@ Classifier failures are visible and never escalate; there is no fallback classif
 Result append and reporter completion share one Durable commit, made only while the parent is idle.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
+
+### Worker bookkeeping upgrade and rollback
+
+The worker document migrates one-way from v1 to v2 on its first committing access, even without an edit.
+The migration preserves delivery and answer IDs and initializes the cumulative delegation count from v1 deliveries.
+A v1 build cannot read the migrated document.
+Before upgrading, stop Monchu and take a consistent backup of its home, including `monchu.sqlite` and any SQLite WAL sidecars together.
+To roll back, stop Monchu and restore that complete pre-upgrade backup before starting the v1 build; do not mix an old database with newer sidecars.
+Restoring loses work accepted since the backup. Merely switching builds does not undo migration.
 
 ## Checks
 

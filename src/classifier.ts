@@ -92,7 +92,7 @@ type AssessInput = {
   submissionId: SubmissionId;
   message: string;
   recent: { role: "user" | "assistant" | "toolResult"; text: string }[];
-  /** Worker deliveries before this input; more afterwards means the front already delegated. */
+  /** Lifetime delegation count before this input. The persisted v1 field name stays recovery-compatible. */
   deliveries: number;
 };
 
@@ -188,7 +188,7 @@ export function effortAssessment(
             const state = await tx.doc(AssessmentsDoc, runtime.conversationId);
             const workers = await tx.doc(WorkersDoc, runtime.conversationId);
             const superseded = state.items.at(-1)?.submissionId !== task.input.submissionId;
-            const delegated = workers.deliveries.length > task.input.deliveries;
+            const delegated = workers.started > task.input.deliveries;
             escalate = !superseded && !delegated;
             (await record(tx, { id: task.id, conversationId: runtime.conversationId })).escalated =
               escalate;
@@ -255,7 +255,7 @@ export function effortAssessment(
       submissionId,
       message: message.slice(0, 4000),
       recent,
-      deliveries: workers.deliveries.length,
+      deliveries: workers.started,
     };
     const taskId = await tx.createTask(Assess, input, {
       conversationId: frontId,
