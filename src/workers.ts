@@ -13,6 +13,7 @@ import {
   type ConversationId,
   type EntryId,
   type Harness,
+  type JsonObject,
   type SubmissionId,
   type TaskId,
   type Tx,
@@ -20,17 +21,98 @@ import {
 import type { ModelRole } from "./config.ts";
 import { resolveDirectory } from "./workdir.ts";
 
-export const WorkersDoc = defineDoc<{
+type WorkerRecords = {
   workers: { name: string; conversationId: ConversationId; reported: EntryId[] }[];
   deliveries: { requestId: string; name: string; taskId: TaskId }[];
-}>({
+};
+
+const RECENT_HISTORY = 200;
+
+// Validate the persisted v1 boundary, including Durable's numeric ID representation.
+function isWorkerRecords(value: JsonObject): value is WorkerRecords {
+  return (
+    Array.isArray(value.workers) &&
+    value.workers.every(
+      (worker) =>
+        worker !== null &&
+        typeof worker === "object" &&
+        !Array.isArray(worker) &&
+        typeof worker.name === "string" &&
+        Number.isSafeInteger(worker.conversationId) &&
+        Array.isArray(worker.reported) &&
+        worker.reported.every((id) => Number.isSafeInteger(id)),
+    ) &&
+    Array.isArray(value.deliveries) &&
+    value.deliveries.every(
+      (delivery) =>
+        delivery !== null &&
+        typeof delivery === "object" &&
+        !Array.isArray(delivery) &&
+        typeof delivery.requestId === "string" &&
+        typeof delivery.name === "string" &&
+        Number.isSafeInteger(delivery.taskId),
+    )
+  );
+}
+
+export const WorkersDoc = defineDoc<WorkerRecords & { started: number }>({
   kind: "monchu.workers",
-  version: 1,
+  version: 2,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ workers: [], deliveries: [] }),
+  initial: () => ({ workers: [], deliveries: [], started: 0 }),
+  // At most 31 replay deltas; an older oversized v2 tail is reclaimed on its next change.
+  checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 31,
+  migrate: (value, fromVersion) => {
+    if (fromVersion !== 1 || !isWorkerRecords(value)) throw new Error("Invalid v1 worker records");
+    // v1 never pruned deliveries, so this also preserves pending assessment baselines.
+    return {
+      workers: value.workers,
+      deliveries: value.deliveries,
+      started: value.deliveries.length,
+    };
+  },
 });
+
+/** Keep every active delivery and its settled answer, plus a recent completed retry window. */
+async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId): Promise<void> {
+  const state = await tx.doc(WorkersDoc, parentId);
+  const active = new Set<TaskId>();
+  const answers = new Set<EntryId>();
+  for (const delivery of state.deliveries) {
+    const task = await tx.task(delivery.taskId);
+    if (delivery.taskId === finishing || task?.state.status === "terminal") continue;
+    active.add(delivery.taskId);
+    const worker = state.workers.find((item) => item.name === delivery.name);
+    if (worker === undefined) throw new Error("Worker record is missing");
+    const submission = await tx.submissionByRequest(
+      worker.conversationId,
+      `worker-message:${delivery.taskId}`,
+    );
+    if (submission?.type === "input" && submission.status === "done")
+      answers.add(submission.answer);
+  }
+  const recent = new Set(
+    state.deliveries
+      .filter((item) => !active.has(item.taskId))
+      .slice(-RECENT_HISTORY)
+      .map((item) => item.taskId),
+  );
+  for (let index = state.deliveries.length - 1; index >= 0; index--) {
+    const item = state.deliveries[index]!;
+    if (!active.has(item.taskId) && !recent.has(item.taskId)) state.deliveries.splice(index, 1);
+  }
+  for (const worker of state.workers) {
+    const recentAnswers = new Set(
+      worker.reported.filter((id) => !answers.has(id)).slice(-RECENT_HISTORY),
+    );
+    for (let index = worker.reported.length - 1; index >= 0; index--) {
+      const id = worker.reported[index]!;
+      if (!answers.has(id) && !recentAnswers.has(id)) worker.reported.splice(index, 1);
+    }
+  }
+}
 
 type WorkerResult = {
   name: string;
@@ -120,10 +202,10 @@ const Delivery = defineTask<
     report: async (task, runtime, context) => {
       const result = task.state.checkpoint.result;
       if (result === null) {
-        await runtime.commit(
-          () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
-          context,
-        );
+        await runtime.commit(async (tx) => {
+          await pruneRecords(tx, task.input.parentId, task.id);
+          return { status: "terminal", outcome: { status: "completed", result: null } };
+        }, context);
         return;
       }
       const parent = await runtime.conversation(task.input.parentId, context);
@@ -137,6 +219,7 @@ const Delivery = defineTask<
           if ((await tx.doc(LiveDoc, task.input.parentId)).run !== undefined) return undefined;
           // Passive committed output: visible without buying another model turn, and provenance-labelled context
           // for the parent's next request. Appending and finishing in one commit makes recovery deduplicated.
+          await pruneRecords(tx, task.input.parentId, task.id);
           await tx.appendEntry(WorkerResultEntry, task.input.parentId, {
             data: result,
             model: [
@@ -155,8 +238,11 @@ const Delivery = defineTask<
       }
     },
   },
-  abort: (_task, runtime, context) =>
-    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+  abort: (task, runtime, context) =>
+    runtime.commit(async (tx) => {
+      await pruneRecords(tx, task.input.parentId, task.id);
+      return { status: "terminal", outcome: { status: "aborted" } };
+    }, context),
 });
 
 export async function startWorker(
@@ -177,6 +263,7 @@ export async function startWorker(
   }
   if (state.workers.some((item) => item.name === name))
     throw new Error(`${name} already exists; send it a message instead`);
+  await pruneRecords(tx, parentId);
   const anchor = await tx.createTask(Anchor, null, {
     conversationId: parentId,
     ownership: { kind: "conversation" },
@@ -198,6 +285,7 @@ export async function startWorker(
     background: true,
   });
   state.deliveries.push({ requestId, name, taskId });
+  state.started++;
   return worker.id;
 }
 
@@ -212,6 +300,7 @@ export async function messageWorker(
   const worker = state.workers.find((item) => item.name === name);
   if (worker === undefined) throw new Error(`No worker named ${name}`);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
+    await pruneRecords(tx, parentId);
     const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "steer" };
     const taskId = await tx.createTask(Delivery, input, {
       conversationId: worker.conversationId,
@@ -219,6 +308,7 @@ export async function messageWorker(
       background: true,
     });
     state.deliveries.push({ requestId, name, taskId });
+    state.started++;
   }
   return worker.conversationId;
 }
