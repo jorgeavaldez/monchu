@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   configure,
   createRegistry,
@@ -14,7 +14,6 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,7 +21,8 @@ import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, effortAssessment, type Assessment } from "./classifier.ts";
 import { Codemode } from "./codemode.ts";
 import { loadConfig, type MonchuConfig } from "./config.ts";
-import { createPiContext } from "./context.ts";
+import { loadPiConfiguration } from "./context.ts";
+import { createPiTools } from "./pi-tools.ts";
 import {
   createWorkerTools,
   listWorkers,
@@ -92,12 +92,27 @@ export class Monchu {
 
       const reports = new Reports(join(home, "monchu.log"));
 
-      const settingsManager = SettingsManager.create(home, agentDir);
+      const pi = await loadPiConfiguration(agentDir);
+      const shellPath = pi.settings.getShellPath();
       const registry = createRegistry();
-      registry.install(CodingTools);
+      registry.install(createPiTools(pi.settings));
       registry.install(createWorkerTools(config.worker));
       registry.install(Codemode);
-      registry.install(createPiContext(agentDir, settingsManager.getSkillPaths(), home));
+      registry.install(pi.extension);
+      for (const diagnostic of pi.diagnostics) {
+        const locations = [
+          diagnostic.path,
+          ...(diagnostic.collision
+            ? [
+                `winner: ${diagnostic.collision.winnerPath}`,
+                `loser: ${diagnostic.collision.loserPath}`,
+              ]
+            : []),
+        ]
+          .filter((location) => location !== undefined)
+          .join("; ");
+        reports.report(new Error(`${diagnostic.message}${locations ? ` (${locations})` : ""}`));
+      }
       registry.install(
         defineExtension({
           name: "monchu",
@@ -121,8 +136,12 @@ export class Monchu {
         {
           models,
           registry,
-          settings: harnessSettings(settingsManager),
-          env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? home }),
+          settings: harnessSettings(pi.settings),
+          env: ({ cwd }) =>
+            new NodeExecutionEnv({
+              cwd: cwd ?? home,
+              ...(shellPath === undefined ? {} : { shellPath }),
+            }),
           onReport: (error) => reports.report(error),
         },
         context,
@@ -291,7 +310,7 @@ type EffortAssessment = ReturnType<typeof effortAssessment>;
 const FRONT_INSTRUCTIONS =
   "You are the front: reply immediately. If you can fully answer in this reply, do. Otherwise acknowledge in one short line (for example 'looking into it') and start the work, usually a background worker with a self-contained goal, context, and constraints. Never stall waiting for an assessment or a worker. When an effort assessment says the work outgrows a single fast reply and you have not delegated, delegate.";
 
-/** Pi's run policy from its settings files, read at each use like Pi's own durable app. */
+/** Durable's run policy from the startup snapshot of Pi's user settings. */
 function harnessSettings(settings: SettingsManager): HarnessSettings {
   return {
     get stream() {

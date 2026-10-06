@@ -50,7 +50,9 @@ Clef Flash uses Pi's native `cloudflare-workers-ai` provider, so Pi's Cloudflare
 `MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` are optional overrides.
 Never put the token in the config file or source code.
 
-Run policy (stream timeout, retries, compaction, steering and follow-up modes) comes from Pi's `settings.json`, read at each use.
+User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed and executable extensions are not loaded.
+
+Resources and settings load at startup, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
 
 Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -85,7 +87,7 @@ Indicators are event-driven text, not animations or a new TUI framework.
 ```
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the installed tools: read, write, edit, bash, worker management, and `codemode`.
+All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected. Built-in selection does not disable Monchu's worker management or `codemode`.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
@@ -111,7 +113,8 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 - `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: Pi's AGENTS.md context files and skills as prompt sections, loaded once per directory.
+- `src/context.ts`: user-only Pi settings and resources, loaded once at startup; imported instructions and skill metadata as prompt sections.
+- `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
 - `src/terminal.ts`: stdin, commands, and rendering only.
 - `src/main.ts`: lifecycle wiring.
 
