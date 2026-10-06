@@ -14,6 +14,7 @@ import {
   type Harness,
   type TaskId,
 } from "@earendil-works/pi-durable";
+import type { ClassifierRole } from "./config.ts";
 
 const questions = {
   disposition: {
@@ -76,14 +77,12 @@ export function clefRouting(
   models: ModelRuntime,
   harness: Harness,
   frontId: ConversationId,
-  accountId: string,
+  role: ClassifierRole,
+  accountId: string | undefined,
 ) {
-  const model = models.getModelOfType(
-    "classifier",
-    "cloudflare-workers-ai",
-    "@cf/cloudflare/clef-flash",
-  );
-  if (model === undefined) throw new Error("Pi has no configured Clef Flash classifier model");
+  const model = models.getModelOfType("classifier", role.provider, role.modelId);
+  if (model === undefined)
+    throw new Error(`Pi has no configured classifier model ${role.provider}/${role.modelId}`);
 
   const Classification = defineTask<ClassificationInput, { phase: "classify" }, RoutingResult>({
     name: "monchu.classify",
@@ -109,8 +108,9 @@ export function clefRouting(
           },
           {
             signal: runtime.signal,
+            // Pi's stored or environment Cloudflare credentials apply unless these overrides are set.
             ...(apiKey === undefined ? {} : { apiKey }),
-            env: { CLOUDFLARE_ACCOUNT_ID: accountId },
+            ...(accountId === undefined ? {} : { env: { CLOUDFLARE_ACCOUNT_ID: accountId } }),
           },
         );
         runtime.signal.throwIfAborted();

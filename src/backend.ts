@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   configure,
   createRegistry,
@@ -10,16 +10,25 @@ import {
   watchEvents,
   type AgentEvent,
   type Conversation,
+  type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { clefRouting } from "./classifier.ts";
-import { listWorkers, messageWorker, startWorker, WorkersDoc, WorkerTools } from "./workers.ts";
+import { Codemode } from "./codemode.ts";
+import { loadConfig, type MonchuConfig } from "./config.ts";
+import {
+  createWorkerTools,
+  listWorkers,
+  messageWorker,
+  startWorker,
+  WorkersDoc,
+} from "./workers.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -30,12 +39,23 @@ export class Monchu {
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
   private readonly front: Conversation;
+  readonly config: MonchuConfig;
+  private readonly reports: Reports;
 
-  private constructor(home: string, owner: DatabaseSync, harness: Harness, front: Conversation) {
+  private constructor(
+    home: string,
+    owner: DatabaseSync,
+    harness: Harness,
+    front: Conversation,
+    config: MonchuConfig,
+    reports: Reports,
+  ) {
     this.home = home;
     this.owner = owner;
     this.harness = harness;
     this.front = front;
+    this.config = config;
+    this.reports = reports;
   }
 
   static async open(home = join(homedir(), ".monchu")): Promise<Monchu> {
@@ -53,15 +73,7 @@ export class Monchu {
           { cause: error },
         );
       }
-      const config: unknown = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
-      if (
-        typeof config !== "object" ||
-        config === null ||
-        !("cloudflareAccountId" in config) ||
-        typeof config.cloudflareAccountId !== "string" ||
-        !/^[a-f0-9]{32}$/i.test(config.cloudflareAccountId)
-      )
-        throw new Error(`${home}/config.json requires a 32-character cloudflareAccountId`);
+      const config = await loadConfig(home);
       const agentDir = getAgentDir();
       const models = await ModelRuntime.create({
         authPath: join(agentDir, "auth.json"),
@@ -69,15 +81,17 @@ export class Monchu {
       });
       const diagnostic = models.getError();
       if (diagnostic !== undefined) throw new Error(diagnostic);
-      for (const modelId of ["gpt-6-luna", "gpt-6.1-sol"]) {
-        if (models.getModel("openai-codex", modelId) === undefined) {
-          throw new Error(`Pi has no configured model openai-codex/${modelId}`);
-        }
+      for (const role of [config.front, config.worker]) {
+        if (models.getModel(role.provider, role.modelId) === undefined)
+          throw new Error(`Pi has no configured model ${role.provider}/${role.modelId}`);
       }
+      const settings = harnessSettings(SettingsManager.create(home, agentDir));
+      const reports = new Reports(join(home, "monchu.log"));
 
       const registry = createRegistry();
       registry.install(CodingTools);
-      registry.install(WorkerTools);
+      registry.install(createWorkerTools(config.worker));
+      registry.install(Codemode);
       registry.install(
         defineExtension({
           name: "monchu",
@@ -101,19 +115,28 @@ export class Monchu {
         {
           models,
           registry,
+          settings,
           env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? home }),
+          onReport: (error) => reports.report(error),
         },
         context,
       );
-      const front = await harness.root(context, {
-        agent: {
-          model: { provider: "openai-codex", modelId: "gpt-6-luna" },
-          thinkingLevel: "low",
-          cwd: home,
+      const front = await harness.root(context, { agent: { cwd: home } });
+      // The configured front role applies from the next request; a running request keeps its model.
+      await front.configure(
+        {
+          model: { provider: config.front.provider, modelId: config.front.modelId },
+          thinkingLevel: config.front.thinkingLevel,
         },
-      });
-      registry.install(clefRouting(models, harness, front.id, config.cloudflareAccountId));
-      return new Monchu(home, owner, harness, front);
+        context,
+      );
+      if (config.classifier !== null)
+        registry.install(
+          clefRouting(models, harness, front.id, config.classifier, config.cloudflareAccountId),
+        );
+      // Every definition is installed; pending work resumes whether or not a client is attached.
+      harness.resume();
+      return new Monchu(home, owner, harness, front, config, reports);
     } catch (error) {
       try {
         await harness?.close(context);
@@ -124,14 +147,18 @@ export class Monchu {
     }
   }
 
-  /** Attach snapshot + committed updates before resuming pending work. */
+  /** Non-fatal runtime failures, also appended to `monchu.log`. Returns an unsubscribe function. */
+  onReport(listener: (message: string) => void): () => void {
+    return this.reports.subscribe(listener);
+  }
+
+  /** Snapshot plus committed updates. Pending work already resumed at open. */
   async watch(listener: (events: readonly AgentEvent[]) => void | Promise<void>) {
     const stream = await watchEvents(this.harness, this.front.id, context);
     await listener([stream.snapshot]);
     stream.start(async (events) => {
       await listener(events);
     });
-    this.harness.resume();
     return stream;
   }
 
@@ -152,7 +179,7 @@ export class Monchu {
     const agent = await this.front.agent(context);
     const cwd = agent.cwd ?? this.home;
     const conversationId = await this.front.commit(
-      (tx) => startWorker(tx, this.front.id, name, message, cwd, requestId),
+      (tx) => startWorker(tx, this.front.id, name, message, cwd, requestId, this.config.worker),
       context,
     );
     this.harness.resume();
@@ -222,5 +249,60 @@ export class Monchu {
     } finally {
       this.owner.close();
     }
+  }
+}
+
+/** Pi's run policy from its settings files, read at each use like Pi's own durable app. */
+function harnessSettings(settings: SettingsManager): HarnessSettings {
+  return {
+    get stream() {
+      const provider = settings.getProviderRetrySettings();
+      const idle = settings.getHttpIdleTimeoutMs();
+      return {
+        timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
+        maxRetryDelayMs: provider.maxRetryDelayMs,
+        ...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
+      };
+    },
+    get compaction() {
+      return settings.getCompactionSettings();
+    },
+    get retry() {
+      return settings.getRetrySettings();
+    },
+    get steeringMode() {
+      return settings.getSteeringMode();
+    },
+    get followUpMode() {
+      return settings.getFollowUpMode();
+    },
+  };
+}
+
+/** Durable's `onReport` sink: kept until a client subscribes, and always logged. Never throws. */
+class Reports {
+  private readonly path: string;
+  private readonly listeners = new Set<(message: string) => void>();
+  private pending: string[] = [];
+
+  constructor(path: string) {
+    this.path = path;
+  }
+
+  report(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    appendFile(this.path, `${new Date().toISOString()} ${message}\n`).catch(() => {});
+    if (this.listeners.size === 0) {
+      this.pending = [...this.pending, message].slice(-20);
+      return;
+    }
+    for (const listener of this.listeners) listener(message);
+  }
+
+  subscribe(listener: (message: string) => void): () => void {
+    this.listeners.add(listener);
+    for (const message of this.pending) listener(message);
+    this.pending = [];
+    return () => this.listeners.delete(listener);
   }
 }

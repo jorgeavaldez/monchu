@@ -17,6 +17,7 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
+import type { ModelRole } from "./config.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 export const WorkersDoc = defineDoc<{
@@ -118,11 +119,23 @@ const Delivery = defineTask<
     },
     report: async (task, runtime, context) => {
       const result = task.state.checkpoint.result;
-      if (result !== null) {
-        // Passive committed output: visible immediately without buying another front-model turn.
-        // The same entry also supplies provenance-labelled context for the front's next request.
-        // Appending the result and finishing its reporter in one commit makes recovery deduplicated.
-        await runtime.commit(async (tx) => {
+      if (result === null) {
+        await runtime.commit(
+          () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
+          context,
+        );
+        return;
+      }
+      const parent = await runtime.conversation(task.input.parentId, context);
+      if (parent === undefined) throw new Error("Worker parent conversation is missing");
+      // Only the Harness may append to a conversation with an active run: a raw entry can land between a tool
+      // call and its result. Wait for an idle parent and append only if it is still idle in the same commit.
+      for (;;) {
+        await parent.waitForIdle(context);
+        const delivered = await runtime.commit(async (tx) => {
+          if ((await tx.doc(LiveDoc, task.input.parentId)).run !== undefined) return undefined;
+          // Passive committed output: visible without buying another model turn, and provenance-labelled context
+          // for the parent's next request. Appending and finishing in one commit makes recovery deduplicated.
           await tx.appendEntry(WorkerResultEntry, task.input.parentId, {
             data: result,
             model: [
@@ -133,14 +146,12 @@ const Delivery = defineTask<
               },
             ],
           });
-          return { status: "terminal", outcome: { status: "completed", result: null } };
+          return { status: "terminal", outcome: { status: "completed", result: null } } as const;
         }, context);
-        return;
+        if (delivered !== undefined) return;
+        // A run started between idle and commit; back off briefly instead of spinning.
+        await runtime.sleep(runtime.now() + 250, context);
       }
-      await runtime.commit(
-        () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
-        context,
-      );
     },
   },
   abort: (_task, runtime, context) =>
@@ -154,6 +165,7 @@ export async function startWorker(
   message: string,
   cwd: string,
   requestId: string,
+  role: ModelRole,
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const previous = state.deliveries.find((item) => item.requestId === requestId);
@@ -171,8 +183,8 @@ export async function startWorker(
   });
   const worker = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
   await configure(tx, worker.id, {
-    model: { provider: "openai-codex", modelId: "gpt-6.1-sol" },
-    thinkingLevel: "high",
+    model: { provider: role.provider, modelId: role.modelId },
+    thinkingLevel: role.thinkingLevel,
     cwd,
     instructions: `You are Monchu's background worker ${name}. Complete the delegated goal and report a concise result. Use installed tools as needed. Work only within the user's authorization. Your working directory is an execution detail, not the identity of your task.`,
   });
@@ -237,82 +249,101 @@ export async function listWorkers(
   );
 }
 
-export const WorkerTools = defineExtension({
-  name: "monchu.workers",
-  tasks: [Anchor, Delivery],
-  tools: [
-    defineTool({
-      name: "start_worker",
-      description:
-        "Start a named Sol worker in the background and return immediately. Supply a self-contained goal, context, and constraints. Results arrive automatically; chat remains available. cwd defaults to this conversation's current directory. Only start work the user authorized.",
-      parameters: Type.Object({
-        name: Type.String({ minLength: 1 }),
-        task: Type.String({ minLength: 1 }),
-        cwd: Type.Optional(Type.String()),
+/** Request IDs include the call ID so several calls inside one codemode script stay distinct. */
+export function createWorkerTools(role: ModelRole) {
+  return defineExtension({
+    name: "monchu.workers",
+    tasks: [Anchor, Delivery],
+    tools: [
+      defineTool({
+        name: "start_worker",
+        description:
+          "Start a named worker in the background and return immediately. Supply a self-contained goal, context, and constraints. Results arrive automatically; chat remains available. cwd defaults to this conversation's current directory. Only start work the user authorized.",
+        parameters: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          task: Type.String({ minLength: 1 }),
+          cwd: Type.Optional(Type.String()),
+        }),
+        replay: "safe",
+        execute: async (args, api, context) => {
+          const agent = await api.agent(context);
+          if (agent.cwd === undefined) throw new Error("Conversation has no execution directory");
+          const cwd = await resolveDirectory(args.cwd ?? agent.cwd, agent.cwd);
+          const id = await api.commit(
+            (tx) =>
+              startWorker(
+                tx,
+                api.conversationId,
+                args.name,
+                args.task,
+                cwd,
+                `tool:${api.taskId}:${api.callId}`,
+                role,
+              ),
+            context,
+          );
+          return {
+            content: [
+              { type: "text", text: `Started ${args.name} (conversation ${id}) in ${cwd}.` },
+            ],
+          };
+        },
       }),
-      replay: "safe",
-      execute: async (args, api, context) => {
-        const agent = await api.agent(context);
-        if (agent.cwd === undefined) throw new Error("Conversation has no execution directory");
-        const cwd = await resolveDirectory(args.cwd ?? agent.cwd, agent.cwd);
-        const id = await api.commit(
-          (tx) =>
-            startWorker(tx, api.conversationId, args.name, args.task, cwd, `tool:${api.taskId}`),
-          context,
-        );
-        return {
-          content: [{ type: "text", text: `Started ${args.name} (conversation ${id}) in ${cwd}.` }],
-        };
-      },
-    }),
-    defineTool({
-      name: "message_worker",
-      description:
-        "Send instructions to an existing background worker. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically.",
-      parameters: Type.Object({
-        name: Type.String({ minLength: 1 }),
-        message: Type.String({ minLength: 1 }),
+      defineTool({
+        name: "message_worker",
+        description:
+          "Send instructions to an existing background worker. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically.",
+        parameters: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          message: Type.String({ minLength: 1 }),
+        }),
+        replay: "safe",
+        execute: async (args, api, context) => {
+          await api.commit(
+            (tx) =>
+              messageWorker(
+                tx,
+                api.conversationId,
+                args.name,
+                args.message,
+                `tool:${api.taskId}:${api.callId}`,
+              ),
+            context,
+          );
+          return { content: [{ type: "text", text: `Message committed for ${args.name}.` }] };
+        },
       }),
-      replay: "safe",
-      execute: async (args, api, context) => {
-        await api.commit(
-          (tx) =>
-            messageWorker(tx, api.conversationId, args.name, args.message, `tool:${api.taskId}`),
-          context,
-        );
-        return { content: [{ type: "text", text: `Message committed for ${args.name}.` }] };
-      },
-    }),
-    defineTool({
-      name: "worker_status",
-      description:
-        "List this conversation's persistent background workers, their directories, and whether they have pending work.",
-      parameters: Type.Object({}),
-      replay: "safe",
-      execute: async (_args, api, context) => ({
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(await listWorkers(api, api.conversationId, context)),
-          },
-        ],
+      defineTool({
+        name: "worker_status",
+        description:
+          "List this conversation's persistent background workers, their directories, and whether they have pending work.",
+        parameters: Type.Object({}),
+        replay: "safe",
+        execute: async (_args, api, context) => ({
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(await listWorkers(api, api.conversationId, context)),
+            },
+          ],
+        }),
       }),
-    }),
-    defineTool({
-      name: "stop_worker",
-      description:
-        "Explicitly cancel a worker's current work, queued messages, deliveries, and nested background work. Its conversation remains available. Ordinary chat abort does not stop workers.",
-      parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
-      replay: "unsafe",
-      execute: async (args, api, context) => {
-        const state = await api.snapshot(WorkersDoc, api.conversationId, context);
-        const record = state?.workers.find((item) => item.name === args.name);
-        if (record === undefined) throw new Error(`No worker named ${args.name}`);
-        const worker = await api.conversation(record.conversationId, context);
-        if (worker === undefined) throw new Error("Worker conversation is missing");
-        await worker.abort(context, { background: true });
-        return { content: [{ type: "text", text: `Stopped ${args.name}.` }] };
-      },
-    }),
-  ],
-});
+      defineTool({
+        name: "stop_worker",
+        description:
+          "Explicitly cancel a worker's current work, queued messages, deliveries, and nested background work. Its conversation remains available. Ordinary chat abort does not stop workers.",
+        parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
+        replay: "unsafe",
+        execute: async (args, api, context) => {
+          const state = await api.snapshot(WorkersDoc, api.conversationId, context);
+          const record = state?.workers.find((item) => item.name === args.name);
+          if (record === undefined) throw new Error(`No worker named ${args.name}`);
+          const worker = await api.conversation(record.conversationId, context);
+          if (worker === undefined) throw new Error("Worker conversation is missing");
+          await worker.abort(context, { background: true });
+          return { content: [{ type: "text", text: `Stopped ${args.name}.` }] };
+        },
+      }),
+    ],
+  });
+}

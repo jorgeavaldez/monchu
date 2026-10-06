@@ -13,7 +13,7 @@ import { ClassificationEntry } from "./classifier.ts";
 import { WorkerResultEntry } from "./workers.ts";
 
 const help = `Commands:
-  /work <name> <goal>         start a Sol worker, keep chatting
+  /work <name> <goal>         start a background worker, keep chatting
   /tell <name> <message>      steer a worker (or start its next run)
   /workers                   list workers and execution directories
   /stop <name>                explicitly cancel a worker and its work
@@ -289,9 +289,11 @@ export async function runTerminal(backend: Monchu): Promise<void> {
   };
   terminal.on("SIGINT", interrupt);
   process.on("SIGTERM", shutdown);
+  const { front, worker, classifier } = backend.config;
   stdout.write(
-    `Monchu | Luna front / Sol workers | Clef Flash classifier\nHome: ${backend.home}\n/help for commands.\n`,
+    `Monchu | front ${front.modelId} / workers ${worker.modelId} | classifier ${classifier?.modelId ?? "off"}\nHome: ${backend.home}\n/help for commands.\n`,
   );
+  const stopReports = backend.onReport((message) => notice(`warning · ${message}`));
   try {
     stream = await backend.watch(render);
     void stream.closed.then((end) => {
@@ -370,6 +372,7 @@ export async function runTerminal(backend: Monchu): Promise<void> {
   } finally {
     finishReply();
     erasePrompt();
+    stopReports();
     terminal.off("SIGINT", interrupt);
     process.off("SIGTERM", shutdown);
     terminal.close();
