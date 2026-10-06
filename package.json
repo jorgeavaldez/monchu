@@ -9,16 +9,18 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/main.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "build": "tsc",
     "start": "node dist/main.js",
     "lint": "oxlint",
     "format": "oxfmt",
-    "check": "npm run typecheck && npm run lint && oxfmt --check"
+    "check": "npm run typecheck && npm run lint && oxfmt --check && npm test",
+    "test": "vitest --run"
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.2",
     "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-codemode": "1.0.2",
     "@earendil-works/pi-coding-agent": "1.0.2",
     "@earendil-works/pi-durable": "1.0.2",
     "@modelcontextprotocol/sdk": "^1.31.0"
@@ -27,7 +29,8 @@
     "@types/node": "^26.6.4",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
   },
   "devEngines": {
     "packageManager": {
