@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { clearScreenDown, createInterface, cursorTo, moveCursor } from "node:readline";
 import { stdin, stdout } from "node:process";
 import type { Monchu } from "./backend.ts";
-import { ClassificationEntry } from "./classifier.ts";
+import { ESCALATION_PREFIX, type AssessmentResult } from "./classifier.ts";
 import { WorkerResultEntry } from "./workers.ts";
 
 const help = `Commands:
@@ -18,6 +18,8 @@ const help = `Commands:
   /workers                   list workers and execution directories
   /stop <name>                explicitly cancel a worker and its work
   /abort                     stop the front run; workers continue
+  /new [handoff]              fresh model context, optionally with a handoff note
+  /compact [instructions]    summarize older context now
   /cd <path>                 change the front's directory while idle
   /cd-worker <name> <path>    change an idle worker's directory
   /help                      show commands
@@ -109,17 +111,6 @@ export async function runTerminal(backend: Monchu): Promise<void> {
   }
 
   function showEntry(entry: EntryRecord) {
-    if (ClassificationEntry.is(entry)) {
-      const result = entry.data;
-      finishReply();
-      erasePrompt();
-      stdout.write(
-        result.status === "failed"
-          ? `\nsystem · classifier failed · ${result.message}\n`
-          : `\nsystem · routing · ${result.disposition} (${Math.round(result.confidence * 100)}%) · effort ${result.effort} (${Math.round(result.effortConfidence * 100)}%)\n`,
-      );
-      return;
-    }
     if (WorkerResultEntry.is(entry)) {
       finishReply();
       erasePrompt();
@@ -133,7 +124,10 @@ export async function runTerminal(backend: Monchu): Promise<void> {
         typeof message.content === "string"
           ? message.content
           : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-      if (text)
+      if (!text) continue;
+      if (message.role === "user" && text.startsWith(ESCALATION_PREFIX))
+        stdout.write(`\nsystem · escalation\n${text.split("\n", 1)[0]}\n`);
+      else
         stdout.write(
           message.role === "user" ? `\nyou> ${text}\n` : `\nmonchu · response\n${text}\n`,
         );
@@ -155,10 +149,7 @@ export async function runTerminal(backend: Monchu): Promise<void> {
             event.entries
               .filter(
                 (entry) =>
-                  UserEntry.is(entry) ||
-                  AssistantEntry.is(entry) ||
-                  WorkerResultEntry.is(entry) ||
-                  ClassificationEntry.is(entry),
+                  UserEntry.is(entry) || AssistantEntry.is(entry) || WorkerResultEntry.is(entry),
               )
               .slice(-10)
               .forEach(showEntry);
@@ -208,14 +199,14 @@ export async function runTerminal(backend: Monchu): Promise<void> {
             }
           }
           break;
-        case "entry_appended":
-          if (ClassificationEntry.is(event.entry)) {
-            showEntry(event.entry);
-            prompt();
-          }
-          break;
         case "message_end":
-          if (WorkerResultEntry.is(event.entry)) {
+          if (UserEntry.is(event.entry)) {
+            const first = event.entry.model?.[0];
+            const text =
+              first?.role === "user" && typeof first.content === "string" ? first.content : "";
+            if (text.startsWith(ESCALATION_PREFIX))
+              notice(`escalation · ${text.split("\n", 1)[0]}`);
+          } else if (WorkerResultEntry.is(event.entry)) {
             showEntry(event.entry);
             workersChanged = true;
             prompt();
@@ -294,6 +285,17 @@ export async function runTerminal(backend: Monchu): Promise<void> {
     `Monchu | front ${front.modelId} / workers ${worker.modelId} | classifier ${classifier?.modelId ?? "off"}\nHome: ${backend.home}\n/help for commands.\n`,
   );
   const stopReports = backend.onReport((message) => notice(`warning · ${message}`));
+  // Assessments settle beside the reply; show each once, skipping the ones settled before attaching.
+  const shown = new Set<number>();
+  let hydrated = false;
+  const stopAssessments = await backend.watchAssessments((items) => {
+    for (const item of items) {
+      if (item.result === null || shown.has(item.taskId)) continue;
+      shown.add(item.taskId);
+      if (hydrated) notice(`effort · ${describeAssessment(item.result)}`);
+    }
+    hydrated = true;
+  });
   try {
     stream = await backend.watch(render);
     void stream.closed.then((end) => {
@@ -336,6 +338,12 @@ export async function runTerminal(backend: Monchu): Promise<void> {
           await backend.stopWorker(rest);
           notice(`stopped worker · ${rest}`);
           await updateWorkers();
+        } else if (command === "/new") {
+          await backend.reset(rest);
+          notice(rest ? "new context · handoff carried" : "new context");
+        } else if (command === "/compact") {
+          await backend.compact(rest);
+          notice("compaction started");
         } else if (command === "/cd") {
           if (!rest) throw new Error("Usage: /cd <path>");
           notice(`directory · ${await backend.changeDirectory(rest)}`);
@@ -373,9 +381,16 @@ export async function runTerminal(backend: Monchu): Promise<void> {
     finishReply();
     erasePrompt();
     stopReports();
+    stopAssessments();
     terminal.off("SIGINT", interrupt);
     process.off("SIGTERM", shutdown);
     terminal.close();
     await stream?.stop();
   }
+}
+
+function describeAssessment(result: AssessmentResult): string {
+  if (result.status === "failed") return `unavailable · ${result.message}`;
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+  return `${result.effort} ${percent(result.effortConfidence)} · scope ${result.scope} ${percent(result.scopeConfidence)}`;
 }

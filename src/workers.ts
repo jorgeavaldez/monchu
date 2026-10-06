@@ -130,9 +130,10 @@ const Delivery = defineTask<
       if (parent === undefined) throw new Error("Worker parent conversation is missing");
       // Only the Harness may append to a conversation with an active run: a raw entry can land between a tool
       // call and its result. Wait for an idle parent and append only if it is still idle in the same commit.
-      for (;;) {
+      let delivered = false;
+      while (!delivered) {
         await parent.waitForIdle(context);
-        const delivered = await runtime.commit(async (tx) => {
+        await runtime.commit(async (tx) => {
           if ((await tx.doc(LiveDoc, task.input.parentId)).run !== undefined) return undefined;
           // Passive committed output: visible without buying another model turn, and provenance-labelled context
           // for the parent's next request. Appending and finishing in one commit makes recovery deduplicated.
@@ -146,11 +147,11 @@ const Delivery = defineTask<
               },
             ],
           });
-          return { status: "terminal", outcome: { status: "completed", result: null } } as const;
+          delivered = true;
+          return { status: "terminal", outcome: { status: "completed", result: null } };
         }, context);
-        if (delivered !== undefined) return;
         // A run started between idle and commit; back off briefly instead of spinning.
-        await runtime.sleep(runtime.now() + 250, context);
+        if (!delivered) await runtime.sleep(runtime.now() + 250, context);
       }
     },
   },

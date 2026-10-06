@@ -62,7 +62,11 @@ Do not sync a live database or open it from multiple devices.
 Just type a message. Receipt means the input was committed, not that the model has answered.
 Replies stream from committed Durable events.
 Live input and restored history use `you>`; answers use `monchu · response`.
-Receipts, routing, loading/thinking, and tool activity use `system ·`; background results use `worker · <name>`.
+Receipts, effort assessments, loading/thinking, and tool activity use `system ·`; background results use `worker · <name>`.
+The front replies immediately: a direct answer, or a one-line acknowledgement while it starts the work.
+Clef Flash assesses each message's effort (single turn or sustained) and scope (contained or expanding) beside that reply, never in front of it.
+Its result joins the front's later requests as advice and shows as `system · effort`.
+When Clef is sure (70%+) the work outgrows a fast reply and the front finished without delegating, one follow-up input (`system · escalation`) asks the front to hand it to a worker.
 Thinking content stays hidden; the terminal shows an indicator when the provider emits thinking events.
 Indicators are event-driven text, not animations or a new TUI framework.
 
@@ -72,6 +76,8 @@ Indicators are event-driven text, not animations or a new TUI framework.
 /workers
 /stop reader
 /abort
+/new optional handoff note for the fresh context
+/compact focus on the open decisions
 /cd ~/proj/monchu
 /cd-worker reader ~/proj/pi
 /help
@@ -104,7 +110,8 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 - `src/config.ts`: optional host config: model roles and classifier overrides.
 - `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
-- `src/classifier.ts`: Clef Flash classification as a Durable child task before front model requests. Typed reply/background/clarify and light/deep advice includes confidence, probabilities, and reported usage; it never grants permission or creates topic threads.
+- `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
+- `src/context.ts`: Pi's AGENTS.md context files and skills as prompt sections, loaded once per directory.
 - `src/terminal.ts`: stdin, commands, and rendering only.
 - `src/main.ts`: lifecycle wiring.
 
@@ -114,10 +121,11 @@ Events use Durable's serializable event protocol; a future interface can consume
 This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
 
 Submission and worker delivery IDs prevent duplicate admission.
-Receipt does not wait for Clef or the chat model.
-Classification tasks are cached per accepted input; classifier output and task completion share one Durable commit, so continuations/recovery reuse a committed result.
-Routing advice stays with the front; substantial authorized work still uses workers.
-Provider failures are visible and carry uncertainty into the front request, with no fallback classifier.
+Neither receipt nor the front's reply waits for Clef.
+Each admitted message gets one assessment task (keyed by submission) in `monchu.assessments`; recovery reuses its committed result.
+An escalation is skipped when the front started or messaged a worker for that message, when a newer message arrived, or when Clef is unsure.
+Classifier failures are visible and never escalate; there is no fallback classifier.
+`/new [handoff]` starts a fresh model context (Durable `reset`); storage keeps every entry and the worker registry.
 Result append and reporter completion share one Durable commit, made only while the parent is idle.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
@@ -131,8 +139,9 @@ npm run build
 npm run check
 ```
 
-No test suite or mocks are added for this slice.
-These static checks do not prove live provider, interaction, background, or restart behavior.
+`npm test` runs vitest against real Durable Harnesses on SQLite in temp directories, following Pi Durable's own tests: Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`.
+They cover worker report placement and restart, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
+They do not prove live provider behavior or the interactive phone flow.
 
 Durable is experimental.
 The npm lockfile pins Pi/Durable **1.0.2**, including Clef's direct-response support; inspect installed declarations before adapting it.
