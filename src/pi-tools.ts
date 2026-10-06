@@ -41,8 +41,11 @@ function sdkTool<TParameters extends TSchema>(
   });
 }
 
-/** Pi resolves defaultTools additions/removals; Monchu's own tools are not coding-agent built-ins. */
-export function createPiTools(settings: SettingsManager) {
+/**
+ * Pi resolves defaultTools additions/removals; Monchu's own tools are not coding-agent built-ins.
+ * Returns warnings for selections that would silently leave Monchu without built-ins.
+ */
+export function createPiTools(settings: SettingsManager, platform: NodeJS.Platform) {
   const commandPrefix = settings.getShellCommandPrefix();
   const codingTools = [
     createReadTool(),
@@ -50,15 +53,34 @@ export function createPiTools(settings: SettingsManager) {
     createEditTool(),
     createBashTool(commandPrefix === undefined ? {} : { commandPrefix }),
   ];
+  const tools = [
+    ...codingTools,
+    sdkTool(createGrepTool, "safe"),
+    sdkTool(createFindTool, "safe"),
+    sdkTool(createLsTool, "safe"),
+    sdkTool(createPowerShellTool, "unsafe"),
+  ];
   const defaults = settings.getDefaultTools() ?? codingTools.map(({ name }) => name);
-  return defineExtension({
-    name: CodingTools.name,
-    tools: [
-      ...codingTools,
-      sdkTool(createGrepTool, "safe"),
-      sdkTool(createFindTool, "safe"),
-      sdkTool(createLsTool, "safe"),
-      sdkTool(createPowerShellTool, "unsafe"),
-    ].filter(({ name }) => defaults.includes(name)),
-  });
+  const warnings: string[] = [];
+  const unknown = defaults.filter((name) => !tools.some((tool) => tool.name === name));
+  if (unknown.length)
+    warnings.push(`Pi defaultTools has unknown built-ins (ignored): ${unknown.join(", ")}`);
+  if (!codingTools.some(({ name }) => defaults.includes(name)))
+    warnings.push(
+      "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
+    );
+  // Pi's grep/find need rg/fd; on Termux its tool manager cannot provide them, so the calls would fail.
+  const unavailable = platform === "android" ? ["grep", "find"] : [];
+  const skipped = unavailable.filter((name) => defaults.includes(name));
+  if (skipped.length)
+    warnings.push(
+      `Pi ${skipped.join("/")} unavailable on Android; use bash with rg/fd on PATH instead`,
+    );
+  return {
+    extension: defineExtension({
+      name: CodingTools.name,
+      tools: tools.filter(({ name }) => defaults.includes(name) && !unavailable.includes(name)),
+    }),
+    warnings,
+  };
 }

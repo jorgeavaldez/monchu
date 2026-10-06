@@ -11,7 +11,7 @@ afterEach(async () => {
   await cleanup();
 });
 
-it("delivers skill warning paths and both collision locations to subscribers and the log", async () => {
+it("delivers skill and defaultTools warnings with collision locations to subscribers and the log", async () => {
   const value = await setup();
   const agentDir = join(value.directory, "agent");
   const home = join(value.directory, "home");
@@ -32,7 +32,10 @@ it("delivers skill warning paths and both collision locations to subscribers and
   for (const path of [firstPath, secondPath]) {
     await writeFile(path, "---\nname: vault\ndescription: vault workflow\n---\nbody");
   }
-  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ skills: ["extra"] }));
+  await writeFile(
+    join(agentDir, "settings.json"),
+    JSON.stringify({ skills: ["extra"], defaultTools: ["read", "bash", "Typo"] }),
+  );
   await writeFile(
     join(home, "config.json"),
     JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
@@ -60,6 +63,7 @@ it("delivers skill warning paths and both collision locations to subscribers and
     expect(collision).toContain(secondPath);
     expect(collision).toContain("winner:");
     expect(collision).toContain("loser:");
+    expect(warnings).toContain("Pi defaultTools has unknown built-ins (ignored): Typo");
   } finally {
     await backend.close();
   }
@@ -67,7 +71,7 @@ it("delivers skill warning paths and both collision locations to subscribers and
   await expect
     .poll(async () => {
       const log = await readFile(join(home, "monchu.log"), "utf8");
-      return [invalidPath, firstPath, secondPath].every((path) => log.includes(path));
+      return [invalidPath, firstPath, secondPath, "Typo"].every((item) => log.includes(item));
     })
     .toBe(true);
 });

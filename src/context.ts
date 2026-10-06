@@ -9,6 +9,13 @@ import {
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import { dirname, join, parse, resolve } from "node:path";
 
+/** Package sources can embed credentials as URL userinfo or token query parameters. */
+function redactSource(source: string) {
+  return source
+    .replace(/\/\/[^/@\s]*@/g, "//***@")
+    .replace(/([?&][^=&#]*(?:token|key|secret|password|auth|sig)[^=&#]*=)[^&#]*/gi, "$1***");
+}
+
 /** User resources are loaded once at startup, never from a conversation's execution directory. */
 export async function loadPiConfiguration(agentDir: string) {
   agentDir = resolve(agentDir);
@@ -41,7 +48,7 @@ export async function loadPiConfiguration(agentDir: string) {
   const resources = await packages.resolve(async (source) => {
     diagnostics.push({
       type: "warning",
-      message: `Pi package unavailable; not installed: ${source}`,
+      message: `Pi package unavailable; not installed: ${redactSource(source)}`,
     });
     return "skip";
   });

@@ -100,7 +100,8 @@ export class Monchu {
       const pi = await loadPiConfiguration(agentDir);
       const shellPath = pi.settings.getShellPath();
       const registry = createRegistry();
-      registry.install(createPiTools(pi.settings));
+      const piTools = createPiTools(pi.settings, process.platform);
+      registry.install(piTools.extension);
       registry.install(createWorkerTools(config.worker));
       registry.install(Codemode);
       registry.install(pi.extension);
@@ -118,6 +119,7 @@ export class Monchu {
           .join("; ");
         reports.report(new Error(`${diagnostic.message}${locations ? ` (${locations})` : ""}`));
       }
+      for (const warning of piTools.warnings) reports.report(new Error(warning));
       registry.install(
         defineExtension({
           name: "monchu",

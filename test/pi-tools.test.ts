@@ -15,7 +15,7 @@ describe("Pi built-ins", () => {
   it("uses Pi's resolved defaults while retaining worker and codemode tools", async () => {
     const value = await setup();
     const settings = SettingsManager.inMemory({ defaultTools: ["-write", "+ls"] });
-    value.registry.install(createPiTools(settings));
+    value.registry.install(createPiTools(settings, process.platform).extension);
     const names = value.registry
       .snapshot()
       .tools()
@@ -28,7 +28,9 @@ describe("Pi built-ins", () => {
     expect(names).not.toContain("grep");
     expect(names).toContain("codemode");
     expect(names).toContain("start_worker");
-    value.registry.install(createPiTools(SettingsManager.inMemory({ defaultTools: [] })));
+    value.registry.install(
+      createPiTools(SettingsManager.inMemory({ defaultTools: [] }), process.platform).extension,
+    );
     expect(
       value.registry
         .snapshot()
@@ -37,12 +39,60 @@ describe("Pi built-ins", () => {
     ).toEqual(names.filter((name) => !["read", "bash", "edit", "ls"].includes(name)));
   });
 
+  it.each([
+    { defaultTools: ["read", "bash", "grep"], warnings: [] },
+    {
+      defaultTools: ["Read", "bash", "+Grep"],
+      warnings: ["Pi defaultTools has unknown built-ins (ignored): Read, Grep"],
+    },
+    {
+      defaultTools: ["ls"],
+      warnings: [
+        "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
+      ],
+    },
+    {
+      defaultTools: "read",
+      warnings: [
+        "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
+      ],
+    },
+  ])("warns about defaultTools $defaultTools", async ({ defaultTools, warnings }) => {
+    const value = await setup();
+    const agentDir = join(value.directory, "agent");
+    await mkdir(agentDir);
+    // Settings files are untrusted JSON, so a non-array value is written to disk rather than typed.
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools }));
+    const tools = createPiTools(SettingsManager.create(agentDir, agentDir), "linux");
+    expect(tools.warnings).toEqual(warnings);
+  });
+
+  it("skips grep and find on Android with one warning", async () => {
+    const value = await setup();
+    const tools = createPiTools(
+      SettingsManager.inMemory({ defaultTools: ["read", "bash", "grep", "find", "ls"] }),
+      "android",
+    );
+    expect(tools.warnings).toEqual([
+      "Pi grep/find unavailable on Android; use bash with rg/fd on PATH instead",
+    ]);
+    value.registry.install(tools.extension);
+    const names = value.registry
+      .snapshot()
+      .tools()
+      .map(({ tool }) => tool.name);
+    expect(names).toEqual(expect.arrayContaining(["read", "bash", "ls"]));
+    expect(names).not.toContain("grep");
+    expect(names).not.toContain("find");
+  });
+
   it.each([undefined, ""])("runs direct and nested bash without a prefix (%s)", async (prefix) => {
     const value = await setup();
     value.registry.install(
       createPiTools(
         SettingsManager.inMemory(prefix === undefined ? {} : { shellCommandPrefix: prefix }),
-      ),
+        process.platform,
+      ).extension,
     );
     const calls = [
       fauxToolCall("bash", { command: "printf unprefixed; pwd" }),
@@ -88,7 +138,7 @@ describe("Pi built-ins", () => {
       shellCommandPrefix:
         "printf 'prefix\\n' >> prefix-calls.txt; export MONCHU_TEST_PREFIX=prefix",
     });
-    value.registry.install(createPiTools(settings));
+    value.registry.install(createPiTools(settings, process.platform).extension);
     const cwd = join(value.directory, "execution");
     await mkdir(cwd);
     await writeFile(join(cwd, "local-marker.txt"), "marker");

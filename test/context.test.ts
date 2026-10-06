@@ -123,7 +123,7 @@ describe("Pi user configuration", () => {
       );
       const pi = await loadPiConfiguration(agentDir);
       value.registry.install(pi.extension);
-      value.registry.install(createPiTools(pi.settings));
+      value.registry.install(createPiTools(pi.settings, process.platform).extension);
       const skillFile = join(agentDir, "skills", "vault", "SKILL.md");
       let advertised = "";
       let loaded = "";
@@ -185,7 +185,7 @@ describe("Pi user configuration", () => {
       }
       await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: tools }));
       const pi = await loadPiConfiguration(agentDir);
-      value.registry.install(createPiTools(pi.settings));
+      value.registry.install(createPiTools(pi.settings, process.platform).extension);
       value.registry.install(pi.extension);
       const sections: Record<string, string | null>[] = [];
       route(value.faux, (request) => {
@@ -263,5 +263,27 @@ describe("Pi user configuration", () => {
     const pi = await loadPiConfiguration(agentDir);
     expect(pi.settings.getPackages()).toEqual(["npm:monchu-nonexistent-test-package@0.0.0"]);
     expect(pi.diagnostics.some(({ type }) => type === "warning")).toBe(true);
+  });
+
+  it("redacts URL userinfo and token parameters from missing package sources", async () => {
+    const value = await setup();
+    const agentDir = join(value.directory, "agent");
+    vi.stubEnv("HOME", value.directory);
+    await mkdir(agentDir);
+    await writeFile(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        packages: [
+          "git:https://user:ghp_SECRET1@github.com/org/repo",
+          "https://SECRET2@example.com/org/other?access_token=SECRET3&ref=main&key=SECRET4",
+        ],
+      }),
+    );
+    const pi = await loadPiConfiguration(agentDir);
+    const messages = pi.diagnostics.map(({ message }) => message);
+    expect(messages).toEqual([
+      "Pi package unavailable; not installed: git:https://***@github.com/org/repo",
+      "Pi package unavailable; not installed: https://***@example.com/org/other?access_token=***&ref=main&key=***",
+    ]);
   });
 });

@@ -50,7 +50,7 @@ Clef Flash uses Pi's native `cloudflare-workers-ai` provider, so Pi's Cloudflare
 `MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` are optional overrides.
 Never put the token in the config file or source code.
 
-User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed and executable extensions are not loaded.
+User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed (the warning redacts URL credentials and token parameters) and executable extensions are not loaded.
 
 Resources and settings load at startup, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
 
@@ -87,7 +87,7 @@ Indicators are event-driven text, not animations or a new TUI framework.
 ```
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected. Built-in selection does not disable Monchu's worker management or `codemode`.
+All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Unknown `defaultTools` names, or a selection without read, write, edit, or bash, produce a warning. Built-in selection does not disable Monchu's worker management or `codemode`.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
