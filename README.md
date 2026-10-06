@@ -93,6 +93,7 @@ A worker starts with a fresh transcript and an explicit goal/context bundle, not
 `/abort` (or interactive Ctrl-C) stops the front only.
 `/stop` explicitly cancels a worker, its pending deliveries, and nested work; its conversation remains reusable.
 `/quit` or SIGTERM closes storage without cancelling accepted work.
+It then stops running tool processes, closes provider connections pi-ai keeps cached (Codex websockets), and exits; if anything else still holds the process, it exits after one second anyway.
 Unfinished work resumes when the backend opens, whether or not a terminal is attached; the terminal starts from a snapshot.
 Worker results are committed directly into the parent transcript and displayed without an extra front-model turn.
 A result waits until the parent has no active run, so it never lands between a tool call and its result.

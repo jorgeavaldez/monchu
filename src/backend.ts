@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   configure,
@@ -43,6 +44,7 @@ export class Monchu {
   readonly config: MonchuConfig;
   private readonly reports: Reports;
   private readonly assessment: EffortAssessment | undefined;
+  private readonly envs: ExecutionEnvs;
 
   private constructor(
     home: string,
@@ -52,6 +54,7 @@ export class Monchu {
     config: MonchuConfig,
     reports: Reports,
     assessment: EffortAssessment | undefined,
+    envs: ExecutionEnvs,
   ) {
     this.home = home;
     this.owner = owner;
@@ -60,6 +63,7 @@ export class Monchu {
     this.config = config;
     this.reports = reports;
     this.assessment = assessment;
+    this.envs = envs;
   }
 
   static async open(home = join(homedir(), ".monchu")): Promise<Monchu> {
@@ -68,6 +72,7 @@ export class Monchu {
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
     const owner = new DatabaseSync(join(home, "owner.sqlite"));
     let harness: Harness | undefined;
+    const envs = new ExecutionEnvs();
     try {
       try {
         owner.exec("BEGIN EXCLUSIVE");
@@ -122,7 +127,7 @@ export class Monchu {
           models,
           registry,
           settings: harnessSettings(settingsManager),
-          env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? home }),
+          env: ({ cwd }) => envs.get(cwd ?? home),
           onReport: (error) => reports.report(error),
         },
         context,
@@ -144,10 +149,11 @@ export class Monchu {
       if (assessment !== undefined) registry.install(assessment.extension);
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
-      return new Monchu(home, owner, harness, front, config, reports, assessment);
+      return new Monchu(home, owner, harness, front, config, reports, assessment, envs);
     } catch (error) {
       try {
         await harness?.close(context);
+        await envs.cleanup();
       } finally {
         owner.close();
       }
@@ -279,6 +285,10 @@ export class Monchu {
     try {
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
+      // Then release what keeps the process alive: tool child processes, and provider connections pi-ai keeps
+      // cached for reuse (Codex websockets idle for minutes). Durable owns neither.
+      await this.envs.cleanup();
+      cleanupSessionResources();
     } finally {
       this.owner.close();
     }
@@ -286,6 +296,26 @@ export class Monchu {
 }
 
 type EffortAssessment = ReturnType<typeof effortAssessment>;
+
+/** One execution environment per directory, shared by every conversation in it, cleaned up on close. */
+class ExecutionEnvs {
+  private readonly envs = new Map<string, NodeExecutionEnv>();
+
+  get(cwd: string): NodeExecutionEnv {
+    let env = this.envs.get(cwd);
+    if (env === undefined) {
+      env = new NodeExecutionEnv({ cwd });
+      this.envs.set(cwd, env);
+    }
+    return env;
+  }
+
+  async cleanup(): Promise<void> {
+    const envs = [...this.envs.values()];
+    this.envs.clear();
+    for (const env of envs) await env.cleanup(context);
+  }
+}
 
 /** The front answers fast; effort assessments arrive beside it, never in front of it. */
 const FRONT_INSTRUCTIONS =
