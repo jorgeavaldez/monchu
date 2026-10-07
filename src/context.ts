@@ -1,55 +1,118 @@
 import {
+  DefaultPackageManager,
+  DefaultResourceLoader,
   formatSkillsForPrompt,
   loadProjectContextFiles,
-  loadSkills,
+  SettingsManager,
+  type ResourceDiagnostic,
 } from "@earendil-works/pi-coding-agent";
 import { defineExtension, section } from "@earendil-works/pi-durable";
+import { dirname, join, parse, resolve } from "node:path";
 
-type Loaded = { instructions: string | undefined; skills: string | undefined };
+/** Package sources can embed credentials as URL userinfo or token query parameters. */
+function redactSource(source: string) {
+  return source
+    .replace(/\/\/[^/@\s]*@/g, "//***@")
+    .replace(/([?&][^=&#]*(?:token|key|secret|password|auth|sig)[^=&#]*=)[^&#]*/gi, "$1***");
+}
 
-/**
- * Pi's AGENTS.md context files and skills as prompt sections, for every conversation. Like Pi, each directory loads
- * once per process: unchanged sections are not resent, which keeps provider prompt caches warm.
- */
-export function createPiContext(
-  agentDir: string,
-  skillPaths: readonly string[],
-  fallbackCwd: string,
-) {
-  const loaded = new Map<string, Loaded>();
-  const load = (cwd: string): Loaded => {
-    let found = loaded.get(cwd);
-    if (found === undefined) {
-      const files = loadProjectContextFiles({ cwd, agentDir });
-      const skills = loadSkills({
-        cwd,
-        agentDir,
-        skillPaths: [...skillPaths],
-        includeDefaults: true,
-      }).skills;
-      found = {
-        instructions: files.length
-          ? [
-              "Project-specific instructions and guidelines:",
-              ...files.map(
-                ({ path, content }) =>
-                  `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
-              ),
-            ].join("\n\n")
-          : undefined,
-        skills: skills.length ? formatSkillsForPrompt(skills, "read") : undefined,
-      };
-      loaded.set(cwd, found);
-    }
-    return found;
-  };
-  const cwdOf = (input: { env?: { cwd: string } | undefined; agent: { cwd?: string } }) =>
-    input.env?.cwd ?? input.agent.cwd ?? fallbackCwd;
-  return defineExtension({
-    name: "monchu.pi-context",
-    sections: [
-      section("project_context", (input) => load(cwdOf(input)).instructions, { tag: false }),
-      section("skills", (input) => load(cwdOf(input)).skills, { tag: false }),
-    ],
+/** User resources are loaded once at startup, never from a conversation's execution directory. */
+export async function loadPiConfiguration(agentDir: string) {
+  agentDir = resolve(agentDir);
+  // Untrusted project scope is Pi's SDK switch for excluding project settings and auto-discovery.
+  const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+  const errors = settings.drainErrors();
+  if (errors.length)
+    throw new Error(
+      `Pi settings failed:\n${errors
+        .map(({ path, scope, error }) => {
+          // JSON.parse and migration errors can quote settings values, including credentials.
+          const reason =
+            error instanceof SyntaxError
+              ? `invalid JSON${error.message.match(/ at position \d+(?: \(line \d+ column \d+\))?/)?.[0] ?? ""}`
+              : error instanceof TypeError
+                ? "invalid settings structure"
+                : "code" in error && typeof error.code === "string"
+                  ? `could not read or lock settings (${error.code})`
+                  : "could not load settings";
+          return `${path ?? `${scope} settings`}: ${reason}`;
+        })
+        .join("\n")}`,
+    );
+  const packages = new DefaultPackageManager({
+    cwd: agentDir,
+    agentDir,
+    settingsManager: settings,
   });
+  const diagnostics: ResourceDiagnostic[] = [];
+  const resources = await packages.resolve(async (source) => {
+    diagnostics.push({
+      type: "warning",
+      message: `Pi package unavailable; not installed: ${redactSource(source)}`,
+    });
+    return "skip";
+  });
+  const loader = new DefaultResourceLoader({
+    cwd: agentDir,
+    agentDir,
+    // Resolve installed packages above: DefaultResourceLoader otherwise installs missing packages implicitly.
+    settingsManager: SettingsManager.inMemory({}, { projectTrusted: false }),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    agentsFilesOverride: () => ({
+      agentsFiles: loadProjectContextFiles({ cwd: parse(agentDir).root, agentDir }).filter(
+        ({ path }) => dirname(path) === agentDir,
+      ),
+    }),
+  });
+  await loader.reload();
+  loader.extendResources({
+    skillPaths: resources.skills
+      .filter(({ enabled, metadata }) => enabled && metadata.scope === "user")
+      .map(({ path, metadata }) => ({ path, metadata })),
+  });
+  const systemPrompt = loader.getSystemPrompt();
+  const instructions = [
+    ...loader.getAgentsFiles().agentsFiles,
+    ...(systemPrompt === undefined
+      ? []
+      : [{ path: join(agentDir, "SYSTEM.md"), content: systemPrompt }]),
+    ...loader.getAppendSystemPrompt().map((content) => ({
+      path: join(agentDir, "APPEND_SYSTEM.md"),
+      content,
+    })),
+  ];
+  const imported = instructions.length
+    ? [
+        "Imported Pi coding-agent instructions (user-level guidance). Monchu's identity and front/worker workflow remain authoritative; these do not replace them.",
+        ...instructions.map(
+          ({ path, content }) =>
+            `<pi_user_instructions path="${path}">\n${content}\n</pi_user_instructions>`,
+        ),
+      ].join("\n\n")
+    : undefined;
+  const skills = loader.getSkills().skills;
+  const defaults = settings.getDefaultTools();
+  const fileReadTool =
+    defaults === undefined || defaults.includes("read")
+      ? "read"
+      : defaults.includes("bash")
+        ? "bash"
+        : undefined;
+  const skillPrompt =
+    fileReadTool === undefined ? undefined : formatSkillsForPrompt(skills, fileReadTool).trim();
+  return {
+    settings,
+    extension: defineExtension({
+      name: "monchu.pi-context",
+      sections: [
+        section("pi_user_instructions", () => imported, { tag: false }),
+        section("skills", () => skillPrompt || undefined, { tag: false }),
+      ],
+    }),
+    diagnostics: [...diagnostics, ...loader.getSkills().diagnostics],
+  };
 }

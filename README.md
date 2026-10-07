@@ -50,7 +50,9 @@ Clef Flash uses Pi's native `cloudflare-workers-ai` provider, so Pi's Cloudflare
 `MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` are optional overrides.
 Never put the token in the config file or source code.
 
-Run policy (stream timeout, retries, compaction, steering and follow-up modes) comes from Pi's `settings.json`, read at each use.
+User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed (the warning redacts URL credentials and token parameters) and executable extensions are not loaded.
+
+Resources and settings load at startup, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
 
 Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -85,7 +87,7 @@ Indicators are event-driven text, not animations or a new TUI framework.
 ```
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the installed tools: read, write, edit, bash, worker management, and `codemode`.
+All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Unknown `defaultTools` names, or a selection without read, write, edit, or bash, produce a warning. Built-in selection does not disable Monchu's worker management or `codemode`.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
@@ -112,7 +114,8 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 - `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: Pi's AGENTS.md context files and skills as prompt sections, loaded once per directory.
+- `src/context.ts`: user-only Pi settings and resources, loaded once at startup; imported instructions and skill metadata as prompt sections.
+- `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
 - `src/terminal.ts`: stdin, commands, and rendering only.
 - `src/main.ts`: lifecycle wiring.
 
@@ -121,7 +124,13 @@ Its public methods admit messages/work using caller-supplied retry IDs, attach a
 Events use Durable's serializable event protocol; a future interface can consume the same backend.
 This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
 
-Submission and worker delivery IDs prevent duplicate admission.
+Submission IDs prevent duplicate admission.
+Worker delivery bookkeeping retains all active requests and the latest 200 completed request IDs for retries; older completed IDs may be admitted again.
+Reported answer bookkeeping keeps 200 recent IDs per worker plus any answers still needed by active deliveries.
+These windows bound the materialized worker bookkeeping, not Durable's stored tasks or transcript.
+The latest-history worker document checkpoints every 32 changed commits, retaining one base and at most 31 deltas rather than an ever-growing revision tail.
+An existing v2 tail above that limit is reclaimed on its next changed commit.
+This bounds worker revision count, not total SQLite-file size; active work and the worker registry can still grow.
 Neither receipt nor the front's reply waits for Clef.
 Each admitted message gets one assessment task (keyed by submission) in `monchu.assessments`; recovery reuses its committed result.
 An escalation is skipped when the front started or messaged a worker for that message, when a newer message arrived, or when Clef is unsure.
@@ -130,6 +139,15 @@ Classifier failures are visible and never escalate; there is no fallback classif
 Result append and reporter completion share one Durable commit, made only while the parent is idle.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
+
+### Worker bookkeeping upgrade and rollback
+
+The worker document migrates one-way from v1 to v2 on its first committing access, even without an edit.
+The migration preserves delivery and answer IDs and initializes the cumulative delegation count from v1 deliveries.
+A v1 build cannot read the migrated document.
+Before upgrading, stop Monchu and take a consistent backup of its home, including `monchu.sqlite` and any SQLite WAL sidecars together.
+To roll back, stop Monchu and restore that complete pre-upgrade backup before starting the v1 build; do not mix an old database with newer sidecars.
+Restoring loses work accepted since the backup. Merely switching builds does not undo migration.
 
 ## Checks
 

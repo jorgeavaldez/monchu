@@ -8,12 +8,14 @@ import {
 import { UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { AssessmentsDoc, ESCALATION_PREFIX, effortAssessment } from "../src/classifier.ts";
+import { messageWorker, startWorker, WorkersDoc } from "../src/workers.ts";
 import {
   allEntries,
   assessed,
   cleanup,
   classifierModel,
   context,
+  fauxRole,
   lastMessage,
   open,
   route,
@@ -163,6 +165,51 @@ describe("effort assessment", () => {
     ).toEqual([]);
     await test.harness.close(context);
   });
+
+  it("does not escalate after delegation prunes an already-full retry window", async () => {
+    const test = await withAssessment();
+    test.faux.setResponses(
+      Array.from({ length: 230 }, () => fauxAssistantMessage([fauxText("done")])),
+    );
+    await test.root.commit(
+      (tx) => startWorker(tx, test.root.id, "w", "work", test.directory, "history:0", fauxRole),
+      context,
+    );
+    for (let index = 0; index < 200; index++) {
+      if (index > 0)
+        await test.root.commit(
+          (tx) => messageWorker(tx, test.root.id, "w", "work", `history:${index}`),
+          context,
+        );
+      const state = await test.harness.snapshot(WorkersDoc, test.root.id, context);
+      await test.harness.waitForTask(state!.deliveries.at(-1)!.taskId, context);
+    }
+    const pending = deferred<ClassifierResult>();
+    test.classifier.answer = () => pending.promise;
+    route(test.faux, (request) =>
+      textOf(lastMessage(request.messages)) === "delegate after pruning"
+        ? fauxAssistantMessage(
+            [fauxToolCall("message_worker", { name: "w", message: "more work" })],
+            { stopReason: "toolUse" },
+          )
+        : fauxAssistantMessage([fauxText("done")]),
+    );
+    await test.send("delegate after pruning");
+    const workers = await test.harness.snapshot(WorkersDoc, test.root.id, context);
+    await test.harness.waitForTask(workers!.deliveries.at(-1)!.taskId, context);
+    expect(
+      (await test.harness.snapshot(WorkersDoc, test.root.id, context))?.deliveries,
+    ).toHaveLength(200);
+    expect((await test.harness.snapshot(WorkersDoc, test.root.id, context))?.started).toBe(201);
+    pending.resolve(assessed("sustained", 0.95, "expanding", 0.95));
+    await test.harness.waitForTask((await test.items())[0]!.taskId, context);
+    expect((await test.items())[0]?.escalated).toBe(false);
+    expect(
+      (await userTexts(test.root)).filter((text) => text.startsWith(ESCALATION_PREFIX)),
+    ).toEqual([]);
+    expect(test.reports).toEqual([]);
+    await test.harness.close(context);
+  }, 60_000);
 
   it("records a classifier failure without blocking or escalating", async () => {
     const test = await withAssessment();
