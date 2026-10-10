@@ -76,6 +76,7 @@ Indicators are event-driven text, not animations or a new TUI framework.
 /work reader summarize a subject using the available local files
 /tell reader focus on the unresolved questions
 /workers
+/goals
 /stop reader
 /abort
 /new optional handoff note for the fresh context
@@ -91,6 +92,16 @@ All roles receive the same installed tools: Pi's user-selected built-ins (read, 
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
+
+The root conversation keeps Jorge's goals and its own commitments in the `monchu.goals` document.
+Each goal has an id, title, owner (`jorge` or `monchu`), status (`active`, `waiting`, `done`, `dropped`), optional project (absolute directory or repository), linked worker names, the next step, and an update time.
+The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`; both are root-only, so workers do not get them.
+Active and waiting goals render as the `goals` prompt section in stored order; Durable resends a section only when its text changes.
+Open goals are always kept; done and dropped goals are kept for the 20 most recently changed.
+`/goals` lists the open goals.
+The document is not transcript, so `/new`, compaction, and restarts keep it, and the section returns in the next request.
+`/compact` always asks the summary to keep goal ids and open commitments, ahead of any focus you add.
+Durable 1.0.2 has no instructions for automatic compaction; its summary may drop goal history, but the section still restores the open goals.
 
 `/abort` (or interactive Ctrl-C) stops the front only.
 `/stop` explicitly cancels a worker, its pending deliveries, and nested work; its conversation remains reusable.
@@ -112,6 +123,7 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 - `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
 - `src/config.ts`: optional host config: model roles and classifier overrides.
 - `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
+- `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
 - `src/context.ts`: user-only Pi settings and resources, loaded once at startup; imported instructions and skill metadata as prompt sections.
@@ -159,7 +171,7 @@ npm run check
 ```
 
 `npm test` runs vitest against real Durable Harnesses on SQLite in temp directories, following Pi Durable's own tests: Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`.
-They cover worker report placement and restart, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
+They cover worker report placement and restart, goal updates/validation/retention and the goals section across `/new` and reopen, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
 They do not prove live provider behavior or the interactive phone flow.
 
 Durable is experimental.
