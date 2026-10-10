@@ -11,7 +11,7 @@ import { stdin, stdout } from "node:process";
 import type { Monchu } from "./backend.ts";
 import { ESCALATION_PREFIX, type AssessmentResult } from "./classifier.ts";
 import { formatOpenGoals } from "./goals.ts";
-import { WorkerResultEntry } from "./workers.ts";
+import { workerNotice } from "./workers.ts";
 
 const help = `Commands:
   /work <name> <goal>         start a background worker, keep chatting
@@ -113,10 +113,11 @@ export async function runTerminal(backend: Monchu): Promise<void> {
   }
 
   function showEntry(entry: EntryRecord) {
-    if (WorkerResultEntry.is(entry)) {
+    const worker = workerNotice(entry);
+    if (worker !== undefined) {
       finishReply();
       erasePrompt();
-      stdout.write(`\nworker · ${entry.data.name} · ${entry.data.status}\n${entry.data.text}\n`);
+      stdout.write(`\nworker · ${worker.name} · ${worker.status}\n${worker.text}\n`);
       return;
     }
     if (!UserEntry.is(entry) && !AssistantEntry.is(entry)) return;
@@ -151,7 +152,9 @@ export async function runTerminal(backend: Monchu): Promise<void> {
             event.entries
               .filter(
                 (entry) =>
-                  UserEntry.is(entry) || AssistantEntry.is(entry) || WorkerResultEntry.is(entry),
+                  UserEntry.is(entry) ||
+                  AssistantEntry.is(entry) ||
+                  workerNotice(entry) !== undefined,
               )
               .slice(-10)
               .forEach(showEntry);
@@ -202,16 +205,16 @@ export async function runTerminal(backend: Monchu): Promise<void> {
           }
           break;
         case "message_end":
-          if (UserEntry.is(event.entry)) {
+          if (workerNotice(event.entry) !== undefined) {
+            showEntry(event.entry);
+            workersChanged = true;
+            prompt();
+          } else if (UserEntry.is(event.entry)) {
             const first = event.entry.model?.[0];
             const text =
               first?.role === "user" && typeof first.content === "string" ? first.content : "";
             if (text.startsWith(ESCALATION_PREFIX))
               notice(`escalation · ${text.split("\n", 1)[0]}`);
-          } else if (WorkerResultEntry.is(event.entry)) {
-            showEntry(event.entry);
-            workersChanged = true;
-            prompt();
           } else if (AssistantEntry.is(event.entry)) {
             for (const message of event.entry.model ?? []) {
               if (message.role !== "assistant") continue;

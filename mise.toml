@@ -4,7 +4,6 @@ node = "26.10.0"
 
 [env]
 NODE_ENV = { default = "development" }
-_.path = ['{{config_root}}/node_modules/.bin']
 
 [tasks.npm-install]
 description = 'Installs locked dependencies with npm'
