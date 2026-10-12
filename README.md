@@ -64,7 +64,7 @@ Do not sync a live database or open it from multiple devices.
 Just type a message. Receipt means the input was committed, not that the model has answered.
 Replies stream from committed Durable events.
 Live input and restored history use `you>`; answers use `monchu · response`.
-Receipts, effort assessments, loading/thinking, and tool activity use `system ·`; background results use `worker · <name>`.
+Receipts, effort assessments, loading/thinking, and tool activity use `system ·`; worker reports and updates use `worker · <name> · <status>`.
 The front replies immediately: a direct answer, or a one-line acknowledgement while it starts the work.
 Clef Flash assesses each message's effort (single turn or sustained) and scope (contained or expanding) beside that reply, never in front of it.
 Its result joins the front's later requests as advice and shows as `system · effort`.
@@ -104,12 +104,14 @@ The document is not transcript, so `/new`, compaction, and restarts keep it, and
 Durable 1.0.2 has no instructions for automatic compaction; its summary may drop goal history, but the section still restores the open goals.
 
 `/abort` (or interactive Ctrl-C) stops the front only.
-`/stop` explicitly cancels a worker, its pending deliveries, and nested work; its conversation remains reusable.
+`/stop` explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
 `/quit` or SIGTERM closes storage without cancelling accepted work.
 It then stops running tool processes, closes provider connections pi-ai keeps cached (Codex websockets), and exits; if anything else still holds the process, it exits after one second anyway.
 Unfinished work resumes when the backend opens, whether or not a terminal is attached; the terminal starts from a snapshot.
-Worker results are committed directly into the parent transcript and displayed without an extra front-model turn.
-A result waits until the parent has no active run, so it never lands between a tool call and its result.
+A worker's result reaches the parent as a labelled follow-up input, so the front gets a turn: it tells Jorge in a line or two and continues with the next step.
+While the front is busy, the report queues until its current answer, then starts one turn; it never lands between a tool call and its result.
+Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
+`/abort` withdraws queued input: a withdrawn report is posted again, a withdrawn update is dropped.
 Non-fatal runtime failures appear as `system · warning` and are appended to `~/.monchu/monchu.log`.
 Reports do not authorize new actions.
 
@@ -148,7 +150,7 @@ Each admitted message gets one assessment task (keyed by submission) in `monchu.
 An escalation is skipped when the front started or messaged a worker for that message, when a newer message arrived, or when Clef is unsure.
 Classifier failures are visible and never escalate; there is no fallback classifier.
 `/new [handoff]` starts a fresh model context (Durable `reset`); storage keeps every entry and the worker registry.
-Result append and reporter completion share one Durable commit, made only while the parent is idle.
+Reports are submitted with stable request IDs (`worker-report:<task>`, then `:<n>` for re-posts after `/abort`), so recovery submits each report once; the reporter finishes once the parent's transcript holds it.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
 
@@ -171,7 +173,7 @@ npm run check
 ```
 
 `npm test` runs vitest against real Durable Harnesses on SQLite in temp directories, following Pi Durable's own tests: Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`.
-They cover worker report placement and restart, goal updates/validation/retention and the goals section across `/new` and reopen, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
+They cover worker reports (turns, queueing, restart, `/abort` re-posts) and updates, goal updates/validation/retention and the goals section across `/new` and reopen, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
 They do not prove live provider behavior or the interactive phone flow.
 
 Durable is experimental.

@@ -5,13 +5,15 @@ import {
   AssistantEntry,
   configure,
   defineDoc,
-  defineEntry,
   defineExtension,
   defineTask,
   defineTool,
+  InboxDoc,
   LiveDoc,
+  UserEntry,
   type ConversationId,
   type EntryId,
+  type EntryRecord,
   type Harness,
   type JsonObject,
   type SubmissionId,
@@ -114,6 +116,54 @@ async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId
   }
 }
 
+/**
+ * Request IDs of a worker's updates that are registered but not admitted yet, or still wait in its parent's queue. A
+ * codemode script interrupted between registration and admission is not replayed, so its ID stays until a stop.
+ */
+const WorkerUpdatesDoc = defineDoc<{ queued: string[] }>({
+  kind: "monchu.worker-updates",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ queued: [] }),
+});
+
+/**
+ * Withdraw the parent's queued inputs among `requestIds`, except the newest admitted one when `keepNewest`, as
+ * `Submission.abort()` does but inside a larger commit. Returns the request IDs not admitted yet or still queued. It
+ * ends with table writes, so the caller makes no table reads after it.
+ */
+async function withdrawQueued(
+  tx: Tx,
+  parentId: ConversationId,
+  requestIds: readonly string[],
+  keepNewest: boolean,
+): Promise<string[]> {
+  const pending: string[] = [];
+  const queued: { requestId: string; id: SubmissionId }[] = [];
+  for (const requestId of requestIds) {
+    const record = await tx.submissionByRequest(parentId, requestId);
+    if (record === undefined) pending.push(requestId);
+    else if (record.status === "queued") queued.push({ requestId, id: record.id });
+  }
+  // Submission IDs grow with admission, so every caller agrees on the newest whatever order they run in.
+  const newest = keepNewest
+    ? queued.reduce<(typeof queued)[number] | undefined>(
+        (found, item) => (found === undefined || item.id > found.id ? item : found),
+        undefined,
+      )
+    : undefined;
+  const inbox = await tx.doc(InboxDoc, parentId);
+  for (const item of queued) {
+    if (item === newest) continue;
+    tx.settleSubmission(item.id, { status: "unanswered", reason: "aborted" });
+    const index = inbox.items.findIndex((queuedItem) => queuedItem.id === item.id);
+    if (index >= 0) inbox.items.splice(index, 1);
+  }
+  return newest === undefined ? pending : [...pending, newest.requestId];
+}
+
 type WorkerResult = {
   name: string;
   conversationId: ConversationId;
@@ -122,7 +172,47 @@ type WorkerResult = {
   text: string;
 } & ({ status: "completed"; answerId: EntryId } | { status: "failed" });
 
-export const WorkerResultEntry = defineEntry<WorkerResult>("monchu.worker-result");
+/** A worker report or progress update as the parent receives it: follow-up input that gives the front a turn. */
+export type WorkerNotice = {
+  name: string;
+  status: "completed" | "failed" | "update";
+  text: string;
+};
+
+const REPORT_LABEL = /^\[Background worker (.+): (completed|failed); not a new user instruction\]$/;
+const UPDATE_LABEL = /^\[Worker (.+) update; not a new user instruction\]$/;
+// Travels with each notice, so the front's own instructions need no worker-specific workflow.
+const NOTICE_GUIDANCE =
+  "Tell Jorge in one or two lines, then continue: start the next step, message the worker, or ask Jorge only when the decision is his.";
+
+function noticeText(notice: WorkerNotice): string {
+  const label =
+    notice.status === "update"
+      ? `[Worker ${notice.name} update; not a new user instruction]`
+      : `[Background worker ${notice.name}: ${notice.status}; not a new user instruction]`;
+  return `${label}\n${NOTICE_GUIDANCE}\n${notice.text}`;
+}
+
+/** The worker notice an entry carries, for clients that label it; `undefined` for any other entry. */
+export function workerNotice(entry: EntryRecord): WorkerNotice | undefined {
+  // Earlier versions appended reports as passive entries of this kind, without the guidance line.
+  const passive = entry.kind === "monchu.worker-result";
+  const message = passive || UserEntry.is(entry) ? entry.model?.[0] : undefined;
+  if (message?.role !== "user" || typeof message.content !== "string") return undefined;
+  const [label = "", ...text] = message.content.split("\n");
+  if (!passive && text.shift() !== NOTICE_GUIDANCE) return undefined;
+  const update = UPDATE_LABEL.exec(label);
+  if (update !== null) return { name: update[1]!, status: "update", text: text.join("\n") };
+  const report = REPORT_LABEL.exec(label);
+  if (report === null) return undefined;
+  const status = report[2] === "completed" ? "completed" : "failed";
+  return { name: report[1]!, status, text: text.join("\n") };
+}
+
+/** A report is posted again after `/abort` withdraws it; each post has its own request ID. */
+function reportRequestId(taskId: TaskId, attempt: number): string {
+  return attempt === 0 ? `worker-report:${taskId}` : `worker-report:${taskId}:${attempt}`;
+}
 
 const Anchor = defineTask<null, { phase: "finish" }, null>({
   name: "monchu.worker-anchor",
@@ -199,48 +289,64 @@ const Delivery = defineTask<
         return { status: "running", checkpoint: { phase: "report", result } };
       }, context);
     },
+    // A checkpoint from before reports were inputs has the same shape and has not reported yet, so it posts once here.
     report: async (task, runtime, context) => {
+      const { parentId } = task.input;
       const result = task.state.checkpoint.result;
-      if (result === null) {
-        await runtime.commit(async (tx) => {
-          await pruneRecords(tx, task.input.parentId, task.id);
-          return { status: "terminal", outcome: { status: "completed", result: null } };
-        }, context);
-        return;
+      if (result !== null) {
+        const parent = await runtime.conversation(parentId, context);
+        if (parent === undefined) throw new Error("Worker parent conversation is missing");
+        // A follow-up starts the parent's turn when idle, or waits for its current answer. `/abort` withdraws queued
+        // input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
+        for (let attempt = 0; ; attempt++) {
+          const submission = await parent.submit(
+            {
+              type: "input",
+              content: noticeText(result),
+              whenBusy: "followUp",
+              requestId: reportRequestId(task.id, attempt),
+            },
+            context,
+          );
+          // Finish once the parent's transcript holds the report, not after its answer: the worker is idle meanwhile.
+          let record = await submission.status(context);
+          while (record.status === "queued") {
+            await runtime.sleep(runtime.now() + 250, context);
+            const idle = (await runtime.snapshot(LiveDoc, parentId, context))?.run === undefined;
+            record = await submission.status(context);
+            // An aborted run ends without placing input queued during its abort; withdraw it and post again.
+            if (idle && record.status === "queued") await submission.abort(context);
+          }
+          if (record.entry !== undefined) break;
+          // Only a withdrawn input settles without an entry.
+          if (record.reason !== "aborted")
+            throw new Error(`Worker report was not placed: ${record.reason}`);
+          // Post again after the aborted run ends, so the report starts a turn instead of queueing behind it.
+          await parent.waitForIdle(context);
+        }
       }
-      const parent = await runtime.conversation(task.input.parentId, context);
-      if (parent === undefined) throw new Error("Worker parent conversation is missing");
-      // Only the Harness may append to a conversation with an active run: a raw entry can land between a tool
-      // call and its result. Wait for an idle parent and append only if it is still idle in the same commit.
-      let delivered = false;
-      while (!delivered) {
-        await parent.waitForIdle(context);
-        await runtime.commit(async (tx) => {
-          if ((await tx.doc(LiveDoc, task.input.parentId)).run !== undefined) return undefined;
-          // Passive committed output: visible without buying another model turn, and provenance-labelled context
-          // for the parent's next request. Appending and finishing in one commit makes recovery deduplicated.
-          await pruneRecords(tx, task.input.parentId, task.id);
-          await tx.appendEntry(WorkerResultEntry, task.input.parentId, {
-            data: result,
-            model: [
-              {
-                role: "user",
-                content: `[Background worker ${result.name}: ${result.status}; not a new user instruction]\n${result.text}`,
-                timestamp: runtime.now(),
-              },
-            ],
-          });
-          delivered = true;
-          return { status: "terminal", outcome: { status: "completed", result: null } };
-        }, context);
-        // A run started between idle and commit; back off briefly instead of spinning.
-        if (!delivered) await runtime.sleep(runtime.now() + 250, context);
-      }
+      await runtime.commit(async (tx) => {
+        await pruneRecords(tx, parentId, task.id);
+        return { status: "terminal", outcome: { status: "completed", result: null } };
+      }, context);
     },
   },
   abort: (task, runtime, context) =>
     runtime.commit(async (tx) => {
-      await pruneRecords(tx, task.input.parentId, task.id);
+      const { parentId } = task.input;
+      await pruneRecords(tx, parentId, task.id);
+      // Stopping a worker also withdraws what it posted that the parent has not placed yet.
+      const reports: string[] = [];
+      for (let attempt = 0; ; attempt++) {
+        const requestId = reportRequestId(task.id, attempt);
+        if ((await tx.submissionByRequest(parentId, requestId)) === undefined) break;
+        reports.push(requestId);
+      }
+      const updates = await tx.doc(WorkerUpdatesDoc, runtime.conversationId);
+      await withdrawQueued(tx, parentId, [...reports, ...updates.queued], false);
+      // The stop's abort mark came first: a registered update not admitted yet never will be, as admission commits
+      // reject once its tool call is marked.
+      updates.queued = [];
       return { status: "terminal", outcome: { status: "aborted" } };
     }, context),
 });
@@ -274,7 +380,7 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}. Complete the delegated goal and report a concise result. Use installed tools as needed. Work only within the user's authorization. Your working directory is an execution detail, not the identity of your task.`,
+    instructions: `You are Monchu's background worker ${name}. Complete the delegated goal and report a concise result; your final answer is reported automatically. Use post_update only for progress worth hearing before you finish. Use installed tools as needed. Work only within the user's authorization. Your working directory is an execution detail, not the identity of your task.`,
   });
   state.workers.push({ name, conversationId: worker.id, reported: [] });
   const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "followUp" };
@@ -418,6 +524,52 @@ export function createWorkerTools(role: ModelRole) {
             },
           ],
         }),
+      }),
+      defineTool({
+        name: "post_update",
+        description:
+          "Workers only: send a short progress update to the conversation that started you, for news worth hearing before you finish. A newer update replaces one still waiting. Your final answer is reported automatically; do not repeat it here.",
+        parameters: Type.Object({ text: Type.String({ minLength: 1 }) }),
+        // Registration and posting are deduplicated by request ID, and every call keeps the same newest update.
+        replay: "safe",
+        execute: async (args, api, context) => {
+          const requestId = `worker-update:${api.taskId}:${api.callId}`;
+          // A worker conversation is owned by an anchor task of the conversation that started it.
+          const parentId = await api.commit(
+            async (tx) => (await tx.conversation(api.conversationId))?.owner?.conversationId,
+            context,
+          );
+          const record =
+            parentId === undefined
+              ? undefined
+              : (await api.snapshot(WorkersDoc, parentId, context))?.workers.find(
+                  (item) => item.conversationId === api.conversationId,
+                );
+          if (parentId === undefined || record === undefined)
+            throw new Error("post_update is only available to background workers");
+          const parent = await api.conversation(parentId, context);
+          if (parent === undefined) throw new Error("Worker parent conversation is missing");
+          // Registered before admission, so every later call and a stop's withdrawal see it once it is admitted.
+          await api.commit(async (tx) => {
+            const state = await tx.doc(WorkerUpdatesDoc, api.conversationId);
+            if (!state.queued.includes(requestId)) state.queued.push(requestId);
+          }, context);
+          await parent.submit(
+            {
+              type: "input",
+              content: noticeText({ name: record.name, status: "update", text: args.text }),
+              whenBusy: "followUp",
+              requestId,
+            },
+            context,
+          );
+          // Keep only the newest queued update; one already placed is part of the parent's transcript and stays.
+          await api.commit(async (tx) => {
+            const state = await tx.doc(WorkerUpdatesDoc, api.conversationId);
+            state.queued = await withdrawQueued(tx, parentId, state.queued, true);
+          }, context);
+          return { content: [{ type: "text", text: "Update posted." }] };
+        },
       }),
       defineTool({
         name: "stop_worker",

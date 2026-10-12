@@ -18,17 +18,17 @@
     "test": "vitest --run"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.0.2",
-    "@earendil-works/pi-ai": "1.0.2",
-    "@earendil-works/pi-codemode": "1.0.2",
-    "@earendil-works/pi-coding-agent": "1.0.2",
-    "@earendil-works/pi-durable": "1.0.2"
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-codemode": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
-    "typescript": "6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "4.1.11"
   },
   "devEngines": {
