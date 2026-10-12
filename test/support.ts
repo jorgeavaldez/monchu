@@ -26,7 +26,6 @@ import {
   type Provider,
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   type Conversation,
   type ConversationId,
@@ -46,7 +45,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Codemode } from "../src/codemode.ts";
-import type { ClaudeConfig, ModelRole } from "../src/config.ts";
+import { type ClaudeConfig, type ModelRole, resolveSettings } from "../src/config.ts";
 import { createClaudeCodeProvider, type ClaudeQuery } from "../src/models/claude-code.ts";
 import { openModels } from "../src/models/index.ts";
 import { createPiTools } from "../src/pi-tools.ts";
@@ -233,7 +232,7 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(createPiTools(SettingsManager.inMemory({}), process.platform).extension);
+  registry.install(createPiTools(resolveSettings({}), process.platform).extension);
   registry.install(createWorkerTools(fauxRole));
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));

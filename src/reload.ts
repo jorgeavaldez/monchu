@@ -1,5 +1,4 @@
 import { Type, type Models } from "@earendil-works/pi-ai";
-import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   createRegistry,
   defineDoc,
@@ -14,7 +13,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { EffortAssessment } from "./classifier.ts";
-import { loadConfig, type MonchuConfig } from "./config.ts";
+import { loadConfig, type MonchuConfig, type Settings } from "./config.ts";
 import { resolveRoles } from "./models/index.ts";
 
 /** Reloadable modules. Static imports inside them stay cached. */
@@ -44,7 +43,7 @@ type Build = {
   extensions: Extension[];
   /** Extensions only the root conversation gets. */
   root: Extension[];
-  settings: SettingsManager;
+  settings: Settings;
   config: MonchuConfig;
   assessment: EffortAssessment | undefined;
   warnings: string[];
@@ -168,7 +167,7 @@ export class Extensions {
   }
 
   /** The loaded run settings. */
-  get settings(): SettingsManager {
+  get settings(): Settings {
     return this.current.settings;
   }
 

@@ -1,5 +1,28 @@
+/*
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { TerminalCapabilities } from "@earendil-works/pi-tui";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -11,19 +34,84 @@ export type ModelRole = {
 
 export type ClassifierRole = { provider: string; modelId: string };
 
-export type RunSettings = Pick<
-  NonNullable<Parameters<typeof SettingsManager.inMemory>[0]>,
-  | "theme"
-  | "retry"
-  | "compaction"
-  | "httpIdleTimeoutMs"
-  | "shellPath"
-  | "shellCommandPrefix"
-  | "defaultTools"
-  | "steeringMode"
-  | "followUpMode"
-  | "terminal"
->;
+export type RunSettings = {
+  theme?: string;
+  retry?: {
+    enabled?: boolean;
+    maxRetries?: number;
+    baseDelayMs?: number;
+    maxAgentDelayMs?: number;
+    provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number };
+  };
+  compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+  httpIdleTimeoutMs?: number;
+  shellPath?: string;
+  shellCommandPrefix?: string;
+  defaultTools?: string[];
+  steeringMode?: "all" | "one-at-a-time";
+  followUpMode?: "all" | "one-at-a-time";
+  terminal?: {
+    hyperlinks?: boolean | "auto";
+    images?: false | "auto" | "kitty" | "iterm2";
+    trueColor?: boolean | "auto";
+  };
+};
+
+export type Settings = ReturnType<typeof resolveSettings>;
+
+/** Resolve the validated config into one in-memory snapshot; no settings-file I/O. */
+export function resolveSettings(settings: RunSettings) {
+  let defaultTools: string[] | undefined;
+  if (settings.defaultTools !== undefined) {
+    const entries = settings.defaultTools;
+    defaultTools = entries.some((name) => /^[+-]/.test(name))
+      ? ["read", "bash", "edit", "write"]
+      : [...entries];
+    for (const entry of entries) {
+      const name = entry.slice(1);
+      const index = defaultTools.indexOf(name);
+      if (entry.startsWith("+") && index === -1) defaultTools.push(name);
+      if (entry.startsWith("-") && index !== -1) defaultTools.splice(index, 1);
+    }
+  }
+  const terminal = settings.terminal;
+  const images = terminal?.images;
+  const terminalCapabilities: Partial<TerminalCapabilities> = {
+    ...(images === "kitty" || images === "iterm2"
+      ? { images }
+      : images === false
+        ? { images: null }
+        : {}),
+    ...(typeof terminal?.trueColor === "boolean" ? { trueColor: terminal.trueColor } : {}),
+    ...(typeof terminal?.hyperlinks === "boolean" ? { hyperlinks: terminal.hyperlinks } : {}),
+  };
+  return {
+    theme: settings.theme,
+    retry: {
+      enabled: settings.retry?.enabled ?? true,
+      maxRetries: settings.retry?.maxRetries ?? 3,
+      baseDelayMs: settings.retry?.baseDelayMs ?? 2000,
+      maxAgentDelayMs: settings.retry?.maxAgentDelayMs ?? 60000,
+    },
+    compaction: {
+      enabled: settings.compaction?.enabled ?? true,
+      reserveTokens: settings.compaction?.reserveTokens ?? 16384,
+      keepRecentTokens: settings.compaction?.keepRecentTokens ?? 20000,
+    },
+    providerRetry: {
+      timeoutMs: settings.retry?.provider?.timeoutMs,
+      maxRetries: settings.retry?.provider?.maxRetries,
+      maxRetryDelayMs: settings.retry?.provider?.maxRetryDelayMs ?? 60000,
+    },
+    httpIdleTimeoutMs: settings.httpIdleTimeoutMs ?? 300000,
+    shellPath: settings.shellPath,
+    shellCommandPrefix: settings.shellCommandPrefix,
+    defaultTools,
+    steeringMode: settings.steeringMode ?? "one-at-a-time",
+    followUpMode: settings.followUpMode ?? "one-at-a-time",
+    terminalCapabilities,
+  };
+}
 
 export type ClaudeConfig = {
   executable: string | undefined;

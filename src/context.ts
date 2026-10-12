@@ -1,4 +1,3 @@
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   defineExtension,
   section,
@@ -7,12 +6,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunSettings } from "./config.ts";
+import { resolveSettings, type RunSettings, type Settings } from "./config.ts";
 import { formatSkillsForPrompt, loadSkills, type ResourceDiagnostic } from "./skills/index.ts";
 
 /** Durable's run policy, resolving the latest loaded settings and default extensions on every read. */
 export function harnessSettings(current: {
-  readonly settings: SettingsManager;
+  readonly settings: Settings;
   defaults(): readonly Extension[];
 }): HarnessSettings {
   return {
@@ -20,8 +19,8 @@ export function harnessSettings(current: {
       return current.defaults();
     },
     get stream() {
-      const provider = current.settings.getProviderRetrySettings();
-      const idle = current.settings.getHttpIdleTimeoutMs();
+      const provider = current.settings.providerRetry;
+      const idle = current.settings.httpIdleTimeoutMs;
       return {
         timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
         maxRetryDelayMs: provider.maxRetryDelayMs,
@@ -29,16 +28,16 @@ export function harnessSettings(current: {
       };
     },
     get compaction() {
-      return current.settings.getCompactionSettings();
+      return current.settings.compaction;
     },
     get retry() {
-      return current.settings.getRetrySettings();
+      return current.settings.retry;
     },
     get steeringMode() {
-      return current.settings.getSteeringMode();
+      return current.settings.steeringMode;
     },
     get followUpMode() {
-      return current.settings.getFollowUpMode();
+      return current.settings.followUpMode;
     },
   };
 }
@@ -65,7 +64,7 @@ export function createContext(home: string, runSettings: RunSettings) {
     join(home, "skills"),
     fileURLToPath(new URL("../skills/", import.meta.url)),
   ]);
-  const settings = SettingsManager.inMemory(runSettings, { projectTrusted: false });
+  const settings = resolveSettings(runSettings);
   const skillPrompt = formatSkillsForPrompt(skills).trim();
   return {
     settings,

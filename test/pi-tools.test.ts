@@ -1,12 +1,11 @@
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Harness } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, resolveSettings, type Settings } from "../src/config.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import {
   cleanup,
@@ -21,7 +20,7 @@ import {
 
 afterEach(cleanup);
 
-function toolNames(settings: SettingsManager, platform: NodeJS.Platform): string[] {
+function toolNames(settings: Settings, platform: NodeJS.Platform): string[] {
   return (createPiTools(settings, platform).extension.tools ?? []).map((tool) => tool.name);
 }
 
@@ -43,11 +42,11 @@ function callInOrder(value: Setup, calls: ReturnType<typeof fauxToolCall>[]): st
 }
 
 describe("Pi built-ins", () => {
-  it("uses Pi's resolved defaults", () => {
+  it("uses the resolved tool selection", () => {
     expect(
-      toolNames(SettingsManager.inMemory({ defaultTools: ["-write", "+ls"] }), process.platform),
+      toolNames(resolveSettings({ defaultTools: ["-write", "+ls"] }), process.platform),
     ).toEqual(["read", "edit", "bash", "ls"]);
-    expect(toolNames(SettingsManager.inMemory({ defaultTools: [] }), process.platform)).toEqual([]);
+    expect(toolNames(resolveSettings({ defaultTools: [] }), process.platform)).toEqual([]);
   });
 
   it.each([
@@ -62,12 +61,12 @@ describe("Pi built-ins", () => {
     const { directory } = await setup();
     await writeFile(join(directory, "config.json"), JSON.stringify({ settings: { defaultTools } }));
     const config = await loadConfig(directory);
-    const tools = createPiTools(SettingsManager.inMemory(config.settings), "linux");
+    const tools = createPiTools(resolveSettings(config.settings), "linux");
     expect(tools.warnings).toEqual(warnings);
   });
 
   it("skips grep and find on Android with one warning", () => {
-    const settings = SettingsManager.inMemory({
+    const settings = resolveSettings({
       defaultTools: ["read", "bash", "grep", "find", "ls"],
     });
     expect(createPiTools(settings, "android").warnings).toEqual([
@@ -80,7 +79,7 @@ describe("Pi built-ins", () => {
     const value = await setup();
     value.registry.install(
       createPiTools(
-        SettingsManager.inMemory(prefix === undefined ? {} : { shellCommandPrefix: prefix }),
+        resolveSettings(prefix === undefined ? {} : { shellCommandPrefix: prefix }),
         process.platform,
       ).extension,
     );
@@ -107,7 +106,7 @@ describe("Pi built-ins", () => {
     const value = await setup();
     value.registry.install(
       createPiTools(
-        SettingsManager.inMemory({
+        resolveSettings({
           defaultTools: ["bash", "ls"],
           shellCommandPrefix:
             "printf 'prefix\\n' >> prefix-calls.txt; export MONCHU_TEST_PREFIX=prefix",
@@ -158,10 +157,8 @@ describe("Pi built-ins", () => {
       );
       await chmod(shellPath, 0o700);
       value.registry.install(
-        createPiTools(
-          SettingsManager.inMemory({ defaultTools: ["bash"], shellPath }),
-          process.platform,
-        ).extension,
+        createPiTools(resolveSettings({ defaultTools: ["bash"], shellPath }), process.platform)
+          .extension,
       );
       const outputs = callInOrder(value, [
         fauxToolCall("bash", { command: "printf direct" }),

@@ -272,9 +272,9 @@ describe("backend", () => {
       expect(backend.reload()).toBe(reload);
       await reload;
       expect(backend.settings).not.toBe(before);
-      expect(backend.settings.getThemeSetting()).toBe("light");
-      expect(backend.settings.getRetrySettings().enabled).toBe(false);
-      expect(backend.settings.getCompactionSettings().enabled).toBe(false);
+      expect(backend.settings.theme).toBe("light");
+      expect(backend.settings.retry.enabled).toBe(false);
+      expect(backend.settings.compaction.enabled).toBe(false);
       release.resolve();
       await waitFor(() =>
         state.value.entries.some((entry) =>

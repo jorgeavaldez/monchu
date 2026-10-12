@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { openDevMonchu } from "../src/dev-faux.ts";
+import { loadConfig } from "../src/config.ts";
 import { monchuHome } from "../src/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
 import { cleanup, fauxRole, prepareHome, setup, waitFor } from "./support.ts";
@@ -34,7 +35,9 @@ async function withTerminal(
     ])
       await writeFile(join(home, file), "Smoke home context");
     backend = await openDevMonchu(await monchuHome(true));
-    backend.settings.setTheme(theme);
+    const config = await loadConfig(home);
+    await writeFile(join(home, "config.json"), JSON.stringify({ ...config, settings: { theme } }));
+    await backend.reload();
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
     await visible(screen, "Monchu · /help");
@@ -104,7 +107,7 @@ it("shows reload errors, retains settings on failure, and recovers on the next r
     send(screen, "/reload");
     await visible(screen, "no configured model");
     expect(backend.settings).toBe(settings);
-    expect(backend.settings.getThemeSetting()).toBe("dark");
+    expect(backend.settings.theme).toBe("dark");
     await writeFile(path, original);
     send(screen, "/reload");
     await visible(screen, "reloaded · context");

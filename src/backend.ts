@@ -6,7 +6,6 @@ import {
   type Provider,
   type Models,
 } from "@earendil-works/pi-ai";
-import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { configure, Harness, LiveDoc, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -15,7 +14,7 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, type Settings } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
@@ -99,7 +98,7 @@ export class Monchu {
           models,
           registry: extensions.registry,
           settings: harnessSettings(extensions),
-          env: ({ cwd }) => envs.get(cwd ?? home, extensions.settings.getShellPath()),
+          env: ({ cwd }) => envs.get(cwd ?? home, extensions.settings.shellPath),
           onReport: (error) =>
             reports.report(error instanceof Error ? error.message : String(error)),
         },
@@ -134,7 +133,7 @@ export class Monchu {
   }
 
   /** The run settings of the last successful load or reload. */
-  get settings(): SettingsManager {
+  get settings(): Settings {
     return this.extensions.settings;
   }
 

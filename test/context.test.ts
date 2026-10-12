@@ -275,7 +275,7 @@ describe("Monchu home context", () => {
       expect(prompts.length).toBe(2);
       for (const prompt of prompts) expect(prompt).not.toContain("FORBIDDEN");
       expect(warnings.join("\n")).not.toMatch(/Pi package|FORBIDDEN/);
-      expect(extensions.settings.getDefaultTools()).toBeUndefined();
+      expect(extensions.settings.defaultTools).toBeUndefined();
       expect(await readdir(agentDir, { recursive: true })).toEqual(paths);
       expect((await stat(agentDir)).mtimeMs).toBe(agentModified);
       for (const entry of before) {

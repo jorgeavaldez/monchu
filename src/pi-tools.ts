@@ -5,7 +5,6 @@ import {
   createLsTool,
   createPowerShellTool,
   getPowerShellConfig,
-  type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import {
@@ -14,6 +13,7 @@ import {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
+import type { Settings } from "./config.ts";
 
 /** Keep SDK-only built-ins inside one Durable invocation, with its cancellation and replay policy. */
 function sdkTool<TParameters extends TSchema>(
@@ -42,12 +42,12 @@ function sdkTool<TParameters extends TSchema>(
 }
 
 /**
- * Pi resolves defaultTools additions/removals; Monchu's own tools are not coding-agent built-ins.
+ * Config resolves defaultTools additions/removals; Monchu's own tools are not coding-agent built-ins.
  * Returns warnings for selections that would silently leave Monchu without built-ins.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createPiTools(settings: SettingsManager, platform: NodeJS.Platform) {
-  const commandPrefix = settings.getShellCommandPrefix();
+export function createPiTools(settings: Settings, platform: NodeJS.Platform) {
+  const commandPrefix = settings.shellCommandPrefix;
   const codingTools = [
     createReadTool(),
     createWriteTool(),
@@ -101,7 +101,7 @@ export function createPiTools(settings: SettingsManager, platform: NodeJS.Platfo
       },
     }),
   ];
-  const defaults = settings.getDefaultTools() ?? codingTools.map(({ name }) => name);
+  const defaults = settings.defaultTools ?? codingTools.map(({ name }) => name);
   const warnings: string[] = [];
   const unknown = defaults.filter((name) => !tools.some((tool) => tool.name === name));
   if (unknown.length)

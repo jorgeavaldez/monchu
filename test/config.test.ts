@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, resolveSettings } from "../src/config.ts";
+import { harnessSettings } from "../src/context.ts";
+import { setup, cleanup } from "./support.ts";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -18,6 +20,67 @@ async function home(config?: unknown): Promise<string> {
 }
 
 describe("config", () => {
+  it("resolves defaults and explicit zero/false overrides into independent snapshots", async () => {
+    await setup();
+    try {
+      const current = { settings: resolveSettings({}), defaults: () => [] };
+      const policy = harnessSettings(current);
+      expect(policy.stream).toEqual({ timeoutMs: 300000, maxRetryDelayMs: 60000 });
+      expect(policy.retry).toEqual({
+        enabled: true,
+        maxRetries: 3,
+        baseDelayMs: 2000,
+        maxAgentDelayMs: 60000,
+      });
+      expect(policy.compaction).toEqual({
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      });
+      expect(policy.steeringMode).toBe("one-at-a-time");
+      expect(policy.followUpMode).toBe("one-at-a-time");
+      expect(current.settings.terminalCapabilities).toEqual({});
+      const previous = current.settings;
+      current.settings = resolveSettings({
+        httpIdleTimeoutMs: 0,
+        retry: { enabled: false, maxRetries: 0, baseDelayMs: 0, maxAgentDelayMs: 0 },
+        terminal: { images: false, trueColor: false, hyperlinks: "auto" },
+      });
+      expect(policy.stream?.timeoutMs).toBe(2147483647);
+      expect(policy.retry).toEqual({
+        enabled: false,
+        maxRetries: 0,
+        baseDelayMs: 0,
+        maxAgentDelayMs: 0,
+      });
+      expect(current.settings.terminalCapabilities).toEqual({ images: null, trueColor: false });
+      expect(previous.retry.enabled).toBe(true);
+      current.settings = resolveSettings({
+        retry: { provider: { timeoutMs: 1234, maxRetries: 0, maxRetryDelayMs: 0 } },
+      });
+      expect(policy.stream).toEqual({ timeoutMs: 1234, maxRetries: 0, maxRetryDelayMs: 0 });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("applies tool modifiers in order without mutating the config", async () => {
+    await setup();
+    try {
+      const defaultTools = ["-write", "+ls", "+ls", "-read", "+read"];
+      expect(resolveSettings({ defaultTools }).defaultTools).toEqual([
+        "bash",
+        "edit",
+        "ls",
+        "read",
+      ]);
+      expect(defaultTools).toEqual(["-write", "+ls", "+ls", "-read", "+read"]);
+      expect(resolveSettings({ defaultTools: [] }).defaultTools).toEqual([]);
+      expect(resolveSettings({}).defaultTools).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
   it("defaults every role when the file is missing", async () => {
     expect(await loadConfig(await home())).toEqual({
       front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },

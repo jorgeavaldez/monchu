@@ -23,8 +23,8 @@ export async function runTerminal(
     ? "light"
     : "dark";
   function applyTheme(): void {
-    const configuredTheme = backend.settings.getThemeSetting();
-    setCapabilityOverrides(backend.settings.getTerminalCapabilityOverrides());
+    const configuredTheme = backend.settings.theme;
+    setCapabilityOverrides(backend.settings.terminalCapabilities);
     const pair = configuredTheme?.split("/");
     const name = pair?.length === 2 ? pair[scheme === "light" ? 0 : 1]?.trim() : configuredTheme;
     initTheme(name && name !== "system" ? name : scheme);

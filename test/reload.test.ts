@@ -316,7 +316,7 @@ describe("in-process reload", () => {
     expect(extensions.settings).toBe(settings);
     expect(extensions.config).toBe(initial);
     expect(extensions.assessment).toBe(assessment);
-    expect(settings.getThemeSetting()).toBe("dark");
+    expect(settings.theme).toBe("dark");
     const { harness, root } = await open({ ...value, registry: extensions.registry });
     route(value.faux, () => fauxAssistantMessage("old registry works"));
     try {
