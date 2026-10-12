@@ -1,9 +1,4 @@
-import {
-  formatSkillsForPrompt,
-  loadSkills,
-  SettingsManager,
-  type ResourceDiagnostic,
-} from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   defineExtension,
   section,
@@ -13,6 +8,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunSettings } from "./config.ts";
+import { formatSkillsForPrompt, loadSkills, type ResourceDiagnostic } from "./skills/index.ts";
 
 /** Durable's run policy, resolving the latest loaded settings and default extensions on every read. */
 export function harnessSettings(current: {
@@ -65,14 +61,12 @@ function warning(diagnostic: ResourceDiagnostic): string {
  */
 export function createContext(home: string, runSettings: RunSettings) {
   home = resolve(home);
-  const { skills, diagnostics } = loadSkills({
-    cwd: home,
-    agentDir: home,
-    skillPaths: [join(home, "skills"), fileURLToPath(new URL("../skills/", import.meta.url))],
-    includeDefaults: false,
-  });
+  const { skills, diagnostics } = loadSkills([
+    join(home, "skills"),
+    fileURLToPath(new URL("../skills/", import.meta.url)),
+  ]);
   const settings = SettingsManager.inMemory(runSettings, { projectTrusted: false });
-  const skillPrompt = formatSkillsForPrompt(skills, "read").trim();
+  const skillPrompt = formatSkillsForPrompt(skills).trim();
   return {
     settings,
     extension: defineExtension({
