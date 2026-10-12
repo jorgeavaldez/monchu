@@ -209,14 +209,18 @@ export class Extensions {
 async function buildForReload(): Promise<void> {
   if (import.meta.url.endsWith(".ts")) return;
   await new Promise<void>((resolve, reject) => {
-    const [command, args] =
-      process.platform === "win32"
-        ? ["cmd.exe", ["/d", "/s", "/c", "npm run build"]]
-        : ["npm", ["run", "build"]];
-    const child = spawn(command, args, {
-      cwd: fileURLToPath(new URL("../", import.meta.url)),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
+        "-p",
+        "tsconfig.build.json",
+      ],
+      {
+        cwd: fileURLToPath(new URL("../", import.meta.url)),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let output = "";
     child.stdout.on("data", (data: Buffer) => {
       output = (output + data.toString()).slice(-8000);

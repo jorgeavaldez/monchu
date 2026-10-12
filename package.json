@@ -7,17 +7,6 @@
   "license": "ISC",
   "author": "",
   "type": "module",
-  "scripts": {
-    "dev": "node --watch src/main.ts",
-    "typecheck": "tsc",
-    "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/main.js",
-    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
-    "format": "oxfmt",
-    "check": "npm run typecheck && npm run lint && oxfmt --check && npm run knip && npm test",
-    "test": "vitest --run",
-    "knip": "knip"
-  },
   "dependencies": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",

@@ -21,12 +21,13 @@ Use npm **12.2.0 or newer** and Node **22.19 or newer**.
 Development tooling (TypeScript 7, oxlint, knip, vitest) runs on Windows, macOS, and Linux.
 Android (Termux) is a runtime target only: the phone runs a build made elsewhere, so runtime code must work there, but checks and builds need not.
 
-```sh
-npm ci
-npm run build
-npm start
-# or, with source watching:
-npm run dev
+`mise.toml` is the task runner; task commands are not duplicated in npm scripts.
+
+```nu
+mise run install
+mise run start  # builds first when sources changed
+# or, directly from source without a build or restart watcher:
+mise run dev
 ```
 
 The runtime reuses Pi's agent configuration directory through `getAgentDir()` and `ModelRuntime`.
@@ -131,11 +132,10 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 
 ## Offline TUI smoke mode
 
-Build, then start the real entry point in an interactive terminal with scripted faux models (Nushell):
+Start the real source entry point in an interactive terminal with scripted faux models:
 
 ```nu
-npm run build
-with-env { MONCHU_DEV_FAUX: "1" } { node dist/main.js }
+mise run smoke
 ```
 
 This explicit dev mode creates a fresh `monchu-smoke-*` home in the OS temp directory, including isolated Pi settings/auth/skills; it never opens `~/.monchu` or uses live providers.
@@ -155,7 +155,7 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 `reload_extensions` is available to all roles, as is Jorge's `/reload` command. The backend exposes `reload()` and `restart()`; only Jorge's `/restart` command calls the latter after restoring the terminal.
 
-Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
+Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode builds that checkout first by spawning the installed `typescript/bin/tsc` with the running Node executable and `-p tsconfig.build.json`, without a shell, npm, or mise. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
 All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
@@ -204,15 +204,17 @@ A home written before the 2026-10 refactor or with version-1 goals needs a fresh
 
 ## Checks
 
-```sh
-npm run check   # typecheck, type-aware lint, format, knip, tests
-npm run build
+```nu
+mise run check   # typecheck, type-aware lint, format check, knip, tests
+mise run build
 ```
 
-- `npm run typecheck`: `tsc` over `src`, `test`, and `vitest.config.ts` (`tsconfig.json`); `npm run build` emits `src` only (`tsconfig.build.json`).
-- `npm run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, any import of `src/tui` outside `src/main.ts` and the TUI itself, and `vi` in tests.
-- `npm run knip`: unused files, exports, and dependencies. The reload manifest imports its modules through computed URLs, so the exports it reads are tagged `@public`.
-- `npm test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME`, `USERPROFILE`, and `PI_CODING_AGENT_DIR` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
+- `mise run install`: `npm ci`, skipped when the locked dependencies are current.
+- `mise run typecheck`: `tsc` over `src`, `test`, and `vitest.config.ts` (`tsconfig.json`); `mise run build` runs `node node_modules/typescript/bin/tsc -p tsconfig.build.json` to emit `src` only, skipped when current.
+- `mise run fmt`: format with oxfmt; `mise run check` checks formatting without rewriting.
+- `mise run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, any import of `src/tui` outside `src/main.ts` and the TUI itself, and `vi` in tests.
+- `mise run check` also runs knip for unused files, exports, and dependencies. The reload manifest imports its modules through computed URLs, so the exports it reads are tagged `@public`.
+- `mise run test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME`, `USERPROFILE`, and `PI_CODING_AGENT_DIR` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
   TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark.
   Tests do not prove live provider behavior or the interactive phone flow.
 

@@ -6,7 +6,7 @@ description: Edit and reload Monchu's own extensions, skills, and instructions; 
 # Changing Monchu
 
 - Work in a separate jj workspace when changing Monchu source. Never edit a sibling lane or mutate history without authorization.
-- Run `npm run check` and `npm run build` in that workspace before applying changes to the running checkout. Do not claim workspace edits are live: `reload_extensions` reads the running checkout, not the tool's cwd.
+- Run `mise run check` and `mise run build` in that workspace before applying changes to the running checkout. Do not claim workspace edits are live: `reload_extensions` reads the running checkout, not the tool's cwd.
 - Once approved source changes are in the running checkout, call `reload_extensions` to reload extensions and home/bundled skills without a restart. Read skills on demand; preserve the user's edits.
 - Home files are read on every request; their edits need no reload.
 - Imports inside a reloaded module stay cached. Host and dependency changes require a restart.

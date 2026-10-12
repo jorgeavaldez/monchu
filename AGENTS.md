@@ -61,14 +61,15 @@ Ask when scope or a design decision materially changes the outcome.
   Publish source changes only when explicitly authorized; vault delivery follows its own standing authorization.
 - Use native `agent_browser` when browser automation is needed.
   Existing homelab browser ownership/takeover rules remain authoritative; never blindly replay uncertain submissions.
-- After code changes run `npm run check` and `npm run build`; both must pass.
+- Use `mise run ...` as the task runner; `mise.toml` owns task definitions, not npm scripts.
+- After code changes run `mise run check` and `mise run build`; both must pass.
   Report what actually ran and any pre-existing failures; do not claim an interactive, restart, or phone flow works from static checks alone.
 - Update the canonical vault handoff when approved work changes the project state.
   Keep shared filenames portable across Windows, macOS, Linux, and Android.
 
 ## Code rules
 
-`npm run check` enforces most of these; do not weaken a check to pass it.
+`mise run check` enforces most of these; do not weaken a check to pass it.
 
 - **Layering.** `src/main.ts` composes the backend (`src/backend.ts`) and the TUI (`src/tui/`).
   Nothing else imports `src/tui/`, and the backend writes nothing to stdout.
@@ -86,5 +87,5 @@ Ask when scope or a design decision materially changes the outcome.
   Shared helpers live only in `test/support.ts`; call `setup()` and `cleanup()` so each test has its own home.
   Tests never touch `~/.monchu`, `~/.pi`, or `~/.agents`.
   The suite passes on Windows and Linux; skip a case only for genuinely POSIX-only behavior, and say why.
-- **Check gates.** `npm run check` runs `tsc`, type-aware oxlint (types, layering, test imports), `oxfmt --check`, knip (unused files, exports, dependencies), and vitest.
+- **Check gates.** `mise run check` runs `tsc`, type-aware oxlint (types, layering, test imports), `oxfmt --check`, knip (unused files, exports, dependencies), and vitest.
   Development tooling need not run on Termux; runtime code must.

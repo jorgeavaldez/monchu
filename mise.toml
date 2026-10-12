@@ -4,14 +4,64 @@ node = "26.10.0"
 
 [env]
 NODE_ENV = { default = "development" }
+_.path = ['{{config_root}}/node_modules/.bin']
 
-[tasks.npm-install]
-description = 'Installs locked dependencies with npm'
+[tasks.install]
+description = 'Install locked dependencies'
 run = 'npm ci'
 sources = ['package.json', 'package-lock.json', 'mise.toml']
 outputs = ['node_modules/.package-lock.json']
 
+[tasks.check]
+description = 'Run all check gates'
+depends = ['typecheck', 'lint', 'test']
+run = ['oxfmt --check', 'knip']
+
+[tasks.test]
+description = 'Run the test suite'
+depends = ['install']
+run = 'vitest --run'
+
+[tasks.lint]
+description = 'Run type-aware lint'
+depends = ['install']
+run = 'oxlint --type-aware --deny-warnings --report-unused-disable-directives'
+
+[tasks.fmt]
+description = 'Format source and documentation'
+depends = ['install']
+run = 'oxfmt'
+
+[tasks.typecheck]
+description = 'Typecheck source and tests'
+depends = ['install']
+run = 'tsc'
+
+[tasks.build]
+description = 'Build the app'
+depends = ['install']
+run = 'node node_modules/typescript/bin/tsc -p tsconfig.build.json'
+sources = [
+  'src/**/*.ts',
+  'tsconfig.json',
+  'tsconfig.build.json',
+  'package.json',
+  'package-lock.json',
+  'mise.toml',
+]
+outputs = ['dist/**/*.js']
+
+[tasks.start]
+description = 'Run the built app, building when needed'
+depends = ['build']
+run = 'node dist/main.js'
+
 [tasks.dev]
-description = 'Calls your dev script in `package.json`'
-run = 'npm run dev'
-depends = ['npm-install']
+description = 'Run from source with Node type stripping, without a watcher'
+depends = ['install']
+run = 'node src/main.ts'
+
+[tasks.smoke]
+description = 'Run from source with isolated faux models'
+env = { MONCHU_DEV_FAUX = '1' }
+run = 'mise run dev'
