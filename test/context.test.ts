@@ -84,7 +84,13 @@ describe("Monchu home context", () => {
     const warnings: string[] = [];
     const extensions = await Extensions.load(
       value.models,
-      { front: fauxRole, worker: fauxRole, classifier: null, cloudflareAccountId: undefined },
+      {
+        front: fauxRole,
+        worker: fauxRole,
+        classifier: null,
+        cloudflareAccountId: undefined,
+        settings: {},
+      },
       value.directory,
       (warning) => warnings.push(warning),
     );
@@ -165,7 +171,7 @@ describe("Monchu home context", () => {
       skillFile,
       "---\nname: vault\ndescription: vault workflow\n---\nPRIVATE HOME BODY",
     );
-    const resources = createContext(value.directory);
+    const resources = createContext(value.directory, {});
     value.registry.install(resources.extension);
     const bundledFile = fileURLToPath(new URL("../skills/monchu/SKILL.md", import.meta.url));
     const advertised: string[] = [];
@@ -256,7 +262,13 @@ describe("Monchu home context", () => {
     const warnings: string[] = [];
     const extensions = await Extensions.load(
       value.models,
-      { front: fauxRole, worker: fauxRole, classifier: null, cloudflareAccountId: undefined },
+      {
+        front: fauxRole,
+        worker: fauxRole,
+        classifier: null,
+        cloudflareAccountId: undefined,
+        settings: {},
+      },
       directory,
       (warning) => warnings.push(warning),
     );

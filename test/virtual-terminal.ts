@@ -37,6 +37,7 @@ export class VirtualTerminal implements Terminal {
   private _rows: number;
   started = false;
   stopped = false;
+  output = "";
 
   constructor(columns = 80, rows = 24) {
     this._columns = columns;
@@ -73,6 +74,7 @@ export class VirtualTerminal implements Terminal {
   }
 
   write(data: string): void {
+    this.output += data;
     this.xterm.write(data);
   }
 

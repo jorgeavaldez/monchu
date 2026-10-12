@@ -1,11 +1,16 @@
-import { Monchu } from "./backend.ts";
-import { runTerminal } from "./tui/app.ts";
+import { join } from "node:path";
+import { monchuHome } from "./home.ts";
 
 try {
+  const home = await monchuHome(process.env.MONCHU_DEV_FAUX === "1");
+  // SDK modules capture some agent paths at import time. Never import them before this assignment.
+  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+  const { Monchu } = await import("./backend.ts");
+  const { runTerminal } = await import("./tui/app.ts");
   const backend =
     process.env.MONCHU_DEV_FAUX === "1"
       ? await (await import("./dev-faux.ts")).openDevMonchu()
-      : await Monchu.open();
+      : await Monchu.open(home);
   try {
     await runTerminal(backend);
   } finally {

@@ -1,20 +1,22 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createProvider } from "@earendil-works/pi-ai";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Monchu } from "../src/backend.ts";
+import { Monchu } from "../src/backend.ts";
 import { openDevMonchu } from "../src/dev-faux.ts";
 import { runTerminal } from "../src/tui/app.ts";
-import { waitFor } from "./support.ts";
+import { cleanup, fauxRole, setup, waitFor } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 async function withTerminal(
   columns: number,
   theme: string,
-  test: (screen: VirtualTerminal) => Promise<void>,
+  test: (screen: VirtualTerminal, backend: Monchu, home: string) => Promise<void>,
 ): Promise<void> {
   const previousHome = process.env.MONCHU_DEV_HOME;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await setup();
   const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
   const screen = new VirtualTerminal(columns, 40);
   let backend: Monchu | undefined;
@@ -36,7 +38,7 @@ async function withTerminal(
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
     await visible(screen, "Monchu · /help");
-    await test(screen);
+    await test(screen, backend, home);
   } finally {
     try {
       if (running !== undefined) {
@@ -52,6 +54,7 @@ async function withTerminal(
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
         await rm(home, { recursive: true, force: true });
+        await cleanup();
       }
     }
   }
@@ -88,6 +91,130 @@ it("rejects the real Monchu home before configuring resources or opening storage
   } finally {
     if (previousHome === undefined) delete process.env.MONCHU_DEV_HOME;
     else process.env.MONCHU_DEV_HOME = previousHome;
+  }
+});
+
+it("shows reload errors, retains settings on failure, and recovers on the next reload", async () => {
+  await withTerminal(60, "dark", async (screen, backend, home) => {
+    const path = join(home, "config.json");
+    const original = await readFile(path, "utf8");
+    const settings = backend.settings;
+    await writeFile(
+      path,
+      JSON.stringify({
+        settings: { theme: "light" },
+        front: { provider: "missing", modelId: "missing" },
+      }),
+    );
+    send(screen, "/reload");
+    await visible(screen, "no configured model");
+    expect(backend.settings).toBe(settings);
+    expect(backend.settings.getThemeSetting()).toBe("dark");
+    await writeFile(path, original);
+    send(screen, "/reload");
+    await visible(screen, "reloaded · context");
+    send(screen, "hello");
+    await visible(screen, "DONE");
+  });
+}, 30_000);
+
+it("keeps Cloudflare login prompts out of chat, editor history and raw terminal output", async () => {
+  const value = await setup({ provider: "cloudflare-workers-ai" });
+  const home = join(value.directory, "home");
+  await mkdir(home);
+  const role = { ...fauxRole, provider: "cloudflare-workers-ai" };
+  await writeFile(
+    join(home, "config.json"),
+    JSON.stringify({ front: role, worker: role, classifier: null }),
+  );
+  const provider = createProvider({
+    id: value.faux.provider.id,
+    models: value.faux.models,
+    api: value.faux.provider,
+    auth: {
+      apiKey: {
+        name: "Faux Cloudflare",
+        resolve: async () => ({ auth: {} }),
+        login: async (interaction) => {
+          const key = await interaction.prompt({ type: "secret", message: "Enter test API key" });
+          const account = await interaction.prompt({
+            type: "text",
+            message: "Enter test account ID",
+          });
+          if (account === "fail") throw new Error(`Provider failure containing ${key}`);
+          return { type: "api_key", key, env: { CLOUDFLARE_ACCOUNT_ID: account } };
+        },
+      },
+    },
+  });
+  const backend = await Monchu.open(home, provider);
+  const screen = new VirtualTerminal(60, 40);
+  const running = runTerminal(backend, screen);
+  const state = await backend.viewState();
+  try {
+    await visible(screen, "Monchu · /help");
+    send(screen, "/login");
+    await visible(screen, "Choose provider:");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\r");
+    await visible(screen, "Enter test API key");
+    screen.sendInput("private-key-123");
+    const masked = await visible(screen, "•••");
+    expect(masked.join("\n")).not.toContain("private-key-123");
+    screen.sendInput("\r");
+    await visible(screen, "Enter test account ID");
+    send(screen, "test-account");
+    await visible(screen, "logged in · cloudflare-workers-ai");
+    expect(state.value.entries).toEqual([]);
+    screen.sendInput("\x1b[A");
+    const history = await visible(screen, "/login");
+    expect(history.join("\n")).not.toContain("private-key-123");
+    expect(history.join("\n")).not.toContain("test-account");
+    screen.sendInput("\x05"); // move to the history entry end before clearing it
+    screen.sendInput("\x15");
+    const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
+    expect(auth).toMatchObject({ "cloudflare-workers-ai": { key: "private-key-123" } });
+    // Raw provider errors must not echo the submitted key, even after another login fails.
+    send(screen, "/login");
+    await visible(screen, "Choose provider:");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\r");
+    await visible(screen, "Enter test API key");
+    send(screen, "never-echo-key");
+    await visible(screen, "Enter test account ID");
+    send(screen, "fail");
+    const failed = await visible(screen, "login failed");
+    expect(failed.join("\n")).not.toContain("never-echo-key");
+    expect(screen.output).not.toContain("private-key-123");
+    expect(screen.output).not.toContain("never-echo-key");
+    expect(state.value.entries).toEqual([]);
+  } finally {
+    state.dispose();
+    process.emit("SIGTERM");
+    await running;
+    await backend.close();
+    await cleanup();
+  }
+}, 30_000);
+
+it("offers /login on a fresh home without credentials and cancels without calling a provider", async () => {
+  const value = await setup();
+  const backend = await Monchu.open(join(value.directory, "fresh"));
+  const screen = new VirtualTerminal(40, 32);
+  const running = runTerminal(backend, screen);
+  try {
+    await visible(screen, "Monchu · /help");
+    send(screen, "/login");
+    await visible(screen, "Choose provider:");
+    screen.sendInput("\x1b");
+    await visible(screen, "login cancelled");
+    const auth: unknown = JSON.parse(await readFile(join(backend.home, "auth.json"), "utf8"));
+    expect(auth).toEqual({});
+  } finally {
+    send(screen, "/quit");
+    await running;
+    await backend.close();
+    await cleanup();
   }
 });
 

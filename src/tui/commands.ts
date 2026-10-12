@@ -1,6 +1,16 @@
 type Input =
   | { command: "message"; text: string }
-  | { command: "/quit" | "/help" | "/abort" | "/workers" | "/goals" | "/reload" | "/restart" }
+  | {
+      command:
+        | "/quit"
+        | "/help"
+        | "/abort"
+        | "/workers"
+        | "/goals"
+        | "/reload"
+        | "/restart"
+        | "/login";
+    }
   | { command: "/new" | "/compact" | "/cd" | "/stop" | "/agents"; text: string }
   | { command: "/work" | "/tell" | "/cd-worker"; name: string; text: string };
 
@@ -20,7 +30,8 @@ export const commands: Record<
   "/compact": { usage: "[instructions]", help: "summarize root context" },
   "/cd": { usage: "<path>", help: "change the idle root's directory" },
   "/cd-worker": { usage: "<name> <path>", help: "change an idle worker's directory" },
-  "/reload": { usage: "", help: "reload extensions and home/bundled skills" },
+  "/login": { usage: "", help: "private provider login (Codex device code or Cloudflare API key)" },
+  "/reload": { usage: "", help: "reload config, extensions and home/bundled skills" },
   "/restart": {
     usage: "",
     help: "User-only approval: restore the terminal and restart Monchu",
@@ -52,6 +63,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/abort":
     case "/workers":
     case "/goals":
+    case "/login":
     case "/reload":
     case "/restart":
       if (rest) throw new Error(`Usage: ${command}`);

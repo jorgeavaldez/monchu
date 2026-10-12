@@ -17,15 +17,14 @@ export async function runTerminal(
 ): Promise<void> {
   if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
     throw new Error("Monchu's TUI needs an interactive terminal.");
-  const settings = backend.settings;
-  setCapabilityOverrides(settings.getTerminalCapabilityOverrides());
-  const configuredTheme = settings.getThemeSetting();
   let scheme: "light" | "dark" = ["7", "9", "10", "11", "12", "13", "14", "15"].includes(
     process.env.COLORFGBG?.split(";").at(-1) ?? "",
   )
     ? "light"
     : "dark";
   function applyTheme(): void {
+    const configuredTheme = backend.settings.getThemeSetting();
+    setCapabilityOverrides(backend.settings.getTerminalCapabilityOverrides());
     const pair = configuredTheme?.split("/");
     const name = pair?.length === 2 ? pair[scheme === "light" ? 0 : 1]?.trim() : configuredTheme;
     initTheme(name && name !== "system" ? name : scheme);
@@ -43,6 +42,8 @@ export async function runTerminal(
   let stopReports: (() => void) | undefined;
   let stopAssessments: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
+  let stopReload: (() => void) | undefined;
+  let login: AbortController | undefined;
   type Worker = Awaited<ReturnType<Monchu["workers"]>>[number];
   const describe = (worker: Worker) => `${worker.busy ? "working" : "idle"} | ${worker.cwd}`;
   const workers = new Map<
@@ -72,6 +73,10 @@ export async function runTerminal(
 
   let inputs = Promise.resolve();
   const interrupt = () => {
+    if (login !== undefined) {
+      login.abort();
+      return;
+    }
     inputs = inputs.then(() => handle("/abort")).catch(fail);
   };
   const view = new MonchuTui(terminal, backend.home, {
@@ -145,6 +150,57 @@ export async function runTerminal(
       case "/help":
         view.notice(help);
         break;
+      case "/login": {
+        const controller = new AbortController();
+        login = controller;
+        view.beginLogin(() => controller.abort());
+        try {
+          const provider = await view.promptLogin(
+            {
+              type: "select",
+              message: "Choose provider:",
+              options: [
+                { id: "openai-codex", label: "OpenAI Codex (device code)" },
+                { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (API key)" },
+              ],
+            },
+            controller.signal,
+          );
+          await backend.login(provider, provider === "openai-codex" ? "oauth" : "api_key", {
+            signal: controller.signal,
+            prompt: (prompt) => view.promptLogin(prompt, controller.signal),
+            notify: (event) => {
+              switch (event.type) {
+                case "device_code":
+                  view.loginMessage(
+                    `Open ${event.verificationUri}\nCode: ${event.userCode}\nWaiting for approval · Esc to cancel`,
+                  );
+                  break;
+                case "auth_url":
+                  view.loginMessage(`Open ${event.url}`);
+                  break;
+                case "info":
+                case "progress":
+                  // Keep provider output ephemeral, outside chat/history/logs.
+                  view.loginMessage(event.message);
+                  break;
+              }
+            },
+          });
+          view.notice(`logged in · ${provider}`);
+        } catch {
+          // Provider failures can include entered credentials. Never echo raw login errors.
+          view.notice(
+            controller.signal.aborted
+              ? "login cancelled"
+              : "login failed; credentials may have been saved; retry /login",
+          );
+        } finally {
+          login = undefined;
+          view.endLogin();
+        }
+        break;
+      }
       case "/reload": {
         view.notice(`reloaded · ${(await backend.reload()).join(", ")}`);
         break;
@@ -256,6 +312,10 @@ export async function runTerminal(
         exit();
       }
     });
+    stopReload = backend.onReload(() => {
+      applyTheme();
+      show(true);
+    });
     stopReports = backend.onReport((message) => view.notice(`warning · ${message}`));
     const shown = new Set<number>();
     let hydrated = false;
@@ -295,7 +355,9 @@ export async function runTerminal(
     process.off("SIGTERM", exit);
     process.off("SIGINT", interrupt);
     // Let an in-flight admission settle before main closes storage. Queued inputs see closing and stop.
+    login?.abort();
     await inputs;
+    stopReload?.();
     stopScheme?.();
     stopReports?.();
     stopAssessments?.();

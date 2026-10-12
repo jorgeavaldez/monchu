@@ -1,18 +1,13 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { monchuHome } from "./home.ts";
 import { Monchu } from "./backend.ts";
 
 /** Explicit offline smoke mode. Its home and Pi resources stay in a throwaway temp directory. */
 export async function openDevMonchu(): Promise<Monchu> {
   // Inherited by /restart so the next process reopens the same conversation.
-  const home = process.env.MONCHU_DEV_HOME ?? (await mkdtemp(join(tmpdir(), "monchu-smoke-")));
-  if (dirname(resolve(home)) !== resolve(tmpdir()) || !basename(home).startsWith("monchu-smoke-"))
-    throw new Error(
-      "MONCHU_DEV_HOME must be a monchu-smoke-* directory directly inside the OS temp directory",
-    );
-  process.env.MONCHU_DEV_HOME = home;
+  const home = await monchuHome(true);
   process.env.PI_CODING_AGENT_DIR = join(home, "agent");
   await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   await writeFile(

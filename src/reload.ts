@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { EffortAssessment } from "./classifier.ts";
-import type { MonchuConfig } from "./config.ts";
+import { loadConfig, type MonchuConfig } from "./config.ts";
 
 /** Reloadable modules. Static imports inside them stay cached. */
 type Reloadable = {
@@ -44,6 +44,7 @@ type Build = {
   /** Extensions only the root conversation gets. */
   root: Extension[];
   settings: SettingsManager;
+  config: MonchuConfig;
   assessment: EffortAssessment | undefined;
   warnings: string[];
 };
@@ -55,13 +56,17 @@ async function build(
   home: string,
   reportMissing: (path: string) => void,
 ): Promise<Build> {
+  for (const role of [config.front, config.worker]) {
+    if (models.getModel(role.provider, role.modelId) === undefined)
+      throw new Error(`Pi has no configured model ${role.provider}/${role.modelId}`);
+  }
   const version = randomUUID();
   const modules: (keyof Reloadable)[] = [];
   const load = <Name extends keyof Reloadable>(name: Name) => {
     modules.push(name);
     return freshImport(name, version);
   };
-  const context = (await load("context")).createContext(home);
+  const context = (await load("context")).createContext(home, config.settings);
   const tools = (await load("pi-tools")).createPiTools(context.settings, process.platform);
   const workers = (await load("workers")).createWorkerTools(config.worker);
   const { Codemode } = await load("codemode");
@@ -90,31 +95,35 @@ async function build(
     ],
     root: [Goals, memory],
     settings: context.settings,
+    config,
     assessment,
     warnings: [...context.warnings, ...tools.warnings],
   };
 }
 
 /** Validate the entire replacement against the installed registry, then publish it in one synchronous step. */
-export function installExtensions(registry: Registry, extensions: readonly Extension[]): void {
+function validateExtensions(registry: Registry, extensions: readonly Extension[]): void {
   const names = new Set(extensions.map((extension) => extension.name));
   if (names.size !== extensions.length) throw new Error("Duplicate extension names");
   const validation = createRegistry();
   // Validate the same publication order: old task names must not collide with an earlier replacement.
   for (const extension of registry.snapshot().installed()) validation.install(extension);
   for (const extension of extensions) validation.install(extension);
+}
+
+export function installExtensions(registry: Registry, extensions: readonly Extension[]): void {
+  validateExtensions(registry, extensions);
   // install is synchronous; no scheduler phase can run between these publications.
   for (const extension of extensions) registry.install(extension);
 }
 
 /**
  * The extension registry and settings of its last successful build. Every `Reloadable` module reloads in
- * process; the backend, config, and this loader need /restart.
+ * process; the backend and this loader need /restart. Config is re-read on each reload.
  */
 export class Extensions {
   readonly registry: Registry;
   private readonly models: Models;
-  private readonly config: MonchuConfig;
   private readonly home: string;
   private readonly report: (warning: string) => void;
   private readonly reportMissing: (path: string) => void;
@@ -123,7 +132,6 @@ export class Extensions {
 
   private constructor(
     models: Models,
-    config: MonchuConfig,
     home: string,
     report: (warning: string) => void,
     reportMissing: (path: string) => void,
@@ -131,7 +139,6 @@ export class Extensions {
   ) {
     this.registry = createRegistry();
     this.models = models;
-    this.config = config;
     this.home = home;
     this.report = report;
     this.reportMissing = reportMissing;
@@ -152,10 +159,14 @@ export class Extensions {
       report(`Missing Monchu home file (skipped): ${path}`);
     };
     const current = await build(models, config, home, reportMissing);
-    const extensions = new Extensions(models, config, home, report, reportMissing, current);
+    const extensions = new Extensions(models, home, report, reportMissing, current);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
+  }
+
+  get config(): MonchuConfig {
+    return this.current.config;
   }
 
   /** The loaded run settings. */
@@ -174,22 +185,28 @@ export class Extensions {
 
   /** Every installed extension except the root-only ones. */
   defaults(): readonly Extension[] {
-    const root = new Set(this.current.root.map((extension) => extension.name));
+    const names = new Set(this.current.extensions.map((extension) => extension.name));
+    for (const extension of this.current.root) names.delete(extension.name);
+    names.add("monchu.reload");
+    // Disabled classifier definitions remain installed to finish already accepted assessment tasks.
     return this.registry
       .snapshot()
       .installed()
-      .filter((extension) => !root.has(extension.name));
+      .filter((extension) => names.has(extension.name));
   }
 
   /**
    * Concurrent requests share one reload, which resolves to the reloaded modules. A failed build, import, or validation
    * leaves installed definitions and settings unchanged.
    */
-  reload(): Promise<readonly string[]> {
+  reload(applyConfig?: (config: MonchuConfig) => Promise<void>): Promise<readonly string[]> {
     this.reloading ??= (async () => {
       await buildForReload();
-      const next = await build(this.models, this.config, this.home, this.reportMissing);
-      installExtensions(this.registry, next.extensions);
+      const config = await loadConfig(this.home);
+      const next = await build(this.models, config, this.home, this.reportMissing);
+      validateExtensions(this.registry, next.extensions);
+      await applyConfig?.(config);
+      for (const extension of next.extensions) this.registry.install(extension);
       this.current = next;
       for (const warning of next.warnings) this.report(warning);
       return next.modules;
@@ -265,7 +282,7 @@ export function createReloadControls(
       defineTool({
         name: "reload_extensions",
         description:
-          "Reload Monchu extensions and home/bundled skills in process. Home files are read on every request. Running calls finish on old code. Host changes require request_restart and the user's /restart.",
+          "Reload Monchu config, extensions and home/bundled skills in process. Model roles and run settings apply to subsequent requests; running calls finish on old code. Home files are read on every request. Host code changes require request_restart and the user's /restart.",
         parameters: Type.Object({}),
         replay: "unsafe",
         execute: async () => ({

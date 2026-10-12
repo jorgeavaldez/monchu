@@ -1,11 +1,26 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import {
+  createProvider,
+  fauxAssistantMessage,
+  fauxToolCall,
+  getCurrentTools,
+} from "@earendil-works/pi-ai";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
-import { cleanup, fauxRole, lastMessage, route, setup, textOf, type Setup } from "./support.ts";
+import {
+  cleanup,
+  fauxRole,
+  lastMessage,
+  route,
+  setup,
+  textOf,
+  waitFor,
+  type Setup,
+} from "./support.ts";
 
 afterEach(cleanup);
 
@@ -21,6 +36,306 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
 }
 
 describe("backend", () => {
+  it("sets its own SDK agent directory before imports in the real source entry point", async () => {
+    const value = await setup();
+    await mkdir(value.agentDir);
+    for (const name of ["auth.json", "settings.json", "models.json"])
+      await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
+    const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
+        {
+          env: {
+            ...process.env,
+            HOME: value.directory,
+            USERPROFILE: value.directory,
+            PI_CODING_AGENT_DIR: value.agentDir,
+            MONCHU_DEV_FAUX: "0",
+            PI_OFFLINE: "1",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 15000,
+        },
+      );
+      let output = "";
+      child.stdout.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+      child.stderr.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, output }));
+    });
+    expect(result, result.output).toMatchObject({ code: 1 });
+    expect(result.output).toContain("TUI needs an interactive terminal");
+    for (const name of ["auth.json", "settings.json", "models.json"])
+      expect(await readFile(join(value.agentDir, name), "utf8")).toBe("decoy: not valid JSON");
+    const auth: unknown = JSON.parse(
+      await readFile(join(value.directory, ".monchu", "auth.json"), "utf8"),
+    );
+    expect(auth).toEqual({});
+    await expect(
+      readFile(join(value.directory, ".monchu", "models-store.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20000);
+
+  it("loads an optional catalog from the Monchu home rather than a Pi directory", async () => {
+    const value = await setup();
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({
+        front: { provider: "openai-codex", modelId: "monchu-custom", thinkingLevel: "off" },
+        classifier: null,
+      }),
+    );
+    await writeFile(
+      join(home, "models.json"),
+      JSON.stringify({
+        providers: {
+          "openai-codex": { models: [{ id: "monchu-custom", name: "Monchu custom" }] },
+        },
+      }),
+    );
+    const backend = await Monchu.open(home);
+    const state = await backend.viewState();
+    try {
+      expect(state.value.docs["pi.agent"]).toMatchObject({
+        model: { provider: "openai-codex", modelId: "monchu-custom" },
+      });
+    } finally {
+      state.dispose();
+      await backend.close();
+    }
+  });
+
+  it("owns auth independently of a decoy Pi directory and uses the runtime's private login API", async () => {
+    const value = await setup();
+    await mkdir(value.agentDir);
+    const decoy = join(value.agentDir, "auth.json");
+    await writeFile(decoy, "not valid JSON: must not be read or written");
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    );
+    const provider = createProvider({
+      id: value.faux.provider.id,
+      models: value.faux.models,
+      api: value.faux.provider,
+      auth: {
+        apiKey: {
+          name: "Test key",
+          resolve: async () => ({ auth: {} }),
+          login: async (interaction) => ({
+            type: "api_key",
+            key: await interaction.prompt({ type: "secret", message: "Test key" }),
+          }),
+        },
+      },
+    });
+    const backend = await Monchu.open(home, provider);
+    try {
+      const prompts: string[] = [];
+      await backend.login("faux", "api_key", {
+        prompt: async (prompt) => {
+          prompts.push(prompt.type);
+          return "private-test-key";
+        },
+        notify: () => {},
+      });
+      expect(prompts).toEqual(["secret"]);
+      const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
+      expect(auth).toEqual({ faux: { type: "api_key", key: "private-test-key" } });
+      expect(await readFile(decoy, "utf8")).toBe("not valid JSON: must not be read or written");
+      const view = await backend.viewState();
+      expect(view.value.entries).toEqual([]);
+      view.dispose();
+      expect(process.env.PI_CODING_AGENT_DIR).toBe(join(home, "agent"));
+    } finally {
+      await backend.close();
+    }
+  });
+
+  it("forces Codex device-code selection through the runtime without browser callbacks", async () => {
+    const value = await setup({ provider: "openai-codex" });
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    const role = { ...fauxRole, provider: "openai-codex" };
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: role, worker: role, classifier: null }),
+    );
+    let method = "";
+    const provider = createProvider({
+      id: value.faux.provider.id,
+      models: value.faux.models,
+      api: value.faux.provider,
+      auth: {
+        oauth: {
+          name: "Faux Codex OAuth",
+          login: async (interaction) => {
+            method = await interaction.prompt({
+              type: "select",
+              message: "Method",
+              options: [
+                { id: "browser", label: "Browser" },
+                { id: "device_code", label: "Device" },
+              ],
+            });
+            interaction.notify({
+              type: "device_code",
+              userCode: "TEST-CODE",
+              verificationUri: "https://example.test/device",
+            });
+            return {
+              type: "oauth",
+              access: "test-access",
+              refresh: "test-refresh",
+              expires: Date.now() + 3600000,
+            };
+          },
+          refresh: async (credential) => credential,
+          toAuth: async (credential) => ({ apiKey: credential.access }),
+        },
+      },
+    });
+    const backend = await Monchu.open(home, provider);
+    try {
+      const events: string[] = [];
+      await backend.login("openai-codex", "oauth", {
+        prompt: () => Promise.reject(new Error("Browser prompt must not be used")),
+        notify: (event) => events.push(event.type),
+      });
+      expect(method).toBe("device_code");
+      expect(events).toEqual(["device_code"]);
+      expect(await readFile(join(home, "auth.json"), "utf8")).toContain("test-refresh");
+    } finally {
+      await backend.close();
+    }
+  });
+
+  it("applies reloaded roles, tools and stream options to later requests, not an in-flight generation", async () => {
+    const value = await setup({
+      models: [{ id: "faux-1" }, { id: "next-front" }, { id: "next-worker" }],
+    });
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const requests: {
+      text: string;
+      model: string;
+      timeout: number | undefined;
+      tools: string[];
+    }[] = [];
+    route(value.faux, async (request, options, _state, model) => {
+      const text = textOf(lastMessage(request.messages));
+      requests.push({
+        text,
+        model: model.id,
+        timeout: options?.timeoutMs,
+        tools: getCurrentTools(request.messages).map((tool) => tool.name),
+      });
+      if (text === "held") {
+        started.resolve();
+        await release.promise;
+      }
+      return fauxAssistantMessage("ok");
+    });
+    const { home, backend } = await openBackend(value);
+    const state = await backend.viewState();
+    try {
+      await backend.submit("held", "held");
+      await started.promise;
+      await writeFile(
+        join(home, "config.json"),
+        JSON.stringify({
+          front: { ...fauxRole, modelId: "next-front" },
+          worker: { ...fauxRole, modelId: "next-worker" },
+          classifier: null,
+          settings: {
+            theme: "light",
+            httpIdleTimeoutMs: 1234,
+            retry: { enabled: false },
+            compaction: { enabled: false },
+            defaultTools: ["read"],
+          },
+        }),
+      );
+      const before = backend.settings;
+      const reload = backend.reload();
+      expect(backend.reload()).toBe(reload);
+      await reload;
+      expect(backend.settings).not.toBe(before);
+      expect(backend.settings.getThemeSetting()).toBe("light");
+      expect(backend.settings.getRetrySettings().enabled).toBe(false);
+      expect(backend.settings.getCompactionSettings().enabled).toBe(false);
+      release.resolve();
+      await waitFor(() =>
+        state.value.entries.some((entry) =>
+          entry.model?.some((message) => message.role === "assistant"),
+        ),
+      );
+      await backend.submit("next", "next");
+      await waitFor(() => requests.some((request) => request.text === "next"));
+      await backend.startWorker("new", "worker request", "new-worker");
+      await waitFor(() => requests.some((request) => request.text === "worker request"));
+      expect(requests.find((request) => request.text === "held")?.model).toBe("faux-1");
+      expect(requests.find((request) => request.text === "held")?.timeout).not.toBe(1234);
+      expect(requests.find((request) => request.text === "held")?.tools).toContain("bash");
+      expect(requests.find((request) => request.text === "next")).toMatchObject({
+        model: "next-front",
+        timeout: 1234,
+      });
+      expect(requests.find((request) => request.text === "next")?.tools).not.toContain("bash");
+      expect(requests.find((request) => request.text === "worker request")?.model).toBe(
+        "next-worker",
+      );
+    } finally {
+      release.resolve();
+      state.dispose();
+      await backend.close();
+    }
+  });
+
+  it("does not leak its agent directory to a Pi started by a shell tool", async () => {
+    const value = await setup();
+    route(value.faux, (request) =>
+      lastMessage(request.messages)?.role === "user"
+        ? fauxAssistantMessage(
+            fauxToolCall("bash", {
+              command: `${JSON.stringify(process.execPath)} -e "console.log(process.env.PI_CODING_AGENT_DIR ?? 'normal-pi-config')"`,
+            }),
+            { stopReason: "toolUse" },
+          )
+        : fauxAssistantMessage("done"),
+    );
+    const { backend } = await openBackend(value);
+    const state = await backend.viewState();
+    try {
+      await backend.submit("check env", "env");
+      await waitFor(() =>
+        state.value.entries.some((entry) =>
+          entry.model?.some(
+            (message) => message.role === "assistant" && textOf(message) === "done",
+          ),
+        ),
+      );
+      const results = state.value.entries
+        .flatMap((entry) => entry.model ?? [])
+        .filter((message) => message.role === "toolResult")
+        .map(textOf)
+        .join("\n");
+      expect(results).toContain("normal-pi-config");
+      expect(results).not.toContain(backend.home);
+    } finally {
+      state.dispose();
+      await backend.close();
+    }
+  });
   it("delivers home skill warnings with collision locations to subscribers and the log", async () => {
     const value = await setup();
     const homeSkills = join(value.directory, "home", "skills");

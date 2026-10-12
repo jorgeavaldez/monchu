@@ -31,7 +31,16 @@ describe("terminal input boundary", () => {
   });
 
   it("preserves all existing commands and adds worker focus", () => {
-    for (const command of ["/quit", "/help", "/abort", "/workers", "/goals", "/reload", "/restart"])
+    for (const command of [
+      "/quit",
+      "/help",
+      "/abort",
+      "/workers",
+      "/goals",
+      "/reload",
+      "/restart",
+      "/login",
+    ])
       expect(parseInput(command)).toEqual({ command });
     for (const command of ["/new", "/compact", "/agents"])
       expect(parseInput(command)).toEqual({ command, text: "" });
@@ -45,6 +54,7 @@ describe("terminal input boundary", () => {
       "/cd",
       "/stop",
       "/quit now",
+      "/login key",
       "/reload now",
       "/restart yes",
       "/missing",

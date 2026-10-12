@@ -58,16 +58,26 @@ export function createPiTools(settings: SettingsManager, platform: NodeJS.Platfo
     sdkTool(createGrepTool, "safe"),
     sdkTool(createFindTool, "safe"),
     sdkTool(createLsTool, "safe"),
-    sdkTool(createPowerShellTool, "unsafe"),
+    sdkTool(
+      (cwd) =>
+        createPowerShellTool(cwd, {
+          exposeSessionEnvironment: false,
+          spawnHook: (input) => {
+            delete input.env.PI_CODING_AGENT_DIR;
+            return input;
+          },
+        }),
+      "unsafe",
+    ),
   ];
   const defaults = settings.getDefaultTools() ?? codingTools.map(({ name }) => name);
   const warnings: string[] = [];
   const unknown = defaults.filter((name) => !tools.some((tool) => tool.name === name));
   if (unknown.length)
-    warnings.push(`Pi defaultTools has unknown built-ins (ignored): ${unknown.join(", ")}`);
+    warnings.push(`Monchu defaultTools has unknown built-ins (ignored): ${unknown.join(", ")}`);
   if (!codingTools.some(({ name }) => defaults.includes(name)))
     warnings.push(
-      "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
+      "Monchu defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
     );
   // Pi's grep/find need rg/fd; on Termux its tool manager cannot provide them, so the calls would fail.
   const unavailable = platform === "android" ? ["grep", "find"] : [];

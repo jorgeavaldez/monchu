@@ -10,6 +10,7 @@ import {
   fauxAssistantMessage,
   type FauxProviderHandle,
   type FauxResponseStep,
+  type RegisterFauxProviderOptions,
   fauxProvider,
   fauxToolCall,
   type Message,
@@ -30,7 +31,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Codemode } from "../src/codemode.ts";
@@ -146,10 +147,8 @@ export async function cleanup(): Promise<void> {
  * The front's tools as Monchu installs them, in a fresh directory that is also this test's home and Pi agent directory
  * parent, so Pi's user resources (`~/.agents`, `~/.pi/agent`) resolve inside it. Call `cleanup` after each test.
  */
-export async function setup(options: { tokensPerSecond?: number } = {}): Promise<Setup> {
-  const faux = fauxProvider(
-    options.tokensPerSecond === undefined ? {} : { tokensPerSecond: options.tokensPerSecond },
-  );
+export async function setup(options: RegisterFauxProviderOptions = {}): Promise<Setup> {
+  const faux = fauxProvider(options);
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
@@ -158,6 +157,10 @@ export async function setup(options: { tokensPerSecond?: number } = {}): Promise
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));
   directories.add(directory);
+  await writeFile(
+    join(directory, "config.json"),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+  );
   const agentDir = join(directory, "agent");
   Object.assign(process.env, {
     HOME: directory,

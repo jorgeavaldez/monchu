@@ -30,8 +30,11 @@ mise run start  # builds first when sources changed
 mise run dev
 ```
 
-The runtime reuses Pi's agent configuration directory through `getAgentDir()` and `ModelRuntime`.
-Configure/login to `openai-codex` through Pi; do not copy credentials into this repo.
+Monchu owns its configuration and credentials; it never reads or writes `~/.pi`.
+Before importing any Pi SDK module, the entry point sets `PI_CODING_AGENT_DIR` to `<home>/agent`.
+Shell-tool subprocesses do not inherit that override, so a Pi started from them uses its normal config.
+`ModelRuntime` uses `<home>/auth.json`, the built-in model catalog, and optional `<home>/models.json` overrides.
+Use `/login` inside Monchu for fresh per-device credentials; do not copy Pi credentials or share refresh tokens.
 There is no silent model/provider fallback.
 
 `~/.monchu/config.json` is optional; every field has a default:
@@ -41,24 +44,47 @@ There is no silent model/provider fallback.
   "front": { "provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low" },
   "worker": { "provider": "openai-codex", "modelId": "gpt-6.1-sol", "thinkingLevel": "high" },
   "classifier": { "provider": "cloudflare-workers-ai", "modelId": "@cf/cloudflare/clef-flash" },
-  "cloudflareAccountId": "optional 32-character account ID override"
+  "settings": {
+    "theme": "system",
+    "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000, "maxAgentDelayMs": 60000 },
+    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+    "httpIdleTimeoutMs": 300000,
+    "defaultTools": ["read", "write", "edit", "bash"]
+  }
 }
 ```
 
 Unknown fields or unknown models fail startup. `"classifier": null` turns classification off.
-The front role is applied to the root conversation at every start, from its next request; new workers use the worker role.
+The front role is applied at startup and on `/reload`, from its next model request; new workers use the current worker role. Existing workers keep their stored role.
 
-Clef Flash uses Pi's native `cloudflare-workers-ai` provider, so Pi's Cloudflare credentials apply: its stored login (key and account ID) or `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`.
-`MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` are optional overrides.
+`settings` is a validated subset, not a Pi settings-file pass-through. Omitted fields keep Pi SDK defaults, as shown above.
+It also accepts `shellPath`, `shellCommandPrefix`, `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
+Themes are built-in `light`, `dark`, `system`, or a `light/dark` pair. Shell path/prefix are unset by default.
+`defaultTools` accepts exact built-in names, or only `+name`/`-name` modifiers. Monchu's own tools are separate from this selection.
+`terminal` accepts `hyperlinks` and `trueColor` (boolean or `auto`), and `images` (`false`, `auto`, `kitty`, `iterm2`); omitted values use SDK capability detection.
+One settings snapshot feeds Durable run policy, tool selection/shells, and the TUI. No Pi `settings.json` is loaded or written.
+
+Clef Flash uses Pi's native `cloudflare-workers-ai` provider with Monchu's stored login (key and account ID) or `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`.
+`MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` (a non-secret 32-character hex account ID) are optional overrides.
 Never put the token in the config file or source code.
 
 The front reads `SOUL.md`, `AGENTS.md`, `DEVICES.md`, `memories/USER.md`, and `memories/MEMORY.md` from its home on every model request. Workers read only the two memory files and `DEVICES.md`. Each file is labelled with its editable path; missing files are skipped with one warning per path for the runtime's lifetime, including reloads. All roles receive device facts (hostname, OS/release, user, user home, Monchu home, execution directory).
 
 Skills load in place at startup and on reload from `<home>/skills` and this checkout's bundled `skills/`, with home skills winning name collisions. Only metadata is advertised; bodies are read on demand. Pi instructions, skills, packages, and cwd/ancestor resources are not loaded, and no skill is copied into Pi's agent directory.
 
-Run policy, theme, built-in tool selection, and shell configuration currently use Pi SDK in-memory defaults, with no settings-file reads or filesystem locks. Own validated `config.json` settings and credentials are a separate follow-up; model authentication still uses Pi as described above.
+Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 
-Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
+- `config.json`: optional model roles and validated run settings; no secrets.
+- `auth.json`: Pi-runtime credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs.
+- `agent/`: isolated SDK agent directory, including SDK-managed binaries/resources; not Pi's user directory.
+- `models.json`: optional custom model catalog. Without it the built-in catalog uses in-memory caching only.
+- `models-store.json`: SDK catalog cache when `models.json` is present.
+- `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
+- Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
+
+For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/models-store.json*`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
+
+Chat history and task checkpoints live in `<home>/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
 Crashes release the lock automatically.
 Do not sync a live database or open it from multiple devices.
@@ -87,11 +113,12 @@ The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
 Esc or Ctrl-C aborts the front only, Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
-`/reload` reloads extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Home-file edits need no reload.
+`/login` opens private provider selection even on a fresh home without model credentials. Codex always uses device-code OAuth: open the displayed URL on any browser and approve its code, with no local callback server. Cloudflare uses API-key and account-ID prompts. Esc/Ctrl-C cancels. Prompts, codes and keys stay outside chat/editor history and logs; keys are masked. Only completion/cancellation or a credential-free failure notice goes into the TUI transcript.
+`/reload` re-reads config, extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Model roles and stream options apply from subsequent model-request boundaries; already prepared requests keep those values. Retry/compaction policy resolves at later scheduler boundaries, following Durable's runtime contract. TUI settings refresh on success; already running shell calls keep their environment. Home-file edits need no reload.
 `/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the same installed tools: read, write, edit, bash, worker management, and `codemode`. The tool adapter also supports Pi's grep, find, ls, and powershell built-ins when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Tool selection currently uses the defaults; own configurable selection is a follow-up.
+All roles receive the same installed tools: read, write, edit, bash, worker management, and `codemode`. The tool adapter also supports Pi's grep, find, ls, and powershell built-ins when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Tool selection comes from `config.json` settings.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
@@ -138,7 +165,7 @@ Start the real source entry point in an interactive terminal with scripted faux 
 mise run smoke
 ```
 
-This explicit dev mode creates a fresh `monchu-smoke-*` home in the OS temp directory, including isolated Pi settings/auth/skills; it never opens `~/.monchu` or uses live providers.
+This explicit dev mode creates a fresh `monchu-smoke-*` home in the OS temp directory, including isolated Monchu config/auth/skills; it never opens `~/.monchu` or uses live providers.
 Normal startup is unchanged.
 The inherited `MONCHU_DEV_HOME` preserves that temporary home through `/restart`; paths outside the temp directory are rejected.
 The home is printed at startup and kept for inspection; delete it after exiting.
@@ -157,7 +184,7 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode builds that checkout first by spawning the installed `typescript/bin/tsc` with the running Node executable and `-p tsconfig.build.json`, without a shell, npm, or mise. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
-All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
+Config and all modules are prepared, and the complete registry and installation order validated before applying anything. A build/import/config/validation error leaves installed code, model roles and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
 `request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Jorge's backend `restart()` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources, re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
 
@@ -166,13 +193,14 @@ All modules are built and the complete registry and installation order validated
 ## Backend boundary
 
 - `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
-- `src/config.ts`: optional host config: model roles and classifier overrides.
+- `src/config.ts`: validated host config: model roles, classifier overrides and run settings.
+- `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
 - `src/memory.ts`: bounded, atomic root-only home-memory edits.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: home/bundled skill metadata as a prompt section, in-memory SDK settings defaults, and Durable run settings.
+- `src/context.ts`: home/bundled skill metadata as a prompt section, the config-backed in-memory settings snapshot, and Durable run policy.
 - `src/reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
 - `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
 - `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.

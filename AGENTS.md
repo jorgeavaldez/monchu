@@ -20,8 +20,8 @@ Ask when scope or a design decision materially changes the outcome.
   Promotion is visibility/interaction behavior; forking is independent continuation; ownership controls work lifetime.
 - No user-facing project/cwd requirement.
   Default agent home is `~/.monchu`; execution uses an explicit host and directory when needed, not whichever cwd launched the app.
-- Reuse Pi's existing provider configuration and credential storage through its runtime APIs.
-  Do not copy secrets, reimplement authentication, or silently inherit Sol/xhigh as the fast-front default.
+- Reuse Pi's model/auth runtime APIs with Monchu-owned configuration and credential storage.
+  Never read or write `~/.pi`, copy secrets, reimplement authentication, or silently inherit Sol/xhigh as the fast-front default.
 - Classification chooses effort/context/thread disposition; it does not authorize side effects.
   Keep uncertainty and provider failures explicit.
 - All agent roles may discover and use installed tools.
@@ -73,7 +73,7 @@ Ask when scope or a design decision materially changes the outcome.
 
 - **Layering.** `src/main.ts` composes the backend (`src/backend.ts`) and the TUI (`src/tui/`).
   Nothing else imports `src/tui/`, and the backend writes nothing to stdout.
-  Reading Pi's configuration belongs in `src/context.ts` and the backend's model/auth setup only.
+  `src/config.ts` validates Monchu's configuration; `src/context.ts` constructs the settings snapshot, and the backend owns model/auth setup. The entry point sets the Monchu-owned SDK agent directory before importing Pi.
 - **One way to define an extension.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory when it needs host inputs.
   A factory that has more to hand back returns `{ extension, ... }`, with configuration problems as `warnings: string[]`.
   Add the module to `Reloadable` and `build()` in `src/reload.ts`, and tag the export the manifest reads `@public`.

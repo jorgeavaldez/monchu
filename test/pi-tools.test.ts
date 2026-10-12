@@ -6,6 +6,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import {
   cleanup,
@@ -52,27 +53,16 @@ describe("Pi built-ins", () => {
   it.each([
     { defaultTools: ["read", "bash", "grep"], warnings: [] },
     {
-      defaultTools: ["Read", "bash", "+Grep"],
-      warnings: ["Pi defaultTools has unknown built-ins (ignored): Read, Grep"],
-    },
-    {
       defaultTools: ["ls"],
       warnings: [
-        "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
-      ],
-    },
-    {
-      defaultTools: "read",
-      warnings: [
-        "Pi defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
+        "Monchu defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
       ],
     },
   ])("warns about defaultTools $defaultTools", async ({ defaultTools, warnings }) => {
-    const { agentDir } = await setup();
-    await mkdir(agentDir);
-    // Settings files are untrusted JSON, so a non-array value is written to disk rather than typed.
-    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools }));
-    const tools = createPiTools(SettingsManager.create(agentDir, agentDir), "linux");
+    const { directory } = await setup();
+    await writeFile(join(directory, "config.json"), JSON.stringify({ settings: { defaultTools } }));
+    const config = await loadConfig(directory);
+    const tools = createPiTools(SettingsManager.inMemory(config.settings), "linux");
     expect(tools.warnings).toEqual(warnings);
   });
 

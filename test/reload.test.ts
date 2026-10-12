@@ -38,6 +38,7 @@ const config = {
   worker: fauxRole,
   classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
   cloudflareAccountId: undefined,
+  settings: {},
 };
 
 type VersionedModule = {
@@ -245,6 +246,7 @@ describe("in-process reload", () => {
       join(value.directory, "skills", "sample", "SKILL.md"),
       "---\nname: sample\ndescription: fresh skill\n---\ncontent\n",
     );
+    await writeFile(join(value.directory, "config.json"), JSON.stringify(config));
     // Concurrent requests share one reload.
     const reloading = extensions.reload();
     expect(extensions.reload()).toBe(reloading);
@@ -271,6 +273,58 @@ describe("in-process reload", () => {
       expect(sections.join("\n")).toContain("fresh skill");
       expect(sections.join("\n")).not.toContain("old skill");
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
+      await writeFile(
+        join(value.directory, "config.json"),
+        JSON.stringify({ ...config, classifier: null }),
+      );
+      await extensions.reload();
+      expect(extensions.assessment).toBeUndefined();
+      expect(extensions.defaults().map((extension) => extension.name)).not.toContain(
+        "monchu.classifier",
+      );
+      expect(
+        extensions.registry
+          .snapshot()
+          .installed()
+          .map((extension) => extension.name),
+      ).toContain("monchu.classifier");
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("leaves installed extensions, config and settings unchanged when replacement preparation fails", async () => {
+    const value = await setup();
+    const initial = { ...config, settings: { theme: "dark", defaultTools: ["read", "bash"] } };
+    await writeFile(join(value.directory, "config.json"), JSON.stringify(initial));
+    scriptedClassifier(value.models);
+    const extensions = await Extensions.load(value.models, initial, value.directory, () => {});
+    const registry = extensions.registry.snapshot();
+    const settings = extensions.settings;
+    const assessment = extensions.assessment;
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({
+        ...initial,
+        settings: { theme: "light", defaultTools: ["ls"] },
+        classifier: { provider: "missing", modelId: "missing" },
+      }),
+    );
+    await expect(extensions.reload()).rejects.toThrow("no configured classifier model");
+    expect(extensions.registry.snapshot()).toBe(registry);
+    expect(extensions.settings).toBe(settings);
+    expect(extensions.config).toBe(initial);
+    expect(extensions.assessment).toBe(assessment);
+    expect(settings.getThemeSetting()).toBe("dark");
+    const { harness, root } = await open({ ...value, registry: extensions.registry });
+    route(value.faux, () => fauxAssistantMessage("old registry works"));
+    try {
+      expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
+      expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain("ls");
+      await (await root.submit({ type: "input", content: "still works" }, context)).wait(context);
+      await writeFile(join(value.directory, "config.json"), JSON.stringify(initial));
+      await extensions.reload();
+      expect(extensions.settings).not.toBe(settings);
     } finally {
       await harness.close(context);
     }

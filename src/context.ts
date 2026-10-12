@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RunSettings } from "./config.ts";
 
 /** Durable's run policy, resolving the latest loaded settings and default extensions on every read. */
 export function harnessSettings(current: {
@@ -62,7 +63,7 @@ function warning(diagnostic: ResourceDiagnostic): string {
  * Skills are read in place from the home and bundled directories, never from Pi or execution cwd.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createContext(home: string) {
+export function createContext(home: string, runSettings: RunSettings) {
   home = resolve(home);
   const { skills, diagnostics } = loadSkills({
     cwd: home,
@@ -70,8 +71,7 @@ export function createContext(home: string) {
     skillPaths: [join(home, "skills"), fileURLToPath(new URL("../skills/", import.meta.url))],
     includeDefaults: false,
   });
-  // No file-backed Pi settings: even reads acquire filesystem locks. Own config settings follow separately.
-  const settings = SettingsManager.inMemory({}, { projectTrusted: false });
+  const settings = SettingsManager.inMemory(runSettings, { projectTrusted: false });
   const skillPrompt = formatSkillsForPrompt(skills, "read").trim();
   return {
     settings,

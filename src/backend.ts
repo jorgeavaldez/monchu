@@ -1,16 +1,21 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { cleanupSessionResources, type Provider } from "@earendil-works/pi-ai";
-import { getAgentDir, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  cleanupSessionResources,
+  type AuthInteraction,
+  type AuthType,
+  type Provider,
+} from "@earendil-works/pi-ai";
+import { ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { configure, Harness, LiveDoc, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
-import { loadConfig, type MonchuConfig } from "./config.ts";
+import { loadConfig } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
@@ -33,7 +38,9 @@ export class Monchu {
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
   private readonly front: Conversation;
-  private readonly config: MonchuConfig;
+  private readonly models: ModelRuntime;
+  private readonly reloadListeners = new Set<() => void>();
+  private reloading: Promise<readonly string[]> | undefined;
   private readonly reports: Reports;
   private readonly extensions: Extensions;
   private closing: Promise<void> | undefined;
@@ -44,7 +51,7 @@ export class Monchu {
     owner: DatabaseSync,
     harness: Harness,
     front: Conversation,
-    config: MonchuConfig,
+    models: ModelRuntime,
     reports: Reports,
     extensions: Extensions,
     envs: ExecutionEnvs,
@@ -53,7 +60,7 @@ export class Monchu {
     this.owner = owner;
     this.harness = harness;
     this.front = front;
-    this.config = config;
+    this.models = models;
     this.reports = reports;
     this.extensions = extensions;
     this.envs = envs;
@@ -61,7 +68,7 @@ export class Monchu {
 
   static async open(home = join(homedir(), ".monchu"), devProvider?: Provider): Promise<Monchu> {
     home = resolve(home);
-    await mkdir(home, { recursive: true, mode: 0o700 });
+    await mkdir(join(home, "agent"), { recursive: true, mode: 0o700 });
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
     const owner = new DatabaseSync(join(home, "owner.sqlite"));
     let harness: Harness | undefined;
@@ -76,20 +83,24 @@ export class Monchu {
         );
       }
       const config = await loadConfig(home);
-      const agentDir = getAgentDir();
+      process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+      let modelsPath: string | null = join(home, "models.json");
+      try {
+        await stat(modelsPath);
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        modelsPath = null;
+      }
       const models = await ModelRuntime.create({
-        authPath: join(agentDir, "auth.json"),
-        modelsPath: join(agentDir, "models.json"),
+        authPath: join(home, "auth.json"),
+        modelsPath,
+        modelsStorePath: join(home, "models-store.json"),
+        allowModelNetwork: false,
       });
       // Only the explicit dev entry point/tests supply a scripted provider; normal startup is unchanged.
       if (devProvider !== undefined) models.registerNativeProvider(devProvider);
       const diagnostic = models.getError();
       if (diagnostic !== undefined) throw new Error(diagnostic);
-      for (const role of [config.front, config.worker]) {
-        if (models.getModel(role.provider, role.modelId) === undefined)
-          throw new Error(`Pi has no configured model ${role.provider}/${role.modelId}`);
-      }
-
       const reports = new Reports(join(home, "monchu.log"));
       const extensions = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
@@ -118,7 +129,7 @@ export class Monchu {
         },
         context,
       );
-      const backend = new Monchu(home, owner, harness, front, config, reports, extensions, envs);
+      const backend = new Monchu(home, owner, harness, front, models, reports, extensions, envs);
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
@@ -137,6 +148,31 @@ export class Monchu {
   /** The run settings of the last successful load or reload. */
   get settings(): SettingsManager {
     return this.extensions.settings;
+  }
+
+  /** Private terminal interaction only: never submitted to Durable or exposed as a model tool. */
+  async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    await this.models.login(
+      providerId,
+      type,
+      {
+        ...interaction,
+        prompt: (prompt) =>
+          providerId === "openai-codex" &&
+          prompt.type === "select" &&
+          prompt.options.some((option) => option.id === "device_code")
+            ? Promise.resolve("device_code")
+            : interaction.prompt(prompt),
+      },
+      { agentName: "Monchu" },
+    );
+  }
+
+  /** Successful reload notifications; callers re-read the single settings owner. */
+  onReload(listener: () => void): () => void {
+    this.reloadListeners.add(listener);
+    return () => this.reloadListeners.delete(listener);
   }
 
   /** Non-fatal runtime failures, also appended to `monchu.log`. Returns an unsubscribe function. */
@@ -200,7 +236,16 @@ export class Monchu {
     const agent = await this.front.agent(context);
     const cwd = agent.cwd ?? this.home;
     await this.front.commit(
-      (tx) => startWorker(tx, this.front.id, name, message, cwd, requestId, this.config.worker),
+      (tx) =>
+        startWorker(
+          tx,
+          this.front.id,
+          name,
+          message,
+          cwd,
+          requestId,
+          this.extensions.config.worker,
+        ),
       context,
     );
     this.harness.resume();
@@ -257,7 +302,31 @@ export class Monchu {
   /** Concurrent requests share one reload. No registry or settings changes survive a failed preparation. */
   reload(): Promise<readonly string[]> {
     if (this.closing !== undefined) return Promise.reject(new Error("Monchu is closing"));
-    return this.extensions.reload();
+    this.reloading ??= this.extensions
+      .reload(async (config) => {
+        // Durable captures model and stream options during request preparation; later phases resolve current policy.
+        await this.front.configure(
+          {
+            model: { provider: config.front.provider, modelId: config.front.modelId },
+            thinkingLevel: config.front.thinkingLevel,
+          },
+          context,
+        );
+      })
+      .then((modules) => {
+        for (const listener of this.reloadListeners) {
+          try {
+            listener();
+          } catch {
+            this.reports.report("Reload listener failed");
+          }
+        }
+        return modules;
+      })
+      .finally(() => {
+        this.reloading = undefined;
+      });
+    return this.reloading;
   }
 
   /** User-only backend operation. Never exposed as a model tool. */
@@ -287,6 +356,7 @@ export class Monchu {
   private async closeRuntime(): Promise<void> {
     try {
       // A failed reload must not prevent storage from closing.
+      await this.reloading?.catch(() => {});
       await this.extensions.settled();
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
@@ -311,7 +381,12 @@ class ExecutionEnvs {
     const key = `${cwd}\0${shellPath ?? ""}`;
     let env = this.envs.get(key);
     if (env === undefined) {
-      env = new NodeExecutionEnv({ cwd, ...(shellPath === undefined ? {} : { shellPath }) });
+      env = new NodeExecutionEnv({
+        cwd,
+        ...(shellPath === undefined ? {} : { shellPath }),
+        // Explicit undefined overrides the parent process env before spawn; child Pi uses its normal config.
+        shellEnv: { PI_CODING_AGENT_DIR: undefined },
+      });
       this.envs.set(key, env);
     }
     return env;

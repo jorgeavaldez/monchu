@@ -32,6 +32,7 @@ import {
   ToolExecutionComponent,
   UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
+import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import {
   CombinedAutocompleteProvider,
@@ -114,6 +115,13 @@ class AgentSelector extends Container implements Focusable {
   }
 }
 
+/** Input editing stays local, but secret contents are never rendered or added to editor history. */
+class SecretInput extends Input {
+  override render(width: number): string[] {
+    return ["•".repeat(Math.min(this.getValue().length, Math.max(0, width - 1)))];
+  }
+}
+
 /** Pi's viewport/editor/message components over committed Durable views. No agent loop lives here. */
 export class MonchuTui {
   readonly ui: TuiAltScreen;
@@ -139,6 +147,9 @@ export class MonchuTui {
   private statusText = "";
   private expanded = false;
   private selector: AgentSelector | undefined;
+  private loginCancel: (() => void) | undefined;
+  private readonly loginStatus = new Container();
+  private readonly loginPrompt = new Container();
   private conversationId: number | undefined;
   private cwd: string;
 
@@ -211,6 +222,13 @@ export class MonchuTui {
     );
     this.ui.setFocus(this.editor);
     this.ui.addInputListener((data) => {
+      if (this.loginCancel !== undefined) {
+        if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
+          this.loginCancel();
+          return { consume: true };
+        }
+        return;
+      }
       if (matchesKey(data, "ctrl+c")) {
         handlers.abort();
         return { consume: true };
@@ -250,6 +268,75 @@ export class MonchuTui {
     this.cards.length = 0;
     this.tools.clear();
     this.streamedCalls.clear();
+  }
+
+  beginLogin(cancel: () => void): void {
+    this.loginCancel = cancel;
+    this.editorContainer.clear();
+    this.editorContainer.addChild(this.loginStatus);
+    this.editorContainer.addChild(this.loginPrompt);
+    this.loginMessage("Login · Esc / Ctrl-C to cancel");
+  }
+
+  loginMessage(message: string): void {
+    this.loginStatus.clear();
+    this.loginStatus.addChild(new Text(message, 1, 0));
+    this.ui.requestRender();
+  }
+
+  /** Dedicated, ephemeral controls; no notices, chat submissions, autocomplete or editor history. */
+  promptLogin(prompt: AuthPrompt, signal: AbortSignal): Promise<string> {
+    const abort = prompt.signal === undefined ? signal : AbortSignal.any([signal, prompt.signal]);
+    return new Promise((resolve, reject) => {
+      const cancel = () => finish(undefined);
+      const finish = (value: string | undefined) => {
+        abort.removeEventListener("abort", cancel);
+        this.loginPrompt.clear();
+        this.ui.setFocus(this.loginStatus);
+        this.ui.requestRender();
+        if (value === undefined) reject(new Error("Login cancelled"));
+        else resolve(value);
+      };
+      if (abort.aborted) {
+        finish(undefined);
+        return;
+      }
+      abort.addEventListener("abort", cancel, { once: true });
+      this.loginPrompt.clear();
+      this.loginPrompt.addChild(new Text(prompt.message, 1, 0));
+      if (prompt.type === "select") {
+        const list = new SelectList(
+          prompt.options.map((option) => ({
+            value: option.id,
+            label: option.label,
+            ...(option.description === undefined ? {} : { description: option.description }),
+          })),
+          6,
+          getSelectListTheme(),
+        );
+        list.onSelect = (item) => finish(item.value);
+        list.onCancel = cancel;
+        this.loginPrompt.addChild(list);
+        this.ui.setFocus(list);
+      } else {
+        const input = prompt.type === "secret" ? new SecretInput() : new Input();
+        input.onSubmit = (value) => {
+          input.setValue("");
+          finish(value);
+        };
+        input.onEscape = cancel;
+        this.loginPrompt.addChild(input);
+        this.ui.setFocus(input);
+      }
+      this.ui.requestRender();
+    });
+  }
+
+  endLogin(): void {
+    this.loginCancel = undefined;
+    this.loginStatus.clear();
+    this.loginPrompt.clear();
+    this.restoreEditor();
   }
 
   selectAgents(items: SelectItem[], select: (value: string) => void): void {
