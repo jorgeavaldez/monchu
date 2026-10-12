@@ -4,10 +4,14 @@ import { defineDoc, defineExtension, defineTool, section } from "@earendil-works
 export type Goal = {
   id: string;
   title: string;
-  owner: "jorge" | "monchu";
+  kind: "endeavor" | "commitment";
   status: "active" | "waiting" | "done" | "dropped";
   /** Absolute directory or repository the goal is about. */
   project?: string;
+  /** Canonical vault note, for example projects/monchu. */
+  vault?: string;
+  /** What is happening now in this ongoing project or commitment. */
+  workstream: string;
   /** Names of linked workers. */
   workers: string[];
   next: string;
@@ -23,7 +27,7 @@ const CLOSED_KEPT = 20;
  */
 export const GoalsDoc = defineDoc<{ goals: Goal[] }>({
   kind: "monchu.goals",
-  version: 1,
+  version: 2,
   scope: "conversation",
   history: "latest",
   fork: "current",
@@ -32,7 +36,7 @@ export const GoalsDoc = defineDoc<{ goals: Goal[] }>({
 
 /** Asks a summary to keep what the goals section refers to. */
 export const GOALS_COMPACTION_FOCUS =
-  "Keep every goal id and every open commitment (who owes what, and the next step) verbatim.";
+  "Keep every open goal id, kind (endeavor or commitment), title, project and vault links, current workstream, next step, and linked workers verbatim. Goals are ongoing projects or workstreams, or Monchu's own commitments, never single requests.";
 
 const isOpen = (goal: Goal) => goal.status === "active" || goal.status === "waiting";
 
@@ -41,8 +45,10 @@ function formatGoals(goals: readonly Goal[]): string {
   return goals
     .map((goal) =>
       [
-        `- [${goal.id}] ${goal.title} (${goal.status}, owner ${goal.owner})`,
+        `- [${goal.id}] ${goal.title} (${goal.status}, ${goal.kind})`,
         ...(goal.project === undefined ? [] : [`  project: ${goal.project}`]),
+        ...(goal.vault === undefined ? [] : [`  vault: ${goal.vault}`]),
+        `  workstream: ${goal.workstream}`,
         ...(goal.workers.length === 0 ? [] : [`  workers: ${goal.workers.join(", ")}`]),
         `  next: ${goal.next}`,
       ].join("\n"),
@@ -76,22 +82,32 @@ export const Goals = defineExtension({
     defineTool({
       name: "update_goal",
       description:
-        "Create or patch one goal by id. Creating needs title, owner, and next. Given fields replace stored ones; workers is the full list of linked worker names; an empty project clears it. Returns what changed.",
+        "Create or patch one ongoing project/workstream (endeavor) or Monchu's own commitment, never a single request. When a request touches a project, update its existing goal's current workstream, next step and workers. Creating needs title, kind, workstream, and next; include project and the canonical vault note when available. Given fields replace stored ones; workers is the full list of linked worker names; an empty project or vault clears that link. Returns what changed.",
       parameters: Type.Object(
         {
           id: Type.String({
             pattern: "^[a-z0-9][a-z0-9-]{0,47}$",
-            description: "Stable lowercase slug, for example fix-phone-quit",
+            description: "Stable ongoing-project slug, for example monchu",
           }),
           title: Type.Optional(text(200, "What the goal is, in one line")),
-          owner: Type.Optional(
-            StringEnum(["jorge", "monchu"] as const, {
-              description: "jorge for his requests, monchu for your own commitments",
+          kind: Type.Optional(
+            StringEnum(["endeavor", "commitment"] as const, {
+              description:
+                "endeavor for the user's ongoing projects, commitment for Monchu's own promises",
             }),
           ),
           status: Type.Optional(StringEnum(["active", "waiting", "done", "dropped"] as const)),
           project: Type.Optional(
             Type.String({ maxLength: 500, description: "Absolute directory or repository" }),
+          ),
+          vault: Type.Optional(
+            Type.String({
+              maxLength: 500,
+              description: "Canonical vault note, for example projects/monchu",
+            }),
+          ),
+          workstream: Type.Optional(
+            text(1000, "What is happening now in this ongoing project or commitment"),
           ),
           workers: Type.Optional(
             Type.Array(text(100, "Worker name"), { maxItems: 20, uniqueItems: true }),
@@ -112,21 +128,30 @@ export const Goals = defineExtension({
           const goal = state.goals[index];
           const changed: string[] = [];
           if (goal === undefined) {
-            if (args.title === undefined || args.owner === undefined || args.next === undefined)
-              throw new Error(`No goal ${args.id}; creating one needs title, owner, and next`);
+            if (
+              args.title === undefined ||
+              args.kind === undefined ||
+              args.workstream === undefined ||
+              args.next === undefined
+            )
+              throw new Error(
+                `No goal ${args.id}; creating one needs title, kind, workstream, and next`,
+              );
             state.goals.push({
               id: args.id,
               title: args.title,
-              owner: args.owner,
+              kind: args.kind,
               status: args.status ?? "active",
               ...(args.project ? { project: args.project } : {}),
+              ...(args.vault ? { vault: args.vault } : {}),
+              workstream: args.workstream,
               workers: args.workers ?? [],
               next: args.next,
               updatedAt: now,
             });
             changed.push("created");
           } else {
-            const set = <K extends "title" | "owner" | "status" | "next">(
+            const set = <K extends "title" | "kind" | "status" | "workstream" | "next">(
               key: K,
               value: Goal[K] | undefined,
             ) => {
@@ -135,13 +160,16 @@ export const Goals = defineExtension({
               changed.push(key);
             };
             set("title", args.title);
-            set("owner", args.owner);
+            set("kind", args.kind);
             set("status", args.status);
+            set("workstream", args.workstream);
             set("next", args.next);
-            if (args.project !== undefined && args.project !== (goal.project ?? "")) {
-              if (args.project) goal.project = args.project;
-              else delete goal.project;
-              changed.push("project");
+            for (const key of ["project", "vault"] as const) {
+              const value = args[key];
+              if (value === undefined || value === (goal[key] ?? "")) continue;
+              if (value) goal[key] = value;
+              else delete goal[key];
+              changed.push(key);
             }
             const workers = args.workers;
             if (
@@ -183,7 +211,7 @@ export const Goals = defineExtension({
     defineTool({
       name: "list_goals",
       description:
-        "List every retained goal: open ones and the most recent done or dropped ones, with project, workers, and next step.",
+        "List retained ongoing endeavors and Monchu's commitments: open ones and the most recent done or dropped ones, with kind, project and vault links, current workstream, workers, and next step.",
       parameters: Type.Object({}),
       replay: "safe",
       execute: async (_args, api, context) => {

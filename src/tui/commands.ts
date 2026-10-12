@@ -13,7 +13,7 @@ export const commands: Record<
   "/tell": { usage: "<name> <message>", help: "message a worker" },
   "/workers": { usage: "", help: "list workers and directories" },
   "/agents": { usage: "[name|root]", help: "view and talk to a worker; root is the default" },
-  "/goals": { usage: "", help: "list open goals" },
+  "/goals": { usage: "", help: "list ongoing endeavors and open commitments" },
   "/stop": { usage: "<name>", help: "cancel a worker and its work" },
   "/abort": { usage: "", help: "stop the front only; workers continue" },
   "/new": { usage: "[handoff]", help: "fresh root context" },

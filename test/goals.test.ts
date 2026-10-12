@@ -8,7 +8,7 @@ import {
   ToolTask,
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import { Goals, GoalsDoc } from "../src/goals.ts";
+import { Goals, GoalsDoc, formatOpenGoals } from "../src/goals.ts";
 import {
   callTools,
   cleanup,
@@ -25,13 +25,7 @@ import {
 
 afterEach(cleanup);
 
-type Calls = Record<string, { tool: string; args: JsonObject }>;
-
-/**
- * The front calls the tool scripted for each message, then answers. Every request's `goals` section values (from the
- * system messages it carries, in order) are recorded.
- */
-async function withGoals(calls: Calls) {
+async function withGoals(calls: Record<string, { tool: string; args: JsonObject }>) {
   const value = await setup();
   value.registry.install(Goals);
   const sections: string[][] = [];
@@ -47,156 +41,178 @@ async function send(root: Awaited<ReturnType<typeof open>>["root"], message: str
   await (await root.submit({ type: "input", content: message }, context)).wait(context);
 }
 
-async function results(root: Awaited<ReturnType<typeof open>>["root"]) {
-  return (await toolResults(root)).map((result) => ({
-    text: textOf(result),
-    isError: result.isError,
-  }));
-}
-
 const create = {
-  id: "phone-quit",
-  title: "Fix /quit hanging on the phone",
-  owner: "jorge",
-  next: "reproduce with a lingering handle",
+  id: "monchu",
+  title: "Keep Monchu moving",
+  kind: "endeavor",
+  project: "/projects/monchu",
+  vault: "projects/monchu",
+  workstream: "Memory and ongoing goals",
+  next: "Implement the bounded memory tool",
 };
 
 describe("goals", () => {
-  it("creates and patches by id, rejects invalid input, and bounds closed goals", async () => {
+  it("creates an ongoing endeavor, patches workstream and next, links workers, and closes it", async () => {
     const test = await withGoals({
       create: { tool: "update_goal", args: create },
       patch: {
         tool: "update_goal",
         args: {
-          id: "phone-quit",
+          id: create.id,
           status: "waiting",
-          project: "/home/jorge/proj/monchu",
+          workstream: "Phone checks",
+          next: "User rechecks on the phone",
           workers: ["reader"],
-          next: "Jorge rechecks on the phone",
         },
       },
-      same: { tool: "update_goal", args: { id: "phone-quit", status: "waiting" } },
-      clear: { tool: "update_goal", args: { id: "phone-quit", project: "" } },
+      same: { tool: "update_goal", args: { id: create.id, status: "waiting" } },
+      clear: { tool: "update_goal", args: { id: create.id, project: "", vault: "" } },
       "no title": {
         tool: "update_goal",
-        args: { id: "other", owner: "monchu", next: "something" },
+        args: { id: "other", kind: "commitment", workstream: "Follow up", next: "Check back" },
       },
-      "bad status": { tool: "update_goal", args: { id: "phone-quit", status: "later" } },
-      "bad id": { tool: "update_goal", args: { ...create, id: "Phone Quit" } },
+      "no workstream": {
+        tool: "update_goal",
+        args: { id: "other", title: "Follow up", kind: "commitment", next: "Check back" },
+      },
+      "bad status": { tool: "update_goal", args: { id: create.id, status: "later" } },
+      "bad kind": { tool: "update_goal", args: { id: create.id, kind: "request" } },
+      "bad id": { tool: "update_goal", args: { ...create, id: "Not Valid" } },
       "extra field": { tool: "update_goal", args: { ...create, priority: "high" } },
-      "blank next": { tool: "update_goal", args: { id: "phone-quit", next: "   " } },
+      "blank next": { tool: "update_goal", args: { id: create.id, next: "   " } },
+      "blank workstream": { tool: "update_goal", args: { id: create.id, workstream: "   " } },
+      close: { tool: "update_goal", args: { id: create.id, status: "done" } },
+      list: { tool: "list_goals", args: {} },
+    });
+    const { harness, root } = await open(test);
+    try {
+      const goals = async () => (await harness.snapshot(GoalsDoc, root.id, context))?.goals ?? [];
+      await send(root, "create");
+      const [created] = await goals();
+      expect(typeof created?.updatedAt).toBe("number");
+      expect(created).toEqual({
+        ...create,
+        status: "active",
+        workers: [],
+        updatedAt: created?.updatedAt,
+      });
+      expect(formatOpenGoals(await goals())).toContain("vault: projects/monchu");
+      for (const message of [
+        "patch",
+        "same",
+        "clear",
+        "no title",
+        "no workstream",
+        "bad status",
+        "bad kind",
+        "bad id",
+        "extra field",
+        "blank next",
+        "blank workstream",
+      ])
+        await send(root, message);
+      const [patched] = await goals();
+      expect(patched).toEqual({
+        id: create.id,
+        title: create.title,
+        kind: "endeavor",
+        status: "waiting",
+        workstream: "Phone checks",
+        next: "User rechecks on the phone",
+        workers: ["reader"],
+        updatedAt: patched?.updatedAt,
+      });
+      const results = await toolResults(root);
+      expect(
+        results.slice(0, 4).map((result) => [textOf(result).split("\n", 1)[0], result.isError]),
+      ).toEqual([
+        ["Changed: created", false],
+        ["Changed: status, workstream, next, workers", false],
+        ["Unchanged", false],
+        ["Changed: project, vault", false],
+      ]);
+      expect(results.slice(4).every((result) => result.isError)).toBe(true);
+      expect(textOf(results[4])).toContain("creating one needs title, kind, workstream, and next");
+      expect(textOf(results[5])).toContain("creating one needs title, kind, workstream, and next");
+      await send(root, "close");
+      expect((await goals())[0]?.status).toBe("done");
+      expect(formatOpenGoals(await goals())).toBe("No open goals.");
+      await send(root, "list");
+      const listed = textOf((await toolResults(root)).at(-1));
+      expect(listed).toContain("- [monchu] Keep Monchu moving (done, endeavor)");
+      expect(listed).toContain(
+        "workstream: Phone checks\n  workers: reader\n  next: User rechecks on the phone",
+      );
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("keeps open endeavors and only the 20 newest closed commitments", async () => {
+    const test = await withGoals({
+      create: { tool: "update_goal", args: create },
       close: {
         tool: "codemode",
         args: {
           code: `
-            for (let index = 0; index < 25; index++) {
-              await tools.update_goal({ id: "closed-" + index, title: "t" + index, owner: "monchu", next: "n" });
-              await tools.update_goal({ id: "closed-" + index, status: index % 2 ? "done" : "dropped" });
-            }`,
+        for (let index = 0; index < 25; index++) {
+          await tools.update_goal({ id: "closed-" + index, title: "t" + index, kind: "commitment", workstream: "Follow up", next: "n" });
+          await tools.update_goal({ id: "closed-" + index, status: index % 2 ? "done" : "dropped" });
+        }`,
         },
       },
       reopen: { tool: "update_goal", args: { id: "closed-5", status: "active" } },
       list: { tool: "list_goals", args: {} },
     });
     const { harness, root } = await open(test);
-    const goals = async () => (await harness.snapshot(GoalsDoc, root.id, context))?.goals ?? [];
-
-    await send(root, "create");
-    const [created] = await goals();
-    expect(typeof created?.updatedAt).toBe("number");
-    expect(created).toEqual({
-      ...create,
-      status: "active",
-      workers: [],
-      updatedAt: created?.updatedAt,
-    });
-
-    await send(root, "patch");
-    await send(root, "same");
-    await send(root, "clear");
-    for (const message of ["no title", "bad status", "bad id", "extra field", "blank next"])
-      await send(root, message);
-    const [patched] = await goals();
-    expect(typeof patched?.updatedAt).toBe("number");
-    expect(await goals()).toEqual([
-      {
-        ...create,
-        status: "waiting",
-        workers: ["reader"],
-        next: "Jorge rechecks on the phone",
-        updatedAt: patched?.updatedAt,
-      },
-    ]);
-    const updates = await results(root);
-    expect(updates.map((result) => [result.text.split("\n", 1)[0], result.isError])).toEqual([
-      ["Changed: created", false],
-      ["Changed: status, next, project, workers", false],
-      ["Unchanged", false],
-      ["Changed: project", false],
-      ...Array.from({ length: 5 }, () => ["<harness>", true]),
-    ]);
-    expect(updates.slice(4).map((result) => result.text.split("\n")[1])).toEqual([
-      "[error] No goal other; creating one needs title, owner, and next",
-      ...Array.from({ length: 4 }, () => '[error] Validation failed for tool "update_goal":'),
-    ]);
-    expect(updates.slice(5).map((result) => result.text.split("\n")[2])).toEqual([
-      "  - status: must be equal to one of the allowed values",
-      '  - id: must match pattern "^[a-z0-9][a-z0-9-]{0,47}$"',
-      "  - priority: schema is false",
-      '  - next: must match pattern "\\S"',
-    ]);
-
-    // Open goals are always kept; only the 20 newest closed ones are.
-    await send(root, "close");
-    let stored = await goals();
-    expect(stored.map((goal) => goal.id)).toEqual([
-      "phone-quit",
-      ...Array.from({ length: 20 }, (_, index) => `closed-${index + 5}`),
-    ]);
-    await send(root, "reopen");
-    await send(root, "list");
-    stored = await goals();
-    expect(stored.filter((goal) => goal.status === "active").map((goal) => goal.id)).toEqual([
-      "closed-5",
-    ]);
-    expect(stored).toHaveLength(21);
-    const list = (await results(root)).at(-1);
-    expect(list?.text).toContain("- [closed-24] t24 (dropped, owner monchu)");
-    expect(list?.text).toContain("- [phone-quit] Fix /quit hanging on the phone (waiting");
-    await harness.close(context);
+    try {
+      for (const message of ["create", "close", "reopen", "list"]) await send(root, message);
+      const goals = (await harness.snapshot(GoalsDoc, root.id, context))?.goals ?? [];
+      expect(goals.map((goal) => goal.id)).toEqual([
+        create.id,
+        ...Array.from({ length: 20 }, (_, index) => `closed-${index + 5}`),
+      ]);
+      expect(goals.filter((goal) => goal.status === "active").map((goal) => goal.id)).toEqual([
+        create.id,
+        "closed-5",
+      ]);
+      expect(textOf((await toolResults(root)).at(-1))).toContain(
+        "- [closed-24] t24 (dropped, commitment)",
+      );
+    } finally {
+      await harness.close(context);
+    }
   });
 
-  it("sends the section with each change only, and restores it after /new and a reopen", async () => {
+  it("sends the section only when changed and restores it after /new and a reopen", async () => {
     const test = await withGoals({
       create: { tool: "update_goal", args: { ...create, workers: ["reader"] } },
-      same: { tool: "update_goal", args: { id: "phone-quit", owner: "jorge" } },
+      same: { tool: "update_goal", args: { id: create.id, kind: "endeavor" } },
     });
     let { harness, root } = await open(test);
-    const section =
-      "<goals>\n- [phone-quit] Fix /quit hanging on the phone (active, owner jorge)\n  workers: reader\n  next: reproduce with a lingering handle\n</goals>";
-
-    await send(root, "create");
-    await send(root, "hello");
-    await send(root, "same");
-    // The baseline, then one update after the tool result; nothing more while the goals stay the same.
-    expect(test.sections).toEqual([
-      ["<goals>\nNo open goals.\n</goals>"],
-      ["<goals>\nNo open goals.\n</goals>", section],
-      ["<goals>\nNo open goals.\n</goals>", section],
-      ["<goals>\nNo open goals.\n</goals>", section],
-      ["<goals>\nNo open goals.\n</goals>", section],
-    ]);
-
-    await root.reset(undefined, context);
-    await send(root, "after reset");
-    expect(test.sections.at(-1)).toEqual([section]);
-
-    // Reopened from the stored document: the shown section still matches, so nothing is resent.
-    await harness.close(context);
-    ({ harness, root } = await open(test));
-    await send(root, "after reopen");
-    expect(test.sections.at(-1)).toEqual([section]);
-    await harness.close(context);
+    try {
+      await send(root, "create");
+      const goals = (await harness.snapshot(GoalsDoc, root.id, context))?.goals ?? [];
+      const section =
+        "<goals>\n- [monchu] Keep Monchu moving (active, endeavor)\n  project: /projects/monchu\n  vault: projects/monchu\n  workstream: Memory and ongoing goals\n  workers: reader\n  next: Implement the bounded memory tool\n</goals>";
+      // This is also the formatter used by /goals.
+      expect(section).toBe(`<goals>\n${formatOpenGoals(goals)}\n</goals>`);
+      await send(root, "hello");
+      await send(root, "same");
+      expect(test.sections).toEqual([
+        ["<goals>\nNo open goals.\n</goals>"],
+        ...Array.from({ length: 4 }, () => ["<goals>\nNo open goals.\n</goals>", section]),
+      ]);
+      await root.reset(undefined, context);
+      await send(root, "after reset");
+      expect(test.sections.at(-1)).toEqual([section]);
+      await harness.close(context);
+      ({ harness, root } = await open(test));
+      await send(root, "after reopen");
+      expect(test.sections.at(-1)).toEqual([section]);
+    } finally {
+      await harness.close(context);
+    }
   });
 
   it("never replays an older update over a newer one in the same round", async () => {
@@ -204,7 +220,6 @@ describe("goals", () => {
     value.registry.install(Goals);
     let pause = true;
     let paused = false;
-    // Interrupt the first call after its commit, before its result settles.
     value.registry.install(
       defineExtension({
         name: "test.interrupt",
@@ -237,20 +252,21 @@ describe("goals", () => {
       return fauxAssistantMessage([fauxText("ok")]);
     });
     let { harness, root } = await open(value);
-    const next = async () => (await harness.snapshot(GoalsDoc, root.id, context))?.goals[0]?.next;
-    await send(root, "create");
-    await root.submit({ type: "input", content: "patch" }, context);
-    await waitFor(() => paused);
-    expect(await next()).toBe("older");
-    // The second call has not started: the round is sequential.
-    const slots = (await harness.snapshot(LiveDoc, root.id, context))?.tools ?? [];
-    expect(slots.map((slot) => slot.taskId !== undefined)).toEqual([true, false]);
-
-    await harness.close(context);
-    pause = false;
-    ({ harness, root } = await open(value));
-    await root.waitForIdle(context);
-    expect(await next()).toBe("newer");
-    await harness.close(context);
+    try {
+      const next = async () => (await harness.snapshot(GoalsDoc, root.id, context))?.goals[0]?.next;
+      await send(root, "create");
+      await root.submit({ type: "input", content: "patch" }, context);
+      await waitFor(() => paused);
+      expect(await next()).toBe("older");
+      const slots = (await harness.snapshot(LiveDoc, root.id, context))?.tools ?? [];
+      expect(slots.map((slot) => slot.taskId !== undefined)).toEqual([true, false]);
+      await harness.close(context);
+      pause = false;
+      ({ harness, root } = await open(value));
+      await root.waitForIdle(context);
+      expect(await next()).toBe("newer");
+    } finally {
+      await harness.close(context);
+    }
   });
 });

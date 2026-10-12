@@ -288,11 +288,10 @@ describe("Monchu home context", () => {
     }
   });
 
-  it("does not hardcode the user name outside the goals lane", async () => {
+  it("does not hardcode the user name", async () => {
     await setup();
     const repo = fileURLToPath(new URL("../", import.meta.url));
     for await (const path of glob("src/**/*.ts", { cwd: repo })) {
-      if (path.replaceAll("\\", "/") === "src/goals.ts") continue;
       expect(await readFile(join(repo, path), "utf8"), path).not.toMatch(/jorge/i);
     }
     expect(

@@ -95,14 +95,16 @@ All roles receive the same installed tools: read, write, edit, bash, worker mana
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
 
-The root conversation keeps Jorge's goals and its own commitments in the `monchu.goals` document.
-Each goal has an id, title, owner (`jorge` or `monchu`), status (`active`, `waiting`, `done`, `dropped`), optional project (absolute directory or repository), linked worker names, the next step, and an update time.
+The root conversation keeps ongoing endeavors and Monchu's own commitments in the `monchu.goals` document (version 2).
+A goal is an ongoing project or workstream, never a single request.
+Each goal has an id, kind (`endeavor` or `commitment`), title, status (`active`, `waiting`, `done`, `dropped`), optional project (directory or repository) and vault note (for example `projects/monchu`), current workstream, next step, linked worker names, and an update time.
+When a request touches a project, update its existing goal's workstream, next step, and workers.
 The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`; both are root-only, so workers do not get them.
 Active and waiting goals render as the `goals` prompt section in stored order; Durable resends a section only when its text changes.
 Open goals are always kept; done and dropped goals are kept for the 20 most recently changed.
 `/goals` lists the open goals.
 The document is not transcript, so `/new`, compaction, and restarts keep it, and the section returns in the next request.
-`/compact` always asks the summary to keep goal ids and open commitments, ahead of any focus you add.
+`/compact` always asks the summary to keep open goal ids, kinds, titles, project/vault links, workstreams, next steps, and workers, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
 
 The root-only `memory` tool edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
@@ -198,7 +200,7 @@ Reports are submitted with stable request IDs (`worker-report:<task>`, then `:<n
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
 
-A home written before the 2026-10 refactor needs a fresh `monchu.sqlite`; there is no compatibility code for older stored data.
+A home written before the 2026-10 refactor or with version-1 goals needs a fresh `monchu.sqlite`; there is no compatibility code for older stored data.
 
 ## Checks
 
