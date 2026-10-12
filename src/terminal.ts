@@ -1,402 +1,317 @@
-import {
-  AssistantEntry,
-  UserEntry,
-  type AgentEvent,
-  type AgentEventStream,
-  type EntryRecord,
-} from "@earendil-works/pi-durable";
+import type { AttachedReplicatedState } from "@earendil-works/chord";
+import { getAgentDir, initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { ConversationView } from "@earendil-works/pi-durable";
+import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
-import { clearScreenDown, createInterface, cursorTo, moveCursor } from "node:readline";
 import { stdin, stdout } from "node:process";
 import type { Monchu } from "./backend.ts";
-import { ESCALATION_PREFIX, type AssessmentResult } from "./classifier.ts";
 import { formatOpenGoals } from "./goals.ts";
-import { workerNotice } from "./workers.ts";
+import { help, parseInput } from "./tui/commands.ts";
+import { presentation } from "./tui/state.ts";
+import { MonchuTui } from "./tui/view.ts";
 
-const help = `Commands:
-  /work <name> <goal>         start a background worker, keep chatting
-  /tell <name> <message>      steer a worker (or start its next run)
-  /workers                   list workers and execution directories
-  /goals                     list open goals
-  /stop <name>                explicitly cancel a worker and its work
-  /abort                     stop the front run; workers continue
-  /new [handoff]              fresh model context, optionally with a handoff note
-  /compact [instructions]    summarize older context now
-  /cd <path>                 change the front's directory while idle
-  /cd-worker <name> <path>    change an idle worker's directory
-  /help                      show commands
-  /quit                      save and close; pending work resumes next launch
-Otherwise, just talk. You don't need a project or directory.`;
-
-/** Terminal adapter only. Backend events are committed state, not speculative tokens. */
-export async function runTerminal(backend: Monchu): Promise<void> {
-  const interactive = Boolean(stdin.isTTY && stdout.isTTY);
-  const terminal = createInterface({
-    input: stdin,
-    output: stdout,
-    terminal: interactive,
-    prompt: "you> ",
+/** Terminal adapter. Input admission and all side effects remain backend-owned. */
+export async function runTerminal(
+  backend: Monchu,
+  terminal: Terminal = new ProcessTerminal(),
+): Promise<void> {
+  if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
+    throw new Error("Monchu's TUI needs an interactive terminal.");
+  const agentDir = getAgentDir();
+  const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+  setCapabilityOverrides(settings.getTerminalCapabilityOverrides());
+  const configuredTheme = settings.getThemeSetting();
+  let scheme: "light" | "dark" = ["7", "9", "10", "11", "12", "13", "14", "15"].includes(
+    process.env.COLORFGBG?.split(";").at(-1) ?? "",
+  )
+    ? "light"
+    : "dark";
+  function applyTheme(): void {
+    const pair = configuredTheme?.split("/");
+    const name = pair?.length === 2 ? pair[scheme === "light" ? 0 : 1]?.trim() : configuredTheme;
+    initTheme(name && name !== "system" ? name : scheme);
+  }
+  applyTheme();
+  let exit = () => {};
+  const exited = new Promise<void>((resolve) => {
+    exit = resolve;
   });
-  // Register input consumption before asynchronous attachment so piped/early input is not lost.
-  const lines = terminal[Symbol.asyncIterator]();
-  let stream: AgentEventStream | undefined;
-  let speaking = false;
-  let promptVisible = false;
-  let activity: string | undefined;
-  let background = "";
-  let printed = new Map<number, string>();
-  const tools = new Map<string, string>();
+  let closing = false;
+  let restarting = false;
+  let selected: string | undefined;
+  let root: AttachedReplicatedState<ConversationView> | undefined;
+  let stopRoot: (() => void) | undefined;
+  let stopReports: (() => void) | undefined;
+  let stopAssessments: (() => void) | undefined;
+  let stopScheme: (() => void) | undefined;
+  type Worker = Awaited<ReturnType<Monchu["workers"]>>[number];
+  const workers = new Map<
+    string,
+    { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
+  >();
+  let refreshing: Promise<void> | undefined;
+  let refreshAgain = false;
+  let lastRootEntry: number | undefined;
 
-  function erasePrompt() {
-    if (!promptVisible) return;
-    const { rows } = terminal.getCursorPos();
-    cursorTo(stdout, 0);
-    if (rows) moveCursor(stdout, 0, -rows);
-    clearScreenDown(stdout);
-    promptVisible = false;
+  function show(force = false): void {
+    if (closing) return;
+    const state = selected === undefined ? root : workers.get(selected)?.state;
+    if (state) view.apply(state.value, selected, force);
+    view.setWorkers(
+      [...workers.values()].map((worker) => ({
+        name: worker.summary.name,
+        busy: presentation(worker.state.value).busy,
+      })),
+      selected,
+    );
   }
 
-  function prompt() {
-    if (!interactive || speaking) return;
-    terminal.prompt(true);
-    promptVisible = true;
+  function fail(error: unknown): void {
+    view.notice(`error · ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  function finishReply() {
-    if (speaking) stdout.write("\n");
-    speaking = false;
+  let inputs = Promise.resolve();
+  const interrupt = () => {
+    inputs = inputs.then(() => handle("/abort")).catch(fail);
+  };
+  const view = new MonchuTui(terminal, backend.home, {
+    submit: (text) => {
+      inputs = inputs.then(() => handle(text)).catch(fail);
+    },
+    abort: interrupt,
+    exit,
+  });
+
+  // Coalesce discovery, and never query the worker registry on every streaming revision.
+  async function refreshWorkers(): Promise<void> {
+    if (closing) return;
+    refreshAgain = true;
+    if (refreshing) return refreshing;
+    refreshing = (async () => {
+      while (refreshAgain && !closing) {
+        refreshAgain = false;
+        for (const summary of await backend.workers()) {
+          if (closing) return;
+          const existing = workers.get(summary.name);
+          if (existing) {
+            existing.summary = summary;
+            continue;
+          }
+          const state = await backend.viewState(summary.name);
+          if (closing) {
+            state.dispose();
+            return;
+          }
+          let busy = presentation(state.value).busy;
+          const stop = state.subscribe((value) => {
+            try {
+              const next = presentation(value).busy;
+              if (next !== busy) {
+                busy = next;
+                void refreshWorkers().catch(fail);
+              }
+              show();
+            } catch (error) {
+              fail(error);
+              process.exitCode = 1;
+              exit();
+            }
+          });
+          workers.set(summary.name, { summary, state, stop });
+        }
+        show();
+      }
+    })().finally(() => {
+      refreshing = undefined;
+    });
+    return refreshing;
   }
 
-  function notice(text: string) {
-    finishReply();
-    erasePrompt();
-    stdout.write(`\nsystem · ${text}\n`);
-    prompt();
+  async function switchTo(name: string | undefined): Promise<void> {
+    await refreshWorkers();
+    if (name !== undefined && !workers.has(name)) throw new Error(`No worker named ${name}`);
+    selected = name;
+    show();
   }
 
-  function setActivity(next: string | undefined) {
-    if (next === activity) return;
-    activity = next;
-    if (next !== undefined) notice(next);
-  }
-
-  async function updateWorkers() {
-    const names = (await backend.workers())
-      .filter((worker) => worker.busy)
-      .map((worker) => worker.name)
-      .join(", ");
-    if (names === background) return;
-    background = names;
-    notice(names ? `background work · ${names}` : "background work idle");
-  }
-
-  function appendText(index: number, text: string) {
-    if (!text) return;
-    erasePrompt();
-    activity = undefined;
-    if (!speaking) {
-      stdout.write("\nmonchu · response\n");
-      speaking = true;
-    }
-    stdout.write(text);
-    printed.set(index, (printed.get(index) ?? "") + text);
-  }
-
-  function reconcileText(index: number, text: string) {
-    const previous = printed.get(index) ?? "";
-    if (text.startsWith(previous)) appendText(index, text.slice(previous.length));
-    else {
-      notice("response updated");
-      printed.delete(index);
-      appendText(index, text);
-    }
-  }
-
-  function showEntry(entry: EntryRecord) {
-    const worker = workerNotice(entry);
-    if (worker !== undefined) {
-      finishReply();
-      erasePrompt();
-      stdout.write(`\nworker · ${worker.name} · ${worker.status}\n${worker.text}\n`);
-      return;
-    }
-    if (!UserEntry.is(entry) && !AssistantEntry.is(entry)) return;
-    for (const message of entry.model ?? []) {
-      if (message.role !== "user" && message.role !== "assistant") continue;
-      const text =
-        typeof message.content === "string"
-          ? message.content
-          : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-      if (!text) continue;
-      if (message.role === "user" && text.startsWith(ESCALATION_PREFIX))
-        stdout.write(`\nsystem · escalation\n${text.split("\n", 1)[0]}\n`);
-      else
-        stdout.write(
-          message.role === "user" ? `\nyou> ${text}\n` : `\nmonchu · response\n${text}\n`,
+  async function handle(raw: string): Promise<void> {
+    if (closing) return;
+    const input = parseInput(raw);
+    if (!input) return;
+    switch (input.command) {
+      case "/quit":
+        exit();
+        break;
+      case "/help":
+        view.notice(help);
+        break;
+      case "/reload": {
+        const result = await backend.reload();
+        view.notice(`reloaded · ${result.reloaded.join(", ")}`);
+        break;
+      }
+      case "/restart":
+        // Only editor input reaches this handler; model output never authorizes a restart.
+        restarting = true;
+        closing = true;
+        exit();
+        break;
+      case "/abort":
+        await backend.abort();
+        view.notice("front stopped; workers continue");
+        break;
+      case "/workers": {
+        await refreshWorkers();
+        view.notice(
+          workers.size
+            ? [...workers.values()]
+                .map(
+                  ({ summary }) =>
+                    `${summary.name}: ${summary.busy ? "working" : "idle"} | ${summary.cwd}`,
+                )
+                .join("\n")
+            : "No workers yet.",
         );
-    }
-  }
-
-  async function render(events: readonly AgentEvent[]) {
-    let workersChanged = false;
-    for (const event of events) {
-      switch (event.type) {
-        case "snapshot": {
-          finishReply();
-          erasePrompt();
-          activity = undefined;
-          printed.clear();
-          tools.clear();
-          if (event.entries.length) {
-            stdout.write("\nsystem · recent conversation\n");
-            event.entries
-              .filter(
-                (entry) =>
-                  UserEntry.is(entry) ||
-                  AssistantEntry.is(entry) ||
-                  workerNotice(entry) !== undefined,
-              )
-              .slice(-10)
-              .forEach(showEntry);
-          }
-          const partial = event.generation?.message;
-          if (partial !== undefined) {
-            partial.content.forEach((part, index) => {
-              if (part.type === "text") appendText(index, part.text);
-            });
-          }
-          for (const tool of event.tools)
-            if (tool.status === "running") tools.set(tool.callId, tool.name);
-          if (tools.size) setActivity(`running ${[...tools.values()].join(", ")}…`);
-          else if (partial?.content.at(-1)?.type === "thinking") setActivity("thinking…");
-          else if (event.generation?.retry)
-            setActivity(`retrying · ${event.generation.retry.error}`);
-          else if (event.run && !speaking) setActivity("loading…");
-          workersChanged = true;
+        break;
+      }
+      case "/agents": {
+        if (input.text) {
+          await switchTo(input.text === "root" ? undefined : input.text);
           break;
         }
-        case "run_start":
-        case "turn_start":
-          setActivity("loading…");
-          break;
-        case "message_start":
-          if (event.message.role === "assistant") {
-            finishReply();
-            printed = new Map();
-            setActivity("loading…");
-          }
-          break;
-        case "message_update":
-          for (const change of event.changes) {
-            if (change.type === "thinking_start" || change.type === "thinking_delta")
-              setActivity("thinking…");
-            else if (change.type === "text_delta") appendText(change.contentIndex, change.delta);
-            else if (
-              (change.type === "text_start" || change.type === "block") &&
-              change.block.type === "text"
-            )
-              reconcileText(change.contentIndex, change.block.text);
-            else if (change.type === "message") {
-              change.message.content.forEach((part, index) => {
-                if (part.type === "text") reconcileText(index, part.text);
-              });
-              if (change.message.content.at(-1)?.type === "thinking") setActivity("thinking…");
-            }
-          }
-          break;
-        case "message_end":
-          if (workerNotice(event.entry) !== undefined) {
-            showEntry(event.entry);
-            workersChanged = true;
-            prompt();
-          } else if (UserEntry.is(event.entry)) {
-            const first = event.entry.model?.[0];
-            const text =
-              first?.role === "user" && typeof first.content === "string" ? first.content : "";
-            if (text.startsWith(ESCALATION_PREFIX))
-              notice(`escalation · ${text.split("\n", 1)[0]}`);
-          } else if (AssistantEntry.is(event.entry)) {
-            for (const message of event.entry.model ?? []) {
-              if (message.role !== "assistant") continue;
-              message.content.forEach((part, index) => {
-                if (part.type === "text") reconcileText(index, part.text);
-              });
-              if (message.stopReason === "error")
-                notice(`model failed · ${message.errorMessage ?? "Unknown provider error"}`);
-              if (message.stopReason === "aborted") notice("front interrupted");
-            }
-            finishReply();
-            setActivity(undefined);
-            prompt();
-          }
-          break;
-        case "tool_execution_start":
-          tools.set(event.toolCallId, event.toolName);
-          setActivity(`running ${[...tools.values()].join(", ")}…`);
-          break;
-        case "tool_execution_end":
-          tools.delete(event.toolCallId);
-          setActivity(tools.size ? `running ${[...tools.values()].join(", ")}…` : "loading…");
-          for (const message of event.entry?.model ?? []) {
-            if (message.role === "toolResult" && message.isError)
-              notice(
-                `${event.toolName} failed · ${message.content
-                  .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                  .join("\n")
-                  .slice(0, 1000)}`,
-              );
-          }
-          if (["start_worker", "message_worker", "stop_worker"].includes(event.toolName))
-            workersChanged = true;
-          break;
-        case "submission":
-          if (event.record.status === "unanswered")
-            notice(`input ${event.record.id} · ${event.record.reason}`);
-          break;
-        case "auto_retry_start":
-          setActivity(`retrying · ${event.errorMessage}`);
-          break;
-        case "deferred_poll":
-          setActivity("waiting for provider…");
-          break;
-        case "compaction_start":
-          setActivity("updating conversation context…");
-          break;
-        case "task_failed":
-          notice(`task failed · ${event.kind} · ${event.message}`);
-          break;
-        case "run_end":
-          finishReply();
-          tools.clear();
-          setActivity(undefined);
-          prompt();
-          break;
+        await refreshWorkers();
+        view.selectAgents(
+          [
+            { value: "", label: "root", description: "Monchu front" },
+            ...[...workers.values()].map(({ summary }) => ({
+              value: summary.name,
+              label: summary.name,
+              description: `${summary.busy ? "working" : "idle"} | ${summary.cwd}`,
+            })),
+          ],
+          (name) => {
+            inputs = inputs.then(() => switchTo(name || undefined)).catch(fail);
+          },
+        );
+        break;
+      }
+      case "/goals":
+        view.notice(formatOpenGoals(await backend.goals()));
+        break;
+      case "/stop":
+        await backend.stopWorker(input.text);
+        view.notice(`stopped worker · ${input.text}`);
+        await refreshWorkers();
+        break;
+      case "/new":
+        await backend.reset(input.text);
+        view.notice(input.text ? "new context · handoff carried" : "new context");
+        break;
+      case "/compact":
+        await backend.compact(input.text);
+        view.notice("compaction started");
+        break;
+      case "/cd":
+        view.notice(`directory · ${await backend.changeDirectory(input.text)}`);
+        break;
+      case "/cd-worker":
+        view.notice(
+          `${input.name} directory · ${await backend.changeDirectory(input.text, input.name)}`,
+        );
+        await refreshWorkers();
+        break;
+      case "/work":
+        await backend.startWorker(input.name, input.text, randomUUID());
+        view.notice(`worker ${input.name} · creation committed`);
+        await refreshWorkers();
+        break;
+      case "/tell":
+        await backend.messageWorker(input.name, input.text, randomUUID());
+        view.notice(`worker ${input.name} · message committed`);
+        await refreshWorkers();
+        break;
+      case "message": {
+        // Capture focus now: a later view switch must not redirect an already submitted input.
+        const name = selected;
+        if (name === undefined) await backend.submit(input.text, randomUUID());
+        else await backend.messageWorker(name, input.text, randomUUID());
+        view.notice(name === undefined ? "received · root" : `received · worker ${name}`);
+        if (name !== undefined) await refreshWorkers();
+        break;
       }
     }
-    if (workersChanged) await updateWorkers();
   }
 
-  const shutdown = () => terminal.close();
-  const interrupt = () => {
-    void backend.abort().then(
-      () => notice("front stopped; workers continue"),
-      (error: unknown) => notice(error instanceof Error ? error.message : String(error)),
-    );
-  };
-  terminal.on("SIGINT", interrupt);
-  process.on("SIGTERM", shutdown);
-  const { front, worker, classifier } = backend.config;
-  stdout.write(
-    `Monchu | front ${front.modelId} / workers ${worker.modelId} | classifier ${classifier?.modelId ?? "off"}\nHome: ${backend.home}\n/help for commands.\n`,
-  );
-  const stopReports = backend.onReport((message) => notice(`warning · ${message}`));
-  // Assessments settle beside the reply; show each once, skipping the ones settled before attaching.
-  const shown = new Set<number>();
-  let hydrated = false;
-  const stopAssessments = await backend.watchAssessments((items) => {
-    for (const item of items) {
-      if (item.result === null || shown.has(item.taskId)) continue;
-      shown.add(item.taskId);
-      if (hydrated) notice(`effort · ${describeAssessment(item.result)}`);
-    }
-    hydrated = true;
-  });
+  process.on("SIGTERM", exit);
+  process.on("SIGINT", interrupt);
   try {
-    stream = await backend.watch(render);
-    void stream.closed.then((end) => {
-      if (end.reason === "listener_error") {
-        console.error(`system · ${end.error.message}`);
+    root = await backend.viewState();
+    stopRoot = root.subscribe((value) => {
+      try {
+        const newest = value.entries.at(-1)?.id;
+        if (newest !== lastRootEntry) {
+          lastRootEntry = newest;
+          void refreshWorkers().catch(fail);
+        }
+        show();
+      } catch (error) {
+        fail(error);
         process.exitCode = 1;
-        terminal.close();
+        exit();
       }
     });
-    prompt();
-    for await (const raw of lines) {
-      promptVisible = false;
-      const line = raw.trim();
-      if (!line) {
-        prompt();
-        continue;
+    stopReports = backend.onReport((message) => view.notice(`warning · ${message}`));
+    const shown = new Set<number>();
+    let hydrated = false;
+    stopAssessments = await backend.watchAssessments((items) => {
+      for (const item of items) {
+        if (item.result === null || shown.has(item.taskId)) continue;
+        shown.add(item.taskId);
+        if (!hydrated) continue;
+        const result = item.result;
+        view.notice(
+          result.status === "failed"
+            ? `effort unavailable · ${result.message}`
+            : `effort · ${result.effort} ${Math.round(result.effortConfidence * 100)}% · scope ${result.scope} ${Math.round(result.scopeConfidence * 100)}%`,
+        );
       }
-      if (!interactive) stdout.write(`\nyou> ${line}\n`);
-      try {
-        const [command] = line.split(/\s+/, 1);
-        const rest = line.slice(command?.length ?? 0).trim();
-        if (command === "/quit") break;
-        if (command === "/help") notice(help);
-        else if (command === "/abort") {
-          await backend.abort();
-          notice("front stopped; workers continue");
-        } else if (command === "/workers") {
-          const workers = await backend.workers();
-          notice(
-            workers.length
-              ? workers
-                  .map(
-                    (worker) =>
-                      `${worker.name}: ${worker.busy ? "working" : "idle"} | ${worker.cwd}`,
-                  )
-                  .join("\n")
-              : "No workers yet.",
-          );
-        } else if (command === "/goals") notice(formatOpenGoals(await backend.goals()));
-        else if (command === "/stop") {
-          await backend.stopWorker(rest);
-          notice(`stopped worker · ${rest}`);
-          await updateWorkers();
-        } else if (command === "/new") {
-          await backend.reset(rest);
-          notice(rest ? "new context · handoff carried" : "new context");
-        } else if (command === "/compact") {
-          await backend.compact(rest);
-          notice("compaction started");
-        } else if (command === "/cd") {
-          if (!rest) throw new Error("Usage: /cd <path>");
-          notice(`directory · ${await backend.changeDirectory(rest)}`);
-        } else if (command === "/work" || command === "/tell" || command === "/cd-worker") {
-          const parsed = /^(\S+)\s+([\s\S]+)$/.exec(rest);
-          const name = parsed?.[1];
-          const message = parsed?.[2];
-          if (name === undefined || message === undefined)
-            throw new Error(
-              `Usage: ${command} <name> <${command === "/cd-worker" ? "path" : "message"}>`,
-            );
-          if (command === "/cd-worker")
-            notice(`${name} directory · ${await backend.changeDirectory(message, name)}`);
-          else {
-            const requestId = randomUUID();
-            if (command === "/work") {
-              await backend.startWorker(name, message, requestId);
-              notice(`worker ${name} · creation committed`);
-            } else {
-              await backend.messageWorker(name, message, requestId);
-              notice(`worker ${name} · message committed`);
-            }
-            await updateWorkers();
-          }
-        } else if (line.startsWith("/")) throw new Error("Unknown command. /help lists commands.");
-        else {
-          await backend.submit(line, randomUUID());
-          notice("received");
-        }
-      } catch (error) {
-        notice(`error · ${error instanceof Error ? error.message : String(error)}`);
-      }
+      hydrated = true;
+    });
+    await refreshWorkers();
+    view.start();
+    stopScheme = view.ui.onTerminalColorSchemeChange((next) => {
+      scheme = next;
+      applyTheme();
+      show(true);
+    });
+    view.ui.setTerminalColorSchemeNotifications(true);
+    const colors = await view.ui.queryTerminalColors({ timeoutMs: 500 });
+    if (colors.background) {
+      const bg = colors.background;
+      scheme = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b > 128 ? "light" : "dark";
+      applyTheme();
     }
+    show(true);
+    view.notice(`Monchu · /help · home ${backend.home}`);
+    await exited;
   } finally {
-    finishReply();
-    erasePrompt();
-    stopReports();
-    stopAssessments();
-    terminal.off("SIGINT", interrupt);
-    process.off("SIGTERM", shutdown);
-    terminal.close();
-    await stream?.stop();
+    closing = true;
+    process.off("SIGTERM", exit);
+    process.off("SIGINT", interrupt);
+    // Let an in-flight admission settle before main closes storage. Queued inputs see closing and stop.
+    await inputs;
+    stopScheme?.();
+    stopReports?.();
+    stopAssessments?.();
+    stopRoot?.();
+    await refreshing?.catch(() => {});
+    for (const worker of workers.values()) {
+      worker.stop();
+      worker.state.dispose();
+    }
+    root?.dispose();
+    view.stop();
   }
-}
-
-function describeAssessment(result: AssessmentResult): string {
-  if (result.status === "failed") return `unavailable · ${result.message}`;
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
-  return `${result.effort} ${percent(result.effortConfidence)} · scope ${result.scope} ${percent(result.scopeConfidence)}`;
+  // Never wait for restart inside handle(): cleanup waits for that input promise to settle.
+  if (restarting) await backend.restart();
 }
