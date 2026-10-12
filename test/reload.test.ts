@@ -1,7 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   defineExtension,
-  ToolResultEntry,
   type ConversationDocToken,
   type Extension,
   type Task,
@@ -17,7 +16,6 @@ import {
   RestartRequest,
 } from "../src/reload.ts";
 import {
-  allEntries,
   cleanup,
   classifierModel,
   context,
@@ -26,8 +24,10 @@ import {
   open,
   route,
   scriptedClassifier,
+  sectionTexts,
   setup,
   textOf,
+  toolResults,
   waitFor,
 } from "./support.ts";
 
@@ -90,11 +90,7 @@ async function fixture(directory: string) {
 }
 
 async function results(root: Awaited<ReturnType<typeof open>>["root"]) {
-  return (await allEntries(root)).flatMap((entry) =>
-    ToolResultEntry.is(entry) && entry.model?.[0]?.role === "toolResult"
-      ? [textOf(entry.model[0])]
-      : [],
-  );
+  return (await toolResults(root)).map(textOf);
 }
 
 describe("in-process reload", () => {
@@ -236,16 +232,18 @@ describe("in-process reload", () => {
 
   it("reloads the real manifest, user instructions, skills and settings", async () => {
     const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    await mkdir(join(agentDir, "skills", "sample"), { recursive: true });
-    await writeFile(join(agentDir, "AGENTS.md"), "old user guidance");
+    await mkdir(join(value.agentDir, "skills", "sample"), { recursive: true });
+    await writeFile(join(value.agentDir, "AGENTS.md"), "old user guidance");
     scriptedClassifier(value.models);
-    const extensions = await Extensions.load(value.models, config, agentDir, () => {});
+    const extensions = await Extensions.load(value.models, config, value.agentDir, () => {});
     expect(extensions.settings.getDefaultTools()).toBeUndefined();
-    await writeFile(join(agentDir, "AGENTS.md"), "fresh user guidance");
-    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
+    await writeFile(join(value.agentDir, "AGENTS.md"), "fresh user guidance");
     await writeFile(
-      join(agentDir, "skills", "sample", "SKILL.md"),
+      join(value.agentDir, "settings.json"),
+      JSON.stringify({ defaultTools: ["read"] }),
+    );
+    await writeFile(
+      join(value.agentDir, "skills", "sample", "SKILL.md"),
       "---\nname: sample\ndescription: fresh skill\n---\ncontent\n",
     );
     // Concurrent requests share one reload.
@@ -263,15 +261,7 @@ describe("in-process reload", () => {
     expect(extensions.settings.getDefaultTools()).toEqual(["read"]);
     const sections: string[] = [];
     route(value.faux, (request) => {
-      sections.push(
-        ...request.messages.flatMap((m) =>
-          m.role === "system"
-            ? Object.values(m.sections ?? {}).flatMap((value) =>
-                typeof value === "string" ? [value] : [],
-              )
-            : [],
-        ),
-      );
+      sections.push(...sectionTexts(request.messages));
       return fauxAssistantMessage("done");
     });
     const { harness, root } = await open({ ...value, registry: extensions.registry });
@@ -288,13 +278,12 @@ describe("in-process reload", () => {
 
   it("leaves installed extensions and settings unchanged when a reload fails", async () => {
     const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    await mkdir(agentDir);
+    await mkdir(value.agentDir);
     scriptedClassifier(value.models);
-    const extensions = await Extensions.load(value.models, config, agentDir, () => {});
+    const extensions = await Extensions.load(value.models, config, value.agentDir, () => {});
     const registry = extensions.registry.snapshot();
     const settings = extensions.settings;
-    await writeFile(join(agentDir, "settings.json"), "{");
+    await writeFile(join(value.agentDir, "settings.json"), "{");
     await expect(extensions.reload()).rejects.toThrow("Pi settings failed");
     expect(extensions.registry.snapshot()).toBe(registry);
     expect(extensions.settings).toBe(settings);

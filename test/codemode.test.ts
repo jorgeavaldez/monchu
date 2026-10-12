@@ -1,44 +1,15 @@
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { ToolResultEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { WorkersDoc } from "../src/workers.ts";
-import {
-  allEntries,
-  cleanup,
-  context,
-  lastMessage,
-  open,
-  route,
-  setup,
-  textOf,
-} from "./support.ts";
+import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
 afterEach(cleanup);
-
-/** The front calls `tool` with `args` for the message `trigger`, then repeats the tool's result. */
-function scripted(calls: Record<string, { tool: string; args: Record<string, string> }>) {
-  return (request: { messages: Parameters<typeof lastMessage>[0] }) => {
-    const last = lastMessage(request.messages);
-    if (last?.role === "toolResult") return fauxAssistantMessage([fauxText(`ok ${textOf(last)}`)]);
-    const call = calls[textOf(last)];
-    if (call !== undefined)
-      return fauxAssistantMessage([fauxToolCall(call.tool, call.args)], { stopReason: "toolUse" });
-    return fauxAssistantMessage([fauxText(`worker answered ${textOf(last)}`)]);
-  };
-}
-
-async function toolResults(root: Parameters<typeof allEntries>[0]) {
-  return (await allEntries(root)).flatMap((entry) =>
-    ToolResultEntry.is(entry) && entry.model?.[0]?.role === "toolResult" ? [entry.model[0]] : [],
-  );
-}
 
 describe("codemode", () => {
   it("calls other tools from a script, keeps store values, and leaves those tools callable", async () => {
     const value = await setup();
     route(
       value.faux,
-      scripted({
+      callTools({
         script: {
           tool: "codemode",
           args: {
@@ -86,7 +57,7 @@ describe("codemode", () => {
     const value = await setup();
     route(
       value.faux,
-      scripted({
+      callTools({
         throws: { tool: "codemode", args: { code: `throw new Error("boom")` } },
         nested: { tool: "codemode", args: { code: `await tools.read({ path: "missing.txt" })` } },
       }),

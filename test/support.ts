@@ -7,25 +7,30 @@ import {
   type ClassifierApi,
   type ClassifierContext,
   type ClassifierResult,
+  fauxAssistantMessage,
   type FauxProviderHandle,
   type FauxResponseStep,
   fauxProvider,
+  fauxToolCall,
   type Message,
   type MutableModels,
+  type ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   type Conversation,
   createRegistry,
   type EntryRecord,
   Harness,
+  type JsonObject,
   type Registry,
+  ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Codemode } from "../src/codemode.ts";
 import type { ModelRole } from "../src/config.ts";
 import { createPiTools } from "../src/pi-tools.ts";
@@ -112,17 +117,33 @@ export type Setup = {
   readonly models: MutableModels;
   readonly registry: Registry;
   readonly reports: unknown[];
+  /** A fresh temp directory: this test's home and default execution directory. */
   readonly directory: string;
+  /** Pi's agent directory inside `directory`; not created. */
+  readonly agentDir: string;
 };
 
 const directories = new Set<string>();
+// The suite-wide sandbox vitest.config.ts sets; each test narrows it to its own directory.
+const sandbox = {
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+};
 
 export async function cleanup(): Promise<void> {
+  for (const [key, value] of Object.entries(sandbox)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   for (const directory of directories) await rm(directory, { recursive: true, force: true });
   directories.clear();
 }
 
-/** The front's tools, as Monchu installs them. */
+/**
+ * The front's tools as Monchu installs them, in a fresh directory that is also this test's home and Pi agent directory
+ * parent, so Pi's user resources (`~/.agents`, `~/.pi/agent`) resolve inside it. Call `cleanup` after each test.
+ */
 export async function setup(options: { tokensPerSecond?: number } = {}): Promise<Setup> {
   const faux = fauxProvider(
     options.tokensPerSecond === undefined ? {} : { tokensPerSecond: options.tokensPerSecond },
@@ -135,7 +156,13 @@ export async function setup(options: { tokensPerSecond?: number } = {}): Promise
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));
   directories.add(directory);
-  return { faux, models, registry, reports: [], directory };
+  const agentDir = join(directory, "agent");
+  Object.assign(process.env, {
+    HOME: directory,
+    USERPROFILE: directory,
+    PI_CODING_AGENT_DIR: agentDir,
+  });
+  return { faux, models, registry, reports: [], directory, agentDir };
 }
 
 export async function open(
@@ -164,6 +191,13 @@ export async function allEntries(conversation: Conversation): Promise<EntryRecor
   return [...page.items].reverse();
 }
 
+/** Tool results in a conversation's transcript, oldest first. */
+export async function toolResults(conversation: Conversation): Promise<ToolResultMessage[]> {
+  return (await allEntries(conversation)).flatMap((entry) =>
+    ToolResultEntry.is(entry) && entry.model?.[0]?.role === "toolResult" ? [entry.model[0]] : [],
+  );
+}
+
 export function textOf(message: Message | undefined): string {
   if (message === undefined || message.role === "system") return "";
   if (typeof message.content === "string") return message.content;
@@ -175,9 +209,31 @@ export function lastMessage(messages: readonly Message[]): Message | undefined {
   return messages.findLast((message) => message.role !== "system");
 }
 
+/** Prompt section texts a request carries, in order; only sections named `name` when given. */
+export function sectionTexts(messages: readonly Message[], name?: string): string[] {
+  return messages.flatMap((message) =>
+    message.role === "system"
+      ? Object.entries(message.sections ?? {}).flatMap(([key, text]) =>
+          text !== null && (name === undefined || key === name) ? [text] : [],
+        )
+      : [],
+  );
+}
+
 /** One response factory reused for every request. */
 export function route(faux: FauxProviderHandle, step: FauxResponseStep): void {
   faux.setResponses(Array.from({ length: 100 }, () => step));
+}
+
+/** Answer a user message named in `calls` with that tool call, and anything else with "ok". */
+export function callTools(calls: Record<string, { tool: string; args: JsonObject }>) {
+  return (request: { messages: readonly Message[] }) => {
+    const last = lastMessage(request.messages);
+    const call = last?.role === "user" ? calls[textOf(last)] : undefined;
+    return call === undefined
+      ? fauxAssistantMessage("ok")
+      : fauxAssistantMessage([fauxToolCall(call.tool, call.args)], { stopReason: "toolUse" });
+  };
 }
 
 /** Poll `check` in real time until it holds. */

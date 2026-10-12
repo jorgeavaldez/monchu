@@ -1,22 +1,28 @@
-import { fauxAssistantMessage, fauxText, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createPiContext } from "../src/context.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import { startWorker, WorkersDoc } from "../src/workers.ts";
-import { cleanup, context, fauxRole, lastMessage, open, route, setup, textOf } from "./support.ts";
+import {
+  cleanup,
+  context,
+  fauxRole,
+  lastMessage,
+  open,
+  route,
+  sectionTexts,
+  setup,
+  textOf,
+} from "./support.ts";
 
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  await cleanup();
-});
+afterEach(cleanup);
 
 describe("Pi user configuration", () => {
   it("imports global context precedence and both prompts, without execution-directory resources", async () => {
     const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    vi.stubEnv("HOME", value.directory);
+    const { agentDir } = value;
     const project = join(value.directory, "project");
     await mkdir(join(agentDir, ".pi"), { recursive: true });
     await mkdir(join(project, ".pi", "skills", "local"), { recursive: true });
@@ -44,13 +50,7 @@ describe("Pi user configuration", () => {
     value.registry.install(pi.extension);
     const systems: string[] = [];
     route(value.faux, (request) => {
-      systems.push(
-        request.messages
-          .flatMap((message: Message) =>
-            message.role === "system" ? Object.values(message.sections ?? {}) : [],
-          )
-          .join("\n"),
-      );
+      systems.push(sectionTexts(request.messages).join("\n"));
       return fauxAssistantMessage([fauxText("ok")]);
     });
     const { harness, root } = await open(value);
@@ -84,8 +84,7 @@ describe("Pi user configuration", () => {
     "advertises filtered skills and loads instructions on demand with %s",
     async (fileReadTool) => {
       const value = await setup();
-      const agentDir = join(value.directory, "agent");
-      vi.stubEnv("HOME", value.directory);
+      const { agentDir } = value;
       const packageDir = join(agentDir, "skill-package");
       for (const path of [
         join(agentDir, "skills", "vault"),
@@ -128,11 +127,7 @@ describe("Pi user configuration", () => {
       let advertised = "";
       let loaded = "";
       route(value.faux, (request) => {
-        advertised = request.messages
-          .flatMap((message) =>
-            message.role === "system" ? Object.values(message.sections ?? {}) : [],
-          )
-          .join("\n");
+        advertised = sectionTexts(request.messages).join("\n");
         if (lastMessage(request.messages)?.role === "toolResult") {
           loaded = textOf(lastMessage(request.messages));
           return fauxAssistantMessage([fauxText("loaded")]);
@@ -172,8 +167,7 @@ describe("Pi user configuration", () => {
     "omits unreadable, non-invocable or absent skills: $tools / $skills",
     async ({ tools, skills, reader }) => {
       const value = await setup();
-      const agentDir = join(value.directory, "agent");
-      vi.stubEnv("HOME", value.directory);
+      const { agentDir } = value;
       await mkdir(agentDir);
       if (skills !== "absent") {
         const skillDir = join(agentDir, "skills", "available");
@@ -187,16 +181,14 @@ describe("Pi user configuration", () => {
       const pi = await createPiContext(agentDir);
       value.registry.install(createPiTools(pi.settings, process.platform).extension);
       value.registry.install(pi.extension);
-      const sections: Record<string, string | null>[] = [];
+      const skillSections: string[] = [];
       route(value.faux, (request) => {
-        for (const message of request.messages) {
-          if (message.role === "system" && message.sections) sections.push(message.sections);
-        }
+        skillSections.push(...sectionTexts(request.messages, "skills"));
         return fauxAssistantMessage([fauxText("ok")]);
       });
       const { harness, root } = await open(value);
       await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
-      const skillSection = sections.find((item) => "skills" in item)?.skills;
+      const skillSection = skillSections[0];
       if (reader === undefined) {
         expect(skillSection).toBeUndefined();
       } else {
@@ -222,7 +214,7 @@ describe("Pi user configuration", () => {
     "fails fast with a credential-safe path and reason for $reason",
     async ({ content, reason }) => {
       const value = await setup();
-      const agentDir = join(value.directory, "agent");
+      const { agentDir } = value;
       await mkdir(agentDir);
       const path = join(agentDir, "settings.json");
       await writeFile(path, content);
@@ -237,7 +229,7 @@ describe("Pi user configuration", () => {
     "reports a settings read/lock failure with its path and %s",
     async (code) => {
       const value = await setup();
-      const agentDir = join(value.directory, "agent");
+      const { agentDir } = value;
       await mkdir(agentDir);
       const path = join(agentDir, "settings.json");
       if (code === "EISDIR") await mkdir(path);
@@ -253,8 +245,7 @@ describe("Pi user configuration", () => {
 
   it("does not install a missing configured package", async () => {
     const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    vi.stubEnv("HOME", value.directory);
+    const { agentDir } = value;
     await mkdir(agentDir);
     await writeFile(
       join(agentDir, "settings.json"),
@@ -269,8 +260,7 @@ describe("Pi user configuration", () => {
 
   it("redacts URL userinfo and token parameters from missing package sources", async () => {
     const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    vi.stubEnv("HOME", value.directory);
+    const { agentDir } = value;
     await mkdir(agentDir);
     await writeFile(
       join(agentDir, "settings.json"),

@@ -5,10 +5,10 @@ import {
   fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { UserEntry } from "@earendil-works/pi-durable";
+import { defineExtension, defineTask, type Extension, UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { AssessmentsDoc, createEffortAssessment, ESCALATION_PREFIX } from "../src/classifier.ts";
-import { messageWorker, startWorker, WorkersDoc } from "../src/workers.ts";
+import { startWorker, WorkersDoc } from "../src/workers.ts";
 import {
   allEntries,
   assessed,
@@ -27,16 +27,25 @@ import {
 
 afterEach(cleanup);
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
+/** A task that finishes at once: a completed delivery without a worker turn. */
+const Done = defineTask<null, { phase: "done" }, null>({
+  name: "test.done",
+  version: 1,
+  initial: () => ({ phase: "done" }),
+  phases: {
+    done: (_task, runtime, context) =>
+      runtime.commit(
+        () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
+        context,
+      ),
+  },
+  abort: (_task, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
 
-async function withAssessment() {
+async function withAssessment(extensions: readonly Extension[] = []) {
   const value = await setup();
+  for (const extension of extensions) value.registry.install(extension);
   const classifier = scriptedClassifier(value.models);
   const assessment = createEffortAssessment(
     value.models,
@@ -69,7 +78,7 @@ const hasAdvice = (messages: readonly Message[]) =>
 describe("effort assessment", () => {
   it("lets the front reply before the classifier answers", async () => {
     const test = await withAssessment();
-    const pending = deferred<ClassifierResult>();
+    const pending = Promise.withResolvers<ClassifierResult>();
     test.classifier.answer = () => pending.promise;
     route(test.faux, () => fauxAssistantMessage([fauxText("looking into it")]));
 
@@ -89,7 +98,7 @@ describe("effort assessment", () => {
 
   it("adds advice to the front's later requests once it settles", async () => {
     const test = await withAssessment();
-    const pending = deferred<ClassifierResult>();
+    const pending = Promise.withResolvers<ClassifierResult>();
     test.classifier.answer = () => pending.promise;
     const seen: boolean[] = [];
     route(test.faux, (request) => {
@@ -110,7 +119,7 @@ describe("effort assessment", () => {
 
   it("escalates once after the reply when a sure assessment finds nothing delegated", async () => {
     const test = await withAssessment();
-    const pending = deferred<ClassifierResult>();
+    const pending = Promise.withResolvers<ClassifierResult>();
     test.classifier.answer = () => pending.promise;
     route(test.faux, (request) => {
       const text = textOf(lastMessage(request.messages));
@@ -167,25 +176,7 @@ describe("effort assessment", () => {
   });
 
   it("does not escalate after delegation prunes an already-full retry window", async () => {
-    const test = await withAssessment();
-    test.faux.setResponses(
-      Array.from({ length: 230 }, () => fauxAssistantMessage([fauxText("done")])),
-    );
-    await test.root.commit(
-      (tx) => startWorker(tx, test.root.id, "w", "work", test.directory, "history:0", fauxRole),
-      context,
-    );
-    for (let index = 0; index < 200; index++) {
-      if (index > 0)
-        await test.root.commit(
-          (tx) => messageWorker(tx, test.root.id, "w", "work", `history:${index}`),
-          context,
-        );
-      const state = await test.harness.snapshot(WorkersDoc, test.root.id, context);
-      await test.harness.waitForTask(state!.deliveries.at(-1)!.taskId, context);
-    }
-    const pending = deferred<ClassifierResult>();
-    test.classifier.answer = () => pending.promise;
+    const test = await withAssessment([defineExtension({ name: "test.done", tasks: [Done] })]);
     route(test.faux, (request) =>
       textOf(lastMessage(request.messages)) === "delegate after pruning"
         ? fauxAssistantMessage(
@@ -194,6 +185,28 @@ describe("effort assessment", () => {
           )
         : fauxAssistantMessage([fauxText("done")]),
     );
+    await test.root.commit(
+      (tx) => startWorker(tx, test.root.id, "w", "work", test.directory, "history:0", fauxRole),
+      context,
+    );
+    // Fill the completed retry window without running a worker turn for each delivery.
+    const seeded = await test.root.commit(async (tx) => {
+      const state = await tx.doc(WorkersDoc, test.root.id);
+      for (let index = 1; index < 200; index++) {
+        const taskId = await tx.createTask(Done, null, {
+          conversationId: test.root.id,
+          ownership: { kind: "conversation" },
+          background: true,
+        });
+        state.deliveries.push({ requestId: `history:${index}`, name: "w", taskId });
+        state.started++;
+      }
+      return state.deliveries.map((delivery) => delivery.taskId);
+    }, context);
+    for (const taskId of seeded) await test.harness.waitForTask(taskId, context);
+    await test.root.waitForIdle(context);
+    const pending = Promise.withResolvers<ClassifierResult>();
+    test.classifier.answer = () => pending.promise;
     await test.send("delegate after pruning");
     const workers = await test.harness.snapshot(WorkersDoc, test.root.id, context);
     await test.harness.waitForTask(workers!.deliveries.at(-1)!.taskId, context);
@@ -209,7 +222,7 @@ describe("effort assessment", () => {
     ).toEqual([]);
     expect(test.reports).toEqual([]);
     await test.harness.close(context);
-  }, 60_000);
+  });
 
   it("records a classifier failure without blocking or escalating", async () => {
     const test = await withAssessment();

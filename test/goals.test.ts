@@ -1,24 +1,25 @@
 import { awaitWithContext } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxText, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   hook,
   type JsonObject,
   LiveDoc,
-  ToolResultEntry,
   ToolTask,
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { Goals, GoalsDoc } from "../src/goals.ts";
 import {
-  allEntries,
+  callTools,
   cleanup,
   context,
   lastMessage,
   open,
   route,
+  sectionTexts,
   setup,
   textOf,
+  toolResults,
   waitFor,
 } from "./support.ts";
 
@@ -34,19 +35,10 @@ async function withGoals(calls: Calls) {
   const value = await setup();
   value.registry.install(Goals);
   const sections: string[][] = [];
+  const respond = callTools(calls);
   route(value.faux, (request) => {
-    sections.push(
-      request.messages.flatMap((message: Message) =>
-        message.role === "system" && typeof message.sections?.goals === "string"
-          ? [message.sections.goals]
-          : [],
-      ),
-    );
-    const last = lastMessage(request.messages);
-    const call = last?.role === "user" ? calls[textOf(last)] : undefined;
-    if (call !== undefined)
-      return fauxAssistantMessage([fauxToolCall(call.tool, call.args)], { stopReason: "toolUse" });
-    return fauxAssistantMessage([fauxText("ok")]);
+    sections.push(sectionTexts(request.messages, "goals"));
+    return respond(request);
   });
   return { ...value, sections };
 }
@@ -55,12 +47,11 @@ async function send(root: Awaited<ReturnType<typeof open>>["root"], message: str
   await (await root.submit({ type: "input", content: message }, context)).wait(context);
 }
 
-async function toolResults(root: Awaited<ReturnType<typeof open>>["root"]) {
-  return (await allEntries(root)).flatMap((entry) =>
-    ToolResultEntry.is(entry) && entry.model?.[0]?.role === "toolResult"
-      ? [{ text: textOf(entry.model[0]), isError: entry.model[0].isError }]
-      : [],
-  );
+async function results(root: Awaited<ReturnType<typeof open>>["root"]) {
+  return (await toolResults(root)).map((result) => ({
+    text: textOf(result),
+    isError: result.isError,
+  }));
 }
 
 const create = {
@@ -130,19 +121,19 @@ describe("goals", () => {
         updatedAt: expect.any(Number),
       },
     ]);
-    const results = await toolResults(root);
-    expect(results.map((result) => [result.text.split("\n", 1)[0], result.isError])).toEqual([
+    const updates = await results(root);
+    expect(updates.map((result) => [result.text.split("\n", 1)[0], result.isError])).toEqual([
       ["Changed: created", false],
       ["Changed: status, next, project, workers", false],
       ["Unchanged", false],
       ["Changed: project", false],
       ...Array.from({ length: 5 }, () => ["<harness>", true]),
     ]);
-    expect(results.slice(4).map((result) => result.text.split("\n")[1])).toEqual([
+    expect(updates.slice(4).map((result) => result.text.split("\n")[1])).toEqual([
       "[error] No goal other; creating one needs title, owner, and next",
       ...Array.from({ length: 4 }, () => '[error] Validation failed for tool "update_goal":'),
     ]);
-    expect(results.slice(5).map((result) => result.text.split("\n")[2])).toEqual([
+    expect(updates.slice(5).map((result) => result.text.split("\n")[2])).toEqual([
       "  - status: must be equal to one of the allowed values",
       '  - id: must match pattern "^[a-z0-9][a-z0-9-]{0,47}$"',
       "  - priority: schema is false",
@@ -163,7 +154,7 @@ describe("goals", () => {
       "closed-5",
     ]);
     expect(stored).toHaveLength(21);
-    const list = (await toolResults(root)).at(-1)!;
+    const list = (await results(root)).at(-1)!;
     expect(list.text).toContain("- [closed-24] t24 (dropped, owner monchu)");
     expect(list.text).toContain("- [phone-quit] Fix /quit hanging on the phone (waiting");
     await harness.close(context);
@@ -213,7 +204,7 @@ describe("goals", () => {
         name: "test.interrupt",
         hooks: [
           hook(ToolTask, {
-            afterTool: async (call, result, _api, context) => {
+            afterTool: async (call, _result, _api, context) => {
               if (!pause || call.arguments.next !== "older") return undefined;
               paused = true;
               return awaitWithContext(new Promise<never>(() => {}), context);
