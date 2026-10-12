@@ -23,6 +23,7 @@ type Reloadable = {
   workers: typeof import("./workers.ts");
   codemode: typeof import("./codemode.ts");
   goals: typeof import("./goals.ts");
+  memory: typeof import("./memory.ts");
   identity: typeof import("./identity.ts");
   classifier: typeof import("./classifier.ts");
 };
@@ -65,6 +66,7 @@ async function build(
   const workers = (await load("workers")).createWorkerTools(config.worker);
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
+  const memory = (await load("memory")).createMemory(home);
   const identity = (await load("identity")).createIdentity(home, reportMissing);
   const assessment =
     config.classifier === null
@@ -82,10 +84,11 @@ async function build(
       workers,
       Codemode,
       Goals,
+      memory,
       identity,
       ...(assessment === undefined ? [] : [assessment.extension]),
     ],
-    root: [Goals],
+    root: [Goals, memory],
     settings: context.settings,
     assessment,
     warnings: [...context.warnings, ...tools.warnings],

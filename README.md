@@ -105,6 +105,11 @@ The document is not transcript, so `/new`, compaction, and restarts keep it, and
 `/compact` always asks the summary to keep goal ids and open commitments, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
 
+The root-only `memory` tool edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
+Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate adds do nothing.
+Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
+The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls.
+
 `/abort` (or interactive Ctrl-C) stops the front only.
 `/stop` explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
 `/quit` or SIGTERM closes storage without cancelling accepted work.
@@ -162,6 +167,7 @@ All modules are built and the complete registry and installation order validated
 - `src/config.ts`: optional host config: model roles and classifier overrides.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
+- `src/memory.ts`: bounded, atomic root-only home-memory edits.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
 - `src/context.ts`: home/bundled skill metadata as a prompt section, in-memory SDK settings defaults, and Durable run settings.
@@ -175,7 +181,7 @@ All modules are built and the complete registry and installation order validated
 The backend imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
 The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
-This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
+This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory retrieval backend.
 
 Submission IDs prevent duplicate admission.
 Worker delivery bookkeeping retains all active requests and the latest 200 completed request IDs for retries; older completed IDs may be admitted again.

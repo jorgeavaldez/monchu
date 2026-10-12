@@ -254,6 +254,7 @@ describe("in-process reload", () => {
       "workers",
       "codemode",
       "goals",
+      "memory",
       "identity",
       "classifier",
     ]);
@@ -273,5 +274,18 @@ describe("in-process reload", () => {
     } finally {
       await harness.close(context);
     }
+  });
+
+  it("keeps goals and memory root-only in the real manifest", async () => {
+    const value = await setup();
+    scriptedClassifier(value.models);
+    const extensions = await Extensions.load(value.models, config, value.directory, () => {});
+    expect(extensions.root.map((extension) => extension.name)).toEqual([
+      "monchu.goals",
+      "monchu.memory",
+    ]);
+    const defaults = extensions.defaults().map((extension) => extension.name);
+    expect(defaults).not.toContain("monchu.goals");
+    expect(defaults).not.toContain("monchu.memory");
   });
 });
