@@ -60,7 +60,7 @@ There is no silent model/provider fallback.
 Unknown fields or unknown models fail startup. `"classifier": null` turns classification off.
 The front role is applied at startup and on `/reload`, from its next model request; new workers use the current worker role. Existing workers keep their stored role.
 
-`settings` is a validated subset, not a Pi settings-file pass-through. Omitted fields keep Pi SDK defaults, as shown above.
+`settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults, matching the Pi defaults shown above.
 It also accepts `shellPath`, `shellCommandPrefix`, `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
 Themes are built-in `light`, `dark`, `system`, or a `light/dark` pair. Shell path/prefix are unset by default.
 `defaultTools` accepts exact built-in names, or only `+name`/`-name` modifiers. Monchu's own tools are separate from this selection.
@@ -131,9 +131,9 @@ Clef Flash assesses each message's effort (single turn or sustained) and scope (
 Its result joins the front's later requests as advice and shows as `system · effort`.
 When Clef is sure (70%+) the work outgrows a fast reply and the front finished without delegating, one follow-up input (`system · escalation`) asks the front to hand it to a worker.
 Thinking content stays hidden; the terminal shows an indicator when the provider emits thinking events.
-Pi's editor, message components, tool renderers, and scrolling viewport provide the terminal UI.
+Pi TUI's editor and scrolling viewport provide the terminal UI. Monchu owns its Pi-derived message components, built-in themes, and renderer-only tool cards; rendering never loads coding-agent tool definitions or reads live files to preview edits.
 The status indicator shows working, thinking, tool execution, compaction, and retry activity.
-The TUI follows terminal light/dark reports with Pi's built-in themes.
+The TUI follows terminal light/dark reports with its copied built-in themes.
 
 `/help` lists the commands; `src/tui/commands.ts` defines them.
 
@@ -224,7 +224,7 @@ Config and all modules are prepared, and the complete registry and installation 
 
 - `src/backend.ts`: store ownership, admission, observation, worker controls, and execution directories.
 - `src/models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.
-- `src/config.ts`: validated host config: model roles, classifier overrides and run settings.
+- `src/config.ts`: validated host config: model roles, classifier overrides, and the resolved Monchu settings type/defaults.
 - `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
@@ -236,7 +236,8 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
 - `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
 - `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
-- `src/tui/`: the command table and input parsing, Durable presentation mapping, and Pi-style viewport rendering.
+- `src/skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
+- `src/tui/`: the command table and input parsing, Durable presentation mapping, copied themes/message components/tool renderers, and Pi-style viewport rendering.
 - `src/main.ts`: lifecycle wiring.
 
 The backend imports no terminal code and writes nothing to stdout.

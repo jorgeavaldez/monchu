@@ -1,5 +1,5 @@
 import type { AttachedReplicatedState } from "@earendil-works/chord";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "./theme/theme.ts";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";

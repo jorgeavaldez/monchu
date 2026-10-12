@@ -1,5 +1,5 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "../src/tui/theme/theme.ts";
 import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";

@@ -17,21 +17,10 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-import {
-  AssistantMessageComponent,
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createFindToolDefinition,
-  createGrepToolDefinition,
-  createLsToolDefinition,
-  createPowerShellToolDefinition,
-  createReadToolDefinition,
-  createWriteToolDefinition,
-  getMarkdownTheme,
-  getSelectListTheme,
-  ToolExecutionComponent,
-  UserMessageComponent,
-} from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { ToolExecutionComponent } from "./components/tool-execution.ts";
+import { UserMessageComponent } from "./components/user-message.ts";
+import { getMarkdownTheme, getSelectListTheme } from "./theme/theme.ts";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import {
@@ -136,10 +125,6 @@ export class MonchuTui {
   private readonly tools = new Map<string, ToolExecutionComponent>();
   private readonly cards: ToolExecutionComponent[] = [];
   private readonly streamedCalls = new Set<string>();
-  private readonly renderers = new Map<
-    string,
-    ConstructorParameters<typeof ToolExecutionComponent>[4]
-  >();
   private readonly notices: string[] = [];
   private renderedIds: number[] = [];
   private streaming: Container | undefined;
@@ -160,18 +145,6 @@ export class MonchuTui {
   ) {
     this.cwd = home;
     this.ui = new TuiAltScreen(terminal, true, home);
-    // Exported definitions include Pi's renderers. Their execution functions are never used here.
-    for (const definition of [
-      createReadToolDefinition(home),
-      createWriteToolDefinition(home),
-      createEditToolDefinition(home),
-      createBashToolDefinition(home),
-      createPowerShellToolDefinition(home),
-      createGrepToolDefinition(home),
-      createFindToolDefinition(home),
-      createLsToolDefinition(home),
-    ])
-      this.renderers.set(definition.name, definition);
     this.editor = new Editor(
       this.ui,
       {
@@ -428,7 +401,6 @@ export class MonchuTui {
     for (const output of state.output) {
       const card = this.tool(output.name, output.id);
       card.setArgsComplete();
-      card.markExecutionStarted();
       if (output.text || output.details !== undefined)
         card.updateResult(
           {
@@ -508,13 +480,8 @@ export class MonchuTui {
       const container = this.streaming ?? new Container();
       if (!this.streaming) this.chat.addChild(container);
       container.clear();
-      // Thinking is private: even a clickable Pi thinking block must not reveal its content.
-      container.addChild(
-        new AssistantMessageComponent(
-          { ...message, content: message.content.filter((part) => part.type !== "thinking") },
-          true,
-        ),
-      );
+      // Monchu's component never renders private thinking content.
+      container.addChild(new AssistantMessageComponent(message));
       this.streaming = undefined;
       for (const part of message.content) {
         if (part.type !== "toolCall") continue;
@@ -550,15 +517,7 @@ export class MonchuTui {
       if (args !== undefined) existing.updateArgs(args);
       return existing;
     }
-    const card = new ToolExecutionComponent(
-      name,
-      id,
-      args ?? {},
-      {},
-      this.renderers.get(name),
-      this.ui,
-      this.cwd,
-    );
+    const card = new ToolExecutionComponent(name, args ?? {}, this.ui, this.cwd);
     card.setExpanded(this.expanded);
     this.chat.addChild(card);
     this.cards.push(card);

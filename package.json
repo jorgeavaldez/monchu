@@ -16,7 +16,11 @@
     "@earendil-works/pi-durable": "1.1.0",
     "@earendil-works/pi-tui": "1.1.0",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "@silvia-odwyer/photon-node": "0.3.4",
     "cc-session-io": "0.4.0",
+    "chalk": "6.0.0",
+    "diff": "8.0.4",
+    "highlight.js": "10.7.3",
     "ignore": "7.0.8",
     "proper-lockfile": "4.1.2",
     "yaml": "2.9.0"
