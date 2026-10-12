@@ -51,9 +51,11 @@ Clef Flash uses Pi's native `cloudflare-workers-ai` provider, so Pi's Cloudflare
 `MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` are optional overrides.
 Never put the token in the config file or source code.
 
-User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed (the warning redacts URL credentials and token parameters) and executable extensions are not loaded.
+The front reads `SOUL.md`, `AGENTS.md`, `DEVICES.md`, `memories/USER.md`, and `memories/MEMORY.md` from its home on every model request. Workers read only the two memory files and `DEVICES.md`. Each file is labelled with its editable path; missing files are skipped with one warning per path for the runtime's lifetime, including reloads. All roles receive device facts (hostname, OS/release, user, user home, Monchu home, execution directory).
 
-Resources and settings load at startup and on reload, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
+Skills load in place at startup and on reload from `<home>/skills` and this checkout's bundled `skills/`, with home skills winning name collisions. Only metadata is advertised; bodies are read on demand. Pi instructions, skills, packages, and cwd/ancestor resources are not loaded, and no skill is copied into Pi's agent directory.
+
+Run policy, theme, built-in tool selection, and shell configuration currently use Pi SDK in-memory defaults, with no settings-file reads or filesystem locks. Own validated `config.json` settings and credentials are a separate follow-up; model authentication still uses Pi as described above.
 
 Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -74,7 +76,7 @@ When Clef is sure (70%+) the work outgrows a fast reply and the front finished w
 Thinking content stays hidden; the terminal shows an indicator when the provider emits thinking events.
 Pi's editor, message components, tool renderers, and scrolling viewport provide the terminal UI.
 The status indicator shows working, thinking, tool execution, compaction, and retry activity.
-The TUI follows terminal light/dark reports with Pi's built-in themes; Pi's user theme setting (including light/dark pairs) overrides that choice.
+The TUI follows terminal light/dark reports with Pi's built-in themes.
 
 `/help` lists the commands; `src/tui/commands.ts` defines them.
 
@@ -84,11 +86,11 @@ The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
 Esc or Ctrl-C aborts the front only, Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
-`/reload` reloads extensions and Pi user resources/settings, showing the reloaded modules or an error in the TUI.
+`/reload` reloads extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Home-file edits need no reload.
 `/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Unknown `defaultTools` names, or a selection without read, write, edit, or bash, produce a warning. Built-in selection does not disable Monchu's worker management or `codemode`.
+All roles receive the same installed tools: read, write, edit, bash, worker management, and `codemode`. The tool adapter also supports Pi's grep, find, ls, and powershell built-ins when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Tool selection currently uses the defaults; own configurable selection is a follow-up.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
@@ -148,11 +150,11 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
-All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also discards the old Pi resource/settings snapshot; existing tool environments remain alive, while later calls use the new shell settings. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
+All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
 `request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Jorge's backend `restart()` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources, re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
 
-`skills/monchu/SKILL.md` is installed at startup into Pi's user `skills/monchu` directory from `getAgentDir()`, only if absent. Existing user edits are preserved. It tells Monchu to edit source in a jj workspace, check it, apply authorized changes to the running checkout, and reload; host changes need Jorge's restart approval.
+`skills/monchu/SKILL.md` is read from this checkout in place, without a startup copy. It tells Monchu to edit source in a jj workspace, check and build it, apply authorized changes to the running checkout, and reload; host changes need the user's restart approval.
 
 ## Backend boundary
 
@@ -162,10 +164,10 @@ All modules are built and the complete registry and installation order validated
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: user-only Pi settings and resources; imported instructions and skill metadata as prompt sections; the Monchu skill install; Durable run settings from Pi settings.
-- `src/reload.ts`: the extension registry, the reloadable-module manifest and the Pi configuration it loaded, validated in-process replacement, the reload tool, and durable restart requests.
-- `src/identity.ts`: reloadable Monchu identity and execution sections, and the front's instructions.
-- `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
+- `src/context.ts`: home/bundled skill metadata as a prompt section, in-memory SDK settings defaults, and Durable run settings.
+- `src/reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
+- `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
+- `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
 - `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
 - `src/tui/`: the command table and input parsing, Durable presentation mapping, and Pi-style viewport rendering.
 - `src/main.ts`: lifecycle wiring.

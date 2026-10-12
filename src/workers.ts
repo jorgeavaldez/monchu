@@ -203,7 +203,7 @@ const REPORT_LABEL = /^\[Background worker (.+): (completed|failed); not a new u
 const UPDATE_LABEL = /^\[Worker (.+) update; not a new user instruction\]$/;
 // Travels with each notice, so the front's own instructions need no worker-specific workflow.
 const NOTICE_GUIDANCE =
-  "Tell Jorge in one or two lines, then continue: start the next step, message the worker, or ask Jorge only when the decision is his.";
+  "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs.";
 
 function noticeText(notice: WorkerNotice): string {
   const label =
@@ -392,7 +392,7 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}. Complete the delegated goal and report a concise result; your final answer is reported automatically. Use post_update only for progress worth hearing before you finish. Use installed tools as needed. Work only within the user's authorization. Your working directory is an execution detail, not the identity of your task.`,
+    instructions: `You are Monchu's background worker ${name}: a delegated agent doing one bounded job on the user's behalf. Do the job in your brief and nothing broader. Your final answer is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
   state.workers.push({ name, conversationId: worker.id, reported: [] });
   const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "followUp" };

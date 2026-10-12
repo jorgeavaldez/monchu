@@ -48,19 +48,24 @@ type Build = {
 };
 
 /** Import fresh copies of the reloadable modules and build their extensions. Nothing is installed. */
-async function build(models: Models, config: MonchuConfig, agentDir: string): Promise<Build> {
+async function build(
+  models: Models,
+  config: MonchuConfig,
+  home: string,
+  reportMissing: (path: string) => void,
+): Promise<Build> {
   const version = randomUUID();
   const modules: (keyof Reloadable)[] = [];
   const load = <Name extends keyof Reloadable>(name: Name) => {
     modules.push(name);
     return freshImport(name, version);
   };
-  const context = await (await load("context")).createPiContext(agentDir);
+  const context = (await load("context")).createContext(home);
   const tools = (await load("pi-tools")).createPiTools(context.settings, process.platform);
   const workers = (await load("workers")).createWorkerTools(config.worker);
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
-  const { Identity } = await load("identity");
+  const identity = (await load("identity")).createIdentity(home, reportMissing);
   const assessment =
     config.classifier === null
       ? undefined
@@ -77,7 +82,7 @@ async function build(models: Models, config: MonchuConfig, agentDir: string): Pr
       workers,
       Codemode,
       Goals,
-      Identity,
+      identity,
       ...(assessment === undefined ? [] : [assessment.extension]),
     ],
     root: [Goals],
@@ -100,30 +105,33 @@ export function installExtensions(registry: Registry, extensions: readonly Exten
 }
 
 /**
- * The extension registry and the Pi configuration of its last successful build. Every `Reloadable` module reloads in
+ * The extension registry and settings of its last successful build. Every `Reloadable` module reloads in
  * process; the backend, config, and this loader need /restart.
  */
 export class Extensions {
   readonly registry: Registry;
   private readonly models: Models;
   private readonly config: MonchuConfig;
-  private readonly agentDir: string;
+  private readonly home: string;
   private readonly report: (warning: string) => void;
+  private readonly reportMissing: (path: string) => void;
   private current: Build;
   private reloading: Promise<readonly string[]> | undefined;
 
   private constructor(
     models: Models,
     config: MonchuConfig,
-    agentDir: string,
+    home: string,
     report: (warning: string) => void,
+    reportMissing: (path: string) => void,
     current: Build,
   ) {
     this.registry = createRegistry();
     this.models = models;
     this.config = config;
-    this.agentDir = agentDir;
+    this.home = home;
     this.report = report;
+    this.reportMissing = reportMissing;
     this.current = current;
   }
 
@@ -131,17 +139,23 @@ export class Extensions {
   static async load(
     models: Models,
     config: MonchuConfig,
-    agentDir: string,
+    home: string,
     report: (warning: string) => void,
   ): Promise<Extensions> {
-    const current = await build(models, config, agentDir);
-    const extensions = new Extensions(models, config, agentDir, report, current);
+    const missingFiles = new Set<string>();
+    const reportMissing = (path: string) => {
+      if (missingFiles.has(path)) return;
+      missingFiles.add(path);
+      report(`Missing Monchu home file (skipped): ${path}`);
+    };
+    const current = await build(models, config, home, reportMissing);
+    const extensions = new Extensions(models, config, home, report, reportMissing, current);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
   }
 
-  /** The loaded Pi user settings. */
+  /** The loaded run settings. */
   get settings(): SettingsManager {
     return this.current.settings;
   }
@@ -171,7 +185,7 @@ export class Extensions {
   reload(): Promise<readonly string[]> {
     this.reloading ??= (async () => {
       await buildForReload();
-      const next = await build(this.models, this.config, this.agentDir);
+      const next = await build(this.models, this.config, this.home, this.reportMissing);
       installExtensions(this.registry, next.extensions);
       this.current = next;
       for (const warning of next.warnings) this.report(warning);
@@ -237,14 +251,14 @@ export function createReloadControls(
         const request = (await input.read.snapshot(RestartRequest, rootId, context))?.request;
         return request === undefined || request === null
           ? undefined
-          : `Restart requested: ${request.reason}. Only Jorge can approve it with /restart.`;
+          : `Restart requested: ${request.reason}. Only the user can approve it with /restart.`;
       }),
     ],
     tools: [
       defineTool({
         name: "reload_extensions",
         description:
-          "Reload Monchu extensions, Pi skills, instructions and settings in process. Running calls finish on old code. Host changes require request_restart and Jorge's /restart.",
+          "Reload Monchu extensions and home/bundled skills in process. Home files are read on every request. Running calls finish on old code. Host changes require request_restart and the user's /restart.",
         parameters: Type.Object({}),
         replay: "unsafe",
         execute: async () => ({
@@ -254,7 +268,7 @@ export function createReloadControls(
       defineTool({
         name: "request_restart",
         description:
-          "Record a reason to ask Jorge for /restart. This never restarts Monchu or approves its own request.",
+          "Record a reason to ask the user for /restart. This never restarts Monchu or approves its own request.",
         parameters: Type.Object(
           { reason: Type.String({ pattern: "\\S", maxLength: 2000 }) },
           { additionalProperties: false },
@@ -271,7 +285,7 @@ export function createReloadControls(
             content: [
               {
                 type: "text",
-                text: "Restart requested. Jorge must use /restart; nothing was restarted.",
+                text: "Restart requested. The user must use /restart; nothing was restarted.",
               },
             ],
           };

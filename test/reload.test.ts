@@ -230,20 +230,19 @@ describe("in-process reload", () => {
     }
   });
 
-  it("reloads the real manifest, user instructions, skills and settings", async () => {
+  it("reloads the real manifest and home skills", async () => {
     const value = await setup();
-    await mkdir(join(value.agentDir, "skills", "sample"), { recursive: true });
-    await writeFile(join(value.agentDir, "AGENTS.md"), "old user guidance");
-    scriptedClassifier(value.models);
-    const extensions = await Extensions.load(value.models, config, value.agentDir, () => {});
-    expect(extensions.settings.getDefaultTools()).toBeUndefined();
-    await writeFile(join(value.agentDir, "AGENTS.md"), "fresh user guidance");
+    await mkdir(join(value.directory, "skills", "sample"), { recursive: true });
+    await writeFile(join(value.directory, "AGENTS.md"), "old home guidance");
     await writeFile(
-      join(value.agentDir, "settings.json"),
-      JSON.stringify({ defaultTools: ["read"] }),
+      join(value.directory, "skills", "sample", "SKILL.md"),
+      "---\nname: sample\ndescription: old skill\n---\ncontent\n",
     );
+    scriptedClassifier(value.models);
+    const extensions = await Extensions.load(value.models, config, value.directory, () => {});
+    await writeFile(join(value.directory, "AGENTS.md"), "fresh home guidance");
     await writeFile(
-      join(value.agentDir, "skills", "sample", "SKILL.md"),
+      join(value.directory, "skills", "sample", "SKILL.md"),
       "---\nname: sample\ndescription: fresh skill\n---\ncontent\n",
     );
     // Concurrent requests share one reload.
@@ -258,7 +257,6 @@ describe("in-process reload", () => {
       "identity",
       "classifier",
     ]);
-    expect(extensions.settings.getDefaultTools()).toEqual(["read"]);
     const sections: string[] = [];
     route(value.faux, (request) => {
       sections.push(...sectionTexts(request.messages));
@@ -267,25 +265,13 @@ describe("in-process reload", () => {
     const { harness, root } = await open({ ...value, registry: extensions.registry });
     try {
       await (await root.submit({ type: "input", content: "hello" }, context)).wait(context);
-      expect(sections.join("\n")).toContain("fresh user guidance");
-      expect(sections.join("\n")).not.toContain("old user guidance");
+      expect(sections.join("\n")).toContain("fresh home guidance");
+      expect(sections.join("\n")).not.toContain("old home guidance");
       expect(sections.join("\n")).toContain("fresh skill");
-      expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain("bash");
+      expect(sections.join("\n")).not.toContain("old skill");
+      expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
     } finally {
       await harness.close(context);
     }
-  });
-
-  it("leaves installed extensions and settings unchanged when a reload fails", async () => {
-    const value = await setup();
-    await mkdir(value.agentDir);
-    scriptedClassifier(value.models);
-    const extensions = await Extensions.load(value.models, config, value.agentDir, () => {});
-    const registry = extensions.registry.snapshot();
-    const settings = extensions.settings;
-    await writeFile(join(value.agentDir, "settings.json"), "{");
-    await expect(extensions.reload()).rejects.toThrow("Pi settings failed");
-    expect(extensions.registry.snapshot()).toBe(registry);
-    expect(extensions.settings).toBe(settings);
   });
 });

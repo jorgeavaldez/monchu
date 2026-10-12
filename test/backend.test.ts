@@ -2,13 +2,14 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { cleanup, fauxRole, lastMessage, route, setup, textOf, type Setup } from "./support.ts";
 
 afterEach(cleanup);
 
-/** A real backend on faux roles in `<directory>/home`, with Pi user resources in the test's agent directory. */
+/** A real backend on faux roles in `<directory>/home`, isolated from the user's homes. */
 async function openBackend(value: Setup): Promise<{ home: string; backend: Monchu }> {
   const home = join(value.directory, "home");
   await mkdir(home, { recursive: true });
@@ -20,27 +21,16 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
 }
 
 describe("backend", () => {
-  it("delivers skill and defaultTools warnings with collision locations to subscribers and the log", async () => {
+  it("delivers home skill warnings with collision locations to subscribers and the log", async () => {
     const value = await setup();
-    const { agentDir } = value;
-    const invalidPath = join(agentDir, "skills", "broken", "SKILL.md");
-    const firstPath = join(agentDir, "skills", "vault", "SKILL.md");
-    const secondPath = join(agentDir, "extra", "vault", "SKILL.md");
-    for (const directory of [
-      join(agentDir, "skills", "broken"),
-      join(agentDir, "skills", "vault"),
-      join(agentDir, "extra", "vault"),
-    ]) {
-      await mkdir(directory, { recursive: true });
-    }
+    const homeSkills = join(value.directory, "home", "skills");
+    const invalidPath = join(homeSkills, "broken", "SKILL.md");
+    const firstPath = join(homeSkills, "monchu", "SKILL.md");
+    const secondPath = fileURLToPath(new URL("../skills/monchu/SKILL.md", import.meta.url));
+    await mkdir(join(homeSkills, "broken"), { recursive: true });
+    await mkdir(join(homeSkills, "monchu"), { recursive: true });
     await writeFile(invalidPath, "---\nname: broken\n---\nno description");
-    for (const path of [firstPath, secondPath]) {
-      await writeFile(path, "---\nname: vault\ndescription: vault workflow\n---\nbody");
-    }
-    await writeFile(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ skills: ["extra"], defaultTools: ["read", "bash", "Typo"] }),
-    );
+    await writeFile(firstPath, "---\nname: monchu\ndescription: home workflow\n---\nbody");
     const { home, backend } = await openBackend(value);
     try {
       const warnings: string[] = [];
@@ -51,12 +41,14 @@ describe("backend", () => {
           (message) => message.includes("description is required") && message.includes(invalidPath),
         ),
       ).toBe(true);
-      const collision = warnings.find((message) => message.includes('name "vault" collision'));
+      const collision = warnings.find((message) => message.includes('name "monchu" collision'));
       expect(collision).toContain(firstPath);
       expect(collision).toContain(secondPath);
       expect(collision).toContain("winner:");
       expect(collision).toContain("loser:");
-      expect(warnings).toContain("Pi defaultTools has unknown built-ins (ignored): Typo");
+      await expect(
+        readFile(join(value.agentDir, "skills", "monchu", "SKILL.md"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await backend.close();
     }
@@ -64,7 +56,7 @@ describe("backend", () => {
     await expect
       .poll(async () => {
         const log = await readFile(join(home, "monchu.log"), "utf8");
-        return [invalidPath, firstPath, secondPath, "Typo"].every((item) => log.includes(item));
+        return [invalidPath, firstPath, secondPath].every((item) => log.includes(item));
       })
       .toBe(true);
   });

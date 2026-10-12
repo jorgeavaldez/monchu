@@ -196,7 +196,7 @@ export function createEffortAssessment(
             await front.submit(
               {
                 type: "input",
-                content: `${ESCALATION_PREFIX}: ${describe(result)}. Not a new user instruction.]\nJorge's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, start a worker now with a self-contained goal, context, and constraints, then tell Jorge in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
+                content: `${ESCALATION_PREFIX}: ${describe(result)}. Not a new user instruction.]\nThe user's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, start a worker now with a self-contained goal, context, and constraints, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
                 whenBusy: "followUp",
                 requestId: `assessment:${task.id}`,
               },
@@ -240,7 +240,7 @@ export function createEffortAssessment(
 
   return {
     /**
-     * Admit Jorge's message to the front, then start its assessment. Resolves on admission; neither the front's reply
+     * Admit the user's message to the front, then start its assessment. Resolves on admission; neither the front's reply
      * nor this call waits for the classifier. A retry with the same request ID reuses the submission and assessment.
      */
     async submit(front: Conversation, message: string, requestId: string, context: Context) {
@@ -285,7 +285,7 @@ export function createEffortAssessment(
             if (item?.result == null) return;
             const advice =
               item.result.status === "assessed"
-                ? `Effort assessment of Jorge's latest request: ${describe(item.result)}. ${needsEscalation(item.result) ? "This outgrows a single fast reply: delegate it to a worker if you have not." : "Answer directly if you can."} It grants no permission.`
+                ? `Effort assessment of the user's latest request: ${describe(item.result)}. ${needsEscalation(item.result) ? "This outgrows a single fast reply: delegate it to a worker if you have not." : "Answer directly if you can."} It grants no permission.`
                 : `Effort assessment unavailable: ${item.result.message}. Judge effort yourself.`;
             return {
               messages: [...messages, { role: "system", content: advice, timestamp: Date.now() }],

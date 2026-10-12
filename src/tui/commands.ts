@@ -20,10 +20,10 @@ export const commands: Record<
   "/compact": { usage: "[instructions]", help: "summarize root context" },
   "/cd": { usage: "<path>", help: "change the idle root's directory" },
   "/cd-worker": { usage: "<name> <path>", help: "change an idle worker's directory" },
-  "/reload": { usage: "", help: "reload extensions, skills, instructions, and settings" },
+  "/reload": { usage: "", help: "reload extensions and home/bundled skills" },
   "/restart": {
     usage: "",
-    help: "Jorge-only approval: restore the terminal and restart Monchu",
+    help: "User-only approval: restore the terminal and restart Monchu",
   },
   "/help": { usage: "", help: "show commands" },
   "/quit": { usage: "", help: "save and close" },

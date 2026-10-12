@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
 import { loadConfig, type MonchuConfig } from "./config.ts";
-import { harnessSettings, installMonchuSkill } from "./context.ts";
+import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
@@ -91,8 +91,7 @@ export class Monchu {
       }
 
       const reports = new Reports(join(home, "monchu.log"));
-      await installMonchuSkill(agentDir);
-      const extensions = await Extensions.load(models, config, agentDir, (warning) =>
+      const extensions = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
       );
       harness = await Harness.open(
@@ -135,7 +134,7 @@ export class Monchu {
     }
   }
 
-  /** The Pi user settings of the last successful load or reload. */
+  /** The run settings of the last successful load or reload. */
   get settings(): SettingsManager {
     return this.extensions.settings;
   }
@@ -261,7 +260,7 @@ export class Monchu {
     return this.extensions.reload();
   }
 
-  /** Jorge-only backend operation. Never exposed as a model tool. */
+  /** User-only backend operation. Never exposed as a model tool. */
   async restart(): Promise<never> {
     await this.front.commit(async (tx) => {
       (await tx.doc(RestartRequest, this.front.id)).request = null;

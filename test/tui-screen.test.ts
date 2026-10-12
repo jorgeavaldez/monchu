@@ -11,24 +11,32 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 async function withTerminal(
   columns: number,
   theme: string,
-  test: (screen: VirtualTerminal, agentDir: string) => Promise<void>,
+  test: (screen: VirtualTerminal) => Promise<void>,
 ): Promise<void> {
   const previousHome = process.env.MONCHU_DEV_HOME;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
-  const agentDir = join(home, "agent");
   const screen = new VirtualTerminal(columns, 40);
   let backend: Monchu | undefined;
   let running: Promise<void> | undefined;
   try {
     process.env.MONCHU_DEV_HOME = home;
-    await mkdir(agentDir);
-    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ theme }));
+    await mkdir(join(home, "memories"));
+    await mkdir(join(home, "skills"));
+    for (const file of [
+      "SOUL.md",
+      "AGENTS.md",
+      "DEVICES.md",
+      "memories/USER.md",
+      "memories/MEMORY.md",
+    ])
+      await writeFile(join(home, file), "Smoke home context");
     backend = await openDevMonchu();
+    backend.settings.setTheme(theme);
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
     await visible(screen, "Monchu · /help");
-    await test(screen, agentDir);
+    await test(screen);
   } finally {
     try {
       if (running !== undefined) {
@@ -132,8 +140,8 @@ describe.each([
     });
   }, 30_000);
 
-  it("labels worker updates/reports, selects and messages a worker, and shows reload success/errors", async () => {
-    await withTerminal(columns, theme, async (screen, agentDir) => {
+  it("labels worker updates/reports, selects and messages a worker, and shows reload success", async () => {
+    await withTerminal(columns, theme, async (screen) => {
       send(screen, "/work reader inspect");
       await visible(screen, "worker · reader · update");
       await visible(screen, "Faux worker progress: checking.");
@@ -159,9 +167,6 @@ describe.each([
       await visible(screen, "root · front");
       send(screen, "/reload");
       await visible(screen, "reloaded · context");
-      await writeFile(join(agentDir, "settings.json"), "{");
-      send(screen, "/reload");
-      await visible(screen, "error · Pi settings failed");
       expect(screen.stopped).toBe(false);
     });
   }, 30_000);

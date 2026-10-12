@@ -52,7 +52,7 @@ describe("terminal input boundary", () => {
       expect(() => parseInput(invalid)).toThrow();
     expect(help).toContain("/reload");
     expect(help).toContain("/restart");
-    expect(help).toContain("Jorge-only");
+    expect(help).toContain("User-only");
   });
 
   it("restores the terminal and stops input before /restart re-executes, reopens storage, and propagates the child code", async () => {
