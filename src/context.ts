@@ -177,7 +177,7 @@ export async function createPiContext(agentDir: string) {
   return {
     settings,
     extension: defineExtension({
-      name: "monchu.pi-context",
+      name: "monchu.context",
       sections: [
         section("pi_user_instructions", () => imported, { tag: false }),
         section("skills", () => skillPrompt || undefined, { tag: false }),

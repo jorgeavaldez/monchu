@@ -54,15 +54,37 @@ Ask when scope or a design decision materially changes the outcome.
 
 - Implement the smallest complete approved outcome, at most two bounded changes per implementation phase.
   Investigations can happen in parallel; never assign concurrent writers to the same checkout/files.
-- Prefer direct local code and precise types.
-  No trivial one-use wrappers, speculative layers, compatibility shims, `any`, unchecked casts, or unjustified suppressions.
+- Prefer direct local code and precise types; follow the code rules below.
 - Validate untrusted inputs at the boundary.
   Keep credentials out of docs, prompts, source control, and logs.
 - Use jj for source-control operations and prefer jj workspaces for separate coding tasks.
   Publish source changes only when explicitly authorized; vault delivery follows its own standing authorization.
 - Use native `agent_browser` when browser automation is needed.
   Existing homelab browser ownership/takeover rules remain authoritative; never blindly replay uncertain submissions.
-- After code changes run the relevant tests, `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run check`.
+- After code changes run `npm run check` and `npm run build`; both must pass.
   Report what actually ran and any pre-existing failures; do not claim an interactive, restart, or phone flow works from static checks alone.
 - Update the canonical vault handoff when approved work changes the project state.
   Keep shared filenames portable across Windows, macOS, Linux, and Android.
+
+## Code rules
+
+`npm run check` enforces most of these; do not weaken a check to pass it.
+
+- **Layering.** `src/main.ts` composes the backend (`src/backend.ts`) and the TUI (`src/tui/`).
+  Nothing else imports `src/tui/`, and the backend writes nothing to stdout.
+  Reading Pi's configuration belongs in `src/context.ts` and the backend's model/auth setup only.
+- **One way to define an extension.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory when it needs host inputs.
+  A factory that has more to hand back returns `{ extension, ... }`, with configuration problems as `warnings: string[]`.
+  Add the module to `Reloadable` and `build()` in `src/reload.ts`, and tag the export the manifest reads `@public`.
+- **Types.** No `any`, casts, non-null assertions, or `@ts-` comments.
+  A lint disable needs a reason on the same line and no alternative; the existing ones are for computed `import()`.
+- **No compatibility shims.** Change an API and update every caller; delete the old shape and its tests.
+  Do not keep code for old stored data, checkpoints, or call shapes.
+  A change to a stored shape ships with a migration only when Jorge wants existing data kept; otherwise he decides on a fresh database.
+- **Tests.** Run real Durable Harnesses on SQLite in temp directories with Pi's faux providers, through Monchu's public seams.
+  No `vi` (mocks, spies, stubs, fake timers) and no patching of Monchu code.
+  Shared helpers live only in `test/support.ts`; call `setup()` and `cleanup()` so each test has its own home.
+  Tests never touch `~/.monchu`, `~/.pi`, or `~/.agents`.
+  The suite passes on Windows and Linux; skip a case only for genuinely POSIX-only behavior, and say why.
+- **Check gates.** `npm run check` runs `tsc`, type-aware oxlint (types, layering, test imports), `oxfmt --check`, knip (unused files, exports, dependencies), and vitest.
+  Development tooling need not run on Termux; runtime code must.

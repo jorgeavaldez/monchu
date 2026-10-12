@@ -18,7 +18,8 @@ This repo owns implementation documentation, not a second roadmap.
 
 Use npm **12.2.0 or newer** and Node **22.19 or newer**.
 `mise.toml` pins the preferred toolchain.
-TypeScript 6 is used because TypeScript 7's native compiler does not ship an Android binary.
+Development tooling (TypeScript 7, oxlint, knip, vitest) runs on Windows, macOS, and Linux.
+Android (Termux) is a runtime target only: the phone runs a build made elsewhere, so runtime code must work there, but checks and builds need not.
 
 ```sh
 npm ci
@@ -75,25 +76,7 @@ Pi's editor, message components, tool renderers, and scrolling viewport provide 
 The status indicator shows working, thinking, tool execution, compaction, and retry activity.
 The TUI follows terminal light/dark reports with Pi's built-in themes; Pi's user theme setting (including light/dark pairs) overrides that choice.
 
-```text
-/work reader summarize a subject using the available local files
-/tell reader focus on the unresolved questions
-/workers
-/agents
-/agents reader
-/agents root
-/goals
-/stop reader
-/abort
-/new optional handoff note for the fresh context
-/compact focus on the open decisions
-/cd ~/proj/monchu
-/cd-worker reader ~/proj/pi
-/reload
-/restart
-/help
-/quit
-```
+`/help` lists the commands; `src/tui/commands.ts` defines them.
 
 `/agents` opens a filterable worker selector with current status and directory.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
@@ -118,7 +101,7 @@ Open goals are always kept; done and dropped goals are kept for the 20 most rece
 `/goals` lists the open goals.
 The document is not transcript, so `/new`, compaction, and restarts keep it, and the section returns in the next request.
 `/compact` always asks the summary to keep goal ids and open commitments, ahead of any focus you add.
-Durable 1.0.2 has no instructions for automatic compaction; its summary may drop goal history, but the section still restores the open goals.
+Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
 
 `/abort` (or interactive Ctrl-C) stops the front only.
 `/stop` explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
@@ -163,7 +146,7 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 `reload_extensions` is available to all roles, as is Jorge's `/reload` command. The backend exposes `reload()` and `restart()`; only Jorge's `/restart` command calls the latter after restoring the terminal.
 
-Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each manifest module is imported with a fresh query string: workers, codemode, classifier, goals, Pi context/tools, and identity. Static imports remain cached, so dependency and host changes require a restart.
+Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
 All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also discards the old Pi resource/settings snapshot; existing tool environments remain alive, while later calls use the new shell settings. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
@@ -175,22 +158,21 @@ All modules are built and the complete registry and installation order validated
 
 - `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
 - `src/config.ts`: optional host config: model roles and classifier overrides.
-- `src/workers.ts`: durable worker ownership/delivery state machines and model tools.
+- `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: user-only Pi settings and resources; imported instructions and skill metadata as prompt sections.
-- `src/reload.ts`: extension manifest, validated in-process replacement, reload tool, and durable restart requests.
-- `src/identity.ts`: reloadable Monchu identity and execution sections.
+- `src/context.ts`: user-only Pi settings and resources; imported instructions and skill metadata as prompt sections; the Monchu skill install; Durable run settings from Pi settings.
+- `src/reload.ts`: the extension registry, the reloadable-module manifest and the Pi configuration it loaded, validated in-process replacement, the reload tool, and durable restart requests.
+- `src/identity.ts`: reloadable Monchu identity and execution sections, and the front's instructions.
 - `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
-- `src/terminal.ts`: terminal lifecycle, commands, and read-only view attachments.
-- `src/tui/`: input parsing, Durable presentation mapping, and Pi-style viewport rendering.
+- `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
+- `src/tui/`: the command table and input parsing, Durable presentation mapping, and Pi-style viewport rendering.
 - `src/main.ts`: lifecycle wiring.
 
 The backend imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
 The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
-The committed-event interface remains available for other consumers.
 This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
 
 Submission IDs prevent duplicate admission.
@@ -198,7 +180,6 @@ Worker delivery bookkeeping retains all active requests and the latest 200 compl
 Reported answer bookkeeping keeps 200 recent IDs per worker plus any answers still needed by active deliveries.
 These windows bound the materialized worker bookkeeping, not Durable's stored tasks or transcript.
 The latest-history worker document checkpoints every 32 changed commits, retaining one base and at most 31 deltas rather than an ever-growing revision tail.
-An existing v2 tail above that limit is reclaimed on its next changed commit.
 This bounds worker revision count, not total SQLite-file size; active work and the worker registry can still grow.
 Neither receipt nor the front's reply waits for Clef.
 Each admitted message gets one assessment task (keyed by submission) in `monchu.assessments`; recovery reuses its committed result.
@@ -209,31 +190,24 @@ Reports are submitted with stable request IDs (`worker-report:<task>`, then `:<n
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
 
-### Worker bookkeeping upgrade and rollback
-
-The worker document migrates one-way from v1 to v2 on its first committing access, even without an edit.
-The migration preserves delivery and answer IDs and initializes the cumulative delegation count from v1 deliveries.
-A v1 build cannot read the migrated document.
-Before upgrading, stop Monchu and take a consistent backup of its home, including `monchu.sqlite` and any SQLite WAL sidecars together.
-To roll back, stop Monchu and restore that complete pre-upgrade backup before starting the v1 build; do not mix an old database with newer sidecars.
-Restoring loses work accepted since the backup. Merely switching builds does not undo migration.
+A home written before the 2026-10 refactor needs a fresh `monchu.sqlite`; there is no compatibility code for older stored data.
 
 ## Checks
 
 ```sh
-npm run typecheck
-npm run lint
+npm run check   # typecheck, type-aware lint, format, knip, tests
 npm run build
-npm run check
 ```
 
-`npm test` runs vitest against real Durable Harnesses on SQLite in temp directories, following Pi Durable's own tests: Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`.
-They cover worker reports (turns, queueing, restart, `/abort` re-posts) and updates, goal updates/validation/retention and the goals section across `/new` and reopen, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
-TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark: streaming without an early `you>` prompt, tool results, worker updates/reports, worker selection/messaging, reload success/errors, and resize.
-They do not prove live provider behavior or the interactive phone flow.
+- `npm run typecheck`: `tsc` over `src`, `test`, and `vitest.config.ts` (`tsconfig.json`); `npm run build` emits `src` only (`tsconfig.build.json`).
+- `npm run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, any import of `src/tui` outside `src/main.ts` and the TUI itself, and `vi` in tests.
+- `npm run knip`: unused files, exports, and dependencies. The reload manifest imports its modules through computed URLs, so the exports it reads are tagged `@public`.
+- `npm test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME`, `USERPROFILE`, and `PI_CODING_AGENT_DIR` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
+  TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark.
+  Tests do not prove live provider behavior or the interactive phone flow.
 
 Durable is experimental.
-The npm lockfile pins Pi/Durable **1.0.2**, including Clef's direct-response support; inspect installed declarations before adapting it.
+The npm lockfile pins the Pi/Durable version; inspect the installed declarations before adapting it.
 Local Pi source is at `~/proj/pi`.
 The persistent background subagent example (23) is the ownership reference.
 Coding-agent extensions, skills, and MCP require a deliberate Durable integration.
