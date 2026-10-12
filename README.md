@@ -62,20 +62,26 @@ Do not sync a live database or open it from multiple devices.
 ## Terminal
 
 Just type a message. Receipt means the input was committed, not that the model has answered.
-Replies stream from committed Durable events.
-Live input and restored history use `you>`; answers use `monchu · response`.
-Receipts, effort assessments, loading/thinking, and tool activity use `system ·`; worker reports and updates use `worker · <name> · <status>`.
+The Pi-style alternate-screen TUI renders committed Durable conversation views, including streaming replies, tool cards, retries, and queued input.
+It needs an interactive terminal; piped stdin/stdout is not supported.
+The multiline editor stays available below the transcript while replies and workers run.
+Receipts, effort assessments, and warnings use `system ·`; worker reports and updates use `worker · <name> · <status>`.
 The front replies immediately: a direct answer, or a one-line acknowledgement while it starts the work.
 Clef Flash assesses each message's effort (single turn or sustained) and scope (contained or expanding) beside that reply, never in front of it.
 Its result joins the front's later requests as advice and shows as `system · effort`.
 When Clef is sure (70%+) the work outgrows a fast reply and the front finished without delegating, one follow-up input (`system · escalation`) asks the front to hand it to a worker.
 Thinking content stays hidden; the terminal shows an indicator when the provider emits thinking events.
-Indicators are event-driven text, not animations or a new TUI framework.
+Pi's editor, message components, tool renderers, and scrolling viewport provide the terminal UI.
+The status indicator shows working, thinking, tool execution, compaction, and retry activity.
+The TUI follows terminal light/dark reports with Pi's built-in themes; Pi's user theme setting (including light/dark pairs) overrides that choice.
 
 ```text
 /work reader summarize a subject using the available local files
 /tell reader focus on the unresolved questions
 /workers
+/agents
+/agents reader
+/agents root
 /goals
 /stop reader
 /abort
@@ -83,9 +89,20 @@ Indicators are event-driven text, not animations or a new TUI framework.
 /compact focus on the open decisions
 /cd ~/proj/monchu
 /cd-worker reader ~/proj/pi
+/reload
+/restart
 /help
 /quit
 ```
+
+`/agents` opens a filterable worker selector with current status and directory.
+Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
+The root is shown by default; `/agents root` returns to it.
+Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
+Esc or Ctrl-C aborts the front only, Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
+Shift-Enter or backslash-Enter adds a newline.
+`/reload` reloads extensions and Pi user resources/settings, showing the reloaded modules or an error in the TUI.
+`/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
 All roles receive the same installed tools: Pi's user-selected built-ins (read, write, edit, bash by default), worker management, and `codemode`. Pi's optional grep, find, ls, and powershell built-ins are also supported when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Unknown `defaultTools` names, or a selection without read, write, edit, or bash, produce a warning. Built-in selection does not disable Monchu's worker management or `codemode`.
@@ -122,7 +139,7 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 
 ## Self reload
 
-`reload_extensions` is available to all roles. The backend also exposes `reload()` and Jorge-only `restart()`; `/reload` and `/restart` terminal wiring belongs to the second of the parallel reload/TUI PRs to merge.
+`reload_extensions` is available to all roles, as is Jorge's `/reload` command. The backend exposes `reload()` and `restart()`; only Jorge's `/restart` command calls the latter after restoring the terminal.
 
 Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each manifest module is imported with a fresh query string: workers, codemode, classifier, goals, Pi context/tools, and identity. Static imports remain cached, so dependency and host changes require a restart.
 
@@ -144,12 +161,14 @@ All modules are built and the complete registry and installation order validated
 - `src/reload.ts`: extension manifest, validated in-process replacement, reload tool, and durable restart requests.
 - `src/identity.ts`: reloadable Monchu identity and execution sections.
 - `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
-- `src/terminal.ts`: stdin, commands, and rendering only.
+- `src/terminal.ts`: terminal lifecycle, commands, and read-only view attachments.
+- `src/tui/`: input parsing, Durable presentation mapping, and Pi-style viewport rendering.
 - `src/main.ts`: lifecycle wiring.
 
 The backend imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
-Events use Durable's serializable event protocol; a future interface can consume the same backend.
+The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
+The committed-event interface remains available for other consumers.
 This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory backend.
 
 Submission IDs prevent duplicate admission.

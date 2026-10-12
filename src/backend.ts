@@ -159,6 +159,12 @@ export class Monchu {
     return this.reports.subscribe(listener);
   }
 
+  /** Read-only committed conversation state. The caller owns and disposes its attachment. */
+  async viewState(workerName?: string) {
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    return conversation.viewState(context);
+  }
+
   /** Snapshot plus committed updates. Pending work already resumed at open. */
   async watch(listener: (events: readonly AgentEvent[]) => void | Promise<void>) {
     const stream = await watchEvents(this.harness, this.front.id, context);
