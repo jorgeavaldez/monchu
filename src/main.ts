@@ -1,5 +1,5 @@
 import { Monchu } from "./backend.ts";
-import { runTerminal } from "./terminal.ts";
+import { runTerminal } from "./tui/app.ts";
 
 try {
   const backend =

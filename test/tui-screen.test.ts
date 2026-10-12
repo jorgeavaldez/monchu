@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Monchu } from "../src/backend.ts";
 import { openDevMonchu } from "../src/dev-faux.ts";
-import { runTerminal } from "../src/terminal.ts";
+import { runTerminal } from "../src/tui/app.ts";
 import { waitFor } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 

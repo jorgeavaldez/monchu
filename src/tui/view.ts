@@ -56,6 +56,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { ESCALATION_PREFIX } from "../classifier.ts";
 import { workerNotice } from "../workers.ts";
+import { commands } from "./commands.ts";
 import { presentation } from "./state.ts";
 
 class AgentSelector extends Container implements Focusable {
@@ -170,23 +171,7 @@ export class MonchuTui {
     );
     this.editor.setAutocompleteProvider(
       new CombinedAutocompleteProvider(
-        [
-          "work",
-          "tell",
-          "workers",
-          "agents",
-          "goals",
-          "stop",
-          "abort",
-          "new",
-          "compact",
-          "cd",
-          "cd-worker",
-          "reload",
-          "restart",
-          "help",
-          "quit",
-        ].map((name) => ({ name })),
+        Object.keys(commands).map((command) => ({ name: command.slice(1) })),
         home,
       ),
     );

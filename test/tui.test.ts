@@ -68,7 +68,7 @@ describe("terminal input boundary", () => {
       script,
       `
       import { Monchu } from ${JSON.stringify(new URL("../src/backend.ts", import.meta.url).href)};
-      import { runTerminal } from ${JSON.stringify(new URL("../src/terminal.ts", import.meta.url).href)};
+      import { runTerminal } from ${JSON.stringify(new URL("../src/tui/app.ts", import.meta.url).href)};
       import { appendFileSync, existsSync, readFileSync } from "node:fs";
       const home = ${JSON.stringify(home)};
       const events = ${JSON.stringify(eventsPath)};

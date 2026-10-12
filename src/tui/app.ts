@@ -4,11 +4,11 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
-import type { Monchu } from "./backend.ts";
-import { formatOpenGoals } from "./goals.ts";
-import { help, parseInput } from "./tui/commands.ts";
-import { presentation } from "./tui/state.ts";
-import { MonchuTui } from "./tui/view.ts";
+import type { Monchu } from "../backend.ts";
+import { formatOpenGoals } from "../goals.ts";
+import { help, parseInput } from "./commands.ts";
+import { presentation } from "./state.ts";
+import { MonchuTui } from "./view.ts";
 
 /** Terminal adapter. Input admission and all side effects remain backend-owned. */
 export async function runTerminal(
@@ -44,6 +44,7 @@ export async function runTerminal(
   let stopAssessments: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
   type Worker = Awaited<ReturnType<Monchu["workers"]>>[number];
+  const describe = (worker: Worker) => `${worker.busy ? "working" : "idle"} | ${worker.cwd}`;
   const workers = new Map<
     string,
     { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
@@ -163,10 +164,7 @@ export async function runTerminal(
         view.notice(
           workers.size
             ? [...workers.values()]
-                .map(
-                  ({ summary }) =>
-                    `${summary.name}: ${summary.busy ? "working" : "idle"} | ${summary.cwd}`,
-                )
+                .map(({ summary }) => `${summary.name}: ${describe(summary)}`)
                 .join("\n")
             : "No workers yet.",
         );
@@ -184,7 +182,7 @@ export async function runTerminal(
             ...[...workers.values()].map(({ summary }) => ({
               value: summary.name,
               label: summary.name,
-              description: `${summary.busy ? "working" : "idle"} | ${summary.cwd}`,
+              description: describe(summary),
             })),
           ],
           (name) => {
