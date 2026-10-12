@@ -97,9 +97,6 @@ describe("backend", () => {
         expect(await readFile(join(value.agentDir, name), "utf8")).toBe("decoy: not valid JSON");
       const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
       expect(auth).toEqual({});
-      await expect(readFile(join(home, "models-store.json"), "utf8")).rejects.toMatchObject({
-        code: "ENOENT",
-      });
       if (smoke) {
         await expect(
           readFile(join(value.directory, ".monchu", "owner.sqlite")),
@@ -115,39 +112,7 @@ describe("backend", () => {
     20000,
   );
 
-  it("loads an optional catalog from the Monchu home rather than a Pi directory", async () => {
-    const value = await setup();
-    const home = join(value.directory, "home");
-    await mkdir(home);
-    await writeFile(
-      join(home, "config.json"),
-      JSON.stringify({
-        front: { provider: "openai-codex", modelId: "monchu-custom", thinkingLevel: "off" },
-        classifier: null,
-      }),
-    );
-    await writeFile(
-      join(home, "models.json"),
-      JSON.stringify({
-        providers: {
-          "openai-codex": { models: [{ id: "monchu-custom", name: "Monchu custom" }] },
-        },
-      }),
-    );
-    prepareHome(home);
-    const backend = await Monchu.open(home);
-    const state = await backend.viewState();
-    try {
-      expect(state.value.docs["pi.agent"]).toMatchObject({
-        model: { provider: "openai-codex", modelId: "monchu-custom" },
-      });
-    } finally {
-      state.dispose();
-      await backend.close();
-    }
-  });
-
-  it("owns auth independently of a decoy Pi directory and uses the runtime's private login API", async () => {
+  it("owns auth independently of a decoy Pi directory and uses private provider login", async () => {
     const value = await setup();
     await mkdir(value.agentDir);
     const decoy = join(value.agentDir, "auth.json");
@@ -197,7 +162,7 @@ describe("backend", () => {
     }
   });
 
-  it("forces Codex device-code selection through the runtime without browser callbacks", async () => {
+  it("forces Codex device-code selection through its provider without browser callbacks", async () => {
     const value = await setup({ provider: "openai-codex" });
     const home = join(value.directory, "home");
     await mkdir(home);

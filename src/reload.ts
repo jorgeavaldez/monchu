@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { EffortAssessment } from "./classifier.ts";
 import { loadConfig, type MonchuConfig } from "./config.ts";
+import { resolveRoles } from "./models/index.ts";
 
 /** Reloadable modules. Static imports inside them stay cached. */
 type Reloadable = {
@@ -56,10 +57,7 @@ async function build(
   home: string,
   reportMissing: (path: string) => void,
 ): Promise<Build> {
-  for (const role of [config.front, config.worker]) {
-    if (models.getModel(role.provider, role.modelId) === undefined)
-      throw new Error(`Pi has no configured model ${role.provider}/${role.modelId}`);
-  }
+  resolveRoles(models, config);
   const version = randomUUID();
   const modules: (keyof Reloadable)[] = [];
   const load = <Name extends keyof Reloadable>(name: Name) => {

@@ -4,12 +4,13 @@ import {
   type AuthInteraction,
   type AuthType,
   type Provider,
+  type Models,
 } from "@earendil-works/pi-ai";
-import { ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { configure, Harness, LiveDoc, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -18,6 +19,7 @@ import { loadConfig } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
+import { openModels } from "./models/index.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   hasPendingDelivery,
@@ -37,7 +39,7 @@ export class Monchu {
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
   private readonly front: Conversation;
-  private readonly models: ModelRuntime;
+  private readonly models: Models;
   private readonly reloadListeners = new Set<() => void>();
   private reloading: Promise<readonly string[]> | undefined;
   private readonly reports: Reports;
@@ -50,7 +52,7 @@ export class Monchu {
     owner: DatabaseSync,
     harness: Harness,
     front: Conversation,
-    models: ModelRuntime,
+    models: Models,
     reports: Reports,
     extensions: Extensions,
     envs: ExecutionEnvs,
@@ -86,23 +88,7 @@ export class Monchu {
         );
       }
       const config = await loadConfig(home);
-      let modelsPath: string | null = join(home, "models.json");
-      try {
-        await stat(modelsPath);
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-        modelsPath = null;
-      }
-      const models = await ModelRuntime.create({
-        authPath: join(home, "auth.json"),
-        modelsPath,
-        modelsStorePath: join(home, "models-store.json"),
-        allowModelNetwork: false,
-      });
-      // Only the explicit dev entry point/tests supply a scripted provider; normal startup is unchanged.
-      if (devProvider !== undefined) models.registerNativeProvider(devProvider);
-      const diagnostic = models.getError();
-      if (diagnostic !== undefined) throw new Error(diagnostic);
+      const models = await openModels(home, devProvider);
       const reports = new Reports(join(home, "monchu.log"));
       const extensions = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
@@ -155,20 +141,7 @@ export class Monchu {
   /** Private terminal interaction only: never submitted to Durable or exposed as a model tool. */
   async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
     if (this.closing !== undefined) throw new Error("Monchu is closing");
-    await this.models.login(
-      providerId,
-      type,
-      {
-        ...interaction,
-        prompt: (prompt) =>
-          providerId === "openai-codex" &&
-          prompt.type === "select" &&
-          prompt.options.some((option) => option.id === "device_code")
-            ? Promise.resolve("device_code")
-            : interaction.prompt(prompt),
-      },
-      { agentName: "Monchu" },
-    );
+    await this.models.login(providerId, type, interaction, { agentName: "Monchu" });
   }
 
   /** Successful reload notifications; callers re-read the single settings owner. */

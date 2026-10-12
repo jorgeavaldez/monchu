@@ -33,7 +33,9 @@ mise run dev
 Monchu owns its configuration and credentials; it never reads or writes `~/.pi`.
 Before importing any Pi SDK module, the entry point sets `PI_CODING_AGENT_DIR` to `<home>/agent`.
 Shell-tool subprocesses do not inherit that override, so a Pi started from them uses its normal config.
-`ModelRuntime` uses `<home>/auth.json`, the built-in model catalog, and optional `<home>/models.json` overrides.
+`src/models/` owns `<home>/auth.json`, provider registration, login, and model-role resolution on pi-ai.
+Providers are code modules: Codex and Cloudflare use their built-in catalogs; dev/test modes inject faux providers.
+Every role uses the same provider collection. There are no file-based catalog overrides or catalog cache files.
 Use `/login` inside Monchu for fresh per-device credentials; do not copy Pi credentials or share refresh tokens.
 There is no silent model/provider fallback.
 
@@ -75,14 +77,12 @@ Skills load in place at startup and on reload from `<home>/skills` and this chec
 Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 
 - `config.json`: optional model roles and validated run settings; no secrets.
-- `auth.json`: Pi-runtime credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs.
+- `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
 - `agent/`: isolated SDK agent directory, including SDK-managed binaries/resources; not Pi's user directory.
-- `models.json`: optional custom model catalog. Without it the built-in catalog uses in-memory caching only.
-- `models-store.json`: SDK catalog cache when `models.json` is present.
 - `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
-For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/models-store.json*`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
+For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -192,7 +192,8 @@ Config and all modules are prepared, and the complete registry and installation 
 
 ## Backend boundary
 
-- `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
+- `src/backend.ts`: store ownership, admission, observation, worker controls, and execution directories.
+- `src/models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.
 - `src/config.ts`: validated host config: model roles, classifier overrides and run settings.
 - `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
