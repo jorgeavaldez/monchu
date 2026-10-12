@@ -17,7 +17,7 @@ import type { ClassifierRole } from "./config.ts";
 import { WorkersDoc } from "./workers.ts";
 
 /** Below this confidence an assessment informs the front but never triggers an escalation. */
-export const SURE = 0.7;
+const SURE = 0.7;
 
 /** Marks the follow-up input an escalation submits, so a client can label it as system context. */
 export const ESCALATION_PREFIX = "[Effort assessment";
@@ -74,7 +74,7 @@ export const AssessmentsDoc = defineDoc<{ items: Assessment[] }>({
 });
 
 /** Whether a sure assessment says the work outgrows the front's current reply. */
-export function needsEscalation(result: AssessmentResult): boolean {
+function needsEscalation(result: AssessmentResult): boolean {
   return (
     result.status === "assessed" &&
     ((result.effort === "sustained" && result.effortConfidence >= SURE) ||
@@ -92,21 +92,18 @@ type AssessInput = {
   submissionId: SubmissionId;
   message: string;
   recent: { role: "user" | "assistant" | "toolResult"; text: string }[];
-  /** Lifetime delegation count before this input. The persisted v1 field name stays recovery-compatible. */
-  deliveries: number;
+  /** The parent's lifetime count of started deliveries before this input. */
+  started: number;
 };
 
-type AssessState =
-  | { phase: "classify" }
-  | { phase: "escalate"; result: AssessmentResult }
-  | { phase: "retired" };
+type AssessState = { phase: "classify" } | { phase: "escalate"; result: AssessmentResult };
 
 /**
  * Clef judges effort and scope beside the front's reply, never in front of it. The result reaches the front's later
  * requests as advice; when it is sure the work outgrows a single fast reply and the front finished without delegating,
  * it submits one follow-up so the front can hand the work to a worker. It never grants permission.
  */
-export function effortAssessment(
+export function createEffortAssessment(
   models: Models,
   role: ClassifierRole,
   accountId: string | undefined,
@@ -188,7 +185,7 @@ export function effortAssessment(
             const state = await tx.doc(AssessmentsDoc, runtime.conversationId);
             const workers = await tx.doc(WorkersDoc, runtime.conversationId);
             const superseded = state.items.at(-1)?.submissionId !== task.input.submissionId;
-            const delegated = workers.started > task.input.deliveries;
+            const delegated = workers.started > task.input.started;
             escalate = !superseded && !delegated;
             (await record(tx, { id: task.id, conversationId: runtime.conversationId })).escalated =
               escalate;
@@ -210,33 +207,7 @@ export function effortAssessment(
           context,
         );
       },
-      retired: (_task, runtime, context) =>
-        runtime.commit(
-          () => ({
-            status: "terminal",
-            outcome: { status: "completed", result: { status: "failed", message: "retired" } },
-          }),
-          context,
-        ),
     },
-    abort: (_task, runtime, context) =>
-      runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
-  });
-
-  // The previous blocking classifier's tasks were owned by front generations. One left pending by an older version
-  // would hold its generation forever, so its definition stays installed and finishes at once.
-  const Retired = defineTask<null, { phase: "retired" }, null>({
-    name: "monchu.classify",
-    version: 1,
-    initial: () => ({ phase: "retired" }),
-    phases: {
-      retired: (_task, runtime, context) =>
-        runtime.commit(
-          () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
-          context,
-        ),
-    },
-    migrate: () => ({ input: null, checkpoint: { phase: "retired" } }),
     abort: (_task, runtime, context) =>
       runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
   });
@@ -255,7 +226,7 @@ export function effortAssessment(
       submissionId,
       message: message.slice(0, 4000),
       recent,
-      deliveries: workers.started,
+      started: workers.started,
     };
     const taskId = await tx.createTask(Assess, input, {
       conversationId: frontId,
@@ -298,7 +269,7 @@ export function effortAssessment(
     },
     extension: defineExtension({
       name: "monchu.classifier",
-      tasks: [Assess, Retired],
+      tasks: [Assess],
       hooks: [
         hook(GenerationTask, {
           // Never waits: advice joins a request only once Clef has answered.
@@ -324,3 +295,5 @@ export function effortAssessment(
     }),
   };
 }
+
+export type EffortAssessment = ReturnType<typeof createEffortAssessment>;

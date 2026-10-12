@@ -22,12 +22,13 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Codemode } from "../src/codemode.ts";
 import type { ModelRole } from "../src/config.ts";
+import { createPiTools } from "../src/pi-tools.ts";
 import { createWorkerTools } from "../src/workers.ts";
 
 export const context: Context = BACKGROUND_CONTEXT;
@@ -129,7 +130,7 @@ export async function setup(options: { tokensPerSecond?: number } = {}): Promise
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(CodingTools);
+  registry.install(createPiTools(SettingsManager.inMemory({}), process.platform).extension);
   registry.install(createWorkerTools(fauxRole));
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));

@@ -1,5 +1,5 @@
 import type { AttachedReplicatedState } from "@earendil-works/chord";
-import { getAgentDir, initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
@@ -17,8 +17,7 @@ export async function runTerminal(
 ): Promise<void> {
   if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
     throw new Error("Monchu's TUI needs an interactive terminal.");
-  const agentDir = getAgentDir();
-  const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+  const settings = backend.settings;
   setCapabilityOverrides(settings.getTerminalCapabilityOverrides());
   const configuredTheme = settings.getThemeSetting();
   let scheme: "light" | "dark" = ["7", "9", "10", "11", "12", "13", "14", "15"].includes(
@@ -146,8 +145,7 @@ export async function runTerminal(
         view.notice(help);
         break;
       case "/reload": {
-        const result = await backend.reload();
-        view.notice(`reloaded · ${result.reloaded.join(", ")}`);
+        view.notice(`reloaded · ${(await backend.reload()).join(", ")}`);
         break;
       }
       case "/restart":

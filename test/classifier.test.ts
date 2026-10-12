@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import { AssessmentsDoc, ESCALATION_PREFIX, effortAssessment } from "../src/classifier.ts";
+import { AssessmentsDoc, createEffortAssessment, ESCALATION_PREFIX } from "../src/classifier.ts";
 import { messageWorker, startWorker, WorkersDoc } from "../src/workers.ts";
 import {
   allEntries,
@@ -38,7 +38,7 @@ function deferred<T>() {
 async function withAssessment() {
   const value = await setup();
   const classifier = scriptedClassifier(value.models);
-  const assessment = effortAssessment(
+  const assessment = createEffortAssessment(
     value.models,
     { provider: classifierModel.provider, modelId: classifierModel.id },
     undefined,

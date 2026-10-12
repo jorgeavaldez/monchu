@@ -2,7 +2,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall, type Message } from "@ear
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPiConfiguration } from "../src/context.ts";
+import { createPiContext } from "../src/context.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import { startWorker, WorkersDoc } from "../src/workers.ts";
 import { cleanup, context, fauxRole, lastMessage, open, route, setup, textOf } from "./support.ts";
@@ -40,7 +40,7 @@ describe("Pi user configuration", () => {
       join(project, ".pi", "skills", "local", "SKILL.md"),
       "---\nname: local\ndescription: project-only skill\n---\nlocal body",
     );
-    const pi = await loadPiConfiguration(agentDir);
+    const pi = await createPiContext(agentDir);
     value.registry.install(pi.extension);
     const systems: string[] = [];
     route(value.faux, (request) => {
@@ -121,7 +121,7 @@ describe("Pi user configuration", () => {
           packages: [{ source: "./skill-package", skills: ["skills/packaged/**"] }],
         }),
       );
-      const pi = await loadPiConfiguration(agentDir);
+      const pi = await createPiContext(agentDir);
       value.registry.install(pi.extension);
       value.registry.install(createPiTools(pi.settings, process.platform).extension);
       const skillFile = join(agentDir, "skills", "vault", "SKILL.md");
@@ -184,7 +184,7 @@ describe("Pi user configuration", () => {
         );
       }
       await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: tools }));
-      const pi = await loadPiConfiguration(agentDir);
+      const pi = await createPiContext(agentDir);
       value.registry.install(createPiTools(pi.settings, process.platform).extension);
       value.registry.install(pi.extension);
       const sections: Record<string, string | null>[] = [];
@@ -226,10 +226,10 @@ describe("Pi user configuration", () => {
       await mkdir(agentDir);
       const path = join(agentDir, "settings.json");
       await writeFile(path, content);
-      await expect(loadPiConfiguration(agentDir)).rejects.toThrow(
+      await expect(createPiContext(agentDir)).rejects.toThrow(
         `Pi settings failed:\n${path}: ${reason}`,
       );
-      await expect(loadPiConfiguration(agentDir)).rejects.not.toThrow("TOP_SECRET");
+      await expect(createPiContext(agentDir)).rejects.not.toThrow("TOP_SECRET");
     },
   );
 
@@ -245,7 +245,7 @@ describe("Pi user configuration", () => {
         await writeFile(path, "{}");
         await mkdir(`${path}.lock`);
       }
-      await expect(loadPiConfiguration(agentDir)).rejects.toThrow(
+      await expect(createPiContext(agentDir)).rejects.toThrow(
         `${path}: could not read or lock settings (${code})`,
       );
     },
@@ -260,9 +260,11 @@ describe("Pi user configuration", () => {
       join(agentDir, "settings.json"),
       JSON.stringify({ packages: ["npm:monchu-nonexistent-test-package@0.0.0"] }),
     );
-    const pi = await loadPiConfiguration(agentDir);
+    const pi = await createPiContext(agentDir);
     expect(pi.settings.getPackages()).toEqual(["npm:monchu-nonexistent-test-package@0.0.0"]);
-    expect(pi.diagnostics.some(({ type }) => type === "warning")).toBe(true);
+    expect(pi.warnings).toEqual([
+      "Pi package unavailable; not installed: npm:monchu-nonexistent-test-package@0.0.0",
+    ]);
   });
 
   it("redacts URL userinfo and token parameters from missing package sources", async () => {
@@ -279,9 +281,8 @@ describe("Pi user configuration", () => {
         ],
       }),
     );
-    const pi = await loadPiConfiguration(agentDir);
-    const messages = pi.diagnostics.map(({ message }) => message);
-    expect(messages).toEqual([
+    const pi = await createPiContext(agentDir);
+    expect(pi.warnings).toEqual([
       "Pi package unavailable; not installed: git:https://***@github.com/org/repo",
       "Pi package unavailable; not installed: https://***@example.com/org/other?access_token=***&ref=main&key=***",
     ]);

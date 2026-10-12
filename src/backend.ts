@@ -1,36 +1,28 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { cleanupSessionResources, type Provider } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
-import {
-  configure,
-  createRegistry,
-  Harness,
-  LiveDoc,
-  watchEvents,
-  type AgentEvent,
-  type Conversation,
-  type HarnessSettings,
-  type Registry,
-} from "@earendil-works/pi-durable";
+import { configure, Harness, LiveDoc, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { appendFile, copyFile, mkdir } from "node:fs/promises";
-import { constants } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
 import { loadConfig, type MonchuConfig } from "./config.ts";
-import { Goals, GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
+import { harnessSettings, installMonchuSkill } from "./context.ts";
+import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
+import { FRONT_INSTRUCTIONS } from "./identity.ts";
+import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
-  buildForReload,
-  extensionManifest,
-  reloadControls,
-  reloadExtensions,
-  RestartRequest,
-} from "./reload.ts";
-import { listWorkers, messageWorker, startWorker, WorkersDoc } from "./workers.ts";
+  hasPendingDelivery,
+  listWorkers,
+  messageWorker,
+  startWorker,
+  stopWorker,
+  workerConversationId,
+} from "./workers.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -41,10 +33,9 @@ export class Monchu {
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
   private readonly front: Conversation;
-  readonly config: MonchuConfig;
+  private readonly config: MonchuConfig;
   private readonly reports: Reports;
-  private readonly reloadRuntime: ReloadRuntime;
-  private reloading: Promise<{ reloaded: string[] }> | undefined;
+  private readonly extensions: Extensions;
   private closing: Promise<void> | undefined;
   private readonly envs: ExecutionEnvs;
 
@@ -55,7 +46,7 @@ export class Monchu {
     front: Conversation,
     config: MonchuConfig,
     reports: Reports,
-    reloadRuntime: ReloadRuntime,
+    extensions: Extensions,
     envs: ExecutionEnvs,
   ) {
     this.home = home;
@@ -64,7 +55,7 @@ export class Monchu {
     this.front = front;
     this.config = config;
     this.reports = reports;
-    this.reloadRuntime = reloadRuntime;
+    this.extensions = extensions;
     this.envs = envs;
   }
 
@@ -100,31 +91,19 @@ export class Monchu {
       }
 
       const reports = new Reports(join(home, "monchu.log"));
-
-      const skillDir = join(agentDir, "skills", "monchu");
-      await mkdir(skillDir, { recursive: true });
-      try {
-        await copyFile(
-          new URL("../skills/monchu/SKILL.md", import.meta.url),
-          join(skillDir, "SKILL.md"),
-          constants.COPYFILE_EXCL,
-        );
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      }
-      const registry = createRegistry();
-      const loader = extensionManifest(models, config, agentDir);
-      await reloadExtensions(registry, loader.manifest);
-      const reloadRuntime = { models, registry, agentDir, ...loader.configuration };
-      reportConfiguration(reloadRuntime, reports);
+      await installMonchuSkill(agentDir);
+      const extensions = await Extensions.load(models, config, agentDir, (warning) =>
+        reports.report(warning),
+      );
       harness = await Harness.open(
         await openNodeSqliteStorage(join(home, "monchu.sqlite")),
         {
           models,
-          registry,
-          settings: harnessSettings(() => reloadRuntime.pi.settings, registry),
-          env: ({ cwd }) => envs.get(cwd ?? home, reloadRuntime.pi.settings.getShellPath()),
-          onReport: (error) => reports.report(error),
+          registry: extensions.registry,
+          settings: harnessSettings(extensions),
+          env: ({ cwd }) => envs.get(cwd ?? home, extensions.settings.getShellPath()),
+          onReport: (error) =>
+            reports.report(error instanceof Error ? error.message : String(error)),
         },
         context,
       );
@@ -134,14 +113,14 @@ export class Monchu {
         {
           model: { provider: config.front.provider, modelId: config.front.modelId },
           thinkingLevel: config.front.thinkingLevel,
-          // Workers follow the host default, which leaves goals out.
-          extensions: { add: [Goals] },
+          // Workers follow the host default, which leaves the root-only extensions out.
+          extensions: { add: extensions.root },
           instructions: FRONT_INSTRUCTIONS,
         },
         context,
       );
-      const backend = new Monchu(home, owner, harness, front, config, reports, reloadRuntime, envs);
-      registry.install(reloadControls(front.id, () => backend.reload()));
+      const backend = new Monchu(home, owner, harness, front, config, reports, extensions, envs);
+      extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
       return backend;
@@ -156,6 +135,11 @@ export class Monchu {
     }
   }
 
+  /** The Pi user settings of the last successful load or reload. */
+  get settings(): SettingsManager {
+    return this.extensions.settings;
+  }
+
   /** Non-fatal runtime failures, also appended to `monchu.log`. Returns an unsubscribe function. */
   onReport(listener: (message: string) => void): () => void {
     return this.reports.subscribe(listener);
@@ -167,25 +151,14 @@ export class Monchu {
     return conversation.viewState(context);
   }
 
-  /** Snapshot plus committed updates. Pending work already resumed at open. */
-  async watch(listener: (events: readonly AgentEvent[]) => void | Promise<void>) {
-    const stream = await watchEvents(this.harness, this.front.id, context);
-    await listener([stream.snapshot]);
-    stream.start(async (events) => {
-      await listener(events);
-    });
-    return stream;
-  }
-
   /** Resolves on durable admission, never on the model answer. Retry with the same request ID. */
-  async submit(message: string, requestId: string) {
+  async submit(message: string, requestId: string): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
-    const submission =
-      this.reloadRuntime.assessment === undefined
-        ? await this.front.submit({ type: "input", content: message, requestId }, context)
-        : await this.reloadRuntime.assessment.submit(this.front, message, requestId, context);
-    return { submissionId: submission.id };
+    const assessment = this.extensions.assessment;
+    if (assessment === undefined)
+      await this.front.submit({ type: "input", content: message, requestId }, context);
+    else await assessment.submit(this.front, message, requestId, context);
   }
 
   /** Effort assessments of front inputs as they settle, newest last. Returns a stop function. */
@@ -222,28 +195,26 @@ export class Monchu {
     return (await this.harness.snapshot(GoalsDoc, this.front.id, context))?.goals ?? [];
   }
 
-  async startWorker(name: string, message: string, requestId: string) {
+  async startWorker(name: string, message: string, requestId: string): Promise<void> {
     if (!name.trim() || !message.trim() || !requestId.trim())
       throw new Error("Worker name, message, and request ID are required");
     const agent = await this.front.agent(context);
     const cwd = agent.cwd ?? this.home;
-    const conversationId = await this.front.commit(
+    await this.front.commit(
       (tx) => startWorker(tx, this.front.id, name, message, cwd, requestId, this.config.worker),
       context,
     );
     this.harness.resume();
-    return { conversationId, cwd };
   }
 
-  async messageWorker(name: string, message: string, requestId: string) {
+  async messageWorker(name: string, message: string, requestId: string): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
-    const conversationId = await this.front.commit(
+    await this.front.commit(
       (tx) => messageWorker(tx, this.front.id, name, message, requestId),
       context,
     );
     this.harness.resume();
-    return { conversationId };
   }
 
   async workers() {
@@ -251,16 +222,16 @@ export class Monchu {
   }
 
   private async worker(name: string): Promise<Conversation> {
-    const state = await this.harness.snapshot(WorkersDoc, this.front.id, context);
-    const record = state?.workers.find((item) => item.name === name);
-    if (record === undefined) throw new Error(`No worker named ${name}`);
-    const conversation = await this.harness.conversation(record.conversationId, context);
+    const conversation = await this.harness.conversation(
+      await workerConversationId(this.harness, this.front.id, name, context),
+      context,
+    );
     if (conversation === undefined) throw new Error("Worker conversation is missing");
     return conversation;
   }
 
   async stopWorker(name: string): Promise<void> {
-    await (await this.worker(name)).abort(context, { background: true });
+    await stopWorker(this.harness, this.front.id, name, context);
   }
 
   async abort(): Promise<void> {
@@ -277,39 +248,17 @@ export class Monchu {
         throw new Error(
           "Directory changes require an idle conversation; stop or finish the current run first",
         );
-      if (workerName !== undefined) {
-        const state = await tx.doc(WorkersDoc, this.front.id);
-        for (const delivery of state.deliveries.filter((item) => item.name === workerName)) {
-          const task = await tx.task(delivery.taskId);
-          if (task !== undefined && task.state.status !== "terminal") {
-            throw new Error("Directory changes require an idle worker with no pending deliveries");
-          }
-        }
-      }
+      if (workerName !== undefined && (await hasPendingDelivery(tx, this.front.id, workerName)))
+        throw new Error("Directory changes require an idle worker with no pending deliveries");
       await configure(tx, conversation.id, { cwd });
     }, context);
     return cwd;
   }
 
   /** Concurrent requests share one reload. No registry or settings changes survive a failed preparation. */
-  reload(): Promise<{ reloaded: string[] }> {
+  reload(): Promise<readonly string[]> {
     if (this.closing !== undefined) return Promise.reject(new Error("Monchu is closing"));
-    if (this.reloading !== undefined) return this.reloading;
-    this.reloading = (async () => {
-      await buildForReload();
-      const loader = extensionManifest(
-        this.reloadRuntime.models,
-        this.config,
-        this.reloadRuntime.agentDir,
-      );
-      const result = await reloadExtensions(this.reloadRuntime.registry, loader.manifest);
-      Object.assign(this.reloadRuntime, loader.configuration);
-      reportConfiguration(this.reloadRuntime, this.reports);
-      return result;
-    })().finally(() => {
-      this.reloading = undefined;
-    });
-    return this.reloading;
+    return this.extensions.reload();
   }
 
   /** Jorge-only backend operation. Never exposed as a model tool. */
@@ -339,7 +288,7 @@ export class Monchu {
   private async closeRuntime(): Promise<void> {
     try {
       // A failed reload must not prevent storage from closing.
-      if (this.reloading !== undefined) await Promise.allSettled([this.reloading]);
+      await this.extensions.settled();
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
       // Then release what keeps the process alive: tool child processes, and provider connections pi-ai keeps
@@ -350,27 +299,6 @@ export class Monchu {
       this.owner.close();
     }
   }
-}
-
-type ReloadRuntime = ReturnType<typeof extensionManifest>["configuration"] & {
-  models: Parameters<typeof extensionManifest>[0];
-  registry: Registry;
-  agentDir: string;
-};
-
-function reportConfiguration(runtime: ReloadRuntime, reports: Reports): void {
-  for (const diagnostic of runtime.pi.diagnostics) {
-    const locations = [
-      diagnostic.path,
-      ...(diagnostic.collision
-        ? [`winner: ${diagnostic.collision.winnerPath}`, `loser: ${diagnostic.collision.loserPath}`]
-        : []),
-    ]
-      .filter((location) => location !== undefined)
-      .join("; ");
-    reports.report(new Error(`${diagnostic.message}${locations ? ` (${locations})` : ""}`));
-  }
-  for (const warning of runtime.warnings) reports.report(new Error(warning));
 }
 
 /**
@@ -397,47 +325,6 @@ class ExecutionEnvs {
   }
 }
 
-/**
- * The front answers fast; effort assessments arrive beside it, never in front of it. It keeps the goals section current
- * so goals and commitments outlive compaction and `/new`.
- */
-const FRONT_INSTRUCTIONS =
-  "You are the front: reply immediately. If you can fully answer in this reply, do. Otherwise acknowledge in one short line (for example 'looking into it') and start the work, usually a background worker with a self-contained goal, context, and constraints. Never stall waiting for an assessment or a worker. When an effort assessment says the work outgrows a single fast reply and you have not delegated, delegate.\n\nKeep the goals section current with update_goal; it is your memory of Jorge's goals and your commitments across compaction, /new, and restarts. A new request creates a goal (owner jorge) or updates the goal it continues; a quick answer you finish in the same reply needs none. A promise you make creates a goal with owner monchu. Starting a worker links its name to the goal. A worker report or update sets the goal's next step, or its status when it finishes or blocks the goal. Use waiting when blocked on Jorge or someone else, done when finished, dropped when abandoned. Tell Jorge only what changed, never the whole list. When a goal is done, you may offer a vault note update; do not write one unasked.";
-
-/** Durable's run policy resolves the latest successfully loaded Pi user settings. */
-function harnessSettings(settings: () => SettingsManager, registry: Registry): HarnessSettings {
-  return {
-    // Every installed extension except the root-only goals.
-    get extensions() {
-      return registry
-        .snapshot()
-        .installed()
-        .filter((extension) => extension.name !== Goals.name);
-    },
-    get stream() {
-      const provider = settings().getProviderRetrySettings();
-      const idle = settings().getHttpIdleTimeoutMs();
-      return {
-        timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
-        maxRetryDelayMs: provider.maxRetryDelayMs,
-        ...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
-      };
-    },
-    get compaction() {
-      return settings().getCompactionSettings();
-    },
-    get retry() {
-      return settings().getRetrySettings();
-    },
-    get steeringMode() {
-      return settings().getSteeringMode();
-    },
-    get followUpMode() {
-      return settings().getFollowUpMode();
-    },
-  };
-}
-
 /** Durable's `onReport` sink: kept until a client subscribes, and always logged. Never throws. */
 class Reports {
   private readonly path: string;
@@ -448,8 +335,7 @@ class Reports {
     this.path = path;
   }
 
-  report(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
+  report(message: string): void {
     appendFile(this.path, `${new Date().toISOString()} ${message}\n`).catch(() => {});
     if (this.listeners.size === 0) {
       this.pending = [...this.pending, message].slice(-20);

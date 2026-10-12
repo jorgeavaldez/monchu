@@ -37,7 +37,7 @@ export const GOALS_COMPACTION_FOCUS =
 const isOpen = (goal: Goal) => goal.status === "active" || goal.status === "waiting";
 
 /** Stable text for the given goals, in stored order: unchanged goals render identically. */
-export function formatGoals(goals: readonly Goal[]): string {
+function formatGoals(goals: readonly Goal[]): string {
   return goals
     .map((goal) =>
       [

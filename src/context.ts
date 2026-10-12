@@ -6,7 +6,14 @@ import {
   SettingsManager,
   type ResourceDiagnostic,
 } from "@earendil-works/pi-coding-agent";
-import { defineExtension, section } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  section,
+  type Extension,
+  type HarnessSettings,
+} from "@earendil-works/pi-durable";
+import { constants } from "node:fs";
+import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, join, parse, resolve } from "node:path";
 
 /** Package sources can embed credentials as URL userinfo or token query parameters. */
@@ -16,8 +23,68 @@ function redactSource(source: string) {
     .replace(/([?&][^=&#]*(?:token|key|secret|password|auth|sig)[^=&#]*=)[^&#]*/gi, "$1***");
 }
 
-/** User resources are loaded once at startup, never from a conversation's execution directory. */
-export async function loadPiConfiguration(agentDir: string) {
+/** Install Monchu's own skill into Pi's user skills, only if absent, so user edits are preserved. */
+export async function installMonchuSkill(agentDir: string): Promise<void> {
+  const skillDir = join(agentDir, "skills", "monchu");
+  await mkdir(skillDir, { recursive: true });
+  try {
+    await copyFile(
+      new URL("../skills/monchu/SKILL.md", import.meta.url),
+      join(skillDir, "SKILL.md"),
+      constants.COPYFILE_EXCL,
+    );
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
+}
+
+/** Durable's run policy, resolving the latest loaded Pi user settings and default extensions on every read. */
+export function harnessSettings(current: {
+  readonly settings: SettingsManager;
+  defaults(): readonly Extension[];
+}): HarnessSettings {
+  return {
+    get extensions() {
+      return current.defaults();
+    },
+    get stream() {
+      const provider = current.settings.getProviderRetrySettings();
+      const idle = current.settings.getHttpIdleTimeoutMs();
+      return {
+        timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
+        maxRetryDelayMs: provider.maxRetryDelayMs,
+        ...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
+      };
+    },
+    get compaction() {
+      return current.settings.getCompactionSettings();
+    },
+    get retry() {
+      return current.settings.getRetrySettings();
+    },
+    get steeringMode() {
+      return current.settings.getSteeringMode();
+    },
+    get followUpMode() {
+      return current.settings.getFollowUpMode();
+    },
+  };
+}
+
+function warning(diagnostic: ResourceDiagnostic): string {
+  const locations = [
+    diagnostic.path,
+    ...(diagnostic.collision
+      ? [`winner: ${diagnostic.collision.winnerPath}`, `loser: ${diagnostic.collision.loserPath}`]
+      : []),
+  ]
+    .filter((location) => location !== undefined)
+    .join("; ");
+  return `${diagnostic.message}${locations ? ` (${locations})` : ""}`;
+}
+
+/** User resources are loaded at startup and on reload, never from a conversation's execution directory. */
+export async function createPiContext(agentDir: string) {
   agentDir = resolve(agentDir);
   // Untrusted project scope is Pi's SDK switch for excluding project settings and auto-discovery.
   const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
@@ -113,6 +180,6 @@ export async function loadPiConfiguration(agentDir: string) {
         section("skills", () => skillPrompt || undefined, { tag: false }),
       ],
     }),
-    diagnostics: [...diagnostics, ...loader.getSkills().diagnostics],
+    warnings: [...diagnostics, ...loader.getSkills().diagnostics].map(warning),
   };
 }

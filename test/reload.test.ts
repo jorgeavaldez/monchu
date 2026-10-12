@@ -11,11 +11,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  extensionManifest,
-  reloadControls,
-  reloadExtensions,
+  createReloadControls,
+  Extensions,
+  installExtensions,
   RestartRequest,
-  type ExtensionManifest,
 } from "../src/reload.ts";
 import {
   allEntries,
@@ -33,6 +32,13 @@ import {
 } from "./support.ts";
 
 afterEach(cleanup);
+
+const config = {
+  front: fauxRole,
+  worker: fauxRole,
+  classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
+  cloudflareAccountId: undefined,
+};
 
 type VersionedModule = {
   extension: Extension;
@@ -80,10 +86,7 @@ async function fixture(directory: string) {
   const load = async (version: string): Promise<VersionedModule> =>
     import(`${pathToFileURL(path).href}?v=${version}`);
   const initial = await load("initial");
-  const manifest: ExtensionManifest = [
-    { module: path, build: async (version) => (await load(version)).extension },
-  ];
-  return { path, load, initial, manifest };
+  return { path, load, initial };
 }
 
 async function results(root: Awaited<ReturnType<typeof open>>["root"]) {
@@ -112,7 +115,7 @@ describe("in-process reload", () => {
       const running = await root.submit({ type: "input", content: "version?" }, context);
       await module.initial.started;
       await writeFile(module.path, source("v2"));
-      await reloadExtensions(value.registry, module.manifest);
+      installExtensions(value.registry, [(await module.load("v2")).extension]);
       module.initial.release();
       await running.wait(context);
       await (await root.submit({ type: "input", content: "now?" }, context)).wait(context);
@@ -126,37 +129,17 @@ describe("in-process reload", () => {
     }
   });
 
-  it.each(["export const = ;", "throw new Error('broken module');"])(
-    "installs nothing for a broken module: %s",
-    async (broken) => {
-      const value = await setup();
-      const module = await fixture(value.directory);
-      value.registry.install(module.initial.extension);
-      const before = value.registry.snapshot();
-      await writeFile(module.path, broken);
-      const manifest: ExtensionManifest = [
-        { module: "valid-first", build: async () => defineExtension({ name: "valid-first" }) },
-        ...module.manifest,
-      ];
-      await expect(reloadExtensions(value.registry, manifest)).rejects.toThrow();
-      expect(value.registry.snapshot()).toBe(before);
-    },
-  );
-
   it("validates registry collisions before publishing anything", async () => {
     const value = await setup();
     const module = await fixture(value.directory);
     value.registry.install(module.initial.extension);
     const before = value.registry.snapshot();
-    await expect(
-      reloadExtensions(value.registry, [
-        { module: "valid", build: async () => defineExtension({ name: "valid" }) },
-        {
-          module: "collision",
-          build: async () => defineExtension({ name: "collision", tasks: [module.initial.Task] }),
-        },
+    expect(() =>
+      installExtensions(value.registry, [
+        defineExtension({ name: "valid" }),
+        defineExtension({ name: "collision", tasks: [module.initial.Task] }),
       ]),
-    ).rejects.toThrow("already installed");
+    ).toThrow("already installed");
     expect(value.registry.snapshot()).toBe(before);
   });
 
@@ -181,7 +164,7 @@ describe("in-process reload", () => {
       const fresh = await module.load("fresh-token");
       expect(fresh.Task).not.toBe(module.initial.Task);
       expect(await harness.snapshot(fresh.Doc, root.id, context)).toEqual({ value: "kept" });
-      await reloadExtensions(value.registry, module.manifest);
+      installExtensions(value.registry, [(await module.load("v2")).extension]);
       await waitFor(async () => (await harness.getTask(id, context))?.state.status === "terminal");
       expect(await harness.snapshot(module.initial.Doc, root.id, context)).toEqual({ value: "v2" });
     } finally {
@@ -196,9 +179,10 @@ describe("in-process reload", () => {
     const { harness, root } = await open(value);
     let reloads = 0;
     value.registry.install(
-      reloadControls(root.id, async () => {
+      createReloadControls(root.id, async () => {
         reloads++;
-        return reloadExtensions(value.registry, module.manifest);
+        installExtensions(value.registry, [(await module.load("v2")).extension]);
+        return [module.path];
       }),
     );
     route(value.faux, (request) =>
@@ -255,25 +239,19 @@ describe("in-process reload", () => {
     const agentDir = join(value.directory, "agent");
     await mkdir(join(agentDir, "skills", "sample"), { recursive: true });
     await writeFile(join(agentDir, "AGENTS.md"), "old user guidance");
-    const config = {
-      front: fauxRole,
-      worker: fauxRole,
-      classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
-      cloudflareAccountId: undefined,
-    };
     scriptedClassifier(value.models);
-    let loader = extensionManifest(value.models, config, agentDir);
-    await reloadExtensions(value.registry, loader.manifest);
-    expect(loader.configuration.pi.settings.getDefaultTools()).toBeUndefined();
+    const extensions = await Extensions.load(value.models, config, agentDir, () => {});
+    expect(extensions.settings.getDefaultTools()).toBeUndefined();
     await writeFile(join(agentDir, "AGENTS.md"), "fresh user guidance");
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
     await writeFile(
       join(agentDir, "skills", "sample", "SKILL.md"),
       "---\nname: sample\ndescription: fresh skill\n---\ncontent\n",
     );
-    loader = extensionManifest(value.models, config, agentDir);
-    const result = await reloadExtensions(value.registry, loader.manifest);
-    expect(result.reloaded).toEqual([
+    // Concurrent requests share one reload.
+    const reloading = extensions.reload();
+    expect(extensions.reload()).toBe(reloading);
+    expect(await reloading).toEqual([
       "context",
       "pi-tools",
       "workers",
@@ -282,7 +260,7 @@ describe("in-process reload", () => {
       "identity",
       "classifier",
     ]);
-    expect(loader.configuration.pi.settings.getDefaultTools()).toEqual(["read"]);
+    expect(extensions.settings.getDefaultTools()).toEqual(["read"]);
     const sections: string[] = [];
     route(value.faux, (request) => {
       sections.push(
@@ -296,7 +274,7 @@ describe("in-process reload", () => {
       );
       return fauxAssistantMessage("done");
     });
-    const { harness, root } = await open(value);
+    const { harness, root } = await open({ ...value, registry: extensions.registry });
     try {
       await (await root.submit({ type: "input", content: "hello" }, context)).wait(context);
       expect(sections.join("\n")).toContain("fresh user guidance");
@@ -306,5 +284,19 @@ describe("in-process reload", () => {
     } finally {
       await harness.close(context);
     }
-  }, 30_000);
+  });
+
+  it("leaves installed extensions and settings unchanged when a reload fails", async () => {
+    const value = await setup();
+    const agentDir = join(value.directory, "agent");
+    await mkdir(agentDir);
+    scriptedClassifier(value.models);
+    const extensions = await Extensions.load(value.models, config, agentDir, () => {});
+    const registry = extensions.registry.snapshot();
+    const settings = extensions.settings;
+    await writeFile(join(agentDir, "settings.json"), "{");
+    await expect(extensions.reload()).rejects.toThrow("Pi settings failed");
+    expect(extensions.registry.snapshot()).toBe(registry);
+    expect(extensions.settings).toBe(settings);
+  });
 });

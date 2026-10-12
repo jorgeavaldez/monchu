@@ -15,9 +15,9 @@ import {
   type EntryId,
   type EntryRecord,
   type Harness,
-  type JsonObject,
   type SubmissionId,
   type TaskId,
+  type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { ModelRole } from "./config.ts";
@@ -30,33 +30,6 @@ type WorkerRecords = {
 
 const RECENT_HISTORY = 200;
 
-// Validate the persisted v1 boundary, including Durable's numeric ID representation.
-function isWorkerRecords(value: JsonObject): value is WorkerRecords {
-  return (
-    Array.isArray(value.workers) &&
-    value.workers.every(
-      (worker) =>
-        worker !== null &&
-        typeof worker === "object" &&
-        !Array.isArray(worker) &&
-        typeof worker.name === "string" &&
-        Number.isSafeInteger(worker.conversationId) &&
-        Array.isArray(worker.reported) &&
-        worker.reported.every((id) => Number.isSafeInteger(id)),
-    ) &&
-    Array.isArray(value.deliveries) &&
-    value.deliveries.every(
-      (delivery) =>
-        delivery !== null &&
-        typeof delivery === "object" &&
-        !Array.isArray(delivery) &&
-        typeof delivery.requestId === "string" &&
-        typeof delivery.name === "string" &&
-        Number.isSafeInteger(delivery.taskId),
-    )
-  );
-}
-
 export const WorkersDoc = defineDoc<WorkerRecords & { started: number }>({
   kind: "monchu.workers",
   version: 2,
@@ -64,18 +37,63 @@ export const WorkersDoc = defineDoc<WorkerRecords & { started: number }>({
   history: "latest",
   fork: "initial",
   initial: () => ({ workers: [], deliveries: [], started: 0 }),
-  // At most 31 replay deltas; an older oversized v2 tail is reclaimed on its next change.
+  // At most 31 replay deltas.
   checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 31,
-  migrate: (value, fromVersion) => {
-    if (fromVersion !== 1 || !isWorkerRecords(value)) throw new Error("Invalid v1 worker records");
-    // v1 never pruned deliveries, so this also preserves pending assessment baselines.
-    return {
-      workers: value.workers,
-      deliveries: value.deliveries,
-      started: value.deliveries.length,
-    };
-  },
 });
+
+function named(workers: WorkerRecords["workers"], name: string) {
+  const worker = workers.find((item) => item.name === name);
+  if (worker === undefined) throw new Error(`No worker named ${name}`);
+  return worker;
+}
+
+/** The conversation of the parent's worker named `name`. */
+export async function workerConversationId(
+  reader: Pick<Harness, "snapshot">,
+  parentId: ConversationId,
+  name: string,
+  context: Context,
+): Promise<ConversationId> {
+  return named((await reader.snapshot(WorkersDoc, parentId, context))?.workers ?? [], name)
+    .conversationId;
+}
+
+/** Whether the worker has a delivery that has not finished. */
+async function pendingDelivery(
+  state: WorkerRecords,
+  name: string,
+  task: (id: TaskId) => Promise<{ readonly state: { readonly status: string } } | undefined>,
+): Promise<boolean> {
+  for (const delivery of state.deliveries.filter((item) => item.name === name)) {
+    const record = await task(delivery.taskId);
+    if (record !== undefined && record.state.status !== "terminal") return true;
+  }
+  return false;
+}
+
+/** `pendingDelivery` inside a commit, so a change that requires an idle worker cannot race a new delivery. */
+export async function hasPendingDelivery(
+  tx: Tx,
+  parentId: ConversationId,
+  name: string,
+): Promise<boolean> {
+  return pendingDelivery(await tx.doc(WorkersDoc, parentId), name, (id) => tx.task(id));
+}
+
+/** Cancel the worker's current work, pending deliveries, and nested background work. */
+export async function stopWorker(
+  api: Pick<ToolExecutionApi, "snapshot" | "conversation">,
+  parentId: ConversationId,
+  name: string,
+  context: Context,
+): Promise<void> {
+  const worker = await api.conversation(
+    await workerConversationId(api, parentId, name, context),
+    context,
+  );
+  if (worker === undefined) throw new Error("Worker conversation is missing");
+  await worker.abort(context, { background: true });
+}
 
 /** Keep every active delivery and its settled answer, plus a recent completed retry window. */
 async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId): Promise<void> {
@@ -86,8 +104,7 @@ async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId
     const task = await tx.task(delivery.taskId);
     if (delivery.taskId === finishing || task?.state.status === "terminal") continue;
     active.add(delivery.taskId);
-    const worker = state.workers.find((item) => item.name === delivery.name);
-    if (worker === undefined) throw new Error("Worker record is missing");
+    const worker = named(state.workers, delivery.name);
     const submission = await tx.submissionByRequest(
       worker.conversationId,
       `worker-message:${delivery.taskId}`,
@@ -101,17 +118,20 @@ async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId
       .slice(-RECENT_HISTORY)
       .map((item) => item.taskId),
   );
+  // Splice in place: replacing a whole array would store the array in every replay delta.
   for (let index = state.deliveries.length - 1; index >= 0; index--) {
-    const item = state.deliveries[index]!;
-    if (!active.has(item.taskId) && !recent.has(item.taskId)) state.deliveries.splice(index, 1);
+    const taskId = state.deliveries[index]?.taskId;
+    if (taskId !== undefined && !active.has(taskId) && !recent.has(taskId))
+      state.deliveries.splice(index, 1);
   }
   for (const worker of state.workers) {
     const recentAnswers = new Set(
       worker.reported.filter((id) => !answers.has(id)).slice(-RECENT_HISTORY),
     );
     for (let index = worker.reported.length - 1; index >= 0; index--) {
-      const id = worker.reported[index]!;
-      if (!answers.has(id) && !recentAnswers.has(id)) worker.reported.splice(index, 1);
+      const id = worker.reported[index];
+      if (id !== undefined && !answers.has(id) && !recentAnswers.has(id))
+        worker.reported.splice(index, 1);
     }
   }
 }
@@ -195,18 +215,15 @@ function noticeText(notice: WorkerNotice): string {
 
 /** The worker notice an entry carries, for clients that label it; `undefined` for any other entry. */
 export function workerNotice(entry: EntryRecord): WorkerNotice | undefined {
-  // Earlier versions appended reports as passive entries of this kind, without the guidance line.
-  const passive = entry.kind === "monchu.worker-result";
-  const message = passive || UserEntry.is(entry) ? entry.model?.[0] : undefined;
+  const message = UserEntry.is(entry) ? entry.model?.[0] : undefined;
   if (message?.role !== "user" || typeof message.content !== "string") return undefined;
-  const [label = "", ...text] = message.content.split("\n");
-  if (!passive && text.shift() !== NOTICE_GUIDANCE) return undefined;
-  const update = UPDATE_LABEL.exec(label);
-  if (update !== null) return { name: update[1]!, status: "update", text: text.join("\n") };
-  const report = REPORT_LABEL.exec(label);
-  if (report === null) return undefined;
-  const status = report[2] === "completed" ? "completed" : "failed";
-  return { name: report[1]!, status, text: text.join("\n") };
+  const [label = "", guidance, ...text] = message.content.split("\n");
+  if (guidance !== NOTICE_GUIDANCE) return undefined;
+  const update = UPDATE_LABEL.exec(label)?.[1];
+  if (update !== undefined) return { name: update, status: "update", text: text.join("\n") };
+  const [, name, status] = REPORT_LABEL.exec(label) ?? [];
+  if (name === undefined) return undefined;
+  return { name, status: status === "completed" ? "completed" : "failed", text: text.join("\n") };
 }
 
 /** A report is posted again after `/abort` withdraws it; each post has its own request ID. */
@@ -289,7 +306,6 @@ const Delivery = defineTask<
         return { status: "running", checkpoint: { phase: "report", result } };
       }, context);
     },
-    // A checkpoint from before reports were inputs has the same shape and has not reported yet, so it posts once here.
     report: async (task, runtime, context) => {
       const { parentId } = task.input;
       const result = task.state.checkpoint.result;
@@ -362,11 +378,7 @@ export async function startWorker(
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const previous = state.deliveries.find((item) => item.requestId === requestId);
-  if (previous !== undefined) {
-    const worker = state.workers.find((item) => item.name === previous.name);
-    if (worker === undefined) throw new Error("Worker record is missing");
-    return worker.conversationId;
-  }
+  if (previous !== undefined) return named(state.workers, previous.name).conversationId;
   if (state.workers.some((item) => item.name === name))
     throw new Error(`${name} already exists; send it a message instead`);
   await pruneRecords(tx, parentId);
@@ -403,8 +415,7 @@ export async function messageWorker(
   requestId: string,
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
-  const worker = state.workers.find((item) => item.name === name);
-  if (worker === undefined) throw new Error(`No worker named ${name}`);
+  const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
     await pruneRecords(tx, parentId);
     const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "steer" };
@@ -425,22 +436,18 @@ export async function listWorkers(
   context: Context,
 ) {
   const state = await reader.snapshot(WorkersDoc, parentId, context);
+  if (state === undefined) return [];
   return Promise.all(
-    (state?.workers ?? []).map(async (worker) => {
+    state.workers.map(async (worker) => {
       const live = await reader.snapshot(LiveDoc, worker.conversationId, context);
       const agent = await reader.snapshot(AgentDoc, worker.conversationId, context);
-      const deliveries = await Promise.all(
-        (state?.deliveries ?? [])
-          .filter((item) => item.name === worker.name)
-          .map((item) => reader.getTask(item.taskId, context)),
-      );
       return {
         name: worker.name,
         conversationId: worker.conversationId,
         cwd: agent?.cwd,
         busy:
           live?.run !== undefined ||
-          deliveries.some((task) => task !== undefined && task.state.status !== "terminal"),
+          (await pendingDelivery(state, worker.name, (id) => reader.getTask(id, context))),
       };
     }),
   );
@@ -578,12 +585,7 @@ export function createWorkerTools(role: ModelRole) {
         parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
         replay: "unsafe",
         execute: async (args, api, context) => {
-          const state = await api.snapshot(WorkersDoc, api.conversationId, context);
-          const record = state?.workers.find((item) => item.name === args.name);
-          if (record === undefined) throw new Error(`No worker named ${args.name}`);
-          const worker = await api.conversation(record.conversationId, context);
-          if (worker === undefined) throw new Error("Worker conversation is missing");
-          await worker.abort(context, { background: true });
+          await stopWorker(api, api.conversationId, args.name, context);
           return { content: [{ type: "text", text: `Stopped ${args.name}.` }] };
         },
       }),

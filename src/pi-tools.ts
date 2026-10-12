@@ -8,7 +8,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import {
-  CodingTools,
   createBashTool,
   createEditTool,
   createReadTool,
@@ -78,7 +77,7 @@ export function createPiTools(settings: SettingsManager, platform: NodeJS.Platfo
     );
   return {
     extension: defineExtension({
-      name: CodingTools.name,
+      name: "monchu.pi-tools",
       tools: tools.filter(({ name }) => defaults.includes(name) && !unavailable.includes(name)),
     }),
     warnings,

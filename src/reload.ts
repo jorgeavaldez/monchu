@@ -1,4 +1,5 @@
 import { Type, type Models } from "@earendil-works/pi-ai";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   createRegistry,
   defineDoc,
@@ -12,125 +13,193 @@ import {
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { EffortAssessment } from "./classifier.ts";
 import type { MonchuConfig } from "./config.ts";
 
-/** A module and its extension builder. Static imports of that module stay cached. */
-export type ExtensionManifest = readonly {
-  module: string;
-  build: (version: string) => Promise<Extension>;
-}[];
+/** Reloadable modules. Static imports inside them stay cached. */
+type Reloadable = {
+  context: typeof import("./context.ts");
+  "pi-tools": typeof import("./pi-tools.ts");
+  workers: typeof import("./workers.ts");
+  codemode: typeof import("./codemode.ts");
+  goals: typeof import("./goals.ts");
+  identity: typeof import("./identity.ts");
+  classifier: typeof import("./classifier.ts");
+};
 
-/** Build and validate the entire replacement registry before publishing any definitions. */
-export async function reloadExtensions(registry: Registry, manifest: ExtensionManifest) {
-  const version = randomUUID();
-  const candidates: Extension[] = [];
-  for (const item of manifest) candidates.push(await item.build(version));
-  const validation = createRegistry();
-  const names = new Set(candidates.map((extension) => extension.name));
-  if (names.size !== candidates.length)
-    throw new Error("Duplicate extension names in reload manifest");
-  // Validate the same publication order: old task names must not collide with an earlier replacement.
-  for (const extension of registry.snapshot().installed()) validation.install(extension);
-  for (const extension of candidates) validation.install(extension);
-  // install is synchronous; no scheduler phase can run between these publications.
-  for (const extension of candidates) registry.install(extension);
-  return { reloaded: manifest.map((item) => item.module) };
+async function freshImport<Name extends keyof Reloadable>(
+  name: Name,
+  version: string,
+): Promise<Reloadable[Name]> {
+  const suffix = import.meta.url.endsWith(".ts") ? "ts" : "js";
+  // oxlint-disable-next-line typescript/no-unsafe-return -- A computed specifier imports as `any`; `Reloadable` names each module's own type.
+  return import(new URL(`./${name}.${suffix}?v=${version}`, import.meta.url).href);
 }
 
-/** The supported reload seam; the backend, config, and loader itself need /restart. */
-export function extensionManifest(models: Models, config: MonchuConfig, agentDir: string) {
-  let pi: Awaited<ReturnType<typeof import("./context.ts").loadPiConfiguration>> | undefined;
-  let assessment: ReturnType<typeof import("./classifier.ts").effortAssessment> | undefined;
-  const suffix = import.meta.url.endsWith(".ts") ? "ts" : "js";
-  const url = (name: string, version: string) =>
-    new URL(`./${name}.${suffix}?v=${version}`, import.meta.url).href;
-  const classifier = config.classifier;
-  const manifest: ExtensionManifest = [
-    {
-      module: "context",
-      build: async (version) => {
-        const module: typeof import("./context.ts") = await import(url("context", version));
-        pi = await module.loadPiConfiguration(agentDir);
-        return pi.extension;
-      },
-    },
-    {
-      module: "pi-tools",
-      build: async (version) => {
-        const module: typeof import("./pi-tools.ts") = await import(url("pi-tools", version));
-        if (pi === undefined) throw new Error("Pi configuration must load before tools");
-        const tools = module.createPiTools(pi.settings, process.platform);
-        warnings.push(...tools.warnings);
-        return tools.extension;
-      },
-    },
-    {
-      module: "workers",
-      build: async (version) => {
-        const module: typeof import("./workers.ts") = await import(url("workers", version));
-        return module.createWorkerTools(config.worker);
-      },
-    },
-    {
-      module: "codemode",
-      build: async (version) => {
-        const module: typeof import("./codemode.ts") = await import(url("codemode", version));
-        return module.Codemode;
-      },
-    },
-    {
-      module: "goals",
-      build: async (version) => {
-        const module: typeof import("./goals.ts") = await import(url("goals", version));
-        return module.Goals;
-      },
-    },
-    {
-      module: "identity",
-      build: async (version) => {
-        const module: typeof import("./identity.ts") = await import(url("identity", version));
-        return module.Identity;
-      },
-    },
-    ...(classifier === null
-      ? []
-      : [
-          {
-            module: "classifier",
-            build: async (version: string) => {
-              const module: typeof import("./classifier.ts") = await import(
-                url("classifier", version)
-              );
-              assessment = module.effortAssessment(models, classifier, config.cloudflareAccountId);
-              return assessment.extension;
-            },
-          },
-        ]),
-  ];
-  const warnings: string[] = [];
+type Build = {
+  /** Imported modules in installation order. */
+  modules: (keyof Reloadable)[];
+  extensions: Extension[];
+  /** Extensions only the root conversation gets. */
+  root: Extension[];
+  settings: SettingsManager;
+  assessment: EffortAssessment | undefined;
+  warnings: string[];
+};
+
+/** Import fresh copies of the reloadable modules and build their extensions. Nothing is installed. */
+async function build(models: Models, config: MonchuConfig, agentDir: string): Promise<Build> {
+  const version = randomUUID();
+  const modules: (keyof Reloadable)[] = [];
+  const load = <Name extends keyof Reloadable>(name: Name) => {
+    modules.push(name);
+    return freshImport(name, version);
+  };
+  const context = await (await load("context")).createPiContext(agentDir);
+  const tools = (await load("pi-tools")).createPiTools(context.settings, process.platform);
+  const workers = (await load("workers")).createWorkerTools(config.worker);
+  const { Codemode } = await load("codemode");
+  const { Goals } = await load("goals");
+  const { Identity } = await load("identity");
+  const assessment =
+    config.classifier === null
+      ? undefined
+      : (await load("classifier")).createEffortAssessment(
+          models,
+          config.classifier,
+          config.cloudflareAccountId,
+        );
   return {
-    manifest,
-    get configuration() {
-      if (pi === undefined) throw new Error("Extension manifest has not loaded");
-      return { pi, assessment, warnings };
-    },
+    modules,
+    extensions: [
+      context.extension,
+      tools.extension,
+      workers,
+      Codemode,
+      Goals,
+      Identity,
+      ...(assessment === undefined ? [] : [assessment.extension]),
+    ],
+    root: [Goals],
+    settings: context.settings,
+    assessment,
+    warnings: [...context.warnings, ...tools.warnings],
   };
 }
 
+/** Validate the entire replacement against the installed registry, then publish it in one synchronous step. */
+export function installExtensions(registry: Registry, extensions: readonly Extension[]): void {
+  const names = new Set(extensions.map((extension) => extension.name));
+  if (names.size !== extensions.length) throw new Error("Duplicate extension names");
+  const validation = createRegistry();
+  // Validate the same publication order: old task names must not collide with an earlier replacement.
+  for (const extension of registry.snapshot().installed()) validation.install(extension);
+  for (const extension of extensions) validation.install(extension);
+  // install is synchronous; no scheduler phase can run between these publications.
+  for (const extension of extensions) registry.install(extension);
+}
+
+/**
+ * The extension registry and the Pi configuration of its last successful build. Every `Reloadable` module reloads in
+ * process; the backend, config, and this loader need /restart.
+ */
+export class Extensions {
+  readonly registry: Registry;
+  private readonly models: Models;
+  private readonly config: MonchuConfig;
+  private readonly agentDir: string;
+  private readonly report: (warning: string) => void;
+  private current: Build;
+  private reloading: Promise<readonly string[]> | undefined;
+
+  private constructor(
+    models: Models,
+    config: MonchuConfig,
+    agentDir: string,
+    report: (warning: string) => void,
+    current: Build,
+  ) {
+    this.registry = createRegistry();
+    this.models = models;
+    this.config = config;
+    this.agentDir = agentDir;
+    this.report = report;
+    this.current = current;
+  }
+
+  /** Build and install every extension. `report` receives configuration warnings now and after each reload. */
+  static async load(
+    models: Models,
+    config: MonchuConfig,
+    agentDir: string,
+    report: (warning: string) => void,
+  ): Promise<Extensions> {
+    const current = await build(models, config, agentDir);
+    const extensions = new Extensions(models, config, agentDir, report, current);
+    installExtensions(extensions.registry, current.extensions);
+    for (const warning of current.warnings) report(warning);
+    return extensions;
+  }
+
+  /** The loaded Pi user settings. */
+  get settings(): SettingsManager {
+    return this.current.settings;
+  }
+
+  get assessment(): EffortAssessment | undefined {
+    return this.current.assessment;
+  }
+
+  /** Extensions only the root conversation gets. */
+  get root(): readonly Extension[] {
+    return this.current.root;
+  }
+
+  /** Every installed extension except the root-only ones. */
+  defaults(): readonly Extension[] {
+    const root = new Set(this.current.root.map((extension) => extension.name));
+    return this.registry
+      .snapshot()
+      .installed()
+      .filter((extension) => !root.has(extension.name));
+  }
+
+  /**
+   * Concurrent requests share one reload, which resolves to the reloaded modules. A failed build, import, or validation
+   * leaves installed definitions and settings unchanged.
+   */
+  reload(): Promise<readonly string[]> {
+    this.reloading ??= (async () => {
+      await buildForReload();
+      const next = await build(this.models, this.config, this.agentDir);
+      installExtensions(this.registry, next.extensions);
+      this.current = next;
+      for (const warning of next.warnings) this.report(warning);
+      return next.modules;
+    })().finally(() => {
+      this.reloading = undefined;
+    });
+    return this.reloading;
+  }
+
+  /** Resolves once no reload is running, whether or not it succeeded. */
+  async settled(): Promise<void> {
+    await this.reloading?.catch(() => {});
+  }
+}
+
 /** Compiled mode needs fresh JS; source mode uses Node's native type stripping. */
-export async function buildForReload(): Promise<void> {
+async function buildForReload(): Promise<void> {
   if (import.meta.url.endsWith(".ts")) return;
   await new Promise<void>((resolve, reject) => {
-    const child =
+    const [command, args] =
       process.platform === "win32"
-        ? spawn("cmd.exe", ["/d", "/s", "/c", "npm run build"], {
-            cwd: fileURLToPath(new URL("../", import.meta.url)),
-            stdio: ["ignore", "pipe", "pipe"],
-          })
-        : spawn("npm", ["run", "build"], {
-            cwd: fileURLToPath(new URL("../", import.meta.url)),
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+        ? ["cmd.exe", ["/d", "/s", "/c", "npm run build"]]
+        : ["npm", ["run", "build"]];
+    const child = spawn(command, args, {
+      cwd: fileURLToPath(new URL("../", import.meta.url)),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let output = "";
     child.stdout.on("data", (data: Buffer) => {
       output = (output + data.toString()).slice(-8000);
@@ -157,9 +226,9 @@ export const RestartRequest = defineDoc<{
   initial: () => ({ request: null }),
 });
 
-export function reloadControls(
+export function createReloadControls(
   rootId: ConversationId,
-  reload: () => Promise<{ reloaded: string[] }>,
+  reload: () => Promise<readonly string[]>,
 ) {
   return defineExtension({
     name: "monchu.reload",
@@ -179,7 +248,7 @@ export function reloadControls(
         parameters: Type.Object({}),
         replay: "unsafe",
         execute: async () => ({
-          content: [{ type: "text", text: `Reloaded: ${(await reload()).reloaded.join(", ")}` }],
+          content: [{ type: "text", text: `Reloaded: ${(await reload()).join(", ")}` }],
         }),
       }),
       defineTool({
