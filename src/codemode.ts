@@ -75,6 +75,8 @@ export const Codemode = defineExtension({
               // Nested calls see a distinct call ID and keep their running output and details local.
               const overrides: Partial<ToolExecutionApi> = {
                 callId,
+                // The local sink needs all text, not the outer call's retained tail.
+                outputWindow: undefined,
                 output: (chunk) => {
                   output += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
                 },

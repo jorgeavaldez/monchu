@@ -1,10 +1,68 @@
+import { defineExtension, wrapTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { afterEach, describe, expect, it } from "vitest";
+import { Codemode } from "../src/codemode.ts";
 import { WorkersDoc } from "../src/workers.ts";
 import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
 afterEach(cleanup);
 
 describe("codemode", () => {
+  it("clears the outer output window when capturing nested output locally", async () => {
+    const value = await setup();
+    const codemode = Codemode.tools?.[0];
+    if (codemode === undefined) throw new Error("Codemode tool is missing");
+    let nestedWindow: ToolExecutionApi["outputWindow"] | "not-called" = "not-called";
+    value.registry.install(
+      defineExtension({
+        name: "test.output-window",
+        wraps: [
+          // A non-default outer tail window must not reach a nested tool's output sink.
+          wrapTool(codemode, (tool) => ({
+            ...tool,
+            outputLimits: { retain: "tail", maxBytes: 128 },
+          })),
+        ],
+      }),
+    );
+    value.registry.install(
+      defineExtension({
+        name: "test.nested-window",
+        wraps: [
+          wrapTool(createBashTool(), (tool) => ({
+            ...tool,
+            execute: async (args, api, context) => {
+              nestedWindow = api.outputWindow;
+              return tool.execute(args, api, context);
+            },
+          })),
+        ],
+      }),
+    );
+    route(
+      value.faux,
+      callTools({
+        script: {
+          tool: "codemode",
+          args: {
+            code: `const output = await tools.bash({ command: "echo nested-output" }); text(output.trim().toUpperCase());`,
+          },
+        },
+      }),
+    );
+    const { harness, root } = await open(value);
+    try {
+      await (await root.submit({ type: "input", content: "script" }, context)).wait(context);
+      expect(nestedWindow).toBeUndefined();
+      const results = await toolResults(root);
+      expect(results).toHaveLength(1);
+      expect(textOf(results[0])).toBe("NESTED-OUTPUT");
+      expect(results[0]?.isError).toBe(false);
+    } finally {
+      await harness.close(context);
+    }
+  });
+
   it("calls other tools from a script, keeps store values, and leaves those tools callable", async () => {
     const value = await setup();
     route(
