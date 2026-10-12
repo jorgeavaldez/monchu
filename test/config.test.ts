@@ -25,6 +25,7 @@ describe("config", () => {
       classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef-flash" },
       cloudflareAccountId: undefined,
       settings: {},
+      claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
     });
   });
 

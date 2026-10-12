@@ -25,11 +25,18 @@ export type RunSettings = Pick<
   | "terminal"
 >;
 
+export type ClaudeConfig = {
+  executable: string | undefined;
+  plan: "pro" | "max";
+  longContextExtraUsage: boolean;
+};
+
 /** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
 export type MonchuConfig = {
   front: ModelRole;
   worker: ModelRole;
   settings: RunSettings;
+  claude: ClaudeConfig;
   /** `null` turns classification off explicitly. */
   classifier: ClassifierRole | null;
   /** Overrides the account ID from Pi's Cloudflare credentials. Not a secret. */
@@ -42,6 +49,7 @@ const defaults: MonchuConfig = {
   classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef-flash" },
   cloudflareAccountId: undefined,
   settings: {},
+  claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
 };
 
 const thinkingLevels = [
@@ -247,7 +255,7 @@ export async function loadConfig(home: string): Promise<MonchuConfig> {
   try {
     const value: unknown = JSON.parse(raw);
     if (!isObject(value)) throw new Error("expected a JSON object");
-    const known = ["front", "worker", "classifier", "cloudflareAccountId", "settings"];
+    const known = ["front", "worker", "classifier", "cloudflareAccountId", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
     const accountId = value.cloudflareAccountId;
@@ -256,7 +264,25 @@ export async function loadConfig(home: string): Promise<MonchuConfig> {
       (typeof accountId !== "string" || !/^[a-f0-9]{32}$/i.test(accountId))
     )
       throw new Error("cloudflareAccountId must be a 32-character hex ID");
+    let claude = defaults.claude;
+    if (value.claude !== undefined) {
+      object(value.claude, "claude", ["executable", "plan", "longContextExtraUsage"]);
+      const plan = value.claude.plan ?? defaults.claude.plan;
+      if (plan !== "pro" && plan !== "max") throw new Error("claude.plan must be pro or max");
+      claude = {
+        executable:
+          value.claude.executable === undefined
+            ? undefined
+            : text(value.claude.executable, "claude.executable"),
+        plan,
+        longContextExtraUsage:
+          value.claude.longContextExtraUsage === undefined
+            ? false
+            : boolean(value.claude.longContextExtraUsage, "claude.longContextExtraUsage"),
+      };
+    }
     return {
+      claude,
       front: modelRole(value.front, "front", defaults.front),
       worker: modelRole(value.worker, "worker", defaults.worker),
       classifier: classifierRole(value.classifier),

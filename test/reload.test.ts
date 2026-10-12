@@ -39,6 +39,7 @@ const config = {
   classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
   cloudflareAccountId: undefined,
   settings: {},
+  claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },
 };
 
 type VersionedModule = {

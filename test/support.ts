@@ -1,3 +1,9 @@
+import type {
+  SDKMessage,
+  SDKPartialAssistantMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import { openSession, type Session } from "cc-session-io";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -15,6 +21,9 @@ import {
   fauxToolCall,
   type Message,
   type MutableModels,
+  type Models,
+  type AssistantMessage,
+  type Provider,
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -31,12 +40,15 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Codemode } from "../src/codemode.ts";
-import type { ModelRole } from "../src/config.ts";
+import type { ClaudeConfig, ModelRole } from "../src/config.ts";
+import { createClaudeCodeProvider, type ClaudeQuery } from "../src/models/claude-code.ts";
+import { openModels } from "../src/models/index.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import { createWorkerTools, WorkersDoc } from "../src/workers.ts";
 
@@ -236,7 +248,7 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
 }
 
 export async function open(
-  value: Setup,
+  value: Pick<Setup, "directory" | "registry" | "reports"> & { models: Models },
 ): Promise<{ readonly harness: Harness; readonly root: Conversation }> {
   const harness = await Harness.open(
     await openNodeSqliteStorage(join(value.directory, "monchu.sqlite")),
@@ -322,6 +334,201 @@ export function callTools(calls: Record<string, { tool: string; args: JsonObject
       ? fauxAssistantMessage("ok")
       : fauxAssistantMessage([fauxToolCall(call.tool, call.args)], { stopReason: "toolUse" });
   };
+}
+
+/** Script the real provider's sole external boundary, retaining disposable replay files at query entry. */
+export function scriptedClaude(
+  home: string,
+  config: ClaudeConfig,
+  respond: (input: Parameters<ClaudeQuery>[0]) => AsyncIterable<SDKMessage>,
+) {
+  const requests: {
+    input: Parameters<ClaudeQuery>[0];
+    prompt: SDKUserMessage[];
+    history: Session["messages"];
+    path: string | undefined;
+  }[] = [];
+  let closed = 0;
+  let interrupted = 0;
+  const query: ClaudeQuery = (input) => {
+    let isClosed = false;
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        const options = input.options;
+        if (
+          options === undefined ||
+          options.cwd === undefined ||
+          options.env?.CLAUDE_CONFIG_DIR === undefined
+        )
+          throw new Error("Claude script needs explicit isolated options");
+        if (typeof input.prompt === "string") throw new Error("Claude script needs streamed input");
+        const prompt: SDKUserMessage[] = [];
+        for await (const message of input.prompt) prompt.push(message);
+        const session =
+          options.resume === undefined
+            ? undefined
+            : openSession({
+                sessionId: options.resume,
+                projectPath: options.cwd,
+                claudeDir: options.env.CLAUDE_CONFIG_DIR,
+              });
+        requests.push({
+          input,
+          prompt,
+          history: session?.messages ?? [],
+          path: session?.jsonlPath,
+        });
+        yield* respond(input);
+      },
+      interrupt: () => {
+        interrupted++;
+        return Promise.resolve();
+      },
+      close: () => {
+        if (!isClosed) {
+          isClosed = true;
+          closed++;
+        }
+      },
+    };
+  };
+  return {
+    provider: createClaudeCodeProvider(home, config, query),
+    requests,
+    closed: () => closed,
+    interrupted: () => interrupted,
+  };
+}
+
+/** Authenticated test setup through Monchu's real credential and login seam. */
+export async function openClaudeModels(
+  home: string,
+  provider: Provider,
+  token: string,
+): Promise<Models> {
+  const models = await openModels(home, provider);
+  await models.login("claude-code", "oauth", { prompt: async () => token, notify: () => {} });
+  return models;
+}
+
+/** SDK frames, not faux Pi events: exercise streaming, signed thinking and tool argument assembly. */
+export function claudeResponse(
+  content: AssistantMessage["content"],
+  stopReason: "end_turn" | "tool_use" | "max_tokens" = "end_turn",
+): SDKMessage[] {
+  const events: SDKPartialAssistantMessage["event"][] = [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_script",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        content: [],
+        container: null,
+        context_management: null,
+        diagnostics: null,
+        stop_reason: null,
+        stop_sequence: null,
+        stop_details: null,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 30,
+          cache_creation: null,
+          fallback_credit: null,
+          inference_geo: null,
+          iterations: null,
+          output_tokens_details: null,
+          server_tool_use: null,
+          service_tier: null,
+          speed: null,
+        },
+      },
+    },
+  ];
+  for (const [index, block] of content.entries()) {
+    if (block.type === "text") {
+      events.push(
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "text", text: "", citations: null },
+        },
+        { type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } },
+      );
+    } else if (block.type === "thinking") {
+      events.push(
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: { type: "thinking_delta", thinking: block.thinking, estimated_tokens: 2 },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: { type: "signature_delta", signature: block.thinkingSignature ?? "signed_script" },
+        },
+      );
+    } else {
+      const args = JSON.stringify(block.arguments);
+      const split = Math.floor(args.length / 2);
+      events.push(
+        {
+          type: "content_block_start",
+          index,
+          content_block: {
+            type: "tool_use",
+            id: block.id,
+            name: `mcp__monchu__${block.name}`,
+            input: {},
+          },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json: args.slice(0, split) },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json: args.slice(split) },
+        },
+      );
+    }
+    events.push({ type: "content_block_stop", index });
+  }
+  events.push(
+    {
+      type: "message_delta",
+      context_management: null,
+      delta: { stop_reason: stopReason, stop_sequence: null, stop_details: null, container: null },
+      usage: {
+        input_tokens: null,
+        output_tokens: 7,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        fallback_credit: null,
+        iterations: null,
+        output_tokens_details: { thinking_tokens: 3 },
+        server_tool_use: null,
+      },
+    },
+    { type: "message_stop" },
+  );
+  return events.map((event) => ({
+    type: "stream_event",
+    event,
+    parent_tool_use_id: null,
+    uuid: randomUUID(),
+    session_id: "script",
+  }));
 }
 
 /** Poll `check` in real time until it holds. */

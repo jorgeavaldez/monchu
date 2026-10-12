@@ -201,6 +201,12 @@ export class Extensions {
     this.reloading ??= (async () => {
       await buildForReload();
       const config = await loadConfig(this.home);
+      if (
+        config.claude.executable !== this.current.config.claude.executable ||
+        config.claude.plan !== this.current.config.claude.plan ||
+        config.claude.longContextExtraUsage !== this.current.config.claude.longContextExtraUsage
+      )
+        throw new Error("Claude Code host settings changed; use /restart to apply them");
       const next = await build(this.models, config, this.home, this.reportMissing);
       validateExtensions(this.registry, next.extensions);
       await applyConfig?.(config);

@@ -88,7 +88,7 @@ export class Monchu {
         );
       }
       const config = await loadConfig(home);
-      const models = await openModels(home, devProvider);
+      const models = await openModels(home, devProvider, config.claude);
       const reports = new Reports(join(home, "monchu.log"));
       const extensions = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),

@@ -1,6 +1,7 @@
 import { createModels, type Models, type Provider } from "@earendil-works/pi-ai";
 import { join } from "node:path";
-import type { MonchuConfig } from "../config.ts";
+import type { ClaudeConfig, MonchuConfig } from "../config.ts";
+import { createClaudeCodeProvider } from "./claude-code.ts";
 import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
 import { FileCredentials } from "./credentials.ts";
@@ -12,13 +13,18 @@ export { createDevProvider } from "./dev.ts";
  * Add a provider module and register it here; every role uses this same collection and credential store.
  * Only the explicit dev entry point and tests supply a faux provider. No catalogs are fetched or persisted.
  */
-export async function openModels(home: string, devProvider?: Provider): Promise<Models> {
+export async function openModels(
+  home: string,
+  devProvider?: Provider,
+  claude: ClaudeConfig = { executable: undefined, plan: "pro", longContextExtraUsage: false },
+): Promise<Models> {
   const credentials = new FileCredentials(join(home, "auth.json"));
   // Validate existing credentials and initialize a fresh store before opening Durable.
   await credentials.list();
   const models = createModels({ credentials });
   models.setProvider(createCodexProvider());
   models.setProvider(Cloudflare);
+  models.setProvider(createClaudeCodeProvider(home, claude));
   if (devProvider !== undefined)
     models.setProvider(
       devProvider.id === "openai-codex" ? createCodexProvider(devProvider) : devProvider,

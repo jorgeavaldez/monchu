@@ -16,6 +16,7 @@ describe("Monchu models", () => {
     expect(models.getProviders().map((provider) => provider.id)).toEqual([
       "openai-codex",
       "cloudflare-workers-ai",
+      "claude-code",
       "faux",
     ]);
     const config = await loadConfig(value.directory);

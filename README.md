@@ -34,8 +34,8 @@ Monchu owns its configuration and credentials; it never reads or writes `~/.pi`.
 Before importing any Pi SDK module, the entry point sets `PI_CODING_AGENT_DIR` to `<home>/agent`.
 Shell-tool subprocesses do not inherit that override, so a Pi started from them uses its normal config.
 `src/models/` owns `<home>/auth.json`, provider registration, login, and model-role resolution on pi-ai.
-Providers are code modules: Codex and Cloudflare use their built-in catalogs; dev/test modes inject faux providers.
-Every role uses the same provider collection. There are no file-based catalog overrides or catalog cache files.
+Providers are code modules: Codex and Cloudflare use their built-in catalogs; Claude Code uses the Opus/Sonnet/Haiku chat catalog; dev/test modes inject faux providers.
+The front and workers use the same chat providers. The classifier stays on Cloudflare's dedicated classification API; Claude Code does not invent classification probabilities. There are no file-based catalog overrides or catalog cache files.
 Use `/login` inside Monchu for fresh per-device credentials; do not copy Pi credentials or share refresh tokens.
 There is no silent model/provider fallback.
 
@@ -46,6 +46,7 @@ There is no silent model/provider fallback.
   "front": { "provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low" },
   "worker": { "provider": "openai-codex", "modelId": "gpt-6.1-sol", "thinkingLevel": "high" },
   "classifier": { "provider": "cloudflare-workers-ai", "modelId": "@cf/cloudflare/clef-flash" },
+  "claude": { "plan": "pro", "longContextExtraUsage": false },
   "settings": {
     "theme": "system",
     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000, "maxAgentDelayMs": 60000 },
@@ -70,6 +71,34 @@ Clef Flash uses Pi's native `cloudflare-workers-ai` provider with Monchu's store
 `MONCHU_CF_WORKERS_AI_TOKEN` and `cloudflareAccountId` (a non-secret 32-character hex account ID) are optional overrides.
 Never put the token in the config file or source code.
 
+## Claude Code subscription provider
+
+Use `/login claude-code` to paste a token obtained from `claude setup-token` into Monchu's own credential store.
+API-key login and ambient Claude credentials are not supported. Setup-tokens are not refreshable; log in again when the server rejects an expired token.
+Choose `claude-code` with an Opus, Sonnet or Haiku catalog ID in `front` or `worker`, for example `claude-opus-5-5`.
+
+**Before first live use, Jorge must check that usage credits/extra usage are disabled on his Claude account.**
+A subscription token alone does not prevent [account-level paid overflow](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans). Monchu does not change this account setting.
+Two guards adapted from pi-claude-bridge reduce additional billing exposure:
+
+- `claude.plan` defaults to `pro`; `claude.longContextExtraUsage` defaults to `false`. Opus 4.6 gets `[1m]` only on `max` or with explicit extra-usage opt-in; Sonnet 4.6 only with that opt-in. Leave the opt-in off for subscription-only operation. The bridge's measured subscription-safe list (Opus 5.5/5/4.8/4.7 and Sonnet 5.5/5) gets 1M; other models stay at 200K. The catalog window matches the CLI model variant.
+- Before launching, the provider refuses an effective system prompt with Pi's preamble at line start (`You are an expert coding assistant operating inside pi`), or both `docs/custom-provider.md` and `docs/packages.md`. Reword the source instructions before retrying; prompts are never dumped to logs.
+
+`claude.executable` accepts a Claude Code executable/wrapper path; relative paths are resolved under the Monchu home. If omitted, Monchu resolves `claude` on PATH.
+It always passes the resolved path as the Agent SDK's `pathToClaudeCodeExecutable`, never using the SDK's platform-package lookup. Missing/startup errors name the attempted path. Windows paths must be directly launchable, not shell-only command shims.
+Changes to `claude` host settings require `/restart`; a reload rejects them without applying a partial settings snapshot.
+
+Claude Code uses `<home>/claude` as `CLAUDE_CONFIG_DIR`, an isolated execution directory, no setting sources, no hooks/plugins/skills, no native tools, and only Monchu's schema-only MCP server.
+The child environment is copied, stripping inherited `ANTHROPIC_*` and `CLAUDE_*` values before installing Monchu's token and isolation settings. Provider switches, fast mode, cloud MCP and automatic compaction are disabled.
+Every model request starts a fresh process: Durable's messages rebuild a disposable session via `cc-session-io`, then the SDK streams one assistant response.
+At its first `message_stop`, Monchu closes the query and kills its owned child. MCP handlers never execute tools or deliver invented results; Durable commits the calls, runs the tools, and issues a new model request with the real results.
+Abort closes/kills the query; restart or a crash leaves no parked process cache to recover. The next request rebuilds from Durable's current transcript. Internal retry/fallback/compaction events and unsupported content fail explicitly rather than returning an empty final answer. Durable retains its own configured retry policy.
+
+**Termux:** the SDK has no Android binary package, but this provider does not need one.
+Jorge's working `claude` on PATH can use his glibc-runner (`grun`) or binary-patch workaround; otherwise point `claude.executable` at that wrapper.
+See [the SDK lookup issue](https://github.com/anthropics/claude-code/issues/50270), [pybe's wrapper](https://github.com/pybe/claude-code-termux), and [d3ffen's workaround](https://github.com/d3ffen/claude-code-termux).
+The SDK accepts an explicit executable and does not eagerly import a platform package. No phone fallback is built; no phone run has been performed.
+
 The front reads `SOUL.md`, `AGENTS.md`, `DEVICES.md`, `memories/USER.md`, and `memories/MEMORY.md` from its home on every model request. Workers read only the two memory files and `DEVICES.md`. Each file is labelled with its editable path; missing files are skipped with one warning per path for the runtime's lifetime, including reloads. All roles receive device facts (hostname, OS/release, user, user home, Monchu home, execution directory).
 
 Skills load in place at startup and on reload from `<home>/skills` and this checkout's bundled `skills/`, with home skills winning name collisions. Only metadata is advertised; bodies are read on demand. Pi instructions, skills, packages, and cwd/ancestor resources are not loaded, and no skill is copied into Pi's agent directory.
@@ -79,10 +108,11 @@ Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 - `config.json`: optional model roles and validated run settings; no secrets.
 - `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
 - `agent/`: isolated SDK agent directory, including SDK-managed binaries/resources; not Pi's user directory.
+- `claude/`: isolated Claude Code config/execution directory and disposable transcript mirrors; not the durable conversation store.
 - `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
-For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
+For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/claude/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.

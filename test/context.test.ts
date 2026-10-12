@@ -4,6 +4,7 @@ import { homedir, hostname, release, type, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.ts";
 import { createContext } from "../src/context.ts";
 import { createIdentity, FRONT_INSTRUCTIONS } from "../src/identity.ts";
 import { Extensions } from "../src/reload.ts";
@@ -84,13 +85,7 @@ describe("Monchu home context", () => {
     const warnings: string[] = [];
     const extensions = await Extensions.load(
       value.models,
-      {
-        front: fauxRole,
-        worker: fauxRole,
-        classifier: null,
-        cloudflareAccountId: undefined,
-        settings: {},
-      },
+      await loadConfig(value.directory),
       value.directory,
       (warning) => warnings.push(warning),
     );
@@ -262,13 +257,7 @@ describe("Monchu home context", () => {
     const warnings: string[] = [];
     const extensions = await Extensions.load(
       value.models,
-      {
-        front: fauxRole,
-        worker: fauxRole,
-        classifier: null,
-        cloudflareAccountId: undefined,
-        settings: {},
-      },
+      await loadConfig(value.directory),
       directory,
       (warning) => warnings.push(warning),
     );
