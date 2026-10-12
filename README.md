@@ -52,7 +52,7 @@ Never put the token in the config file or source code.
 
 User-level Pi configuration comes from `getAgentDir()`: global context-file precedence, `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, and skills. Coding-agent instructions are labeled guidance; they do not replace Monchu's identity or front/worker workflow. Skills use Pi's user discovery (including `~/.agents/skills`), configured paths/filters, and installed package resources; only metadata is advertised, with instructions read on demand. Missing packages are not installed (the warning redacts URL credentials and token parameters) and executable extensions are not loaded.
 
-Resources and settings load at startup, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
+Resources and settings load at startup and on reload, independently of execution cwd. Project `.pi` settings/resources and cwd/ancestor context are excluded. Run policy (stream timeout, retries, compaction, steering and follow-up modes), built-in tool defaults, shell path, and shell command prefix come from these user settings.
 
 Chat history and task checkpoints live in `~/.monchu/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -120,6 +120,18 @@ Each conversation stores its own cwd.
 Persistent directory changes require an idle conversation with no pending worker deliveries, so running calls do not silently change environments.
 Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 
+## Self reload
+
+`reload_extensions` is available to all roles. The backend also exposes `reload()` and Jorge-only `restart()`; `/reload` and `/restart` terminal wiring belongs to the second of the parallel reload/TUI PRs to merge.
+
+Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode runs `npm run build` in that checkout first. Each manifest module is imported with a fresh query string: workers, codemode, classifier, goals, Pi context/tools, and identity. Static imports remain cached, so dependency and host changes require a restart.
+
+All modules are built and the complete registry and installation order validated before installing anything. A build/import/validation error leaves installed code and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also discards the old Pi resource/settings snapshot; existing tool environments remain alive, while later calls use the new shell settings. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
+
+`request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Jorge's backend `restart()` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources, re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
+
+`skills/monchu/SKILL.md` is installed at startup into Pi's user `skills/monchu` directory from `getAgentDir()`, only if absent. Existing user edits are preserved. It tells Monchu to edit source in a jj workspace, check it, apply authorized changes to the running checkout, and reload; host changes need Jorge's restart approval.
+
 ## Backend boundary
 
 - `src/backend.ts`: store ownership, Pi model runtime, admission, observation, worker controls, and execution directories.
@@ -128,7 +140,9 @@ Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: user-only Pi settings and resources, loaded once at startup; imported instructions and skill metadata as prompt sections.
+- `src/context.ts`: user-only Pi settings and resources; imported instructions and skill metadata as prompt sections.
+- `src/reload.ts`: extension manifest, validated in-process replacement, reload tool, and durable restart requests.
+- `src/identity.ts`: reloadable Monchu identity and execution sections.
 - `src/pi-tools.ts`: user-selected built-ins and shell configuration inside Durable tool invocations.
 - `src/terminal.ts`: stdin, commands, and rendering only.
 - `src/main.ts`: lifecycle wiring.
