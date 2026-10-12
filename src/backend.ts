@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, type Provider } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   configure,
@@ -68,7 +68,7 @@ export class Monchu {
     this.envs = envs;
   }
 
-  static async open(home = join(homedir(), ".monchu")): Promise<Monchu> {
+  static async open(home = join(homedir(), ".monchu"), devProvider?: Provider): Promise<Monchu> {
     home = resolve(home);
     await mkdir(home, { recursive: true, mode: 0o700 });
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
@@ -90,6 +90,8 @@ export class Monchu {
         authPath: join(agentDir, "auth.json"),
         modelsPath: join(agentDir, "models.json"),
       });
+      // Only the explicit dev entry point/tests supply a scripted provider; normal startup is unchanged.
+      if (devProvider !== undefined) models.registerNativeProvider(devProvider);
       const diagnostic = models.getError();
       if (diagnostic !== undefined) throw new Error(diagnostic);
       for (const role of [config.front, config.worker]) {
