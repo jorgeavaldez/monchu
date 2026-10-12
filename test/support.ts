@@ -34,6 +34,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Codemode } from "../src/codemode.ts";
 import type { ModelRole } from "../src/config.ts";
 import { createPiTools } from "../src/pi-tools.ts";
@@ -42,6 +43,63 @@ import { createWorkerTools, WorkersDoc } from "../src/workers.ts";
 export const context: Context = BACKGROUND_CONTEXT;
 
 export const fauxRole: ModelRole = { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
+
+/** Direct environment access, including computed property spelling. */
+function isProcessEnvironment(node: Node): boolean {
+  return (
+    node.type === "MemberExpression" &&
+    node.object.type === "Identifier" &&
+    node.object.name === "process" &&
+    (node.computed
+      ? node.property.type === "Literal" && node.property.value === "env"
+      : node.property.type === "Identifier" && node.property.name === "env")
+  );
+}
+
+function isEnvironmentTarget(node: Node): boolean {
+  return (
+    isProcessEnvironment(node) ||
+    (node.type === "MemberExpression" && isEnvironmentTarget(node.object))
+  );
+}
+
+/** Syntax-aware guard: writes, mutation calls and aliases cannot move host setup into library code. */
+export function environmentMutations(source: string): number[] {
+  const parsed = parseSync("source.ts", source);
+  if (parsed.errors.length)
+    throw new Error("Cannot parse source for the environment ownership check");
+  const mutations: number[] = [];
+  new Visitor({
+    AssignmentExpression: (node) => {
+      if (isEnvironmentTarget(node.left)) mutations.push(node.start);
+    },
+    UpdateExpression: (node) => {
+      if (isEnvironmentTarget(node.argument)) mutations.push(node.start);
+    },
+    UnaryExpression: (node) => {
+      if (node.operator === "delete" && isEnvironmentTarget(node.argument))
+        mutations.push(node.start);
+    },
+    VariableDeclarator: (node) => {
+      if (node.init && isProcessEnvironment(node.init)) mutations.push(node.start);
+    },
+    CallExpression: (node) => {
+      if (!node.arguments.some(isProcessEnvironment)) return;
+      // These inspect the environment rather than handing its mutable reference to another owner.
+      if (
+        node.callee.type === "MemberExpression" &&
+        !node.callee.computed &&
+        node.callee.object.type === "Identifier" &&
+        node.callee.object.name === "Object" &&
+        node.callee.property.type === "Identifier" &&
+        ["keys", "entries", "values"].includes(node.callee.property.name)
+      )
+        return;
+      mutations.push(node.start);
+    },
+  }).visit(parsed.program);
+  return mutations;
+}
 
 /** Pending classifier answers, resolved by the test. */
 export type ScriptedClassifier = {
@@ -132,6 +190,7 @@ const sandbox = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+  MONCHU_DEV_HOME: process.env.MONCHU_DEV_HOME,
 };
 
 export async function cleanup(): Promise<void> {
@@ -141,6 +200,16 @@ export async function cleanup(): Promise<void> {
   }
   for (const directory of directories) await rm(directory, { recursive: true, force: true });
   directories.clear();
+}
+
+/** Prepare the process for an explicit test home, just as the entry point does before opening Monchu. */
+export function prepareHome(home: string): void {
+  directories.add(home);
+  Object.assign(process.env, {
+    HOME: home,
+    USERPROFILE: home,
+    PI_CODING_AGENT_DIR: join(home, "agent"),
+  });
 }
 
 /**
@@ -162,11 +231,7 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
     JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
   );
   const agentDir = join(directory, "agent");
-  Object.assign(process.env, {
-    HOME: directory,
-    USERPROFILE: directory,
-    PI_CODING_AGENT_DIR: agentDir,
-  });
+  prepareHome(directory);
   return { faux, models, registry, reports: [], directory, agentDir };
 }
 

@@ -10,6 +10,5 @@ export async function monchuHome(smoke: boolean): Promise<string> {
     throw new Error(
       "MONCHU_DEV_HOME must be a monchu-smoke-* directory directly inside the OS temp directory",
     );
-  process.env.MONCHU_DEV_HOME = home;
   return resolve(home);
 }

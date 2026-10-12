@@ -19,6 +19,7 @@
     "@types/node": "^26.6.4",
     "@xterm/headless": "5.5.0",
     "knip": "6.41.0",
+    "oxc-parser": "0.153.0",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2004",

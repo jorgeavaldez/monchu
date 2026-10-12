@@ -68,7 +68,7 @@ describe("terminal input boundary", () => {
   it("restores the terminal and stops input before /restart re-executes, reopens storage, and propagates the child code", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
-    const agentDir = join(value.directory, "agent");
+    const agentDir = join(home, "agent");
     await mkdir(home);
     await writeFile(join(home, "config.json"), JSON.stringify({ classifier: null }));
     const eventsPath = join(home, "restart-events.txt");

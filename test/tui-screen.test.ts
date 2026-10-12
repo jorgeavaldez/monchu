@@ -1,12 +1,13 @@
 import { createProvider } from "@earendil-works/pi-ai";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { openDevMonchu } from "../src/dev-faux.ts";
+import { monchuHome } from "../src/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
-import { cleanup, fauxRole, setup, waitFor } from "./support.ts";
+import { cleanup, fauxRole, prepareHome, setup, waitFor } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 async function withTerminal(
@@ -14,10 +15,9 @@ async function withTerminal(
   theme: string,
   test: (screen: VirtualTerminal, backend: Monchu, home: string) => Promise<void>,
 ): Promise<void> {
-  const previousHome = process.env.MONCHU_DEV_HOME;
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   await setup();
   const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
+  prepareHome(home);
   const screen = new VirtualTerminal(columns, 40);
   let backend: Monchu | undefined;
   let running: Promise<void> | undefined;
@@ -33,7 +33,7 @@ async function withTerminal(
       "memories/MEMORY.md",
     ])
       await writeFile(join(home, file), "Smoke home context");
-    backend = await openDevMonchu();
+    backend = await openDevMonchu(await monchuHome(true));
     backend.settings.setTheme(theme);
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
@@ -49,11 +49,6 @@ async function withTerminal(
       try {
         await backend?.close();
       } finally {
-        if (previousHome === undefined) delete process.env.MONCHU_DEV_HOME;
-        else process.env.MONCHU_DEV_HOME = previousHome;
-        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        await rm(home, { recursive: true, force: true });
         await cleanup();
       }
     }
@@ -86,7 +81,7 @@ it("rejects the real Monchu home before configuring resources or opening storage
   const agentDir = process.env.PI_CODING_AGENT_DIR;
   try {
     process.env.MONCHU_DEV_HOME = join(homedir(), ".monchu");
-    await expect(openDevMonchu()).rejects.toThrow("MONCHU_DEV_HOME must be");
+    await expect(monchuHome(true)).rejects.toThrow("MONCHU_DEV_HOME must be");
     expect(process.env.PI_CODING_AGENT_DIR).toBe(agentDir);
   } finally {
     if (previousHome === undefined) delete process.env.MONCHU_DEV_HOME;
@@ -147,6 +142,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
       },
     },
   });
+  prepareHome(home);
   const backend = await Monchu.open(home, provider);
   const screen = new VirtualTerminal(60, 40);
   const running = runTerminal(backend, screen);
@@ -199,7 +195,9 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
 
 it("offers /login on a fresh home without credentials and cancels without calling a provider", async () => {
   const value = await setup();
-  const backend = await Monchu.open(join(value.directory, "fresh"));
+  const home = join(value.directory, "fresh");
+  prepareHome(home);
+  const backend = await Monchu.open(home);
   const screen = new VirtualTerminal(40, 32);
   const running = runTerminal(backend, screen);
   try {

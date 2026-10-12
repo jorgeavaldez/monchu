@@ -6,7 +6,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,6 +17,7 @@ import {
   fauxRole,
   lastMessage,
   route,
+  prepareHome,
   setup,
   textOf,
   waitFor,
@@ -32,54 +34,86 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
     join(home, "config.json"),
     JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
   );
+  prepareHome(home);
   return { home, backend: await Monchu.open(home, value.faux.provider) };
 }
 
 describe("backend", () => {
-  it("sets its own SDK agent directory before imports in the real source entry point", async () => {
+  it("rejects a mismatched agent directory without changing the environment or touching the home", async () => {
     const value = await setup();
-    await mkdir(value.agentDir);
-    for (const name of ["auth.json", "settings.json", "models.json"])
-      await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
-    const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-      const child = spawn(
-        process.execPath,
-        [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
-        {
-          env: {
-            ...process.env,
-            HOME: value.directory,
-            USERPROFILE: value.directory,
-            PI_CODING_AGENT_DIR: value.agentDir,
-            MONCHU_DEV_FAUX: "0",
-            PI_OFFLINE: "1",
-          },
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: 15000,
+    const home = join(value.directory, "unprepared");
+    const agentDir = process.env.PI_CODING_AGENT_DIR;
+    await expect(Monchu.open(home)).rejects.toThrow(
+      `PI_CODING_AGENT_DIR must be ${join(home, "agent")}`,
+    );
+    expect(process.env.PI_CODING_AGENT_DIR).toBe(agentDir);
+    await expect(readFile(join(home, "owner.sqlite"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])(
+    "sets its own SDK agent directory before imports in the real source entry point (smoke=%s)",
+    async (smoke) => {
+      const value = await setup();
+      const home = smoke
+        ? await mkdtemp(join(tmpdir(), "monchu-smoke-"))
+        : join(value.directory, ".monchu");
+      prepareHome(home);
+      await mkdir(value.agentDir);
+      for (const name of ["auth.json", "settings.json", "models.json"])
+        await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
+      const result = await new Promise<{ code: number | null; output: string }>(
+        (resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
+            {
+              env: {
+                ...process.env,
+                HOME: value.directory,
+                USERPROFILE: value.directory,
+                PI_CODING_AGENT_DIR: value.agentDir,
+                MONCHU_DEV_FAUX: smoke ? "1" : "0",
+                ...(smoke ? { MONCHU_DEV_HOME: home } : {}),
+                PI_OFFLINE: "1",
+              },
+              stdio: ["ignore", "pipe", "pipe"],
+              timeout: 15000,
+            },
+          );
+          let output = "";
+          child.stdout.on("data", (data: Buffer) => {
+            output += data.toString();
+          });
+          child.stderr.on("data", (data: Buffer) => {
+            output += data.toString();
+          });
+          child.once("error", reject);
+          child.once("close", (code) => resolve({ code, output }));
         },
       );
-      let output = "";
-      child.stdout.on("data", (data: Buffer) => {
-        output += data.toString();
+      expect(result, result.output).toMatchObject({ code: 1 });
+      expect(result.output).toContain("TUI needs an interactive terminal");
+      for (const name of ["auth.json", "settings.json", "models.json"])
+        expect(await readFile(join(value.agentDir, name), "utf8")).toBe("decoy: not valid JSON");
+      const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
+      expect(auth).toEqual({});
+      await expect(readFile(join(home, "models-store.json"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
       });
-      child.stderr.on("data", (data: Buffer) => {
-        output += data.toString();
-      });
-      child.once("error", reject);
-      child.once("close", (code) => resolve({ code, output }));
-    });
-    expect(result, result.output).toMatchObject({ code: 1 });
-    expect(result.output).toContain("TUI needs an interactive terminal");
-    for (const name of ["auth.json", "settings.json", "models.json"])
-      expect(await readFile(join(value.agentDir, name), "utf8")).toBe("decoy: not valid JSON");
-    const auth: unknown = JSON.parse(
-      await readFile(join(value.directory, ".monchu", "auth.json"), "utf8"),
-    );
-    expect(auth).toEqual({});
-    await expect(
-      readFile(join(value.directory, ".monchu", "models-store.json"), "utf8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-  }, 20000);
+      if (smoke) {
+        await expect(
+          readFile(join(value.directory, ".monchu", "owner.sqlite")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        const config: unknown = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+        expect(config).toMatchObject({
+          front: { provider: "faux" },
+          worker: { provider: "faux" },
+          classifier: null,
+        });
+      }
+    },
+    20000,
+  );
 
   it("loads an optional catalog from the Monchu home rather than a Pi directory", async () => {
     const value = await setup();
@@ -100,6 +134,7 @@ describe("backend", () => {
         },
       }),
     );
+    prepareHome(home);
     const backend = await Monchu.open(home);
     const state = await backend.viewState();
     try {
@@ -138,6 +173,7 @@ describe("backend", () => {
         },
       },
     });
+    prepareHome(home);
     const backend = await Monchu.open(home, provider);
     try {
       const prompts: string[] = [];
@@ -204,6 +240,7 @@ describe("backend", () => {
         },
       },
     });
+    prepareHome(home);
     const backend = await Monchu.open(home, provider);
     try {
       const events: string[] = [];
@@ -301,40 +338,60 @@ describe("backend", () => {
     }
   });
 
-  it("does not leak its agent directory to a Pi started by a shell tool", async () => {
-    const value = await setup();
-    route(value.faux, (request) =>
-      lastMessage(request.messages)?.role === "user"
-        ? fauxAssistantMessage(
-            fauxToolCall("bash", {
-              command: `${JSON.stringify(process.execPath)} -e "console.log(process.env.PI_CODING_AGENT_DIR ?? 'normal-pi-config')"`,
-            }),
-            { stopReason: "toolUse" },
-          )
-        : fauxAssistantMessage("done"),
-    );
-    const { backend } = await openBackend(value);
-    const state = await backend.viewState();
-    try {
-      await backend.submit("check env", "env");
-      await waitFor(() =>
-        state.value.entries.some((entry) =>
-          entry.model?.some(
-            (message) => message.role === "assistant" && textOf(message) === "done",
-          ),
-        ),
+  // Pi resolves PowerShell only on Windows; exercise every supported shell on this host.
+  describe.each(
+    (process.platform === "win32" ? ["bash", "powershell"] : ["bash"]).flatMap((tool) => [
+      { tool, nested: false },
+      { tool, nested: true },
+    ]),
+  )("$tool child environment (codemode=$nested)", ({ tool, nested }) => {
+    it("does not leak its agent directory to a Pi started by a shell tool", async () => {
+      const value = await setup();
+      const command = `${tool === "powershell" ? "& " : ""}${JSON.stringify(process.execPath)} -e "console.log(process.env.PI_CODING_AGENT_DIR ?? 'normal-pi-config')"`;
+      route(value.faux, (request) =>
+        lastMessage(request.messages)?.role === "user"
+          ? fauxAssistantMessage(
+              nested
+                ? fauxToolCall("codemode", {
+                    code: `text(await tools.${tool}({ command: ${JSON.stringify(command)} }))`,
+                  })
+                : fauxToolCall(tool, { command }),
+              { stopReason: "toolUse" },
+            )
+          : fauxAssistantMessage("done"),
       );
-      const results = state.value.entries
-        .flatMap((entry) => entry.model ?? [])
-        .filter((message) => message.role === "toolResult")
-        .map(textOf)
-        .join("\n");
-      expect(results).toContain("normal-pi-config");
-      expect(results).not.toContain(backend.home);
-    } finally {
-      state.dispose();
-      await backend.close();
-    }
+      await writeFile(
+        join(value.directory, "config.json"),
+        JSON.stringify({
+          front: fauxRole,
+          worker: fauxRole,
+          classifier: null,
+          settings: { defaultTools: [tool] },
+        }),
+      );
+      const backend = await Monchu.open(value.directory, value.faux.provider);
+      const state = await backend.viewState();
+      try {
+        await backend.submit("check env", "env");
+        await waitFor(() =>
+          state.value.entries.some((entry) =>
+            entry.model?.some(
+              (message) => message.role === "assistant" && textOf(message) === "done",
+            ),
+          ),
+        );
+        const results = state.value.entries
+          .flatMap((entry) => entry.model ?? [])
+          .filter((message) => message.role === "toolResult")
+          .map(textOf)
+          .join("\n");
+        expect(results).toContain("normal-pi-config");
+        expect(results).not.toContain(backend.home);
+      } finally {
+        state.dispose();
+        await backend.close();
+      }
+    });
   });
   it("delivers home skill warnings with collision locations to subscribers and the log", async () => {
     const value = await setup();

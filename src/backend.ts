@@ -11,7 +11,6 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { appendFile, mkdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
@@ -66,8 +65,12 @@ export class Monchu {
     this.envs = envs;
   }
 
-  static async open(home = join(homedir(), ".monchu"), devProvider?: Provider): Promise<Monchu> {
+  static async open(home: string, devProvider?: Provider): Promise<Monchu> {
     home = resolve(home);
+    if (process.env.PI_CODING_AGENT_DIR !== join(home, "agent"))
+      throw new Error(
+        `PI_CODING_AGENT_DIR must be ${join(home, "agent")}; configure it in the entry point before importing Pi`,
+      );
     await mkdir(join(home, "agent"), { recursive: true, mode: 0o700 });
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
     const owner = new DatabaseSync(join(home, "owner.sqlite"));
@@ -83,7 +86,6 @@ export class Monchu {
         );
       }
       const config = await loadConfig(home);
-      process.env.PI_CODING_AGENT_DIR = join(home, "agent");
       let modelsPath: string | null = join(home, "models.json");
       try {
         await stat(modelsPath);

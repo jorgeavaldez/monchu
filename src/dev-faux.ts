@@ -1,15 +1,11 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { monchuHome } from "./home.ts";
 import { Monchu } from "./backend.ts";
 
 /** Explicit offline smoke mode. Its home and Pi resources stay in a throwaway temp directory. */
-export async function openDevMonchu(): Promise<Monchu> {
-  // Inherited by /restart so the next process reopens the same conversation.
-  const home = await monchuHome(true);
-  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
-  await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+export async function openDevMonchu(home: string): Promise<Monchu> {
+  await mkdir(join(home, "agent"), { recursive: true });
   await writeFile(
     join(home, "config.json"),
     JSON.stringify({

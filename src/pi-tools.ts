@@ -4,6 +4,7 @@ import {
   createGrepTool,
   createLsTool,
   createPowerShellTool,
+  getPowerShellConfig,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
@@ -53,22 +54,52 @@ export function createPiTools(settings: SettingsManager, platform: NodeJS.Platfo
     createEditTool(),
     createBashTool(commandPrefix === undefined ? {} : { commandPrefix }),
   ];
+  const powershell = createPowerShellTool("");
   const tools = [
     ...codingTools,
     sdkTool(createGrepTool, "safe"),
     sdkTool(createFindTool, "safe"),
     sdkTool(createLsTool, "safe"),
-    sdkTool(
-      (cwd) =>
-        createPowerShellTool(cwd, {
+    defineTool({
+      name: powershell.name,
+      description: powershell.description,
+      parameters: powershell.parameters,
+      replay: "unsafe",
+      execute: async (args, api, context) => {
+        const env = api.env;
+        if (env === undefined) throw new Error("PowerShell requires a local execution environment");
+        const result = await createPowerShellTool(env.cwd, {
           exposeSessionEnvironment: false,
-          spawnHook: (input) => {
-            delete input.env.PI_CODING_AGENT_DIR;
-            return input;
+          operations: {
+            exec: async (command, cwd, options) => {
+              const shell = getPowerShellConfig();
+              const execution = await env.exec(
+                [
+                  shell.shell,
+                  ...shell.args,
+                  `try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n${command}`,
+                ],
+                {
+                  cwd,
+                  ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+                  onOutput: (text) => options.onData(Buffer.from(text)),
+                },
+                context,
+              );
+              if (!execution.ok) {
+                // Preserve the SDK tool's user-visible cancellation and timeout formatting.
+                if (execution.error.code === "aborted") throw new Error("aborted");
+                if (execution.error.code === "timeout")
+                  throw new Error(`timeout:${options.timeout}`);
+                throw execution.error;
+              }
+              return { exitCode: execution.value.exitCode };
+            },
           },
-        }),
-      "unsafe",
-    ),
+        }).execute(api.callId, args, context.abortSignal);
+        return { content: result.content };
+      },
+    }),
   ];
   const defaults = settings.getDefaultTools() ?? codingTools.map(({ name }) => name);
   const warnings: string[] = [];
