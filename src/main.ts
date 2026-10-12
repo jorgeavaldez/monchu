@@ -2,7 +2,10 @@ import { Monchu } from "./backend.ts";
 import { runTerminal } from "./terminal.ts";
 
 try {
-  const backend = await Monchu.open();
+  const backend =
+    process.env.MONCHU_DEV_FAUX === "1"
+      ? await (await import("./dev-faux.ts")).openDevMonchu()
+      : await Monchu.open();
   try {
     await runTerminal(backend);
   } finally {

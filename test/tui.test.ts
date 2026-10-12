@@ -1,49 +1,16 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { stripTerminalSequences, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Monchu } from "../src/backend.ts";
-import { runTerminal } from "../src/terminal.ts";
 import { help, parseInput } from "../src/tui/commands.ts";
 import { presentation } from "../src/tui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
 import { cleanup, context, open, route, setup, waitFor } from "./support.ts";
-
-/** Terminal transport only: the TUI, store, tools, and providers are real. */
-class Screen implements Terminal {
-  columns = 40;
-  rows = 20;
-  kittyProtocolActive = false;
-  readonly started = Promise.withResolvers<void>();
-  readonly writes: string[] = [];
-  stopped = false;
-  input: (data: string) => void = () => {};
-  start(input: (data: string) => void): void {
-    this.input = input;
-    this.started.resolve();
-  }
-  stop(): void {
-    this.stopped = true;
-    this.input = () => {};
-  }
-  async drainInput(): Promise<void> {}
-  write(data: string): void {
-    this.writes.push(data);
-  }
-  moveBy(): void {}
-  hideCursor(): void {}
-  showCursor(): void {}
-  clearLine(): void {}
-  clearFromCursor(): void {}
-  clearScreen(): void {}
-  setTitle(): void {}
-  setProgress(): void {}
-  setProgramStatus(): void {}
-}
+import { VirtualTerminal } from "./virtual-terminal.ts";
 
 afterEach(cleanup);
 
@@ -87,56 +54,6 @@ describe("terminal input boundary", () => {
     expect(help).toContain("/restart");
     expect(help).toContain("Jorge-only");
   });
-
-  it("runs /reload on the real backend and renders success and errors without leaving the TUI", async () => {
-    const value = await setup();
-    const agentDir = join(value.directory, "agent");
-    const home = join(value.directory, "home");
-    await mkdir(home);
-    await writeFile(join(home, "config.json"), JSON.stringify({ classifier: null }));
-    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-    const screen = new Screen();
-    screen.columns = 100;
-    screen.rows = 40;
-    let backend: Monchu | undefined;
-    let running: Promise<void> | undefined;
-    try {
-      backend = await Monchu.open(home);
-      running = runTerminal(backend, screen);
-      await Promise.race([screen.started.promise, running]);
-      screen.input("/reload");
-      screen.input("\r");
-      await waitFor(() =>
-        stripTerminalSequences(screen.writes.join("")).includes("reloaded · context"),
-      );
-      expect(screen.stopped).toBe(false);
-      await writeFile(join(agentDir, "settings.json"), "{");
-      screen.input("/reload");
-      screen.input("\r");
-      await waitFor(() =>
-        stripTerminalSequences(screen.writes.join("")).includes("error · Pi settings failed"),
-      );
-      expect(screen.stopped).toBe(false);
-    } finally {
-      try {
-        if (running !== undefined) {
-          screen.input("/quit");
-          screen.input("\r");
-          await running;
-        }
-      } finally {
-        try {
-          await backend?.close();
-        } finally {
-          if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-          else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        }
-      }
-    }
-    expect(screen.stopped).toBe(true);
-    expect(screen.writes.join("")).toContain("\x1b[?1049l");
-  }, 30_000);
 
   it("restores the terminal and stops input before /restart re-executes, reopens storage, and propagates the child code", async () => {
     const value = await setup();
@@ -220,7 +137,7 @@ describe("committed Durable presentation", () => {
     const { harness, root } = await open(value);
     const state = await root.viewState(context);
     initTheme("dark");
-    const screen = new Screen();
+    const screen = new VirtualTerminal(40, 20);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
       abort: () => {},
@@ -254,10 +171,10 @@ describe("committed Durable presentation", () => {
       expect(thought).toBe(true);
       expect(streamed).toBe(true);
       expect(presentation(state.value)).toMatchObject({ busy: false, status: "", queue: [] });
-      screen.rows = 60;
+      screen.resize(40, 60);
       ui.ui.scrollToTop();
       ui.ui.renderNow(true);
-      const lines = ui.ui.getScreenLines().map(stripTerminalSequences);
+      const lines = await screen.flushAndGetViewport();
       expect(
         lines
           .join("")
@@ -288,8 +205,7 @@ describe("committed Durable presentation", () => {
       ]);
       const { harness, root } = await open(value);
       initTheme(theme);
-      const screen = new Screen();
-      screen.columns = 32;
+      const screen = new VirtualTerminal(32, 20);
       const ui = new MonchuTui(screen, value.directory, {
         submit: () => {},
         abort: () => {},
@@ -304,14 +220,12 @@ describe("committed Durable presentation", () => {
         ).wait(context);
         ui.ui.scrollToTop();
         ui.ui.renderNow(true);
-        const lines = ui.ui.getScreenLines().map(stripTerminalSequences);
+        const lines = await screen.flushAndGetViewport();
         expect(lines.join("\n")).toContain("missing-file.txt");
         expect(lines.every((line) => visibleWidth(line) <= screen.columns)).toBe(true);
         await root.reset(undefined, context);
         ui.ui.renderNow(true);
-        expect(ui.ui.getScreenLines().map(stripTerminalSequences).join("\n")).not.toContain(
-          "missing-file.txt",
-        );
+        expect((await screen.flushAndGetViewport()).join("\n")).not.toContain("missing-file.txt");
         expect(value.reports).toEqual([]);
       } finally {
         stop();

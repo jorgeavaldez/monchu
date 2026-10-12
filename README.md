@@ -137,6 +137,28 @@ Each conversation stores its own cwd.
 Persistent directory changes require an idle conversation with no pending worker deliveries, so running calls do not silently change environments.
 Tools can use explicit paths or shell `cd` for work elsewhere during a run.
 
+## Offline TUI smoke mode
+
+Build, then start the real entry point in an interactive terminal with scripted faux models (Nushell):
+
+```nu
+npm run build
+with-env { MONCHU_DEV_FAUX: "1" } { node dist/main.js }
+```
+
+This explicit dev mode creates a fresh `monchu-smoke-*` home in the OS temp directory, including isolated Pi settings/auth/skills; it never opens `~/.monchu` or uses live providers.
+Normal startup is unchanged.
+The inherited `MONCHU_DEV_HOME` preserves that temporary home through `/restart`; paths outside the temp directory are rejected.
+The home is printed at startup and kept for inspection; delete it after exiting.
+
+Smoke steps: send `hello`, then `read` (a real read tool call on a missing file), then `/work reader inspect`.
+Expect a streaming faux reply, a tool error, labelled worker progress/result lines, and the front's acknowledgement.
+Use `/agents`, filter `reader`, Enter, and send `more`; `/agents root` returns to the front.
+Run `/reload` and expect `reloaded · context, ...`.
+Run `/restart`: the app re-executes in the same terminal, restores the conversation and workers, and accepts another message.
+Finish with `/quit` and check the shell's exit code is 0.
+This checks lifecycle/rendering with deterministic models, not live models or Android/Termux.
+
 ## Self reload
 
 `reload_extensions` is available to all roles, as is Jorge's `/reload` command. The backend exposes `reload()` and `restart()`; only Jorge's `/restart` command calls the latter after restoring the terminal.
@@ -207,6 +229,7 @@ npm run check
 
 `npm test` runs vitest against real Durable Harnesses on SQLite in temp directories, following Pi Durable's own tests: Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`.
 They cover worker reports (turns, queueing, restart, `/abort` re-posts) and updates, goal updates/validation/retention and the goals section across `/new` and reopen, codemode nesting/store/errors, non-blocking assessment and escalation, config parsing, and Pi context loading.
+TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark: streaming without an early `you>` prompt, tool results, worker updates/reports, worker selection/messaging, reload success/errors, and resize.
 They do not prove live provider behavior or the interactive phone flow.
 
 Durable is experimental.
