@@ -12,6 +12,7 @@ import {
   type AgentEvent,
   type Conversation,
   type HarnessSettings,
+  type Registry,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -23,6 +24,7 @@ import { AssessmentsDoc, effortAssessment, type Assessment } from "./classifier.
 import { Codemode } from "./codemode.ts";
 import { loadConfig, type MonchuConfig } from "./config.ts";
 import { loadPiConfiguration } from "./context.ts";
+import { Goals, GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { createPiTools } from "./pi-tools.ts";
 import {
   createWorkerTools,
@@ -105,6 +107,7 @@ export class Monchu {
       registry.install(createWorkerTools(config.worker));
       registry.install(Codemode);
       registry.install(pi.extension);
+      registry.install(Goals);
       for (const diagnostic of pi.diagnostics) {
         const locations = [
           diagnostic.path,
@@ -143,7 +146,7 @@ export class Monchu {
         {
           models,
           registry,
-          settings: harnessSettings(pi.settings),
+          settings: harnessSettings(pi.settings, registry),
           env: ({ cwd }) => envs.get(cwd ?? home, shellPath),
           onReport: (error) => reports.report(error),
         },
@@ -155,6 +158,8 @@ export class Monchu {
         {
           model: { provider: config.front.provider, modelId: config.front.modelId },
           thinkingLevel: config.front.thinkingLevel,
+          // Workers follow the host default, which leaves goals out.
+          extensions: { add: [Goals] },
           instructions: FRONT_INSTRUCTIONS,
         },
         context,
@@ -224,9 +229,18 @@ export class Monchu {
     await this.front.reset(handoff?.trim() || undefined, context);
   }
 
-  /** Summarize older context now; the conversation keeps working meanwhile. */
+  /** Summarize older context now, keeping goal ids and open commitments; the conversation keeps working meanwhile. */
   async compact(instructions: string | undefined): Promise<void> {
-    await this.front.compact(instructions?.trim() || undefined, context);
+    const focus = instructions?.trim();
+    await this.front.compact(
+      focus ? `${GOALS_COMPACTION_FOCUS} ${focus}` : GOALS_COMPACTION_FOCUS,
+      context,
+    );
+  }
+
+  /** The root's goals in stored order, including recently closed ones. */
+  async goals(): Promise<readonly Goal[]> {
+    return (await this.harness.snapshot(GoalsDoc, this.front.id, context))?.goals ?? [];
   }
 
   async startWorker(name: string, message: string, requestId: string) {
@@ -337,13 +351,23 @@ class ExecutionEnvs {
   }
 }
 
-/** The front answers fast; effort assessments arrive beside it, never in front of it. */
+/**
+ * The front answers fast; effort assessments arrive beside it, never in front of it. It keeps the goals section current
+ * so goals and commitments outlive compaction and `/new`.
+ */
 const FRONT_INSTRUCTIONS =
-  "You are the front: reply immediately. If you can fully answer in this reply, do. Otherwise acknowledge in one short line (for example 'looking into it') and start the work, usually a background worker with a self-contained goal, context, and constraints. Never stall waiting for an assessment or a worker. When an effort assessment says the work outgrows a single fast reply and you have not delegated, delegate.";
+  "You are the front: reply immediately. If you can fully answer in this reply, do. Otherwise acknowledge in one short line (for example 'looking into it') and start the work, usually a background worker with a self-contained goal, context, and constraints. Never stall waiting for an assessment or a worker. When an effort assessment says the work outgrows a single fast reply and you have not delegated, delegate.\n\nKeep the goals section current with update_goal; it is your memory of Jorge's goals and your commitments across compaction, /new, and restarts. A new request creates a goal (owner jorge) or updates the goal it continues; a quick answer you finish in the same reply needs none. A promise you make creates a goal with owner monchu. Starting a worker links its name to the goal. A worker report or update sets the goal's next step, or its status when it finishes or blocks the goal. Use waiting when blocked on Jorge or someone else, done when finished, dropped when abandoned. Tell Jorge only what changed, never the whole list. When a goal is done, you may offer a vault note update; do not write one unasked.";
 
 /** Durable's run policy from the startup snapshot of Pi's user settings. */
-function harnessSettings(settings: SettingsManager): HarnessSettings {
+function harnessSettings(settings: SettingsManager, registry: Registry): HarnessSettings {
   return {
+    // Every installed extension except the root-only goals.
+    get extensions() {
+      return registry
+        .snapshot()
+        .installed()
+        .filter((extension) => extension.name !== Goals.name);
+    },
     get stream() {
       const provider = settings.getProviderRetrySettings();
       const idle = settings.getHttpIdleTimeoutMs();

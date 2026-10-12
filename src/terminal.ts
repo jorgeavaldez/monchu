@@ -10,12 +10,14 @@ import { clearScreenDown, createInterface, cursorTo, moveCursor } from "node:rea
 import { stdin, stdout } from "node:process";
 import type { Monchu } from "./backend.ts";
 import { ESCALATION_PREFIX, type AssessmentResult } from "./classifier.ts";
+import { formatOpenGoals } from "./goals.ts";
 import { WorkerResultEntry } from "./workers.ts";
 
 const help = `Commands:
   /work <name> <goal>         start a background worker, keep chatting
   /tell <name> <message>      steer a worker (or start its next run)
   /workers                   list workers and execution directories
+  /goals                     list open goals
   /stop <name>                explicitly cancel a worker and its work
   /abort                     stop the front run; workers continue
   /new [handoff]              fresh model context, optionally with a handoff note
@@ -334,7 +336,8 @@ export async function runTerminal(backend: Monchu): Promise<void> {
                   .join("\n")
               : "No workers yet.",
           );
-        } else if (command === "/stop") {
+        } else if (command === "/goals") notice(formatOpenGoals(await backend.goals()));
+        else if (command === "/stop") {
           await backend.stopWorker(rest);
           notice(`stopped worker · ${rest}`);
           await updateWorkers();
