@@ -43,6 +43,7 @@ function sdkTool<TParameters extends TSchema>(
 /**
  * Pi resolves defaultTools additions/removals; Monchu's own tools are not coding-agent built-ins.
  * Returns warnings for selections that would silently leave Monchu without built-ins.
+ * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createPiTools(settings: SettingsManager, platform: NodeJS.Platform) {
   const commandPrefix = settings.getShellCommandPrefix();

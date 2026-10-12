@@ -83,7 +83,10 @@ function warning(diagnostic: ResourceDiagnostic): string {
   return `${diagnostic.message}${locations ? ` (${locations})` : ""}`;
 }
 
-/** User resources are loaded at startup and on reload, never from a conversation's execution directory. */
+/**
+ * User resources are loaded at startup and on reload, never from a conversation's execution directory.
+ * @public Loaded by the reload manifest (src/reload.ts).
+ */
 export async function createPiContext(agentDir: string) {
   agentDir = resolve(agentDir);
   // Untrusted project scope is Pi's SDK switch for excluding project settings and auto-discovery.

@@ -19,11 +19,13 @@ import {
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   type Conversation,
+  type ConversationId,
   createRegistry,
   type EntryRecord,
   Harness,
   type JsonObject,
   type Registry,
+  type TaskId,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -34,7 +36,7 @@ import { join } from "node:path";
 import { Codemode } from "../src/codemode.ts";
 import type { ModelRole } from "../src/config.ts";
 import { createPiTools } from "../src/pi-tools.ts";
-import { createWorkerTools } from "../src/workers.ts";
+import { createWorkerTools, WorkersDoc } from "../src/workers.ts";
 
 export const context: Context = BACKGROUND_CONTEXT;
 
@@ -183,6 +185,24 @@ export async function open(
   });
   harness.resume();
   return { harness, root };
+}
+
+/** A conversation that must exist. */
+export async function conversationOf(harness: Harness, id: ConversationId): Promise<Conversation> {
+  const conversation = await harness.conversation(id, context);
+  if (conversation === undefined) throw new Error(`No conversation ${id}`);
+  return conversation;
+}
+
+/** The task of the parent's delivery at `index` (`-1` is the newest), which must exist. */
+export async function deliveryTaskId(
+  harness: Harness,
+  parentId: ConversationId,
+  index: number,
+): Promise<TaskId> {
+  const delivery = (await harness.snapshot(WorkersDoc, parentId, context))?.deliveries.at(index);
+  if (delivery === undefined) throw new Error(`No delivery at ${index}`);
+  return delivery.taskId;
 }
 
 /** Raw entries of a conversation, oldest first. */

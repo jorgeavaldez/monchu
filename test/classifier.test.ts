@@ -15,6 +15,7 @@ import {
   cleanup,
   classifierModel,
   context,
+  deliveryTaskId,
   fauxRole,
   lastMessage,
   open,
@@ -58,7 +59,13 @@ async function withAssessment(extensions: readonly Extension[] = []) {
     (await assessment.submit(opened.root, message, `test:${message}`, context)).wait(context);
   const items = async () =>
     (await opened.harness.snapshot(AssessmentsDoc, opened.root.id, context))?.items ?? [];
-  return { ...value, ...opened, classifier, send, items };
+  /** Wait for the assessment task of the input at `index`, which must exist. */
+  const settle = async (index: number) => {
+    const item = (await items())[index];
+    if (item === undefined) throw new Error(`No assessment at ${index}`);
+    await opened.harness.waitForTask(item.taskId, context);
+  };
+  return { ...value, ...opened, classifier, send, items, settle };
 }
 
 async function userTexts(root: Parameters<typeof allEntries>[0]): Promise<string[]> {
@@ -87,7 +94,7 @@ describe("effort assessment", () => {
     expect(item?.result).toBeNull();
 
     pending.resolve(assessed("single_turn", 0.9, "contained", 0.9));
-    await test.harness.waitForTask(item!.taskId, context);
+    await test.settle(0);
     expect((await test.items())[0]?.result).toMatchObject({
       status: "assessed",
       effort: "single_turn",
@@ -132,8 +139,7 @@ describe("effort assessment", () => {
 
     await test.send("migrate the whole homelab to nix");
     pending.resolve(assessed("sustained", 0.92, "expanding", 0.8));
-    const [item] = await test.items();
-    await test.harness.waitForTask(item!.taskId, context);
+    await test.settle(0);
     await test.root.waitForIdle(context);
 
     const texts = await userTexts(test.root);
@@ -161,11 +167,11 @@ describe("effort assessment", () => {
     test.classifier.answer = () => assessed("sustained", 0.95, "expanding", 0.95);
     await test.send("big and delegated");
     await waitFor(async () => (await test.items())[0]?.result != null);
-    await test.harness.waitForTask((await test.items())[0]!.taskId, context);
+    await test.settle(0);
 
     test.classifier.answer = () => assessed("sustained", 0.55, "expanding", 0.6);
     await test.send("maybe big");
-    await test.harness.waitForTask((await test.items())[1]!.taskId, context);
+    await test.settle(1);
     await test.root.waitForIdle(context);
 
     expect((await test.items()).map((item) => item.escalated)).toEqual([false, false]);
@@ -208,14 +214,13 @@ describe("effort assessment", () => {
     const pending = Promise.withResolvers<ClassifierResult>();
     test.classifier.answer = () => pending.promise;
     await test.send("delegate after pruning");
-    const workers = await test.harness.snapshot(WorkersDoc, test.root.id, context);
-    await test.harness.waitForTask(workers!.deliveries.at(-1)!.taskId, context);
+    await test.harness.waitForTask(await deliveryTaskId(test.harness, test.root.id, -1), context);
     expect(
       (await test.harness.snapshot(WorkersDoc, test.root.id, context))?.deliveries,
     ).toHaveLength(200);
     expect((await test.harness.snapshot(WorkersDoc, test.root.id, context))?.started).toBe(201);
     pending.resolve(assessed("sustained", 0.95, "expanding", 0.95));
-    await test.harness.waitForTask((await test.items())[0]!.taskId, context);
+    await test.settle(0);
     expect((await test.items())[0]?.escalated).toBe(false);
     expect(
       (await userTexts(test.root)).filter((text) => text.startsWith(ESCALATION_PREFIX)),
@@ -233,7 +238,7 @@ describe("effort assessment", () => {
     });
     route(test.faux, () => fauxAssistantMessage([fauxText("answer")]));
     await test.send("hello");
-    await test.harness.waitForTask((await test.items())[0]!.taskId, context);
+    await test.settle(0);
     expect((await test.items())[0]?.result).toEqual({
       status: "failed",
       message: "401 from provider",

@@ -1,5 +1,9 @@
 import { defineExtension, section } from "@earendil-works/pi-durable";
 
+/**
+ * Monchu's identity and execution sections.
+ * @public Loaded by the reload manifest (src/reload.ts).
+ */
 export const Identity = defineExtension({
   name: "monchu.identity",
   sections: [

@@ -102,6 +102,7 @@ type AssessState = { phase: "classify" } | { phase: "escalate"; result: Assessme
  * Clef judges effort and scope beside the front's reply, never in front of it. The result reaches the front's later
  * requests as advice; when it is sure the work outgrows a single fast reply and the front finished without delegating,
  * it submits one follow-up so the front can hand the work to a worker. It never grants permission.
+ * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createEffortAssessment(
   models: Models,

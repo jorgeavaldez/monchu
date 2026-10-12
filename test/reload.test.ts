@@ -84,6 +84,7 @@ async function fixture(directory: string) {
   const path = join(directory, "versioned.mjs");
   await writeFile(path, source("v1", true));
   const load = async (version: string): Promise<VersionedModule> =>
+    // oxlint-disable-next-line typescript/no-unsafe-return -- The fixture is generated source; `VersionedModule` names its exports.
     import(`${pathToFileURL(path).href}?v=${version}`);
   const initial = await load("initial");
   return { path, load, initial };
@@ -195,10 +196,9 @@ describe("in-process reload", () => {
     );
     try {
       await (await root.submit({ type: "input", content: "request" }, context)).wait(context);
-      expect((await harness.snapshot(RestartRequest, root.id, context))?.request).toMatchObject({
-        reason: "host changed",
-        requestedAt: expect.any(Number),
-      });
+      const request = (await harness.snapshot(RestartRequest, root.id, context))?.request;
+      expect(request?.reason).toBe("host changed");
+      expect(typeof request?.requestedAt).toBe("number");
       const worker = await harness.createConversation(
         {
           ownership: { kind: "ownerless" },

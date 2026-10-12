@@ -9,13 +9,14 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/main.ts",
-    "typecheck": "tsc -p tsconfig.test.json",
-    "build": "tsc",
+    "typecheck": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "lint": "oxlint",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
     "format": "oxfmt",
-    "check": "npm run typecheck && npm run lint && oxfmt --check && npm test",
-    "test": "vitest --run"
+    "check": "npm run typecheck && npm run lint && oxfmt --check && npm run knip && npm test",
+    "test": "vitest --run",
+    "knip": "knip"
   },
   "dependencies": {
     "@earendil-works/chord": "1.1.0",
@@ -28,8 +29,10 @@
   "devDependencies": {
     "@types/node": "^26.6.4",
     "@xterm/headless": "5.5.0",
+    "knip": "6.41.0",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2004",
     "typescript": "^7.0.2",
     "vitest": "4.1.11"
   },

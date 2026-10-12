@@ -102,23 +102,29 @@ describe("goals", () => {
     const goals = async () => (await harness.snapshot(GoalsDoc, root.id, context))?.goals ?? [];
 
     await send(root, "create");
-    expect(await goals()).toMatchObject([
-      { ...create, status: "active", workers: [], updatedAt: expect.any(Number) },
-    ]);
-    expect((await goals())[0]).not.toHaveProperty("project");
+    const [created] = await goals();
+    expect(typeof created?.updatedAt).toBe("number");
+    expect(created).toEqual({
+      ...create,
+      status: "active",
+      workers: [],
+      updatedAt: created?.updatedAt,
+    });
 
     await send(root, "patch");
     await send(root, "same");
     await send(root, "clear");
     for (const message of ["no title", "bad status", "bad id", "extra field", "blank next"])
       await send(root, message);
+    const [patched] = await goals();
+    expect(typeof patched?.updatedAt).toBe("number");
     expect(await goals()).toEqual([
       {
         ...create,
         status: "waiting",
         workers: ["reader"],
         next: "Jorge rechecks on the phone",
-        updatedAt: expect.any(Number),
+        updatedAt: patched?.updatedAt,
       },
     ]);
     const updates = await results(root);
@@ -154,9 +160,9 @@ describe("goals", () => {
       "closed-5",
     ]);
     expect(stored).toHaveLength(21);
-    const list = (await results(root)).at(-1)!;
-    expect(list.text).toContain("- [closed-24] t24 (dropped, owner monchu)");
-    expect(list.text).toContain("- [phone-quit] Fix /quit hanging on the phone (waiting");
+    const list = (await results(root)).at(-1);
+    expect(list?.text).toContain("- [closed-24] t24 (dropped, owner monchu)");
+    expect(list?.text).toContain("- [phone-quit] Fix /quit hanging on the phone (waiting");
     await harness.close(context);
   });
 

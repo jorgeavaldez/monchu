@@ -59,7 +59,10 @@ export function formatOpenGoals(goals: readonly Goal[]): string {
 const text = (maxLength: number, description: string) =>
   Type.String({ minLength: 1, maxLength, pattern: "\\S", description });
 
-/** Root-only: hosts exclude it from the default selection and add it to the root conversation. */
+/**
+ * Root-only: hosts exclude it from the default selection and add it to the root conversation.
+ * @public Loaded by the reload manifest (src/reload.ts).
+ */
 export const Goals = defineExtension({
   name: "monchu.goals",
   sections: [
@@ -159,7 +162,9 @@ export const Goals = defineExtension({
           // Only a created or changed goal can exceed the limit, and it is the newest, so it is kept.
           let closed = 0;
           for (let at = state.goals.length - 1; at >= 0; at--) {
-            if (!isOpen(state.goals[at]!) && ++closed > CLOSED_KEPT) state.goals.splice(at, 1);
+            const goal = state.goals[at];
+            if (goal !== undefined && !isOpen(goal) && ++closed > CLOSED_KEPT)
+              state.goals.splice(at, 1);
           }
           const saved = state.goals.find((item) => item.id === args.id);
           if (saved === undefined) throw new Error(`Goal ${args.id} is missing`);

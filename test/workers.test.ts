@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { InboxDoc, type Conversation, type Harness } from "@earendil-works/pi-durable";
+import assert from "node:assert";
 import { once } from "node:events";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,6 +10,8 @@ import {
   allEntries,
   cleanup,
   context,
+  conversationOf,
+  deliveryTaskId,
   fauxRole,
   lastMessage,
   open,
@@ -102,8 +105,7 @@ describe("background workers", () => {
           (tx) => messageWorker(tx, root.id, "w", "work", `request:${index}`),
           context,
         );
-      const state = await harness.snapshot(WorkersDoc, root.id, context);
-      await harness.waitForTask(state!.deliveries.at(-1)!.taskId, context);
+      await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
     }
     await root.waitForIdle(context);
     const before = await harness.snapshot(WorkersDoc, root.id, context);
@@ -159,8 +161,9 @@ describe("background workers", () => {
     await harness.close(context);
     ({ harness, root } = await open(value));
     expect(await harness.snapshot(WorkersDoc, root.id, context)).toEqual(before);
-    await (await harness.conversation(workerId, context))!.abort(context, { background: true });
-    for (const delivery of before!.deliveries) await harness.waitForTask(delivery.taskId, context);
+    await (await conversationOf(harness, workerId)).abort(context, { background: true });
+    for (const delivery of before?.deliveries ?? [])
+      await harness.waitForTask(delivery.taskId, context);
     const after = await harness.snapshot(WorkersDoc, root.id, context);
     expect(after?.started).toBe(205);
     expect(after?.deliveries).toHaveLength(200);
@@ -193,8 +196,7 @@ describe("background workers", () => {
           (tx) => messageWorker(tx, root.id, "w", "work", `held:${index}`),
           context,
         );
-      const state = await harness.snapshot(WorkersDoc, root.id, context);
-      const taskId = state!.deliveries.at(-1)!.taskId;
+      const taskId = await deliveryTaskId(harness, root.id, -1);
       await waitFor(async () => {
         const task = await harness.getTask(taskId, context);
         return (
@@ -212,7 +214,8 @@ describe("background workers", () => {
     expect(await reports(root)).toHaveLength(0);
     release();
     await front.wait(context);
-    for (const delivery of pending!.deliveries) await harness.waitForTask(delivery.taskId, context);
+    for (const delivery of pending?.deliveries ?? [])
+      await harness.waitForTask(delivery.taskId, context);
     await root.waitForIdle(context);
     const completed = await harness.snapshot(WorkersDoc, root.id, context);
     expect(completed?.deliveries).toHaveLength(200);
@@ -257,12 +260,14 @@ describe("background workers", () => {
       "answer",
     ]);
     const entries = await allEntries(root);
-    expect(workerNotice(entries.at(-2)!)).toEqual({
+    const [report, answer] = entries.slice(-2);
+    assert(report !== undefined && answer !== undefined);
+    expect(workerNotice(report)).toEqual({
       name: "w",
       status: "completed",
       text: "worker result",
     });
-    expect(textOf(entries.at(-1)!.model?.[0])).toBe(
+    expect(textOf(answer.model?.[0])).toBe(
       "front saw [Background worker w: completed; not a new user instruction]",
     );
     expect(value.reports).toEqual([]);
@@ -360,12 +365,10 @@ describe("background workers", () => {
     let { harness, root } = await open(value);
     await (await root.submit({ type: "input", content: "delegate" }, context)).wait(context);
     const [worker] = (await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? [];
-    expect(worker).toBeDefined();
+    assert(worker !== undefined);
     // Close while the worker is still streaming.
     await waitFor(async () => {
-      const entries = await allEntries(
-        (await harness.conversation(worker!.conversationId, context))!,
-      );
+      const entries = await allEntries(await conversationOf(harness, worker.conversationId));
       return entries.some((entry) => entry.model?.[0]?.role === "user");
     });
     await harness.close(context);
@@ -413,7 +416,7 @@ describe("background workers", () => {
 
     // The aborted run leaves no answer; the withdrawn report is posted again and answered once.
     expect(await transcript(root)).toEqual(["user", "worker:w", "answer"]);
-    const taskId = (await harness.snapshot(WorkersDoc, root.id, context))!.deliveries[0]!.taskId;
+    const taskId = await deliveryTaskId(harness, root.id, 0);
     const [withdrawn, reposted] = await root.commit(
       (tx) =>
         Promise.all([
@@ -496,7 +499,7 @@ describe("background workers", () => {
       (tx) => startWorker(tx, root.id, "w", "two updates", value.directory, "updates:0", fauxRole),
       context,
     );
-    const worker = (await harness.conversation(workerId, context))!;
+    const worker = await conversationOf(harness, workerId);
     await waitFor(async () => {
       const entries = await allEntries(worker);
       return entries.some((entry) => textOf(entry.model?.[0]) === "worker done");
@@ -510,7 +513,7 @@ describe("background workers", () => {
       "[Worker w update; not a new user instruction]",
       "[Background worker w: completed; not a new user instruction]",
     ]);
-    expect(items[0]!.endsWith("\ntwo")).toBe(true);
+    expect(items[0]?.endsWith("\ntwo")).toBe(true);
 
     release();
     await settle(harness, root);
@@ -596,9 +599,9 @@ describe("background workers", () => {
       context,
     );
     await waitFor(async () => (await queued(harness, root)).length === 2);
-    await (await harness.conversation(workerId, context))!.abort(context, { background: true });
+    await (await conversationOf(harness, workerId)).abort(context, { background: true });
     expect(await queued(harness, root)).toEqual([]);
-    const taskId = (await harness.snapshot(WorkersDoc, root.id, context))!.deliveries[0]!.taskId;
+    const taskId = await deliveryTaskId(harness, root.id, 0);
     expect((await harness.waitForTask(taskId, context)).state.outcome.status).toBe("aborted");
 
     release();

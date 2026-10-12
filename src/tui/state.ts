@@ -9,6 +9,11 @@ function object(value: JsonValue | undefined): JsonObject | undefined {
   return value;
 }
 
+/** A scalar field as text; anything else as its JSON, never "[object Object]". */
+function scalar(value: JsonValue | undefined): string {
+  return typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+}
+
 function text(content: JsonValue | undefined): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -33,11 +38,15 @@ export function presentation(view: ConversationView) {
   const compactionRetry = object(compaction?.retry);
   const blocks = Array.isArray(message?.content) ? message.content.map(object) : [];
   let status = "";
-  if (retry) status = `Retrying (attempt ${Number(generation?.attempt ?? 0) + 1}): ${retry.error}`;
+  if (retry)
+    status = `Retrying (attempt ${Number(generation?.attempt ?? 0) + 1}): ${scalar(retry.error)}`;
   else if (generation?.deferred) status = "Waiting for provider…";
   else if (compaction)
-    status = compactionRetry ? `Retrying compaction: ${compactionRetry.error}` : "Compacting…";
-  else if (running.length) status = `Running ${running.map((slot) => slot?.name).join(", ")}…`;
+    status = compactionRetry
+      ? `Retrying compaction: ${scalar(compactionRetry.error)}`
+      : "Compacting…";
+  else if (running.length)
+    status = `Running ${running.map((slot) => scalar(slot?.name)).join(", ")}…`;
   else if (blocks.at(-1)?.type === "thinking") status = "Thinking…";
   else if (live?.run) status = "Working…";
   const calls: { id: string; name: string; arguments: JsonObject }[] = [];
@@ -62,8 +71,8 @@ export function presentation(view: ConversationView) {
   const queue = (Array.isArray(inbox?.items) ? inbox.items : []).map((value) => {
     const item = object(value);
     return item?.mode === "write"
-      ? `[write] ${object(item.entry)?.kind}`
-      : `[${item?.mode}] ${text(item?.content)}`;
+      ? `[write] ${scalar(object(item.entry)?.kind)}`
+      : `[${scalar(item?.mode)}] ${text(item?.content)}`;
   });
   const model = object(agent?.model);
   return {

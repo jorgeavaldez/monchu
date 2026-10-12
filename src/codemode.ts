@@ -39,6 +39,7 @@ function resultText(result: ToolExecutionResult, output: string): string {
  * `await tools.<name>(args)`. Nested calls run inside this one Durable tool call: they share its task, cancellation and
  * committed result, and are not separate tool tasks. A failed script does not undo earlier calls, so this tool is not
  * replayed after a crash.
+ * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Codemode = defineExtension({
   name: "monchu.codemode",
@@ -63,7 +64,8 @@ export const Codemode = defineExtension({
             execute: async (args, { signal }) => {
               if (!isJsonObject(args)) throw new Error(`${tool.name} expects an object argument`);
               const callId = `${api.callId}/${++calls}`;
-              const validated = validateToolArguments(tool, {
+              // pi-ai types the validated arguments as `any`; the tool's own execute narrows them.
+              const validated: unknown = validateToolArguments(tool, {
                 type: "toolCall",
                 id: callId,
                 name: tool.name,
@@ -79,7 +81,7 @@ export const Codemode = defineExtension({
                 details: async () => {},
               };
               const nested = new Proxy(api, {
-                get(target, property, receiver) {
+                get(target, property, receiver): unknown {
                   if (Object.hasOwn(overrides, property))
                     return Reflect.get(overrides, property, receiver);
                   const value: unknown = Reflect.get(target, property, target);
