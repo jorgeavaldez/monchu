@@ -13,6 +13,7 @@ import {
   lastMessage,
   open,
   route,
+  sectionTexts,
   setup,
   textOf,
   type Setup,
@@ -61,6 +62,29 @@ describe("Pi built-ins", () => {
       "powershell",
     ]);
     expect(toolNames(resolveSettings({ defaultTools: [] }), value)).toEqual([]);
+  });
+
+  it("tells the model to search with the selected fff tools, as pi-fff does", async () => {
+    const value = await setup();
+    value.registry.install(
+      createPiTools(resolveSettings({ defaultTools: ["-fffind"] }), value.finders).extension,
+    );
+    const prompts: string[] = [];
+    route(value.faux, (request) => {
+      prompts.push(sectionTexts(request.messages, "search_tools").join("\n"));
+      return fauxAssistantMessage("ok");
+    });
+    const { harness, root } = await open(value);
+    try {
+      await (await root.submit({ type: "input", content: "search" }, context)).wait(context);
+    } finally {
+      await harness.close(context);
+    }
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("- ffgrep: Grep contents");
+    expect(prompts[0]).toContain("instead of bash grep/find/rg");
+    expect(prompts[0]).toContain("ffgrep: after 1-2 greps, read the top match");
+    expect(prompts[0]).not.toContain("fffind");
   });
 
   it.each([
