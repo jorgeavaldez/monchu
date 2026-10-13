@@ -73,7 +73,7 @@ Never put the token in the config file or source code.
 
 ## Claude Code subscription provider
 
-Use `/login claude-code` to paste a token obtained from `claude setup-token` into Monchu's own credential store.
+Use `/login`, choose Claude Code, and paste a token obtained from `claude setup-token` into Monchu's own credential store.
 API-key login and ambient Claude credentials are not supported. Setup-tokens are not refreshable; log in again when the server rejects an expired token.
 Choose `claude-code` with an Opus, Sonnet or Haiku catalog ID in `front` or `worker`, for example `claude-opus-5-5`.
 

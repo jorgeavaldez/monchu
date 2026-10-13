@@ -219,6 +219,34 @@ it("offers /login on a fresh home without credentials and cancels without callin
   }
 });
 
+it("logs in to Claude Code with a setup-token from /login", async () => {
+  const value = await setup();
+  const home = join(value.directory, "claude");
+  prepareHome(home);
+  const backend = await Monchu.open(home);
+  const screen = new VirtualTerminal(60, 32);
+  const running = runTerminal(backend, screen);
+  try {
+    await visible(screen, "Monchu · /help");
+    send(screen, "/login");
+    await visible(screen, "Choose provider:");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\r");
+    await visible(screen, "Paste a Claude Code setup-token");
+    send(screen, "sk-ant-oat01-private-token");
+    await visible(screen, "logged in · claude-code");
+    expect(screen.output).not.toContain("sk-ant-oat01-private-token");
+    const auth: unknown = JSON.parse(await readFile(join(backend.home, "auth.json"), "utf8"));
+    expect(auth).toMatchObject({ "claude-code": { access: "sk-ant-oat01-private-token" } });
+  } finally {
+    send(screen, "/quit");
+    await running;
+    await backend.close();
+    await cleanup();
+  }
+});
+
 // Transport emulation only: entry commands, Monchu, Durable, models, and tools are real.
 describe.each([
   { columns: 40, theme: "dark" },

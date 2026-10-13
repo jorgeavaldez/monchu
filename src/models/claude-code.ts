@@ -233,7 +233,9 @@ export function createClaudeCodeProvider(
       try {
         options?.signal?.throwIfAborted();
         if (!options?.apiKey?.startsWith("sk-ant-oat01-"))
-          throw new Error("Claude Code requires a stored setup-token; use /login claude-code");
+          throw new Error(
+            "Claude Code requires a stored setup-token; use /login and choose Claude Code",
+          );
         const systemPrompt = getCurrentSystemPrompt(context.messages);
         if (
           /(^|\n)You are an expert coding assistant operating inside pi/.test(systemPrompt) ||
@@ -560,7 +562,9 @@ export function createClaudeCodeProvider(
           return { type: "oauth", access: token, refresh: "", expires: Number.MAX_SAFE_INTEGER };
         },
         refresh: () => {
-          throw new Error("Claude Code setup-tokens cannot be refreshed; use /login claude-code");
+          throw new Error(
+            "Claude Code setup-tokens cannot be refreshed; use /login and choose Claude Code",
+          );
         },
         toAuth: async (credential) => ({ apiKey: credential.access }),
       },

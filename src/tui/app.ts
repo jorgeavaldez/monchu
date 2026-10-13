@@ -162,31 +162,36 @@ export async function runTerminal(
               options: [
                 { id: "openai-codex", label: "OpenAI Codex (device code)" },
                 { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (API key)" },
+                { id: "claude-code", label: "Claude Code (setup-token)" },
               ],
             },
             controller.signal,
           );
-          await backend.login(provider, provider === "openai-codex" ? "oauth" : "api_key", {
-            signal: controller.signal,
-            prompt: (prompt) => view.promptLogin(prompt, controller.signal),
-            notify: (event) => {
-              switch (event.type) {
-                case "device_code":
-                  view.loginMessage(
-                    `Open ${event.verificationUri}\nCode: ${event.userCode}\nWaiting for approval · Esc to cancel`,
-                  );
-                  break;
-                case "auth_url":
-                  view.loginMessage(`Open ${event.url}`);
-                  break;
-                case "info":
-                case "progress":
-                  // Keep provider output ephemeral, outside chat/history/logs.
-                  view.loginMessage(event.message);
-                  break;
-              }
+          await backend.login(
+            provider,
+            provider === "cloudflare-workers-ai" ? "api_key" : "oauth",
+            {
+              signal: controller.signal,
+              prompt: (prompt) => view.promptLogin(prompt, controller.signal),
+              notify: (event) => {
+                switch (event.type) {
+                  case "device_code":
+                    view.loginMessage(
+                      `Open ${event.verificationUri}\nCode: ${event.userCode}\nWaiting for approval · Esc to cancel`,
+                    );
+                    break;
+                  case "auth_url":
+                    view.loginMessage(`Open ${event.url}`);
+                    break;
+                  case "info":
+                  case "progress":
+                    // Keep provider output ephemeral, outside chat/history/logs.
+                    view.loginMessage(event.message);
+                    break;
+                }
+              },
             },
-          });
+          );
           view.notice(`logged in · ${provider}`);
         } catch {
           // Provider failures can include entered credentials. Never echo raw login errors.

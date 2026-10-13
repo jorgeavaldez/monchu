@@ -30,7 +30,10 @@ export const commands: Record<
   "/compact": { usage: "[instructions]", help: "summarize root context" },
   "/cd": { usage: "<path>", help: "change the idle root's directory" },
   "/cd-worker": { usage: "<name> <path>", help: "change an idle worker's directory" },
-  "/login": { usage: "", help: "private provider login (Codex device code or Cloudflare API key)" },
+  "/login": {
+    usage: "",
+    help: "private provider login (Codex device code, Cloudflare API key, or Claude Code setup-token)",
+  },
   "/reload": { usage: "", help: "reload config, extensions and home/bundled skills" },
   "/restart": {
     usage: "",
