@@ -4,7 +4,6 @@ node = "26.10.0"
 
 [env]
 NODE_ENV = { default = "development" }
-_.path = ['{{config_root}}/node_modules/.bin']
 
 [tasks.install]
 description = 'Install locked dependencies'
@@ -15,27 +14,27 @@ outputs = ['node_modules/.package-lock.json']
 [tasks.check]
 description = 'Run all check gates'
 depends = ['typecheck', 'lint', 'test']
-run = ['oxfmt --check', 'knip']
+run = ['npm exec --no -- oxfmt --check', 'npm exec --no -- knip']
 
 [tasks.test]
 description = 'Run the test suite'
 depends = ['install']
-run = 'vitest --run'
+run = 'npm exec --no -- vitest --run'
 
 [tasks.lint]
 description = 'Run type-aware lint'
 depends = ['install']
-run = 'oxlint --type-aware --deny-warnings --report-unused-disable-directives'
+run = 'npm exec --no -- oxlint --type-aware --deny-warnings --report-unused-disable-directives'
 
 [tasks.fmt]
 description = 'Format source and documentation'
 depends = ['install']
-run = 'oxfmt'
+run = 'npm exec --no -- oxfmt'
 
 [tasks.typecheck]
 description = 'Typecheck source and tests'
 depends = ['install']
-run = 'tsc'
+run = 'npm exec --no -- tsc'
 
 [tasks.build]
 description = 'Build the app'
