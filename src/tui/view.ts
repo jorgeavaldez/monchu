@@ -40,9 +40,11 @@ import {
   TruncatedText,
   TuiAltScreen,
   VStack,
+  type Component,
   type Focusable,
   type SelectItem,
   type Terminal,
+  type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { ESCALATION_PREFIX } from "../classifier.ts";
 import { workerNotice } from "../workers.ts";
@@ -104,6 +106,91 @@ class AgentSelector extends Container implements Focusable {
   }
 }
 
+/**
+ * The chat document. Layout renders the whole scroll content every frame, so re-rendering every entry made each
+ * frame cost grow with the conversation. Children before the settled index keep their lines per width until
+ * `changed` names one of them or the tree is invalidated; later children render every frame. Every entry stays
+ * mounted, so scrollback, selection, and search still reach the whole conversation.
+ */
+class Transcript extends Container {
+  private settled = 0;
+  private cache: { width: number; lines: string[]; heights: number[] } | undefined;
+  private live: { width: number; heights: number[] } | undefined;
+  // Hosts one child at a time so Container's own dispatch translates mouse events into it.
+  private readonly hit = new Container();
+
+  /** Children before `index` change only through `changed`. */
+  settle(index: number): void {
+    this.settled = index;
+  }
+
+  changed(child: Component): void {
+    if (this.cache === undefined) return;
+    const index = this.children.lastIndexOf(child);
+    if (index !== -1 && index < this.cache.heights.length) this.cache = undefined;
+  }
+
+  override invalidate(): void {
+    this.cache = undefined;
+    super.invalidate();
+  }
+
+  override clear(): void {
+    super.clear();
+    this.settled = 0;
+    this.cache = undefined;
+  }
+
+  override removeChild(component: Component): void {
+    super.removeChild(component);
+    this.settled = Math.min(this.settled, this.children.length);
+    this.cache = undefined;
+  }
+
+  override render(width: number): string[] {
+    const settled = Math.min(this.settled, this.children.length);
+    if (this.cache?.width !== width || this.cache.heights.length > settled)
+      this.cache = { width, lines: [], heights: [] };
+    const cache = this.cache;
+    if (cache.heights.length < settled) {
+      const lines = [...cache.lines];
+      for (const child of this.children.slice(cache.heights.length, settled)) {
+        const rendered = child.render(width);
+        cache.heights.push(rendered.length);
+        for (const line of rendered) lines.push(line);
+      }
+      cache.lines = lines;
+    }
+    this.live = { width, heights: [] };
+    if (settled === this.children.length) return cache.lines;
+    const lines = [...cache.lines];
+    for (const child of this.children.slice(settled)) {
+      const rendered = child.render(width);
+      this.live.heights.push(rendered.length);
+      for (const line of rendered) lines.push(line);
+    }
+    return lines;
+  }
+
+  override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+    const cache = this.cache;
+    if (cache?.width !== event.width || this.live?.width !== event.width)
+      return super.handleMouse(event);
+    const settled = cache.heights.length;
+    let top = 0;
+    for (const [index, child] of this.children.entries()) {
+      const height = index < settled ? cache.heights[index] : this.live.heights[index - settled];
+      if (height === undefined) break;
+      if (event.y >= top && event.y < top + height) {
+        this.hit.children = [child];
+        return this.hit.handleMouse({ ...event, y: event.y - top, height });
+      }
+      top += height;
+    }
+    return undefined;
+  }
+}
+
 /** Input editing stays local, but secret contents are never rendered or added to editor history. */
 class SecretInput extends Input {
   override render(width: number): string[] {
@@ -114,7 +201,7 @@ class SecretInput extends Input {
 /** Pi's viewport/editor/message components over committed Durable views. No agent loop lives here. */
 export class MonchuTui {
   readonly ui: TuiAltScreen;
-  private readonly chat = new Container();
+  private readonly chat = new Transcript();
   private readonly workers = new Container();
   private readonly queue = new Container();
   private readonly status = new Container();
@@ -124,12 +211,14 @@ export class MonchuTui {
   private readonly transcript: ScrollView;
   private readonly tools = new Map<string, ToolExecutionComponent>();
   private readonly cards: ToolExecutionComponent[] = [];
+  private readonly unfinished = new Set<ToolExecutionComponent>();
   private readonly streamedCalls = new Set<string>();
   private readonly notices: string[] = [];
   private renderedIds: number[] = [];
   private applied: ConversationView | undefined;
   private workersLine = "";
   private streaming: Container | undefined;
+  private streamingText = "";
   private loader: Loader | undefined;
   private statusText = "";
   private expanded = false;
@@ -242,16 +331,7 @@ export class MonchuTui {
 
   stop(): void {
     this.loader?.stop();
-    this.discardTools();
     this.ui.stop();
-  }
-
-  private discardTools(): void {
-    // Bash renderer timers must be stopped even when a view is switched mid-call.
-    for (const card of this.cards) card.updateResult({ content: [], isError: false }, false);
-    this.cards.length = 0;
-    this.tools.clear();
-    this.streamedCalls.clear();
   }
 
   beginLogin(cancel: () => void): void {
@@ -389,7 +469,10 @@ export class MonchuTui {
       rebuilt = true;
     if (rebuilt) {
       this.chat.clear();
-      this.discardTools();
+      this.cards.length = 0;
+      this.tools.clear();
+      this.unfinished.clear();
+      this.streamedCalls.clear();
       this.renderedIds = [];
       this.streaming = undefined;
       this.ui.resetTextSelection();
@@ -401,11 +484,16 @@ export class MonchuTui {
     if (state.partial !== undefined) {
       if (!this.streaming) {
         this.streaming = new Container();
+        this.streamingText = "";
         this.chat.addChild(this.streaming);
       }
-      this.streaming.clear();
-      if (state.partial)
-        this.streaming.addChild(new Markdown(state.partial, 1, 1, getMarkdownTheme()));
+      // A revision often moves only tool or status state; re-parse the reply only when its text grew.
+      if (state.partial !== this.streamingText) {
+        this.streamingText = state.partial;
+        this.streaming.clear();
+        if (state.partial)
+          this.streaming.addChild(new Markdown(state.partial, 1, 1, getMarkdownTheme()));
+      }
       for (const call of state.calls) {
         this.tool(call.name, call.id, call.arguments, !this.streamedCalls.has(call.id));
         this.streamedCalls.add(call.id);
@@ -415,14 +503,7 @@ export class MonchuTui {
       const card = this.tool(output.name, output.id);
       card.setArgsComplete();
       if (output.text || output.details !== undefined)
-        card.updateResult(
-          {
-            content: [{ type: "text", text: output.text }],
-            details: output.details,
-            isError: false,
-          },
-          true,
-        );
+        card.updatePartialOutput(output.text, output.details);
     }
     if (rebuilt) {
       for (const text of this.notices) {
@@ -431,6 +512,16 @@ export class MonchuTui {
       }
       this.transcript.scrollToEnd();
     }
+    // Cache everything before the first entry a run may still change: the streaming reply or an unfinished card.
+    // Cards report later changes themselves, so once the run is over even a card left without a result settles.
+    if (!state.busy) this.unfinished.clear();
+    for (const card of this.unfinished) if (card.finished) this.unfinished.delete(card);
+    let settled = this.chat.children.length;
+    for (const component of [this.streaming, ...this.unfinished]) {
+      const index = component === undefined ? -1 : this.chat.children.lastIndexOf(component);
+      if (index !== -1) settled = Math.min(settled, index);
+    }
+    this.chat.settle(settled);
     this.queue.clear();
     for (const line of state.queue)
       this.queue.addChild(new TruncatedText(getSelectListTheme().description(line), 1, 0));
@@ -531,7 +622,10 @@ export class MonchuTui {
       if (args !== undefined) existing.updateArgs(args);
       return existing;
     }
-    const card = new ToolExecutionComponent(name, args ?? {}, this.ui, this.cwd);
+    const card = new ToolExecutionComponent(name, args ?? {}, this.ui, this.cwd, (changed) =>
+      this.chat.changed(changed),
+    );
+    this.unfinished.add(card);
     card.setExpanded(this.expanded);
     this.chat.addChild(card);
     this.cards.push(card);

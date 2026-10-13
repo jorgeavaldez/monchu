@@ -56,6 +56,7 @@ export class ToolExecutionComponent extends Container {
   private readonly toolName: string;
   private readonly ui: TUI;
   private readonly cwd: string;
+  private readonly changed: (card: ToolExecutionComponent) => void;
   private callComponent: Component | undefined;
   private resultComponent: Component | undefined;
   private rawArgs: unknown;
@@ -64,6 +65,7 @@ export class ToolExecutionComponent extends Container {
   private argsComplete = false;
   private isPartial = true;
   private result: RenderResult | undefined;
+  private partialOutput: { text: string; details: unknown } | undefined;
   private readonly renderer: ToolRenderers | undefined;
   private imageComponents: Image[] = [];
   private imageSources: Array<{ data: string; mimeType: string; widthCells: number }> = [];
@@ -71,11 +73,19 @@ export class ToolExecutionComponent extends Container {
   private readonly imageWidthCells = 60;
   private readonly showImages = true;
 
-  constructor(toolName: string, args: unknown, ui: TUI, cwd: string) {
+  /** `changed` hears every change to the card's lines, including clicks and late image conversion. */
+  constructor(
+    toolName: string,
+    args: unknown,
+    ui: TUI,
+    cwd: string,
+    changed: (card: ToolExecutionComponent) => void,
+  ) {
     super();
     this.toolName = toolName;
     this.ui = ui;
     this.cwd = cwd;
+    this.changed = changed;
     this.rawArgs = args;
     this.args = parseRenderArgs(args);
     this.renderer = toolRenderers.get(toolName);
@@ -85,15 +95,29 @@ export class ToolExecutionComponent extends Container {
     this.updateDisplay();
   }
 
+  /** Whether a committed result arrived; until then Durable revisions may still change the card. */
+  get finished(): boolean {
+    return this.result !== undefined && !this.isPartial;
+  }
+
   updateArgs(args: unknown): void {
+    if (args === this.rawArgs) return;
     this.rawArgs = args;
     this.args = parseRenderArgs(args);
     this.updateDisplay();
   }
 
   setArgsComplete(): void {
+    if (this.argsComplete) return;
     this.argsComplete = true;
     this.updateDisplay();
+  }
+
+  /** Durable's running output so far. Revisions repeat it unchanged while other state moves. */
+  updatePartialOutput(text: string, details: unknown): void {
+    if (this.partialOutput?.text === text && this.partialOutput.details === details) return;
+    this.partialOutput = { text, details };
+    this.updateResult({ content: [{ type: "text", text }], details, isError: false }, true);
   }
 
   updateResult(
@@ -249,5 +273,6 @@ export class ToolExecutionComponent extends Container {
         }
       }
     }
+    this.changed(this);
   }
 }

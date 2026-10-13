@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { help, parseInput } from "../src/tui/commands.ts";
 import { presentation } from "../src/tui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
-import { cleanup, context, open, route, setup, waitFor } from "./support.ts";
+import { cleanup, context, lastMessage, open, route, setup, waitFor } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 afterEach(cleanup);
@@ -285,6 +285,113 @@ describe("committed Durable presentation", () => {
       await harness.close(context);
     }
   });
+
+  it("keeps a long settled transcript reachable and redraws settled tool cards on click and Ctrl-O", async () => {
+    const value = await setup();
+    await writeFile(join(value.directory, "notes.txt"), "first note line\nsecond note line");
+    route(value.faux, (context) =>
+      lastMessage(context.messages)?.role === "toolResult"
+        ? fauxAssistantMessage("noted")
+        : fauxAssistantMessage([fauxToolCall("read", { path: "notes.txt" })], {
+            stopReason: "toolUse",
+          }),
+    );
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(40, 20);
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    const stop = state.subscribe((view) => ui.apply(view));
+    const viewport = async () => {
+      ui.ui.renderNow();
+      return (await screen.flushAndGetViewport()).join("\n");
+    };
+    try {
+      ui.start();
+      for (const turn of [1, 2, 3, 4, 5, 6]) {
+        const content = `question ${turn}`;
+        await (
+          await root.submit({ type: "input", content, requestId: content }, context)
+        ).wait(context);
+      }
+      await root.waitForIdle(context);
+      expect(await viewport()).not.toContain("first note line");
+      ui.ui.scrollToTop();
+      const top = (await viewport()).split("\n");
+      expect(top.join("\n")).toContain("question 1");
+      // Click the first card's call line: the settled card must expand on screen.
+      const row = top.findIndex((line) => line.includes("notes.txt"));
+      expect(row).toBeGreaterThan(-1);
+      screen.sendInput(`\x1b[<0;5;${row + 1}M`);
+      screen.sendInput(`\x1b[<0;5;${row + 1}m`);
+      await waitFor(async () => (await viewport()).includes("first note line"));
+      ui.ui.scrollToBottom();
+      expect(await viewport()).not.toContain("first note line");
+      screen.sendInput("\x0f"); // Ctrl-O expands every card, including settled ones
+      await waitFor(async () => (await viewport()).includes("second note line"));
+      expect(value.reports).toEqual([]);
+    } finally {
+      stop();
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  });
+
+  it("shows running bash output as it grows and settles the card when it finishes", async () => {
+    const value = await setup();
+    route(value.faux, (context) =>
+      lastMessage(context.messages)?.role === "toolResult"
+        ? fauxAssistantMessage("bash finished")
+        : fauxAssistantMessage(
+            [
+              fauxToolCall("bash", {
+                command: "echo $((1234 + 1)); sleep 1; echo $((5677 + 1)); sleep 1.5",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          ),
+    );
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(40, 20);
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    const stop = state.subscribe((view) => ui.apply(view));
+    const running = () => presentation(state.value).output.some((tool) => tool.name === "bash");
+    try {
+      ui.start();
+      const submission = await root.submit(
+        { type: "input", content: "run", requestId: "run" },
+        context,
+      );
+      // The command echoes sums, so only its output, never the call line, shows them.
+      for (const line of ["1235", "5678"]) {
+        await waitFor(async () => (await screen.flushAndGetViewport()).join("\n").includes(line));
+        expect(running()).toBe(true);
+      }
+      await submission.wait(context);
+      await root.waitForIdle(context);
+      await waitFor(async () => {
+        const lines = (await screen.flushAndGetViewport()).join("\n");
+        return lines.includes("bash finished") && lines.includes("5678");
+      });
+      expect(value.reports).toEqual([]);
+    } finally {
+      stop();
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  }, 20_000);
 
   it("maps a committed retry without treating it as an answer", async () => {
     const value = await setup();
