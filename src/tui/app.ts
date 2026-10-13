@@ -83,7 +83,10 @@ export async function runTerminal(
     submit: (text) => {
       inputs = inputs.then(() => handle(text)).catch(fail);
     },
-    abort: interrupt,
+    // As in Pi, Esc interrupts only a front that shows activity (a run, retry, or compaction).
+    abort: () => {
+      if (root !== undefined && presentation(root.value).status) interrupt();
+    },
     exit,
   });
 

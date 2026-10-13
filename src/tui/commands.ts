@@ -48,7 +48,7 @@ export const help = [
   ...Object.entries(commands).map(([command, { usage, help }]) =>
     `${`${command} ${usage}`.padEnd(26)}${help}`.trimEnd(),
   ),
-  "Esc aborts the front. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
+  "Esc interrupts a running front. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools. Shift-Enter or backslash-Enter inserts a newline.",
   "Plain messages go to the conversation shown; root commands always target the root.",
 ].join("\n");

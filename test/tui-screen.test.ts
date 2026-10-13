@@ -131,6 +131,20 @@ it("clears the editor on Ctrl-C without aborting the front, and exits on a quick
   });
 });
 
+it("ignores Esc while the front is idle and interrupts it while it runs", async () => {
+  await withTerminal(60, "dark", async (screen) => {
+    screen.sendInput("\x1b");
+    // An idle abort would have posted its notice well within this window.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await screen.flushAndGetViewport()).join("\n")).not.toContain("front stopped");
+    send(screen, "hello");
+    await visible(screen, "Faux reply:");
+    screen.sendInput("\x1b");
+    const stopped = await visible(screen, "front stopped; workers continue");
+    expect(stopped.join("\n")).not.toContain("DONE");
+  });
+});
+
 it("keeps Cloudflare login prompts out of chat, editor history and raw terminal output", async () => {
   const value = await setup({ provider: "cloudflare-workers-ai" });
   const home = join(value.directory, "home");
