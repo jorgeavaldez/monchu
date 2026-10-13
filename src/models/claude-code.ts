@@ -249,6 +249,8 @@ export function createClaudeCodeProvider(
         const declarations = tools.map((tool) => {
           if (!/^[a-zA-Z0-9_-]+$/.test(tool.name))
             throw new Error(`Claude Code cannot declare tool ${tool.name}`);
+          if (!("type" in tool.parameters) || tool.parameters.type !== "object")
+            throw new Error(`Claude Code tool ${tool.name} needs an object parameters schema`);
           return ToolSchema.parse({
             name: tool.name,
             description: tool.description,
@@ -535,7 +537,7 @@ export function createClaudeCodeProvider(
     })().catch((error: unknown) => {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       const detail = error instanceof Error ? error.message : String(error);
-      output.errorMessage = `Claude Code executable "${executable}": ${options?.apiKey ? detail.split(options.apiKey).join("[redacted]") : detail}`;
+      output.errorMessage = `Claude Code (${executable}): ${options?.apiKey ? detail.split(options.apiKey).join("[redacted]") : detail}`;
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     });

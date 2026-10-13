@@ -7,6 +7,11 @@ import { callTools, cleanup, context, open, route, setup, textOf, toolResults } 
 afterEach(cleanup);
 
 describe("memory", () => {
+  it("declares one object schema, which Claude Code's MCP layer requires", () => {
+    const schemas = (createMemory("unused").tools ?? []).map((tool) => tool.parameters);
+    expect(schemas).toEqual([expect.objectContaining({ type: "object" })]);
+  });
+
   it("adds, deduplicates, replaces and removes entries in the explicit home", async () => {
     const value = await setup();
     value.registry.install(createMemory(value.directory));
