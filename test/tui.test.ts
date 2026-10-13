@@ -244,6 +244,48 @@ describe("committed Durable presentation", () => {
     },
   );
 
+  it("writes nothing for an unchanged view or worker line, hides the hardware cursor, and rebuilds without clearing", async () => {
+    const value = await setup();
+    route(value.faux, () => fauxAssistantMessage("settled answer"));
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(40, 20);
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    try {
+      ui.start();
+      await (
+        await root.submit({ type: "input", content: "hi", requestId: "hi" }, context)
+      ).wait(context);
+      await root.waitForIdle(context);
+      ui.apply(state.value);
+      ui.setWorkers([{ name: "w", busy: true }], undefined);
+      await waitFor(async () => {
+        const lines = (await screen.flushAndGetViewport()).join("\n");
+        return lines.includes("settled answer") && lines.includes("w: working");
+      });
+      const written = screen.output.length;
+      // Each worker revision re-shows the root view and the worker line unchanged.
+      ui.apply(state.value);
+      ui.setWorkers([{ name: "w", busy: true }], undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.output.length).toBe(written);
+      ui.apply(state.value, undefined, true);
+      await waitFor(() => screen.output.length > written);
+      expect(screen.output.slice(written)).not.toContain("\x1b[2J");
+      expect((await screen.flushAndGetViewport()).join("\n")).toContain("settled answer");
+      expect(screen.output).not.toContain("\x1b[?25h");
+    } finally {
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  });
+
   it("maps a committed retry without treating it as an answer", async () => {
     const value = await setup();
     const { harness, root } = await open(value);

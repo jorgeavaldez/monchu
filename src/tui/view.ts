@@ -127,6 +127,8 @@ export class MonchuTui {
   private readonly streamedCalls = new Set<string>();
   private readonly notices: string[] = [];
   private renderedIds: number[] = [];
+  private applied: ConversationView | undefined;
+  private workersLine = "";
   private streaming: Container | undefined;
   private loader: Loader | undefined;
   private statusText = "";
@@ -145,7 +147,8 @@ export class MonchuTui {
     handlers: { submit(text: string): void; abort(): void; exit(): void },
   ) {
     this.cwd = home;
-    this.ui = new TuiAltScreen(terminal, true, home);
+    // As in Pi, the editor draws its own cursor; a shown hardware cursor is moved and re-shown every frame.
+    this.ui = new TuiAltScreen(terminal, false, home);
     this.editor = new Editor(
       this.ui,
       {
@@ -354,21 +357,23 @@ export class MonchuTui {
     items: readonly { name: string; busy: boolean }[],
     selected: string | undefined,
   ): void {
+    // Every revision of any shown or worker view lands here; render only when the styled line changes.
+    const line = items.length
+      ? getSelectListTheme().description(
+          `Workers · ${items.map((item) => `${item.name}${selected === item.name ? " (shown)" : ""}: ${item.busy ? "working" : "idle"}`).join(" · ")} · /agents`,
+        )
+      : "";
+    if (line === this.workersLine) return;
+    this.workersLine = line;
     this.workers.clear();
-    if (items.length)
-      this.workers.addChild(
-        new TruncatedText(
-          getSelectListTheme().description(
-            `Workers · ${items.map((item) => `${item.name}${selected === item.name ? " (shown)" : ""}: ${item.busy ? "working" : "idle"}`).join(" · ")} · /agents`,
-          ),
-          1,
-          0,
-        ),
-      );
+    if (line) this.workers.addChild(new TruncatedText(line, 1, 0));
     this.ui.requestRender();
   }
 
   apply(view: ConversationView, selected?: string, force = false): void {
+    // Worker revisions re-show the unchanged root view; skip the full-frame render it would cost.
+    if (!force && view === this.applied) return;
+    this.applied = view;
     const state = presentation(view);
     this.cwd = state.cwd ?? this.cwd;
     let rebuilt =
@@ -453,7 +458,8 @@ export class MonchuTui {
         0,
       ),
     );
-    this.ui.requestRender(rebuilt);
+    // The alt screen rewrites every changed row; a forced render would clear the screen first and flash.
+    this.ui.requestRender();
   }
 
   private addEntry(entry: EntryRecord): void {
