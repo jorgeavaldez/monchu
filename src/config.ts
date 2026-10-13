@@ -65,7 +65,7 @@ export function resolveSettings(settings: RunSettings) {
   if (settings.defaultTools !== undefined) {
     const entries = settings.defaultTools;
     defaultTools = entries.some((name) => /^[+-]/.test(name))
-      ? ["read", "bash", "edit", "write"]
+      ? ["read", "bash", "edit", "write", "fffind", "ffgrep"]
       : [...entries];
     for (const entry of entries) {
       const name = entry.slice(1);
@@ -255,7 +255,7 @@ function runSettings(value: unknown): RunSettings {
     const modified = value.defaultTools.filter((name) => /^[+-]/.test(name));
     if (modified.length !== 0 && modified.length !== value.defaultTools.length)
       throw new Error("settings.defaultTools must not mix names with +/- modifiers");
-    const names = ["read", "write", "edit", "bash", "grep", "find", "ls", "powershell"];
+    const names = ["read", "write", "edit", "bash", "fffind", "ffgrep", "powershell"];
     if (value.defaultTools.some((name) => !names.includes(name.replace(/^[+-]/, ""))))
       throw new Error("settings.defaultTools contains an unknown built-in");
     settings.defaultTools = value.defaultTools;

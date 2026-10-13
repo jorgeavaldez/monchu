@@ -39,26 +39,15 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
 }
 
 describe("backend", () => {
-  it("rejects a mismatched agent directory without changing the environment or touching the home", async () => {
-    const value = await setup();
-    const home = join(value.directory, "unprepared");
-    const agentDir = process.env.PI_CODING_AGENT_DIR;
-    await expect(Monchu.open(home)).rejects.toThrow(
-      `PI_CODING_AGENT_DIR must be ${join(home, "agent")}`,
-    );
-    expect(process.env.PI_CODING_AGENT_DIR).toBe(agentDir);
-    await expect(readFile(join(home, "owner.sqlite"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
   it.each([false, true])(
-    "sets its own SDK agent directory before imports in the real source entry point (smoke=%s)",
+    "ignores Pi resources in the real source entry point (smoke=%s)",
     async (smoke) => {
       const value = await setup();
       const home = smoke
         ? await mkdtemp(join(tmpdir(), "monchu-smoke-"))
         : join(value.directory, ".monchu");
       prepareHome(home);
-      await mkdir(value.agentDir);
+      await mkdir(value.agentDir, { recursive: true });
       for (const name of ["auth.json", "settings.json", "models.json"])
         await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
       const result = await new Promise<{ code: number | null; output: string }>(
@@ -71,7 +60,6 @@ describe("backend", () => {
                 ...process.env,
                 HOME: value.directory,
                 USERPROFILE: value.directory,
-                PI_CODING_AGENT_DIR: value.agentDir,
                 MONCHU_DEV_FAUX: smoke ? "1" : "0",
                 ...(smoke ? { MONCHU_DEV_HOME: home } : {}),
                 PI_OFFLINE: "1",
@@ -114,7 +102,7 @@ describe("backend", () => {
 
   it("owns auth independently of a decoy Pi directory and uses private provider login", async () => {
     const value = await setup();
-    await mkdir(value.agentDir);
+    await mkdir(value.agentDir, { recursive: true });
     const decoy = join(value.agentDir, "auth.json");
     await writeFile(decoy, "not valid JSON: must not be read or written");
     const home = join(value.directory, "home");
@@ -156,7 +144,6 @@ describe("backend", () => {
       const view = await backend.viewState();
       expect(view.value.entries).toEqual([]);
       view.dispose();
-      expect(process.env.PI_CODING_AGENT_DIR).toBe(join(home, "agent"));
     } finally {
       await backend.close();
     }
@@ -303,16 +290,16 @@ describe("backend", () => {
     }
   });
 
-  // Pi resolves PowerShell only on Windows; exercise every supported shell on this host.
+  // Windows has PowerShell installed; exercise both Durable shell tools there.
   describe.each(
     (process.platform === "win32" ? ["bash", "powershell"] : ["bash"]).flatMap((tool) => [
       { tool, nested: false },
       { tool, nested: true },
     ]),
   )("$tool child environment (codemode=$nested)", ({ tool, nested }) => {
-    it("does not leak its agent directory to a Pi started by a shell tool", async () => {
+    it("inherits the process environment unchanged in shell tools", async () => {
       const value = await setup();
-      const command = `${tool === "powershell" ? "& " : ""}${JSON.stringify(process.execPath)} -e "console.log(process.env.PI_CODING_AGENT_DIR ?? 'normal-pi-config')"`;
+      const command = `${tool === "powershell" ? "& " : ""}${JSON.stringify(process.execPath)} -e "console.log(JSON.stringify({HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE,MONCHU_TEST_SHELL_ENV:process.env.MONCHU_TEST_SHELL_ENV}))"`;
       route(value.faux, (request) =>
         lastMessage(request.messages)?.role === "user"
           ? fauxAssistantMessage(
@@ -350,8 +337,12 @@ describe("backend", () => {
           .filter((message) => message.role === "toolResult")
           .map(textOf)
           .join("\n");
-        expect(results).toContain("normal-pi-config");
-        expect(results).not.toContain(backend.home);
+        const childEnv: unknown = JSON.parse(results.trim());
+        expect(childEnv).toEqual({
+          HOME: process.env.HOME,
+          USERPROFILE: process.env.USERPROFILE,
+          MONCHU_TEST_SHELL_ENV: "unchanged-process-value",
+        });
       } finally {
         state.dispose();
         await backend.close();

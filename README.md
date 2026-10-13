@@ -31,8 +31,8 @@ mise run dev
 ```
 
 Monchu owns its configuration and credentials; it never reads or writes `~/.pi`.
-Before importing any Pi SDK module, the entry point sets `PI_CODING_AGENT_DIR` to `<home>/agent`.
-Shell-tool subprocesses do not inherit that override, so a Pi started from them uses its normal config.
+No coding-agent runtime or agent-directory override is loaded.
+Shell-tool subprocesses inherit Monchu's process environment unchanged; there is no env file or shell startup override.
 `src/models/` owns `<home>/auth.json`, provider registration, login, and model-role resolution on pi-ai.
 Providers are code modules: Codex and Cloudflare use their built-in catalogs; Claude Code uses the Opus/Sonnet/Haiku chat catalog; dev/test modes inject faux providers.
 The front and workers use the same chat providers. The classifier stays on Cloudflare's dedicated classification API; Claude Code does not invent classification probabilities. There are no file-based catalog overrides or catalog cache files.
@@ -52,7 +52,7 @@ There is no silent model/provider fallback.
     "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000, "maxAgentDelayMs": 60000 },
     "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
     "httpIdleTimeoutMs": 300000,
-    "defaultTools": ["read", "write", "edit", "bash"]
+    "defaultTools": ["read", "write", "edit", "bash", "fffind", "ffgrep"]
   }
 }
 ```
@@ -60,7 +60,7 @@ There is no silent model/provider fallback.
 Unknown fields or unknown models fail startup. `"classifier": null` turns classification off.
 The front role is applied at startup and on `/reload`, from its next model request; new workers use the current worker role. Existing workers keep their stored role.
 
-`settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults, matching the Pi defaults shown above.
+`settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults shown above.
 It also accepts `shellPath`, `shellCommandPrefix`, `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
 Themes are built-in `light`, `dark`, `system`, or a `light/dark` pair. Shell path/prefix are unset by default.
 `defaultTools` accepts exact built-in names, or only `+name`/`-name` modifiers. Monchu's own tools are separate from this selection.
@@ -101,18 +101,18 @@ The SDK accepts an explicit executable and does not eagerly import a platform pa
 
 The front reads `SOUL.md`, `AGENTS.md`, `DEVICES.md`, `memories/USER.md`, and `memories/MEMORY.md` from its home on every model request. Workers read only the two memory files and `DEVICES.md`. Each file is labelled with its editable path; missing files are skipped with one warning per path for the runtime's lifetime, including reloads. All roles receive device facts (hostname, OS/release, user, user home, Monchu home, execution directory).
 
-Skills load in place at startup and on reload from `<home>/skills` and this checkout's bundled `skills/`, with home skills winning name collisions. Only metadata is advertised; bodies are read on demand. Pi instructions, skills, packages, and cwd/ancestor resources are not loaded, and no skill is copied into Pi's agent directory.
+Skills load in place at startup and on reload from `<home>/skills` and this checkout's bundled `skills/`, with home skills winning name collisions. Only metadata is advertised; bodies are read on demand. Pi instructions, skills, packages, and cwd/ancestor resources are not loaded; no skills are copied.
 
 Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 
 - `config.json`: optional model roles and validated run settings; no secrets.
 - `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
-- `agent/`: isolated SDK agent directory, including SDK-managed binaries/resources; not Pi's user directory.
+- `fff/`: frecency and query-history databases for native file/content search; no Pi or editor databases are reused.
 - `claude/`: isolated Claude Code config/execution directory and disposable transcript mirrors; not the durable conversation store.
 - `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
-For a source-controlled home, ignore `/auth.json*`, `/agent/`, `/claude/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
+For a source-controlled home, ignore `/auth.json*`, `/fff/`, `/claude/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
@@ -148,7 +148,7 @@ Shift-Enter or backslash-Enter adds a newline.
 `/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the same installed tools: read, write, edit, bash, worker management, and `codemode`. The tool adapter also supports Pi's grep, find, ls, and powershell built-ins when selected; on Android (Termux) grep and find are skipped with a warning, so use bash with `rg`/`fd` on PATH. Tool selection comes from `config.json` settings.
+All roles receive the same installed tools: read, write, edit, bash, `fffind`, `ffgrep`, worker management, and `codemode`. File/shell tools come from Durable, including optional `powershell`. The search tools port @ff-labs/pi-fff 0.11.0's tool logic (MIT) on @ff-labs/fff-node 0.11.0: git-aware fuzzy/glob path search and smart-case content search, with filters, context, fuzzy fallback, and pagination. Native indexes follow each conversation's execution directory and support paths outside it; Monchu owns and closes their handles across reloads. fff ships android-arm64, so searches are not skipped on Termux. Tool selection comes from `config.json` settings; `grep`, `find`, and `ls` are no longer built-ins.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
@@ -235,6 +235,7 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
 - `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
 - `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
+- `src/fff.ts`: Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases.
 - `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
 - `src/skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
 - `src/tui/`: the command table and input parsing, Durable presentation mapping, copied themes/message components/tool renderers, and Pi-style viewport rendering.
@@ -274,7 +275,7 @@ mise run build
 - `mise run fmt`: format with oxfmt; `mise run check` checks formatting without rewriting.
 - `mise run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, any import of `src/tui` outside `src/main.ts` and the TUI itself, and `vi` in tests.
 - `mise run check` also runs knip for unused files, exports, and dependencies. The reload manifest imports its modules through computed URLs, so the exports it reads are tagged `@public`.
-- `mise run test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME`, `USERPROFILE`, and `PI_CODING_AGENT_DIR` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
+- `mise run test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME` and `USERPROFILE` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
   TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark.
   Tests do not prove live provider behavior or the interactive phone flow.
 

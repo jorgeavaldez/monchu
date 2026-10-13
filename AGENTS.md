@@ -73,8 +73,8 @@ Ask when scope or a design decision materially changes the outcome.
 
 - **Layering.** `src/main.ts` composes the backend (`src/backend.ts`) and the TUI (`src/tui/`).
   Nothing else imports `src/tui/`, and the backend writes nothing to stdout.
-  `src/config.ts` validates Monchu's configuration; `src/context.ts` constructs the settings snapshot, and the backend owns model/auth setup. The entry point sets the Monchu-owned SDK agent directory before importing Pi.
-- Process-level setup (environment, home, signals) belongs to the entry point; library code never mutates it.
+  `src/config.ts` validates Monchu's configuration; `src/context.ts` constructs the settings snapshot, and the backend owns model/auth setup. Monchu does not depend on the coding-agent runtime or configure an SDK agent directory. Durable owns read/write/edit/bash/powershell; `src/fff.ts` ports pi-fff 0.11.0 tool logic for default `fffind`/`ffgrep`, with databases under the explicit Monchu home.
+- Process-level setup (environment, home, signals) belongs to the entry point; library code never mutates it. Shell-tool children inherit that environment unchanged, without an env file or startup override.
 - **One way to define an extension.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory when it needs host inputs.
   A factory that has more to hand back returns `{ extension, ... }`, with configuration problems as `warnings: string[]`.
   Add the module to `Reloadable` and `build()` in `src/reload.ts`, and tag the export the manifest reads `@public`.

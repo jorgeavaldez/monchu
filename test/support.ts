@@ -48,6 +48,7 @@ import { Codemode } from "../src/codemode.ts";
 import { type ClaudeConfig, type ModelRole, resolveSettings } from "../src/config.ts";
 import { createClaudeCodeProvider, type ClaudeQuery } from "../src/models/claude-code.ts";
 import { openModels } from "../src/models/index.ts";
+import { FffFinders } from "../src/fff.ts";
 import { createPiTools } from "../src/pi-tools.ts";
 import { createWorkerTools, WorkersDoc } from "../src/workers.ts";
 
@@ -191,20 +192,24 @@ export type Setup = {
   readonly reports: unknown[];
   /** A fresh temp directory: this test's home and default execution directory. */
   readonly directory: string;
-  /** Pi's agent directory inside `directory`; not created. */
+  /** Decoy Pi directory inside this test home; not created. */
   readonly agentDir: string;
+  readonly finders: FffFinders;
 };
 
 const directories = new Set<string>();
+const findersToClose = new Set<FffFinders>();
 // The suite-wide sandbox vitest.config.ts sets; each test narrows it to its own directory.
 const sandbox = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
-  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
   MONCHU_DEV_HOME: process.env.MONCHU_DEV_HOME,
+  MONCHU_TEST_SHELL_ENV: process.env.MONCHU_TEST_SHELL_ENV,
 };
 
 export async function cleanup(): Promise<void> {
+  for (const finders of findersToClose) await finders.close();
+  findersToClose.clear();
   for (const [key, value] of Object.entries(sandbox)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -219,20 +224,19 @@ export function prepareHome(home: string): void {
   Object.assign(process.env, {
     HOME: home,
     USERPROFILE: home,
-    PI_CODING_AGENT_DIR: join(home, "agent"),
+    MONCHU_TEST_SHELL_ENV: "unchanged-process-value",
   });
 }
 
 /**
- * The front's tools as Monchu installs them, in a fresh directory that is also this test's home and Pi agent directory
- * parent, so Pi's user resources (`~/.agents`, `~/.pi/agent`) resolve inside it. Call `cleanup` after each test.
+ * The front's tools as Monchu installs them in a fresh temp home.
+ * Default user resources (`~/.agents`, `~/.pi/agent`) resolve inside it. Call `cleanup` after each test.
  */
 export async function setup(options: RegisterFauxProviderOptions = {}): Promise<Setup> {
   const faux = fauxProvider(options);
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(createPiTools(resolveSettings({}), process.platform).extension);
   registry.install(createWorkerTools(fauxRole));
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));
@@ -241,9 +245,13 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
     join(directory, "config.json"),
     JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
   );
-  const agentDir = join(directory, "agent");
+  const agentDir = join(directory, ".pi", "agent");
   prepareHome(directory);
-  return { faux, models, registry, reports: [], directory, agentDir };
+  const reports: unknown[] = [];
+  const finders = new FffFinders(directory, (warning) => reports.push(warning));
+  findersToClose.add(finders);
+  registry.install(createPiTools(resolveSettings({}), finders).extension);
+  return { faux, models, registry, reports, directory, agentDir, finders };
 }
 
 export async function open(

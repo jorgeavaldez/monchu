@@ -81,11 +81,9 @@ async function visible(screen: VirtualTerminal, text: string): Promise<string[]>
 
 it("rejects the real Monchu home before configuring resources or opening storage in dev mode", async () => {
   const previousHome = process.env.MONCHU_DEV_HOME;
-  const agentDir = process.env.PI_CODING_AGENT_DIR;
   try {
     process.env.MONCHU_DEV_HOME = join(homedir(), ".monchu");
     await expect(monchuHome(true)).rejects.toThrow("MONCHU_DEV_HOME must be");
-    expect(process.env.PI_CODING_AGENT_DIR).toBe(agentDir);
   } finally {
     if (previousHome === undefined) delete process.env.MONCHU_DEV_HOME;
     else process.env.MONCHU_DEV_HOME = previousHome;

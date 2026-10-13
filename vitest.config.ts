@@ -9,6 +9,6 @@ process.once("exit", () => rmSync(home, { recursive: true, force: true }));
 
 export default defineConfig({
   test: {
-    env: { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
+    env: { HOME: home, USERPROFILE: home },
   },
 });

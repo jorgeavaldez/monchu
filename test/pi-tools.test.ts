@@ -20,8 +20,8 @@ import {
 
 afterEach(cleanup);
 
-function toolNames(settings: Settings, platform: NodeJS.Platform): string[] {
-  return (createPiTools(settings, platform).extension.tools ?? []).map((tool) => tool.name);
+function toolNames(settings: Settings, value: Setup): string[] {
+  return (createPiTools(settings, value.finders).extension.tools ?? []).map((tool) => tool.name);
 }
 
 /** The front makes `calls` in order, one per message, and records each tool result's text. */
@@ -42,37 +42,55 @@ function callInOrder(value: Setup, calls: ReturnType<typeof fauxToolCall>[]): st
 }
 
 describe("Pi built-ins", () => {
-  it("uses the resolved tool selection", () => {
-    expect(
-      toolNames(resolveSettings({ defaultTools: ["-write", "+ls"] }), process.platform),
-    ).toEqual(["read", "edit", "bash", "ls"]);
-    expect(toolNames(resolveSettings({ defaultTools: [] }), process.platform)).toEqual([]);
+  it("uses the resolved selection, including default fff searches", async () => {
+    const value = await setup();
+    expect(toolNames(resolveSettings({}), value)).toEqual([
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "fffind",
+      "ffgrep",
+    ]);
+    expect(toolNames(resolveSettings({ defaultTools: ["-write", "+powershell"] }), value)).toEqual([
+      "read",
+      "edit",
+      "bash",
+      "fffind",
+      "ffgrep",
+      "powershell",
+    ]);
+    expect(toolNames(resolveSettings({ defaultTools: [] }), value)).toEqual([]);
   });
 
   it.each([
-    { defaultTools: ["read", "bash", "grep"], warnings: [] },
+    { defaultTools: ["read", "bash", "ffgrep"], warnings: [] },
     {
-      defaultTools: ["ls"],
+      defaultTools: ["fffind"],
       warnings: [
         "Monchu defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins",
       ],
     },
   ])("warns about defaultTools $defaultTools", async ({ defaultTools, warnings }) => {
-    const { directory } = await setup();
-    await writeFile(join(directory, "config.json"), JSON.stringify({ settings: { defaultTools } }));
-    const config = await loadConfig(directory);
-    const tools = createPiTools(resolveSettings(config.settings), "linux");
+    const value = await setup();
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ settings: { defaultTools } }),
+    );
+    const config = await loadConfig(value.directory);
+    const tools = createPiTools(resolveSettings(config.settings), value.finders);
     expect(tools.warnings).toEqual(warnings);
   });
 
-  it("skips grep and find on Android with one warning", () => {
-    const settings = resolveSettings({
-      defaultTools: ["read", "bash", "grep", "find", "ls"],
-    });
-    expect(createPiTools(settings, "android").warnings).toEqual([
-      "Pi grep/find unavailable on Android; use bash with rg/fd on PATH instead",
-    ]);
-    expect(toolNames(settings, "android")).toEqual(["read", "bash", "ls"]);
+  it.each(["grep", "find", "ls"])("rejects removed built-in %s without an alias", async (name) => {
+    const value = await setup();
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ settings: { defaultTools: [name] } }),
+    );
+    await expect(loadConfig(value.directory)).rejects.toThrow(
+      "settings.defaultTools contains an unknown built-in",
+    );
   });
 
   it.each([undefined, ""])("runs direct and nested bash without a prefix (%s)", async (prefix) => {
@@ -80,7 +98,7 @@ describe("Pi built-ins", () => {
     value.registry.install(
       createPiTools(
         resolveSettings(prefix === undefined ? {} : { shellCommandPrefix: prefix }),
-        process.platform,
+        value.finders,
       ).extension,
     );
     // A marker read by relative path shows the command ran in the execution directory on any platform.
@@ -102,16 +120,16 @@ describe("Pi built-ins", () => {
     expect(value.reports).toEqual([]);
   });
 
-  it("runs a configured prefix directly and through codemode, and SDK ls at execution cwd", async () => {
+  it("runs a configured prefix directly and through codemode, and fffind at execution cwd", async () => {
     const value = await setup();
     value.registry.install(
       createPiTools(
         resolveSettings({
-          defaultTools: ["bash", "ls"],
+          defaultTools: ["bash", "fffind"],
           shellCommandPrefix:
             "printf 'prefix\\n' >> prefix-calls.txt; export MONCHU_TEST_PREFIX=prefix",
         }),
-        process.platform,
+        value.finders,
       ).extension,
     );
     const cwd = join(value.directory, "execution");
@@ -123,7 +141,7 @@ describe("Pi built-ins", () => {
       fauxToolCall("codemode", {
         code: `text(await tools.bash({ command: ${JSON.stringify(command)} }))`,
       }),
-      fauxToolCall("ls", { path: "." }),
+      fauxToolCall("fffind", { pattern: "", path: "." }),
     ]);
     const { harness, root } = await open(value);
     try {
@@ -157,7 +175,7 @@ describe("Pi built-ins", () => {
       );
       await chmod(shellPath, 0o700);
       value.registry.install(
-        createPiTools(resolveSettings({ defaultTools: ["bash"], shellPath }), process.platform)
+        createPiTools(resolveSettings({ defaultTools: ["bash"], shellPath }), value.finders)
           .extension,
       );
       const outputs = callInOrder(value, [

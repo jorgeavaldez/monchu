@@ -12,6 +12,7 @@ import {
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { FffFinders } from "./fff.ts";
 import type { EffortAssessment } from "./classifier.ts";
 import { loadConfig, type MonchuConfig, type Settings } from "./config.ts";
 import { resolveRoles } from "./models/index.ts";
@@ -55,6 +56,7 @@ async function build(
   config: MonchuConfig,
   home: string,
   reportMissing: (path: string) => void,
+  finders: FffFinders,
 ): Promise<Build> {
   resolveRoles(models, config);
   const version = randomUUID();
@@ -64,7 +66,7 @@ async function build(
     return freshImport(name, version);
   };
   const context = (await load("context")).createContext(home, config.settings);
-  const tools = (await load("pi-tools")).createPiTools(context.settings, process.platform);
+  const tools = (await load("pi-tools")).createPiTools(context.settings, finders);
   const workers = (await load("workers")).createWorkerTools(config.worker);
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
@@ -122,6 +124,7 @@ export class Extensions {
   readonly registry: Registry;
   private readonly models: Models;
   private readonly home: string;
+  private readonly finders: FffFinders;
   private readonly report: (warning: string) => void;
   private readonly reportMissing: (path: string) => void;
   private current: Build;
@@ -133,10 +136,12 @@ export class Extensions {
     report: (warning: string) => void,
     reportMissing: (path: string) => void,
     current: Build,
+    finders: FffFinders,
   ) {
     this.registry = createRegistry();
     this.models = models;
     this.home = home;
+    this.finders = finders;
     this.report = report;
     this.reportMissing = reportMissing;
     this.current = current;
@@ -155,8 +160,9 @@ export class Extensions {
       missingFiles.add(path);
       report(`Missing Monchu home file (skipped): ${path}`);
     };
-    const current = await build(models, config, home, reportMissing);
-    const extensions = new Extensions(models, home, report, reportMissing, current);
+    const finders = new FffFinders(home, report);
+    const current = await build(models, config, home, reportMissing, finders);
+    const extensions = new Extensions(models, home, report, reportMissing, current, finders);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
@@ -206,7 +212,7 @@ export class Extensions {
         config.claude.longContextExtraUsage !== this.current.config.claude.longContextExtraUsage
       )
         throw new Error("Claude Code host settings changed; use /restart to apply them");
-      const next = await build(this.models, config, this.home, this.reportMissing);
+      const next = await build(this.models, config, this.home, this.reportMissing, this.finders);
       validateExtensions(this.registry, next.extensions);
       await applyConfig?.(config);
       for (const extension of next.extensions) this.registry.install(extension);
@@ -217,6 +223,11 @@ export class Extensions {
       this.reloading = undefined;
     });
     return this.reloading;
+  }
+
+  /** Release host-owned search indexes after Durable stops its calls. */
+  async close(): Promise<void> {
+    await this.finders.close();
   }
 
   /** Resolves once no reload is running, whether or not it succeeded. */

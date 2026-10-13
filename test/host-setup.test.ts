@@ -20,12 +20,12 @@ describe("process environment ownership", () => {
   });
 
   it.each([
-    'process.env.PI_CODING_AGENT_DIR = "other";',
-    'process["env"]["PI_CODING_AGENT_DIR"] = "other";',
+    'process.env.MONCHU_DEV_HOME = "other";',
+    'process["env"]["MONCHU_DEV_HOME"] = "other";',
     "process.env = {};",
-    "delete process.env.PI_CODING_AGENT_DIR;",
+    "delete process.env.MONCHU_DEV_HOME;",
     "process.env.COUNT++;",
-    'Object.assign(process.env, { PI_CODING_AGENT_DIR: "other" });',
+    'Object.assign(process.env, { MONCHU_DEV_HOME: "other" });',
     'Object.defineProperty(process.env, "HOME", { value: "other" });',
     'Reflect.set(process.env, "HOME", "other");',
     'const env = process.env; env.HOME = "other";',
@@ -38,7 +38,7 @@ describe("process environment ownership", () => {
       environmentMutations(`
         const home = process.env.HOME;
         const env = { ...process.env };
-        delete env.PI_CODING_AGENT_DIR;
+        delete env.MONCHU_DEV_HOME;
         Object.keys(process.env);
         Object.entries(process.env);
         Object.values(process.env);

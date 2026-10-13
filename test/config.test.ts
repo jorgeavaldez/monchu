@@ -67,14 +67,16 @@ describe("config", () => {
   it("applies tool modifiers in order without mutating the config", async () => {
     await setup();
     try {
-      const defaultTools = ["-write", "+ls", "+ls", "-read", "+read"];
+      const defaultTools = ["-write", "+powershell", "+powershell", "-read", "+read"];
       expect(resolveSettings({ defaultTools }).defaultTools).toEqual([
         "bash",
         "edit",
-        "ls",
+        "fffind",
+        "ffgrep",
+        "powershell",
         "read",
       ]);
-      expect(defaultTools).toEqual(["-write", "+ls", "+ls", "-read", "+read"]);
+      expect(defaultTools).toEqual(["-write", "+powershell", "+powershell", "-read", "+read"]);
       expect(resolveSettings({ defaultTools: [] }).defaultTools).toEqual([]);
       expect(resolveSettings({}).defaultTools).toBeUndefined();
     } finally {

@@ -307,7 +307,7 @@ describe("in-process reload", () => {
       join(value.directory, "config.json"),
       JSON.stringify({
         ...initial,
-        settings: { theme: "light", defaultTools: ["ls"] },
+        settings: { theme: "light", defaultTools: ["fffind"] },
         classifier: { provider: "missing", modelId: "missing" },
       }),
     );
@@ -321,7 +321,7 @@ describe("in-process reload", () => {
     route(value.faux, () => fauxAssistantMessage("old registry works"));
     try {
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
-      expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain("ls");
+      expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain("fffind");
       await (await root.submit({ type: "input", content: "still works" }, context)).wait(context);
       await writeFile(join(value.directory, "config.json"), JSON.stringify(initial));
       await extensions.reload();

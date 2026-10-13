@@ -239,7 +239,7 @@ describe("Monchu home context", () => {
       join(agentDir, "settings.json"),
       JSON.stringify({
         packages: ["npm:monchu-nonexistent-test-package@0.0.0"],
-        defaultTools: ["ls"],
+        defaultTools: ["fffind"],
       }),
     );
     const paths = await readdir(agentDir, { recursive: true });

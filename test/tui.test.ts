@@ -68,7 +68,6 @@ describe("terminal input boundary", () => {
   it("restores the terminal and stops input before /restart re-executes, reopens storage, and propagates the child code", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
-    const agentDir = join(home, "agent");
     await mkdir(home);
     await writeFile(join(home, "config.json"), JSON.stringify({ classifier: null }));
     const eventsPath = join(home, "restart-events.txt");
@@ -112,7 +111,6 @@ describe("terminal input boundary", () => {
     );
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       const child = spawn(process.execPath, [script], {
-        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 25_000,
       });

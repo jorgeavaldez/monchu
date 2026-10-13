@@ -68,14 +68,11 @@ export class Monchu {
 
   static async open(home: string, devProvider?: Provider): Promise<Monchu> {
     home = resolve(home);
-    if (process.env.PI_CODING_AGENT_DIR !== join(home, "agent"))
-      throw new Error(
-        `PI_CODING_AGENT_DIR must be ${join(home, "agent")}; configure it in the entry point before importing Pi`,
-      );
-    await mkdir(join(home, "agent"), { recursive: true, mode: 0o700 });
+    await mkdir(home, { recursive: true, mode: 0o700 });
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
     const owner = new DatabaseSync(join(home, "owner.sqlite"));
     let harness: Harness | undefined;
+    let extensions: Extensions | undefined;
     const envs = new ExecutionEnvs();
     try {
       try {
@@ -89,16 +86,17 @@ export class Monchu {
       const config = await loadConfig(home);
       const models = await openModels(home, devProvider, config.claude);
       const reports = new Reports(join(home, "monchu.log"));
-      const extensions = await Extensions.load(models, config, home, (warning) =>
+      const loaded = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
       );
+      extensions = loaded;
       harness = await Harness.open(
         await openNodeSqliteStorage(join(home, "monchu.sqlite")),
         {
           models,
           registry: extensions.registry,
           settings: harnessSettings(extensions),
-          env: ({ cwd }) => envs.get(cwd ?? home, extensions.settings.shellPath),
+          env: ({ cwd }) => envs.get(cwd ?? home, loaded.settings.shellPath),
           onReport: (error) =>
             reports.report(error instanceof Error ? error.message : String(error)),
         },
@@ -124,6 +122,7 @@ export class Monchu {
     } catch (error) {
       try {
         await harness?.close(context);
+        await extensions?.close();
         await envs.cleanup();
       } finally {
         owner.close();
@@ -334,6 +333,7 @@ export class Monchu {
       await this.extensions.settled();
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
+      await this.extensions.close();
       // Then release what keeps the process alive: tool child processes, and provider connections pi-ai keeps
       // cached for reuse (Codex websockets idle for minutes). Durable owns neither.
       await this.envs.cleanup();
@@ -358,8 +358,6 @@ class ExecutionEnvs {
       env = new NodeExecutionEnv({
         cwd,
         ...(shellPath === undefined ? {} : { shellPath }),
-        // Explicit undefined overrides the parent process env before spawn; child Pi uses its normal config.
-        shellEnv: { PI_CODING_AGENT_DIR: undefined },
       });
       this.envs.set(key, env);
     }
