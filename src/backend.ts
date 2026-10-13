@@ -6,7 +6,13 @@ import {
   type Provider,
   type Models,
 } from "@earendil-works/pi-ai";
-import { configure, Harness, LiveDoc, type Conversation } from "@earendil-works/pi-durable";
+import {
+  configure,
+  Harness,
+  LiveDoc,
+  ProviderDoc,
+  type Conversation,
+} from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -187,6 +193,8 @@ export class Monchu {
   /** Start a fresh model context, optionally carrying a handoff note. Storage keeps every entry. */
   async reset(handoff: string | undefined): Promise<void> {
     await this.front.reset(handoff?.trim() || undefined, context);
+    const provider = await this.harness.snapshot(ProviderDoc, this.front.id, context);
+    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
   }
 
   /** Summarize older context now, keeping goal ids and open commitments; the conversation keeps working meanwhile. */
@@ -253,6 +261,8 @@ export class Monchu {
 
   async abort(): Promise<void> {
     await this.front.abort(context);
+    const provider = await this.harness.snapshot(ProviderDoc, this.front.id, context);
+    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
   }
 
   async changeDirectory(path: string, workerName?: string): Promise<string> {

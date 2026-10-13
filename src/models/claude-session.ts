@@ -23,6 +23,7 @@
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ImageContent, Message, UserMessage } from "@earendil-works/pi-ai";
 import { createSession, type ContentBlock } from "cc-session-io";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 function imageBlock(image: ImageContent): {
   type: "image";
@@ -54,29 +55,72 @@ function userContent(content: UserMessage["content"]) {
       );
 }
 
-/** Fresh disposable mirror, never a second source of conversation state. No pairing repair or fabricated results. */
-export function rebuildClaudeSession(
-  messages: Message[],
-  cwd: string,
-  claudeDir: string,
-  model: string,
-) {
+/** The bridge's history/prompt split: all trailing user messages belong to this turn. */
+export function claudeTurn(messages: Message[]) {
   const history = messages.filter((message) => message.role !== "system");
-  const last = history.at(-1);
+  let start = history.length;
+  while (start > 0 && history[start - 1]?.role === "user") start--;
+  const content = history.slice(start).flatMap((message) => {
+    if (message.role !== "user") return [];
+    const converted = userContent(message.content);
+    return typeof converted === "string" ? [{ type: "text" as const, text: converted }] : converted;
+  });
   const prompt: SDKUserMessage = {
     type: "user",
     session_id: "",
     parent_tool_use_id: null,
     message: {
       role: "user",
-      content:
-        last?.role === "user"
-          ? userContent(last.content)
-          : "Continue from the tool results in the restored transcript.",
+      content: content.length
+        ? content
+        : "[Your context was compacted. What precedes this is a summary plus the most recent messages, ending with the tool result you were waiting for. Continue the task from there.]",
     },
   };
-  if (last?.role === "user") history.pop();
-  const session = createSession({ projectPath: cwd, cwd, claudeDir, model });
+  return { history, prior: history.slice(0, start), prompt, hasUserPrompt: start < history.length };
+}
+
+/** Compare model history, not Durable timestamps or response bookkeeping, when detecting rewrites. */
+export function claudeHistoryKeys(messages: Message[]): string[] {
+  return messages.map((message) =>
+    JSON.stringify({
+      role: message.role,
+      content: message.content,
+      ...(message.role === "toolResult"
+        ? { id: message.toolCallId, isError: message.isError }
+        : {}),
+    }),
+  );
+}
+
+/** MCP only transports Durable's actual result, paired by the Claude tool-use id. */
+export function claudeToolResult(
+  message: Extract<Message, { role: "toolResult" }>,
+): CallToolResult {
+  return {
+    content: message.content.map((block) =>
+      block.type === "image"
+        ? { type: "image", data: block.data, mimeType: block.mimeType }
+        : { type: "text", text: block.text },
+    ),
+    isError: message.isError,
+  };
+}
+
+/** Rebuild a Claude mirror from Durable's authoritative history, retaining its UUID unless rotated. */
+export function rebuildClaudeSession(
+  history: Message[],
+  cwd: string,
+  claudeDir: string,
+  model: string,
+  sessionId: string | undefined,
+) {
+  const session = createSession({
+    projectPath: cwd,
+    cwd,
+    claudeDir,
+    model,
+    ...(sessionId === undefined ? {} : { sessionId }),
+  });
   const pending = new Set<string>();
   const ids = new Map<string, string>();
   // Both directions use the same sanitized id; collisions are rejected, not silently merged.
@@ -138,5 +182,5 @@ export function rebuildClaudeSession(
     }
   }
   if (pending.size) throw new Error("Claude Code history is missing tool results");
-  return { session, prompt };
+  return session;
 }

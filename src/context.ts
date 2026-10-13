@@ -1,5 +1,9 @@
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import {
+  CompactionTask,
   defineExtension,
+  hook,
+  ProviderDoc,
   section,
   type Extension,
   type HarnessSettings,
@@ -70,6 +74,14 @@ export function createContext(home: string, runSettings: RunSettings) {
     settings,
     extension: defineExtension({
       name: "monchu.context",
+      hooks: [
+        hook(CompactionTask, {
+          beforeCompact: async (_compaction, api, context) => {
+            const provider = await api.snapshot(ProviderDoc, api.conversationId, context);
+            if (provider !== undefined) cleanupSessionResources(provider.sessionId);
+          },
+        }),
+      ],
       sections: [section("skills", () => skillPrompt || undefined, { tag: false })],
     }),
     warnings: diagnostics.map(warning),

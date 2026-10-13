@@ -1,4 +1,4 @@
-// Guard and long-context policy adapted from pi-claude-bridge 0.9.2.
+// Session/query behavior, guards and long-context policy adapted from pi-claude-bridge 0.9.2.
 // MIT License
 // Copyright (c) 2026 Eli Dickinson
 //
@@ -29,6 +29,8 @@ import {
 import {
   createAssistantMessageEventStream,
   createProvider,
+  EventStream,
+  registerSessionResourceCleanup,
   getCurrentSystemPrompt,
   getCurrentTools,
   type Api,
@@ -36,6 +38,7 @@ import {
   type SimpleStreamOptions,
   type JsonObject,
   type JsonValue,
+  type Message,
   type ModelThinkingLevel,
   type Provider,
   type StreamFunction,
@@ -46,14 +49,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   ToolSchema,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { deleteSession, type Session } from "cc-session-io";
+import { deleteSession } from "cc-session-io";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { access, chmod, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ClaudeConfig } from "../config.ts";
-import { rebuildClaudeSession } from "./claude-session.ts";
+import {
+  claudeHistoryKeys,
+  claudeToolResult,
+  claudeTurn,
+  rebuildClaudeSession,
+} from "./claude-session.ts";
 
 /** Injectable SDK boundary; scripts need only iteration, interrupt and close, not a fake extension host. */
 export type ClaudeQuery = (
@@ -147,7 +156,31 @@ type ClaudeUsage = {
   output_tokens_details?: { thinking_tokens: number } | null;
 };
 
-/** Subscription-token provider. One disposable process per Durable model request, never a parked agent loop. */
+type QueryEvent = { message: SDKMessage } | { error: unknown };
+type LiveQuery = {
+  events: EventStream<QueryEvent, undefined>;
+  finished: Promise<void>;
+  stop: () => void;
+  pendingCalls: Map<
+    string,
+    { resolve: (result: CallToolResult) => void; reject: (error: Error) => void }
+  >;
+  pendingResults: Map<string, CallToolResult>;
+  toolIds: Set<string>;
+  history: string[];
+  parked: boolean;
+  preserveSharedSession: boolean;
+  pushPrompt: (prompt: ReturnType<typeof claudeTurn>["prompt"]) => Promise<void>;
+};
+type SessionState = {
+  sessionId: string;
+  cursor: number;
+  history: string[];
+  needsRebuild: boolean;
+  forceRotate: boolean;
+};
+
+/** Durable owns history and tool execution; Claude owns one persisted query for the whole turn. */
 export function createClaudeCodeProvider(
   home: string,
   config: ClaudeConfig,
@@ -178,6 +211,9 @@ export function createClaudeCodeProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       };
     });
+  const sessions = new Map<string, SessionState>();
+  const liveQueries = new Map<string, LiveQuery>();
+  const sessionCleanups = new Map<string, () => void>();
   const streamClaude: StreamFunction<Api, SimpleStreamOptions> = (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     const output: AssistantMessage = {
@@ -209,27 +245,23 @@ export function createClaudeCodeProvider(
     };
     let executable = config.executable ?? "claude (PATH)";
     void (async () => {
-      let sdkQuery: ReturnType<ClaudeQuery> | undefined;
-      let child: ChildProcessWithoutNullStreams | undefined;
-      let session: Session | undefined;
-      let mcp: McpServer | undefined;
-      const abort = new AbortController();
+      // Durable's compaction uses the same conversation id but must not touch a parked chat query.
+      const isolated = options?.cacheRetention === "none" || options?.sessionId === undefined;
+      const key =
+        !isolated && options?.sessionId !== undefined ? options.sessionId : crypto.randomUUID();
       const claudeDir = join(home, "claude");
       const cwd = join(claudeDir, "work");
+      let live: LiveQuery | undefined;
+      let preserveSharedSession = false;
       let complete = false;
-      let stopped = false;
-      const stop = () => {
-        if (stopped) return;
-        stopped = true;
-        abort.abort();
-        if (sdkQuery !== undefined) {
-          void sdkQuery.interrupt().catch(() => {});
-          sdkQuery.close();
+      const onAbort = () => {
+        const state = sessions.get(key);
+        if (state !== undefined && !preserveSharedSession) {
+          state.needsRebuild = true;
+          state.forceRotate = true;
         }
-        // SDK close allows a grace period. Kill our child now so no next model/tool round can start.
-        child?.kill("SIGKILL");
+        live?.stop();
       };
-      options?.signal?.addEventListener("abort", stop, { once: true });
       try {
         options?.signal?.throwIfAborted();
         if (!options?.apiKey?.startsWith("sk-ant-oat01-"))
@@ -260,47 +292,6 @@ export function createClaudeCodeProvider(
         });
         executable = await resolveExecutable(config.executable, home);
         await mkdir(cwd, { recursive: true, mode: 0o700 });
-        const rebuilt = rebuildClaudeSession(context.messages, cwd, claudeDir, model.id);
-        session = rebuilt.session;
-        if (session.messages.length) {
-          session.save();
-          await chmod(session.jsonlPath, 0o600);
-        }
-        const env = Object.fromEntries(
-          Object.entries(process.env).filter(([key]) => !/^(ANTHROPIC_|CLAUDE_)/i.test(key)),
-        );
-        Object.assign(env, {
-          CLAUDE_CONFIG_DIR: claudeDir,
-          CLAUDE_CODE_OAUTH_TOKEN: options.apiKey,
-          ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-          DISABLE_AUTO_COMPACT: "1",
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-          CLAUDE_CODE_DISABLE_FAST_MODE: "1",
-          CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL: "0",
-          CLAUDE_CODE_MAX_RETRIES: "0",
-          CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES: "0",
-          CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(options.maxTokens ?? model.maxTokens),
-        });
-        if (options.timeoutMs !== undefined) env.API_TIMEOUT_MS = String(options.timeoutMs);
-        if (tools.length) {
-          mcp = new McpServer(
-            { name: "monchu", version: "1.0.0" },
-            { capabilities: { tools: {} } },
-          );
-          mcp.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: declarations }));
-          // Schema-only MCP bridge: handlers never execute Monchu tools or return synthetic results.
-          // They wait for the first message_stop to close the query; Durable owns real execution.
-          mcp.server.setRequestHandler(CallToolRequestSchema, async () => {
-            await new Promise<void>((resolve) => {
-              if (abort.signal.aborted) resolve();
-              else abort.signal.addEventListener("abort", () => resolve(), { once: true });
-            });
-            throw new Error(
-              "Tool execution belongs to Durable; this Claude Code request is closed",
-            );
-          });
-        }
-        options.signal?.throwIfAborted();
         const mapped =
           options.reasoning === undefined ? undefined : model.thinkingLevelMap?.[options.reasoning];
         const effort =
@@ -317,73 +308,349 @@ export function createClaudeCodeProvider(
                 : undefined;
         if (effort !== undefined) output.providerThinkingLevel = effort;
         if (options.reasoning !== undefined) output.thinkingLevel = options.reasoning;
-        sdkQuery = queryImpl({
-          prompt: (async function* () {
-            yield rebuilt.prompt;
-          })(),
-          options: {
-            pathToClaudeCodeExecutable: executable,
-            cwd,
-            env,
-            abortController: abort,
-            model: model.contextWindow > 200000 ? `${model.id}[1m]` : model.id,
-            systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt },
-            tools: [],
-            skills: [],
-            plugins: [],
-            settingSources: [],
-            strictMcpConfig: true,
-            settings: {
-              disableAllHooks: true,
-              claudeMdExcludes: ["**"],
-              includeGitInstructions: false,
-              autoMemoryEnabled: false,
-              fastMode: false,
-            },
-            includePartialMessages: true,
-            // Claude Code selects the model's supported thinking mode (Haiku is not adaptive).
-            ...(options.reasoning === undefined || !model.reasoning
-              ? { thinking: { type: "disabled" as const } }
-              : { extraArgs: { "thinking-display": "summarized" } }),
-            ...(effort === undefined ? {} : { effort }),
-            ...(mcp === undefined
-              ? {}
-              : { mcpServers: { monchu: { type: "sdk", name: "monchu", instance: mcp } } }),
-            ...(session.messages.length ? { resume: session.sessionId } : {}),
-            persistSession: false,
-            maxTurns: 1,
-            spawnClaudeCodeProcess: (input) => {
-              child = spawn(input.command, input.args, {
-                cwd: input.cwd,
-                env: input.env,
-                signal: input.signal,
-                stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
+        const turn = claudeTurn(context.messages);
+        const keys = claudeHistoryKeys(turn.history);
+        if (!isolated && !sessionCleanups.has(key)) {
+          const unregister = registerSessionResourceCleanup((sessionId) => {
+            if (sessionId !== undefined && sessionId !== key) return;
+            const state = sessions.get(key);
+            if (state !== undefined) {
+              state.needsRebuild = true;
+              state.forceRotate ||= liveQueries.has(key);
+            }
+            liveQueries.get(key)?.stop();
+            unregister();
+            sessionCleanups.delete(key);
+          });
+          sessionCleanups.set(key, unregister);
+        }
+        const existing = liveQueries.get(key);
+        if (existing !== undefined && !existing.parked)
+          throw new Error("Claude Code already has a request running for this conversation");
+        const results: Extract<Message, { role: "toolResult" }>[] = [];
+        for (let i = turn.history.length - 1; i >= 0; i--) {
+          const message = turn.history[i];
+          if (message?.role === "assistant") break;
+          if (message?.role === "toolResult") results.unshift(message);
+        }
+        // Durable has no Pi UI rewrite hook. Compare the parked query's actual prefix instead.
+        const rewritten =
+          existing !== undefined && existing.history.some((value, index) => keys[index] !== value);
+        if (existing !== undefined && (rewritten || !results.length)) {
+          const state = sessions.get(key);
+          if (state !== undefined) {
+            state.needsRebuild = true;
+            state.forceRotate = true;
+          }
+          existing.stop();
+        } else if (existing !== undefined) {
+          live = existing;
+          preserveSharedSession = live.preserveSharedSession;
+          live.parked = false;
+          options.signal?.addEventListener("abort", onAbort, { once: true });
+          if (
+            results.length !== live.toolIds.size ||
+            results.some((result) => !live?.toolIds.has(result.toolCallId))
+          )
+            throw new Error("Claude Code tool results do not match the parked turn");
+          // Like the bridge, write a steer before releasing any MCP result on the same stdin FIFO.
+          if (turn.hasUserPrompt) await live.pushPrompt(turn.prompt);
+          for (const result of results) {
+            const converted = claudeToolResult(result);
+            const pending = live.pendingCalls.get(result.toolCallId);
+            if (pending !== undefined) {
+              live.pendingCalls.delete(result.toolCallId);
+              pending.resolve(converted);
+            } else live.pendingResults.set(result.toolCallId, converted);
+          }
+          live.toolIds.clear();
+        }
+        let resume: string | undefined;
+        if (live === undefined) {
+          const state = sessions.get(key);
+          const priorKeys = claudeHistoryKeys(turn.prior);
+          if (
+            state !== undefined &&
+            priorKeys.length >= state.cursor &&
+            state.history
+              .slice(0, priorKeys.length)
+              .some((value, index) => priorKeys[index] !== value)
+          )
+            state.needsRebuild = true;
+          // Without a live query, a tool-result continuation must import the actual results before resuming.
+          if (state !== undefined && turn.history.at(-1)?.role === "toolResult")
+            state.needsRebuild = true;
+          if (state !== undefined && !state.needsRebuild && turn.prior.length >= state.cursor) {
+            const missed = turn.prior.slice(state.cursor);
+            if (missed.length === 0 || (missed.length === 1 && missed[0]?.role === "assistant")) {
+              resume = state.sessionId;
+              state.cursor = turn.prior.length;
+            }
+          }
+          if (resume === undefined) {
+            if (state !== undefined && !state.needsRebuild && turn.prior.length < state.cursor) {
+              // The bridge's shorter-context clean start must not overwrite the shared mirror.
+              preserveSharedSession = true;
+            } else if (turn.prior.length) {
+              const previousId = state?.forceRotate ? undefined : state?.sessionId;
+              if (previousId !== undefined) deleteSession(previousId, cwd, claudeDir);
+              const session = rebuildClaudeSession(
+                turn.prior,
+                cwd,
+                claudeDir,
+                model.id,
+                previousId,
+              );
+              session.save();
+              await chmod(session.jsonlPath, 0o600);
+              resume = session.sessionId;
+              if (!isolated)
+                sessions.set(key, {
+                  sessionId: resume,
+                  cursor: turn.prior.length,
+                  history: priorKeys,
+                  needsRebuild: false,
+                  forceRotate: false,
+                });
+            }
+          }
+          const env = Object.fromEntries(
+            Object.entries(process.env).filter(([key]) => !/^(ANTHROPIC_|CLAUDE_)/i.test(key)),
+          );
+          Object.assign(env, {
+            CLAUDE_CONFIG_DIR: claudeDir,
+            CLAUDE_CODE_OAUTH_TOKEN: options.apiKey,
+            ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+            DISABLE_AUTO_COMPACT: "1",
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+            CLAUDE_CODE_DISABLE_FAST_MODE: "1",
+            CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL: "0",
+            CLAUDE_CODE_MAX_RETRIES: "0",
+            CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES: "0",
+            CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(options.maxTokens ?? model.maxTokens),
+          });
+          if (options.timeoutMs !== undefined) env.API_TIMEOUT_MS = String(options.timeoutMs);
+          let mcp: McpServer | undefined;
+          const pendingCalls: LiveQuery["pendingCalls"] = new Map();
+          const pendingResults: LiveQuery["pendingResults"] = new Map();
+          const abort = new AbortController();
+          const promptEnd = Promise.withResolvers<void>();
+          let promptWake = Promise.withResolvers<void>();
+          const prompts = [{ prompt: turn.prompt, ack: Promise.withResolvers<void>() }];
+          // Only steers await an acknowledgement. The SDK pulls again after writing the previous item.
+          void prompts[0]?.ack.promise.catch(() => {});
+          if (tools.length) {
+            mcp = new McpServer(
+              { name: "monchu", version: "1.0.0" },
+              { capabilities: { tools: {} } },
+            );
+            mcp.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: declarations }));
+            mcp.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+              if (!tools.some((tool) => tool.name === request.params.name))
+                throw new Error(`Unknown Claude Code tool ${request.params.name}`);
+              const id = request.params._meta?.["claudecode/toolUseId"];
+              if (typeof id !== "string")
+                throw new Error('Claude Code tools/call is missing _meta["claudecode/toolUseId"]');
+              if (abort.signal.aborted) throw new Error("Claude Code query stopped");
+              const result = pendingResults.get(id);
+              if (result !== undefined) {
+                pendingResults.delete(id);
+                return result;
+              }
+              if (pendingCalls.has(id))
+                throw new Error("Claude Code repeated a pending tool-use ID");
+              return new Promise<CallToolResult>((resolve, reject) => {
+                pendingCalls.set(id, { resolve, reject });
               });
-              // The custom-spawn seam bypasses the SDK's stderr reader. Drain without logging prompts or tokens.
-              child.stderr.resume();
-              return child;
+            });
+          }
+          options.signal?.throwIfAborted();
+          let inputEnded = false;
+          let inFlight: PromiseWithResolvers<void> | undefined;
+          let child: ChildProcessWithoutNullStreams | undefined;
+          const sdkQuery = queryImpl({
+            prompt: (async function* () {
+              while (!inputEnded) {
+                const item = prompts.shift();
+                if (item !== undefined) {
+                  inFlight = item.ack;
+                  yield item.prompt;
+                  item.ack.resolve();
+                  inFlight = undefined;
+                } else {
+                  await Promise.race([promptWake.promise, promptEnd.promise]);
+                  promptWake = Promise.withResolvers<void>();
+                }
+              }
+            })(),
+            options: {
+              pathToClaudeCodeExecutable: executable,
+              cwd,
+              env,
+              abortController: abort,
+              model: model.contextWindow > 200000 ? `${model.id}[1m]` : model.id,
+              systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt },
+              tools: [],
+              skills: [],
+              plugins: [],
+              settingSources: [],
+              strictMcpConfig: true,
+              settings: {
+                disableAllHooks: true,
+                claudeMdExcludes: ["**"],
+                includeGitInstructions: false,
+                autoMemoryEnabled: false,
+                fastMode: false,
+              },
+              includePartialMessages: true,
+              // Claude Code selects the model's supported thinking mode (Haiku is not adaptive).
+              ...(options.reasoning === undefined || !model.reasoning
+                ? { thinking: { type: "disabled" as const } }
+                : { extraArgs: { "thinking-display": "summarized" } }),
+              ...(effort === undefined ? {} : { effort }),
+              ...(mcp === undefined
+                ? {}
+                : { mcpServers: { monchu: { type: "sdk", name: "monchu", instance: mcp } } }),
+              ...(resume === undefined ? {} : { resume }),
+              persistSession: !isolated,
+              spawnClaudeCodeProcess: (input) => {
+                child = spawn(input.command, input.args, {
+                  cwd: input.cwd,
+                  env: input.env,
+                  signal: input.signal,
+                  stdio: ["pipe", "pipe", "pipe"],
+                  windowsHide: true,
+                });
+                // The custom-spawn seam bypasses the SDK's stderr reader. Drain without logging prompts or tokens.
+                child.stderr.resume();
+                return child;
+              },
             },
-          },
-        });
+          });
+          const events = new EventStream<QueryEvent, undefined>(
+            (event) => "error" in event || event.message.type === "result",
+            () => undefined,
+          );
+          let stopped = false;
+          const finished = Promise.withResolvers<void>();
+          const unregister = isolated
+            ? registerSessionResourceCleanup((sessionId) => {
+                if (sessionId === undefined) current.stop();
+              })
+            : undefined;
+          const endInput = () => {
+            inputEnded = true;
+            promptEnd.resolve();
+          };
+          const current: LiveQuery = {
+            events,
+            pendingCalls,
+            pendingResults,
+            toolIds: new Set(),
+            history: keys,
+            parked: false,
+            preserveSharedSession,
+            finished: finished.promise,
+            pushPrompt: async (prompt) => {
+              if (inputEnded) throw new Error("Claude Code prompt stream ended before the steer");
+              const ack = Promise.withResolvers<void>();
+              prompts.push({ prompt, ack });
+              promptWake.resolve();
+              await ack.promise;
+            },
+            stop: () => {
+              if (stopped) return;
+              stopped = true;
+              unregister?.();
+              endInput();
+              abort.abort();
+              inFlight?.reject(new Error("Claude Code query stopped"));
+              for (const item of prompts) item.ack.reject(new Error("Claude Code query stopped"));
+              for (const pending of pendingCalls.values())
+                pending.reject(new Error("Claude Code query stopped"));
+              pendingCalls.clear();
+              pendingResults.clear();
+              events.push({ error: new Error("Claude Code query stopped") });
+              events.end();
+              void sdkQuery.interrupt().catch(() => {});
+              sdkQuery.close();
+              child?.kill("SIGKILL");
+              void mcp?.close();
+              if (liveQueries.get(key) === current) liveQueries.delete(key);
+            },
+          };
+          void (async () => {
+            try {
+              for await (const message of sdkQuery) {
+                if (stopped) break;
+                if (
+                  message.type === "system" &&
+                  message.subtype === "init" &&
+                  !preserveSharedSession &&
+                  !isolated
+                )
+                  sessions.set(key, {
+                    sessionId: message.session_id,
+                    cursor: turn.history.length,
+                    history: keys,
+                    needsRebuild: false,
+                    forceRotate: false,
+                  });
+                if (message.type === "system" && message.subtype === "api_retry")
+                  throw new Error("Claude Code attempted an internal API retry; request stopped");
+                if (message.type === "system" && message.subtype === "compact_boundary")
+                  throw new Error("Claude Code attempted internal compaction; request stopped");
+                if (message.type === "system" && message.subtype === "model_refusal_fallback")
+                  throw new Error("Claude Code attempted a fallback model; request stopped");
+                if (message.type === "assistant" && message.error !== undefined)
+                  throw new Error(`Claude Code rejected the request: ${message.error}`);
+                if (message.type === "result") endInput();
+                events.push({ message });
+              }
+            } catch (error) {
+              if (stopped) return;
+              events.push({ error });
+              const state = sessions.get(key);
+              if (state !== undefined && !preserveSharedSession) {
+                state.needsRebuild = true;
+                state.forceRotate = true;
+              }
+              current.stop();
+            } finally {
+              endInput();
+              events.end();
+              finished.resolve();
+            }
+          })();
+          live = current;
+          liveQueries.set(key, current);
+          options.signal?.addEventListener("abort", onAbort, { once: true });
+        }
+        live.history = keys;
+        const state = sessions.get(key);
+        if (state !== undefined && !preserveSharedSession) {
+          state.cursor = turn.history.length;
+          state.history = keys;
+        }
         const blocks = new Map<number, { contentIndex: number; json: string }>();
         let started = false;
-        for await (const message of sdkQuery) {
+        let sawResult = false;
+        for await (const item of live.events) {
           options.signal?.throwIfAborted();
-          if (message.type === "system" && message.subtype === "api_retry")
-            throw new Error("Claude Code attempted an internal API retry; request stopped");
-          if (message.type === "system" && message.subtype === "compact_boundary")
-            throw new Error("Claude Code attempted internal compaction; request stopped");
-          if (message.type === "system" && message.subtype === "model_refusal_fallback")
-            throw new Error("Claude Code attempted a fallback model; request stopped");
-          if (message.type === "assistant" && message.error !== undefined)
-            throw new Error(`Claude Code rejected the request: ${message.error}`);
-          if (message.type === "result")
-            throw new Error(
-              message.subtype === "success"
-                ? "Claude Code ended without a complete streamed message"
-                : message.errors.join("; "),
-            );
+          if ("error" in item) throw item.error;
+          const message = item.message;
+          if (message.type === "result") {
+            if (message.subtype !== "success") throw new Error(message.errors.join("; "));
+            if (message.is_error)
+              throw new Error(message.result || "Claude Code reported an error");
+            if (!complete || output.stopReason === "toolUse")
+              throw new Error("Claude Code ended without a complete streamed message");
+            await live.finished;
+            sawResult = true;
+            if (preserveSharedSession || isolated)
+              deleteSession(message.session_id, cwd, claudeDir);
+            break;
+          }
           if (message.type !== "stream_event") continue;
           if (message.parent_tool_use_id !== null)
             throw new Error("Claude Code started an unexpected subagent");
@@ -422,6 +689,7 @@ export function createClaudeCodeProvider(
               const tool = tools.find((tool) => `mcp__monchu__${tool.name}` === block.name);
               if (tool === undefined)
                 throw new Error(`Claude Code requested an undeclared tool ${block.name}`);
+              live.toolIds.add(block.id);
               output.content.push({
                 type: "toolCall",
                 id: block.id,
@@ -512,16 +780,35 @@ export function createClaudeCodeProvider(
             )
               throw new Error("Claude Code returned inconsistent tool-use stop reason");
             complete = true;
-            stop();
-            break;
+            if (output.stopReason === "toolUse") {
+              live.parked = true;
+              live.history = [...keys, ...claudeHistoryKeys([output])];
+              break;
+            }
           }
         }
-        if (!complete) throw new Error("Claude Code exited before completing its response");
+        if (!complete || (!live.parked && !sawResult))
+          throw new Error("Claude Code exited before completing its response");
+        const updated = sessions.get(key);
+        if (updated !== undefined && !preserveSharedSession) {
+          updated.cursor = turn.history.length;
+          updated.history = [...keys, ...claudeHistoryKeys([output])];
+        }
+      } catch (error) {
+        if (live !== undefined) {
+          const state = sessions.get(key);
+          if (state !== undefined && !preserveSharedSession) {
+            state.needsRebuild = true;
+            state.forceRotate = true;
+          }
+          live.stop();
+        }
+        throw error;
       } finally {
-        options?.signal?.removeEventListener("abort", stop);
-        stop();
-        await mcp?.close();
-        if (session !== undefined) deleteSession(session.sessionId, cwd, claudeDir);
+        options?.signal?.removeEventListener("abort", onAbort);
+        // Durable aborts its generation signal when that invocation ends normally, too.
+        // A tool boundary detaches it; the next request installs its own signal.
+        if (live !== undefined && (!live.parked || isolated)) live.stop();
       }
       stream.push({
         type: "done",

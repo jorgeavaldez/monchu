@@ -1,5 +1,5 @@
 import type { Context } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, Type } from "@earendil-works/pi-ai";
 import {
   AgentDoc,
   AssistantEntry,
@@ -10,6 +10,7 @@ import {
   defineTool,
   InboxDoc,
   LiveDoc,
+  ProviderDoc,
   UserEntry,
   type ConversationId,
   type EntryId,
@@ -93,6 +94,14 @@ export async function stopWorker(
   );
   if (worker === undefined) throw new Error("Worker conversation is missing");
   await worker.abort(context, { background: true });
+  // Generation signals end at each tool boundary; release parked provider resources for the stopped subtree too.
+  const stopped = [worker.id];
+  for (const id of stopped) {
+    const provider = await api.snapshot(ProviderDoc, id, context);
+    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
+    const children = await api.snapshot(WorkersDoc, id, context);
+    stopped.push(...(children?.workers.map((child) => child.conversationId) ?? []));
+  }
 }
 
 /** Keep every active delivery and its settled answer, plus a recent completed retry window. */

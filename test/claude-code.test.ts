@@ -1,12 +1,14 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { fauxAssistantMessage, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
+import { CompactionEntry } from "@earendil-works/pi-durable";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import assert from "node:assert";
 import { spawn } from "node:child_process";
 import { chmod, readFile, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Monchu } from "../src/backend.ts";
 import { loadConfig, type ClaudeConfig } from "../src/config.ts";
 import { createClaudeCodeProvider } from "../src/models/claude-code.ts";
 import { openModels, resolveRoles } from "../src/models/index.ts";
@@ -22,6 +24,7 @@ import {
   setup,
   textOf,
   toolResults,
+  waitFor,
 } from "./support.ts";
 
 afterEach(cleanup);
@@ -104,9 +107,8 @@ describe("Claude Code subscription provider", () => {
     expect(await reopened.getAuth("claude-code")).toBeUndefined();
   });
 
-  it("streams text, signed thinking, usage and length, stopping at the first message_stop", async () => {
+  it("streams text, signed thinking, usage and length, persisting through the terminal SDK result", async () => {
     const value = await setup();
-    let continued = false;
     const script = scriptedClaude(value.directory, config, async function* () {
       yield* claudeResponse(
         [
@@ -115,8 +117,6 @@ describe("Claude Code subscription provider", () => {
         ],
         "max_tokens",
       );
-      continued = true;
-      throw new Error("This is a hidden second model round");
     });
     const models = await openClaudeModels(value.directory, script.provider, token);
     const model = models.getModel("claude-code", role.modelId);
@@ -124,7 +124,7 @@ describe("Claude Code subscription provider", () => {
     const stream = models.streamSimple(
       model,
       { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
-      { reasoning: "high" },
+      { reasoning: "high", sessionId: "streamed-text" },
     );
     const events: string[] = [];
     for await (const event of stream) events.push(event.type);
@@ -148,7 +148,6 @@ describe("Claude Code subscription provider", () => {
       ],
       usage: { input: 10, output: 7, cacheRead: 20, cacheWrite: 30, reasoning: 3, totalTokens: 67 },
     });
-    expect(continued).toBe(false);
     expect(script.closed()).toBe(1);
     expect(script.interrupted()).toBe(1);
     expect(script.requests[0]?.input.options).toMatchObject({
@@ -159,8 +158,7 @@ describe("Claude Code subscription provider", () => {
       plugins: [],
       settingSources: [],
       strictMcpConfig: true,
-      persistSession: false,
-      maxTurns: 1,
+      persistSession: true,
       effort: "high",
       env: {
         CLAUDE_CONFIG_DIR: join(value.directory, "claude"),
@@ -170,50 +168,53 @@ describe("Claude Code subscription provider", () => {
     });
   });
 
-  it("uses a new SDK query for every Durable tool round and rebuilds after reopening the SQLite harness", async () => {
+  it("parks one query across Durable tool rounds, pairs out-of-order MCP calls, and rebuilds after restart", async () => {
     const value = await setup();
     await writeFile(join(value.directory, "known.txt"), "durable-owned file");
-    let request = 0;
     let declarations: Awaited<ReturnType<Client["listTools"]>> | undefined;
-    let mcpExecuted = false;
+    const delivered: Awaited<ReturnType<Client["callTool"]>>[] = [];
     const script = scriptedClaude(value.directory, config, async function* (input) {
-      request++;
-      if (request === 1) {
-        const server = input.options?.mcpServers?.monchu;
-        assert(server?.type === "sdk");
-        const client = new Client({ name: "script", version: "1" });
-        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-        await server.instance.connect(serverTransport);
-        await client.connect(clientTransport);
+      const server = input.options?.mcpServers?.monchu;
+      assert(server?.type === "sdk");
+      const client = new Client({ name: "script", version: "1" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
         declarations = await client.listTools();
-        const call = client.callTool({ name: "read", arguments: { path: "known.txt" } });
-        void call.then(
-          () => {
-            mcpExecuted = true;
-          },
-          () => {},
+        await expect(client.callTool({ name: "read", arguments: {} })).rejects.toThrow(
+          "claudecode/toolUseId",
         );
-        try {
-          yield* claudeResponse(
-            [
-              {
-                type: "thinking",
-                thinking: "read files",
-                thinkingSignature: "signature-survives-restart",
-              },
-              fauxToolCall("read", { path: "known.txt" }, { id: "read_1" }),
-              fauxToolCall("read", { path: "missing.txt" }, { id: "read_2" }),
-            ],
-            "tool_use",
-          );
-        } finally {
-          await client.close();
-          await call.catch(() => {});
-        }
-      } else
-        yield* claudeResponse([
-          { type: "text", text: request === 2 ? "used the durable results" : "after restart" },
-        ]);
+        // The handler for read_2 arrives first. read_1 is called only after Durable has sent both results.
+        const second = client.callTool({
+          name: "read",
+          arguments: {},
+          _meta: { "claudecode/toolUseId": "read_2" },
+        });
+        yield* claudeResponse(
+          [
+            {
+              type: "thinking",
+              thinking: "read files",
+              thinkingSignature: "signature-survives-restart",
+            },
+            fauxToolCall("read", { path: "known.txt" }, { id: "read_1" }),
+            fauxToolCall("read", { path: "missing.txt" }, { id: "read_2" }),
+          ],
+          "tool_use",
+        );
+        delivered.push(await second);
+        delivered.push(
+          await client.callTool({
+            name: "read",
+            arguments: {},
+            _meta: { "claudecode/toolUseId": "read_1" },
+          }),
+        );
+        yield* claudeResponse([{ type: "text", text: "used the durable results" }]);
+      } finally {
+        await client.close();
+      }
     });
     let models = await openClaudeModels(value.directory, script.provider, token);
     let { harness, root } = await open({ ...value, models });
@@ -223,48 +224,32 @@ describe("Claude Code subscription provider", () => {
       await (
         await root.submit({ type: "input", content: "read both files" }, context)
       ).wait(context);
-      expect(request).toBe(2);
+      expect(script.requests).toHaveLength(1);
       const results = await toolResults(root);
       expect(results).toHaveLength(2);
-      expect(results.find((result) => result.toolCallId === "read_1")?.isError).toBe(false);
-      expect(results.find((result) => result.toolCallId === "read_2")?.isError).toBe(true);
+      expect(delivered).toEqual([
+        {
+          content: results.find((result) => result.toolCallId === "read_2")?.content,
+          isError: true,
+        },
+        {
+          content: results.find((result) => result.toolCallId === "read_1")?.content,
+          isError: false,
+        },
+      ]);
       expect(textOf(results.find((result) => result.toolCallId === "read_1"))).toContain(
         "durable-owned file",
       );
       expect(declarations?.tools.find((tool) => tool.name === "read")?.inputSchema).toEqual(
         (await root.agent(context)).tools.find((tool) => tool.name === "read")?.parameters,
       );
-      expect(mcpExecuted).toBe(false);
-      const replay = script.requests[1];
-      assert(replay);
-      expect(
-        replay.history
-          .filter((record) => record.type === "user")
-          .flatMap((record) =>
-            typeof record.message.content === "string" ? [] : record.message.content,
-          ),
-      ).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: "tool_result", tool_use_id: "read_1" }),
-          expect.objectContaining({ type: "tool_result", tool_use_id: "read_2", is_error: true }),
-        ]),
-      );
-      expect(
-        replay.history
-          .filter((record) => record.type === "assistant")
-          .flatMap((record) => record.message.content),
-      ).toEqual(
-        expect.arrayContaining([
-          { type: "thinking", thinking: "read files", signature: "signature-survives-restart" },
-        ]),
-      );
-      for (const captured of script.requests)
-        if (captured.path !== undefined)
-          await expect(readFile(captured.path)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(script.requests[0]?.prompt).toHaveLength(1);
+      expect(script.closed()).toBe(1);
+      expect(script.requests[0]?.path).toBeDefined();
+      await expect(readFile(script.requests[0]?.path ?? "")).resolves.toBeDefined();
     } finally {
       await harness.close(context);
     }
-    // Fresh provider and credential store: there is no parked query or in-memory session to rely on.
     const restarted = scriptedClaude(value.directory, config, async function* () {
       yield* claudeResponse([{ type: "text", text: "after restart" }]);
     });
@@ -281,7 +266,14 @@ describe("Claude Code subscription provider", () => {
         "user",
         "assistant",
       ]);
-      expect(restarted.requests[0]?.prompt[0]?.message.content).toBe("continue");
+      expect(restarted.requests[0]?.prompt[0]?.message.content).toEqual([
+        { type: "text", text: "continue" },
+      ]);
+      expect(restarted.requests[0]?.history[1]?.message.content).toContainEqual({
+        type: "thinking",
+        thinking: "read files",
+        signature: "signature-survives-restart",
+      });
       expect(
         (await allEntries(root)).some((entry) =>
           entry.model?.some((message) => textOf(message) === "after restart"),
@@ -290,8 +282,399 @@ describe("Claude Code subscription provider", () => {
     } finally {
       await harness.close(context);
     }
-    expect(script.closed()).toBe(2);
     expect(restarted.closed()).toBe(1);
+  });
+
+  it("reuses the persisted UUID, rebuilds missed or rewritten history, and preserves it for shorter contexts", async () => {
+    const value = await setup();
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" }]);
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const options = { sessionId: "stable-conversation", reasoning: "high" as const };
+    const messages: Message[] = [{ role: "user", content: "one", timestamp: 1 }];
+    messages.push(await models.completeSimple(model, { messages }, options));
+    messages.push({ role: "user", content: "two", timestamp: 2 });
+    messages.push(await models.completeSimple(model, { messages }, options));
+    const firstPath = script.requests[0]?.path;
+    assert(firstPath);
+    expect(script.requests[1]?.path).toBe(firstPath);
+    expect(script.requests[1]?.input.options?.resume).toBe(basename(firstPath, ".jsonl"));
+    expect(script.requests[1]?.history).toHaveLength(2);
+    // A short synthetic context gets a clean ephemeral query, not the shared file.
+    await models.completeSimple(
+      model,
+      { messages: [{ role: "user", content: "short", timestamp: 3 }] },
+      options,
+    );
+    const shortPath = script.requests[2]?.path;
+    assert(shortPath);
+    expect(shortPath).not.toBe(firstPath);
+    expect(script.requests[2]?.input.options?.resume).toBeUndefined();
+    await expect(readFile(shortPath)).rejects.toMatchObject({ code: "ENOENT" });
+    messages.push({ role: "user", content: "three", timestamp: 4 });
+    messages.push(await models.completeSimple(model, { messages }, options));
+    expect(script.requests[3]?.path).toBe(firstPath);
+    expect(script.requests[3]?.history).toHaveLength(4);
+    // Missed messages came from another provider, so rewrite the mirror in place.
+    messages.push(
+      { role: "user", content: "external", timestamp: 5 },
+      fauxAssistantMessage("external answer"),
+      { role: "user", content: "four", timestamp: 6 },
+    );
+    messages.push(await models.completeSimple(model, { messages }, options));
+    expect(script.requests[4]?.path).toBe(firstPath);
+    expect(script.requests[4]?.history).toHaveLength(8);
+    messages[0] = { role: "user", content: "rewritten", timestamp: 1 };
+    messages.push({ role: "user", content: "five", timestamp: 7 });
+    messages.push(await models.completeSimple(model, { messages }, options));
+    expect(script.requests[5]?.path).toBe(firstPath);
+    expect(script.requests[5]?.history[0]?.message.content).toBe("rewritten");
+    // No missed messages is also REUSE (a non-user continuation over exactly the consumed prefix).
+    const consumed = [...messages];
+    await models.completeSimple(model, { messages: consumed }, options);
+    expect(script.requests[6]?.path).toBe(firstPath);
+    await models.completeSimple(model, { messages: consumed }, options);
+    expect(script.requests[7]?.path).toBe(firstPath);
+  });
+
+  it("rotates after an abort and rebuilds an orphaned tool result with the bridge continuation prompt", async () => {
+    const value = await setup();
+    const entered = Promise.withResolvers<void>();
+    let attempt = 0;
+    const script = scriptedClaude(value.directory, config, async function* (input) {
+      attempt++;
+      if (attempt !== 2) {
+        yield* claudeResponse([{ type: "text", text: "answer" }]);
+        return;
+      }
+      entered.resolve();
+      const signal = input.options?.abortController?.signal;
+      assert(signal);
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const options = { sessionId: "aborted-conversation" };
+    const messages: Message[] = [{ role: "user", content: "one", timestamp: 1 }];
+    messages.push(await models.completeSimple(model, { messages }, options));
+    messages.push({ role: "user", content: "abort", timestamp: 2 });
+    const abort = new AbortController();
+    const pending = models.completeSimple(
+      model,
+      { messages },
+      { ...options, signal: abort.signal },
+    );
+    await entered.promise;
+    abort.abort();
+    expect((await pending).stopReason).toBe("aborted");
+    messages.push(
+      fauxAssistantMessage([fauxToolCall("read", {}, { id: "orphan" })], { stopReason: "toolUse" }),
+      {
+        role: "toolResult",
+        toolCallId: "orphan",
+        toolName: "read",
+        content: [{ type: "text", text: "actual recovered result" }],
+        isError: false,
+        timestamp: 3,
+      },
+    );
+    expect((await models.completeSimple(model, { messages }, options)).stopReason).toBe("stop");
+    expect(script.requests[2]?.path).not.toBe(script.requests[0]?.path);
+    expect(script.requests[2]?.history.at(-1)?.message.content).toEqual([
+      {
+        type: "tool_result",
+        tool_use_id: "orphan",
+        content: [{ type: "text", text: "actual recovered result" }],
+      },
+    ]);
+    expect(script.requests[2]?.prompt[0]?.message.content).toBe(
+      "[Your context was compacted. What precedes this is a summary plus the most recent messages, ending with the tool result you were waiting for. Continue the task from there.]",
+    );
+  });
+
+  it("discards and rotates a query whose history was rewritten while parked", async () => {
+    const value = await setup();
+    let attempt = 0;
+    let released = false;
+    const script = scriptedClaude(value.directory, config, async function* (input) {
+      attempt++;
+      if (attempt > 1) {
+        yield* claudeResponse([{ type: "text", text: "rebuilt" }]);
+        return;
+      }
+      const server = input.options?.mcpServers?.monchu;
+      assert(server?.type === "sdk");
+      const client = new Client({ name: "rewrite", version: "1" });
+      const [left, right] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(right);
+      await client.connect(left);
+      try {
+        const pending = client.callTool({
+          name: "read",
+          arguments: {},
+          _meta: { "claudecode/toolUseId": "rewrite_tool" },
+        });
+        void pending.catch(() => {});
+        yield* claudeResponse([fauxToolCall("read", {}, { id: "rewrite_tool" })], "tool_use");
+        try {
+          await pending;
+          released = true;
+        } catch {}
+      } finally {
+        await client.close();
+      }
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const tools = [{ name: "read", description: "read", parameters: Type.Object({}) }];
+    const options = { sessionId: "rewritten-conversation" };
+    const first = await models.completeSimple(
+      model,
+      { tools, messages: [{ role: "user", content: "original", timestamp: 1 }] },
+      options,
+    );
+    expect(first.stopReason).toBe("toolUse");
+    expect(script.closed()).toBe(0);
+    const summary = await models.completeSimple(
+      model,
+      { messages: [{ role: "user", content: "summarize", timestamp: 2 }] },
+      { ...options, cacheRetention: "none" },
+    );
+    expect(textOf(summary)).toBe("rebuilt");
+    expect(script.closed()).toBe(1);
+    expect(script.requests[1]?.input.options?.persistSession).toBe(false);
+    const result = await models.completeSimple(
+      model,
+      {
+        tools,
+        messages: [
+          { role: "user", content: "compacted", timestamp: 2 },
+          first,
+          {
+            role: "toolResult",
+            toolCallId: "rewrite_tool",
+            toolName: "read",
+            content: [{ type: "text", text: "real result" }],
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+      options,
+    );
+    expect(textOf(result)).toBe("rebuilt");
+    expect(released).toBe(false);
+    expect(script.requests).toHaveLength(3);
+    expect(script.requests[2]?.path).not.toBe(script.requests[0]?.path);
+    expect(script.requests[2]?.history[0]?.message.content).toBe("compacted");
+    expect(script.closed()).toBe(3);
+  });
+
+  it("rebuilds an idle conversation after Durable compaction and starts clean after reset", async () => {
+    const value = await setup();
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({
+        front: role,
+        worker: role,
+        classifier: null,
+        claude: config,
+        settings: { compaction: { keepRecentTokens: 1 } },
+      }),
+    );
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" + script.requests.length }]);
+    });
+    await openClaudeModels(value.directory, script.provider, token);
+    const backend = await Monchu.open(value.directory, script.provider);
+    const view = await backend.viewState();
+    try {
+      for (const n of [1, 2]) {
+        await backend.submit("turn" + n, "turn" + n);
+        await waitFor(() =>
+          view.value.entries.some((entry) =>
+            entry.model?.some(
+              (message) => message.role === "assistant" && textOf(message) === "answer" + n,
+            ),
+          ),
+        );
+      }
+      const original = script.requests[0]?.path;
+      assert(original);
+      expect(script.requests[1]?.path).toBe(original);
+      await backend.compact(undefined);
+      await waitFor(() => view.value.entries.some((entry) => CompactionEntry.is(entry)));
+      expect(script.requests[2]?.input.options?.persistSession).toBe(false);
+      await backend.submit("after compaction", "after-compaction");
+      await waitFor(() =>
+        view.value.entries.some((entry) =>
+          entry.model?.some(
+            (message) => message.role === "assistant" && textOf(message) === "answer4",
+          ),
+        ),
+      );
+      expect(script.requests[3]?.path).toBe(original);
+      expect(JSON.stringify(script.requests[3]?.history)).toContain("answer3");
+      await backend.reset(undefined);
+      await backend.submit("after reset", "after-reset");
+      await waitFor(() =>
+        view.value.entries.some((entry) =>
+          entry.model?.some(
+            (message) => message.role === "assistant" && textOf(message) === "answer5",
+          ),
+        ),
+      );
+      expect(script.requests[4]?.input.options?.resume).toBeUndefined();
+      expect(script.requests[4]?.path).not.toBe(original);
+      expect(script.requests[4]?.history).toEqual([]);
+    } finally {
+      view.dispose();
+      await backend.close();
+    }
+  });
+
+  it.each(["front", "worker"])(
+    "closes a parked %s query when its real Durable tool is cancelled",
+    async (target) => {
+      const value = await setup();
+      await writeFile(
+        join(value.directory, "config.json"),
+        JSON.stringify({
+          front: role,
+          worker: role,
+          classifier: null,
+          claude: config,
+        }),
+      );
+      const marker = join(value.directory, "tool-started");
+      const command = `${JSON.stringify(process.execPath)} -e "require('node:fs').writeFileSync('tool-started', 'ready'); setTimeout(() => {}, 1500)"`;
+      const script = scriptedClaude(value.directory, config, async function* (input) {
+        const server = input.options?.mcpServers?.monchu;
+        assert(server?.type === "sdk");
+        const client = new Client({ name: "cancellation", version: "1" });
+        const [left, right] = InMemoryTransport.createLinkedPair();
+        await server.instance.connect(right);
+        await client.connect(left);
+        try {
+          const pending = client.callTool({
+            name: "bash",
+            arguments: {},
+            _meta: { "claudecode/toolUseId": "blocked_tool" },
+          });
+          void pending.catch(() => {});
+          yield* claudeResponse(
+            [fauxToolCall("bash", { command }, { id: "blocked_tool" })],
+            "tool_use",
+          );
+          await pending.catch(() => {});
+        } finally {
+          await client.close();
+        }
+      });
+      await openClaudeModels(value.directory, script.provider, token);
+      const backend = await Monchu.open(value.directory, script.provider);
+      try {
+        if (target === "front") await backend.submit("block", "block-front");
+        else await backend.startWorker("blocked", "block", "block-worker");
+        await waitFor(async () => {
+          try {
+            return (await readFile(marker, "utf8")) === "ready";
+          } catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+            throw error;
+          }
+        });
+        expect(script.closed()).toBe(0);
+        if (target === "front") await backend.abort();
+        else await backend.stopWorker("blocked");
+        expect(script.closed()).toBe(1);
+        expect(script.interrupted()).toBe(1);
+      } finally {
+        await backend.close();
+      }
+    },
+  );
+
+  it("keeps concurrent Durable conversations and their parked results isolated", async () => {
+    const value = await setup();
+    await writeFile(join(value.directory, "front.txt"), "front result");
+    await writeFile(join(value.directory, "worker.txt"), "worker result");
+    const both = Promise.withResolvers<void>();
+    let entered = 0;
+    const delivered = new Map<string, Awaited<ReturnType<Client["callTool"]>>>();
+    const script = scriptedClaude(value.directory, config, async function* (input) {
+      const request = script.requests.find((request) => request.input === input);
+      const content = request?.prompt[0]?.message.content;
+      assert(Array.isArray(content));
+      const label = content.find((block) => block.type === "text");
+      assert(label?.type === "text");
+      const name = label.text;
+      const server = input.options?.mcpServers?.monchu;
+      assert(server?.type === "sdk");
+      const client = new Client({ name, version: "1" });
+      const [left, right] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(right);
+      await client.connect(left);
+      entered++;
+      if (entered === 2) both.resolve();
+      await both.promise;
+      try {
+        // Repeated native id across separate conversations must not cross-deliver.
+        const result = client.callTool({
+          name: "read",
+          arguments: {},
+          _meta: { "claudecode/toolUseId": "same_id" },
+        });
+        yield* claudeResponse(
+          [fauxToolCall("read", { path: name + ".txt" }, { id: "same_id" })],
+          "tool_use",
+        );
+        delivered.set(name, await result);
+        yield* claudeResponse([{ type: "text", text: name + " done" }]);
+      } finally {
+        await client.close();
+      }
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const { harness, root } = await open({ ...value, models });
+    try {
+      await root.configure({ model: role }, context);
+      const worker = await harness.createConversation(
+        { ownership: { kind: "ownerless" }, agent: { model: role, cwd: value.directory } },
+        context,
+      );
+      await Promise.all([
+        (async () => {
+          await (await root.submit({ type: "input", content: "front" }, context)).wait(context);
+        })(),
+        (async () => {
+          await (await worker.submit({ type: "input", content: "worker" }, context)).wait(context);
+        })(),
+      ]);
+      expect(script.requests).toHaveLength(2);
+      expect(script.requests[0]?.path).not.toBe(script.requests[1]?.path);
+      expect(JSON.stringify(delivered.get("front"))).toContain("front result");
+      expect(JSON.stringify(delivered.get("front"))).not.toContain("worker result");
+      expect(JSON.stringify(delivered.get("worker"))).toContain("worker result");
+      for (const [conversation, name] of [
+        [root, "front"],
+        [worker, "worker"],
+      ] as const) {
+        await (await conversation.submit({ type: "input", content: name }, context)).wait(context);
+      }
+      expect(script.requests[2]?.path).toBe(script.requests[0]?.path);
+      expect(script.requests[3]?.path).toBe(script.requests[1]?.path);
+    } finally {
+      await harness.close(context);
+    }
+    expect(script.closed()).toBe(4);
   });
 
   it.each([
@@ -392,7 +775,7 @@ describe("Claude Code subscription provider", () => {
     ]);
   });
 
-  it("aborts a blocked query, closes it once, and preserves no disposable session", async () => {
+  it("aborts a blocked query and closes it once", async () => {
     const value = await setup();
     const entered = Promise.withResolvers<void>();
     const script = scriptedClaude(value.directory, config, async function* (input) {
@@ -456,7 +839,7 @@ describe("Claude Code subscription provider", () => {
       expect(result.stopReason).toBe("error");
       expect(result.errorMessage).not.toContain(token);
       expect(result.errorMessage).toContain(process.execPath);
-      expect(result.errorMessage).toMatch(/crashed|exited|internal API retry/);
+      expect(result.errorMessage).toMatch(/crashed|exited|ended without|internal API retry/);
       expect(script.closed()).toBe(1);
     },
   );

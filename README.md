@@ -88,11 +88,12 @@ Two guards adapted from pi-claude-bridge reduce additional billing exposure:
 It always passes the resolved path as the Agent SDK's `pathToClaudeCodeExecutable`, never using the SDK's platform-package lookup. Missing/startup errors name the attempted path. Windows paths must be directly launchable, not shell-only command shims.
 Changes to `claude` host settings require `/restart`; a reload rejects them without applying a partial settings snapshot.
 
-Claude Code uses `<home>/claude` as `CLAUDE_CONFIG_DIR`, an isolated execution directory, no setting sources, no hooks/plugins/skills, no native tools, and only Monchu's schema-only MCP server.
+Claude Code uses `<home>/claude` as `CLAUDE_CONFIG_DIR`, an isolated execution directory, no setting sources, no hooks/plugins/skills, no native tools, and only Monchu's MCP bridge, with Durable owning tool execution.
 The child environment is copied, stripping inherited `ANTHROPIC_*` and `CLAUDE_*` values before installing Monchu's token and isolation settings. Provider switches, fast mode, cloud MCP and automatic compaction are disabled.
-Every model request starts a fresh process: Durable's messages rebuild a disposable session via `cc-session-io`, then the SDK streams one assistant response.
-At its first `message_stop`, Monchu closes the query and kills its owned child. MCP handlers never execute tools or deliver invented results; Durable commits the calls, runs the tools, and issues a new model request with the real results.
-Abort closes/kills the query; restart or a crash leaves no parked process cache to recover. The next request rebuilds from Durable's current transcript. Internal retry/fallback/compaction events and unsupported content fail explicitly rather than returning an empty final answer. Durable retains its own configured retry policy.
+Session/query behavior follows pi-claude-bridge 0.9.2: each Durable conversation's stable provider `sessionId` owns its Claude session and live query, independently of concurrent front/worker conversations.
+A new user turn resumes that persisted session without rebuilding its history when the cursor matches, including an assistant already written by Claude. Missed or rewritten history is rebuilt from Durable via `cc-session-io`; a shorter synthetic context starts clean without replacing the conversation's mirror. Compaction summaries use an isolated, non-persisted query.
+One SDK query stays parked across the whole turn's tool rounds. MCP handlers never execute tools or invent results: Durable commits the calls and runs every tool, then its next provider request delivers the real results to the parked handlers by `claudecode/toolUseId`, even when calls/results arrive out of order. No synthetic user prompt is added between live tool rounds. A steer is written before releasing results.
+The final SDK result closes the input/query. Abort and explicit worker cancellation close/kill owned queries and invalidate their mirrors; the next request rebuilds with a rotated UUID to avoid an orphan writer. Restart or a discarded parked query rebuilds from Durable's current transcript; only a tool-result continuation without a live query uses the bridge's continuation prompt. Internal retry/fallback/compaction events and unsupported content fail explicitly rather than returning an empty final answer. Durable retains its own configured retry policy.
 
 **Termux:** the SDK has no Android binary package, but this provider does not need one.
 Jorge's working `claude` on PATH can use his glibc-runner (`grun`) or binary-patch workaround; otherwise point `claude.executable` at that wrapper.
@@ -108,7 +109,7 @@ Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 - `config.json`: optional model roles and validated run settings; no secrets.
 - `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
 - `fff/`: frecency and query-history databases for native file/content search; no Pi or editor databases are reused.
-- `claude/`: isolated Claude Code config/execution directory and disposable transcript mirrors; not the durable conversation store.
+- `claude/`: isolated Claude Code config/execution directory and persisted Claude session mirrors; not the durable conversation store.
 - `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 

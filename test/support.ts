@@ -3,12 +3,19 @@ import type {
   SDKPartialAssistantMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { openSession, type Session } from "cc-session-io";
+import {
+  createSession,
+  openSession,
+  type Session,
+  type ContentBlock,
+  type UserContentBlock,
+} from "cc-session-io";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,
   createProvider,
+  cleanupSessionResources,
   type ClassifierModel,
   type ClassifierApi,
   type ClassifierContext,
@@ -208,6 +215,7 @@ const sandbox = {
 };
 
 export async function cleanup(): Promise<void> {
+  cleanupSessionResources();
   for (const finders of findersToClose) await finders.close();
   findersToClose.clear();
   for (const [key, value] of Object.entries(sandbox)) {
@@ -343,7 +351,7 @@ export function callTools(calls: Record<string, { tool: string; args: JsonObject
   };
 }
 
-/** Script the real provider's sole external boundary, retaining disposable replay files at query entry. */
+/** Inject only the Claude SDK boundary; mirror its persisted sessions and open prompt input. */
 export function scriptedClaude(
   home: string,
   config: ClaudeConfig,
@@ -360,7 +368,7 @@ export function scriptedClaude(
   const query: ClaudeQuery = (input) => {
     let isClosed = false;
     return {
-      [Symbol.asyncIterator]: async function* () {
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<SDKMessage> {
         const options = input.options;
         if (
           options === undefined ||
@@ -369,23 +377,118 @@ export function scriptedClaude(
         )
           throw new Error("Claude script needs explicit isolated options");
         if (typeof input.prompt === "string") throw new Error("Claude script needs streamed input");
-        const prompt: SDKUserMessage[] = [];
-        for await (const message of input.prompt) prompt.push(message);
+        const source = input.prompt[Symbol.asyncIterator]();
+        const first = await source.next();
+        if (first.done) throw new Error("Claude script needs an initial prompt");
+        const prompt = [first.value];
         const session =
           options.resume === undefined
-            ? undefined
+            ? createSession({
+                projectPath: options.cwd,
+                cwd: options.cwd,
+                claudeDir: options.env.CLAUDE_CONFIG_DIR,
+                model: options.model ?? "claude-sonnet-4-6",
+              })
             : openSession({
                 sessionId: options.resume,
                 projectPath: options.cwd,
                 claudeDir: options.env.CLAUDE_CONFIG_DIR,
               });
-        requests.push({
-          input,
-          prompt,
-          history: session?.messages ?? [],
-          path: session?.jsonlPath,
-        });
-        yield* respond(input);
+        requests.push({ input, prompt, history: [...session.messages], path: session.jsonlPath });
+        // Keep consuming so a steer gets its write acknowledgement, just as with the real SDK stdin pump.
+        const drain = (async () => {
+          for (;;) {
+            const item = await source.next();
+            if (item.done) break;
+            prompt.push(item.value);
+          }
+        })();
+        const content = first.value.message.content;
+        if (typeof content === "string") session.addUserMessage(content);
+        else
+          session.addUserMessage(
+            content.flatMap((block): UserContentBlock[] => {
+              if (block.type === "text") return [{ type: "text", text: block.text }];
+              if (block.type === "image" && block.source.type === "base64")
+                return [{ type: "image", source: block.source }];
+              throw new Error("Claude script received an unsupported prompt block");
+            }),
+          );
+        session.save();
+        yield {
+          type: "system",
+          subtype: "init",
+          uuid: randomUUID(),
+          session_id: session.sessionId,
+          apiKeySource: "none",
+          claude_code_version: "injected",
+          cwd: options.cwd,
+          tools: [],
+          mcp_servers: [],
+          model: options.model ?? "claude-sonnet-4-6",
+          permissionMode: "default",
+          slash_commands: [],
+          output_style: "default",
+          skills: [],
+          plugins: [],
+        };
+        for await (const message of respond(input)) {
+          if (message.type === "assistant") {
+            const blocks: ContentBlock[] = [];
+            for (const block of message.message.content) {
+              if (block.type === "text") blocks.push({ type: "text", text: block.text });
+              else if (block.type === "thinking")
+                blocks.push({
+                  type: "thinking",
+                  thinking: block.thinking,
+                  signature: block.signature,
+                });
+              else if (block.type === "tool_use")
+                blocks.push({
+                  type: "tool_use",
+                  id: block.id,
+                  name: block.name,
+                  input: block.input,
+                });
+            }
+            session.addAssistantMessage(blocks, {
+              model: message.message.model,
+              stopReason: message.message.stop_reason ?? "end_turn",
+            });
+            session.save();
+          }
+          yield { ...message, session_id: session.sessionId };
+        }
+        yield {
+          type: "result",
+          subtype: "success",
+          uuid: randomUUID(),
+          session_id: session.sessionId,
+          duration_ms: 0,
+          duration_api_ms: 0,
+          is_error: false,
+          num_turns: 1,
+          result: "",
+          stop_reason: "end_turn",
+          total_cost_usd: 0,
+          modelUsage: {},
+          permission_denials: [],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+            server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+            service_tier: "standard",
+            inference_geo: "",
+            iterations: [],
+            speed: "standard",
+            fallback_credit: null,
+            output_tokens_details: { thinking_tokens: 0 },
+          },
+        };
+        await drain;
       },
       interrupt: () => {
         interrupted++;
@@ -529,13 +632,38 @@ export function claudeResponse(
     },
     { type: "message_stop" },
   );
-  return events.map((event) => ({
+  const messages: SDKMessage[] = events.map((event) => ({
     type: "stream_event",
     event,
     parent_tool_use_id: null,
     uuid: randomUUID(),
     session_id: "script",
   }));
+  const start = events[0];
+  if (start?.type !== "message_start") throw new Error("Claude response needs message_start");
+  const blocks: typeof start.message.content = content.map((block) => {
+    if (block.type === "text") return { type: "text", text: block.text, citations: null };
+    if (block.type === "thinking")
+      return {
+        type: "thinking",
+        thinking: block.thinking,
+        signature: block.thinkingSignature ?? "signed_script",
+      };
+    return {
+      type: "tool_use",
+      id: block.id,
+      name: `mcp__monchu__${block.name}`,
+      input: block.arguments,
+    };
+  });
+  messages.push({
+    type: "assistant",
+    uuid: randomUUID(),
+    session_id: "script",
+    parent_tool_use_id: null,
+    message: { ...start.message, content: blocks, stop_reason: stopReason },
+  });
+  return messages;
 }
 
 /** Poll `check` in real time until it holds. */

@@ -111,19 +111,22 @@ export class FileCredentials implements CredentialStore {
       checkLock();
       if (next !== undefined) {
         data.set(id, next);
-        await this.persist(data);
+        await this.persist(data, checkLock);
       }
       return data.get(id);
     }, options);
   }
 
   async delete(id: string, options?: AuthOperationOptions): Promise<void> {
-    await this.withLock(async (data) => {
-      if (data.delete(id)) await this.persist(data);
+    await this.withLock(async (data, checkLock) => {
+      if (data.delete(id)) await this.persist(data, checkLock);
     }, options);
   }
 
-  private async persist(data: ReadonlyMap<string, Credential>): Promise<void> {
+  private async persist(
+    data: ReadonlyMap<string, Credential>,
+    checkLock: () => void,
+  ): Promise<void> {
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     try {
       const file = await open(temporary, "wx", 0o600);
@@ -133,7 +136,30 @@ export class FileCredentials implements CredentialStore {
       } finally {
         await file.close();
       }
-      await rename(temporary, this.path);
+      // Windows readers/antivirus can briefly deny replacement. Retry the same complete file;
+      // never unlink auth.json or expose a partially written credential store.
+      const deadline = Date.now() + 5000;
+      let retry = 0;
+      for (;;) {
+        checkLock();
+        try {
+          await rename(temporary, this.path);
+          break;
+        } catch (error) {
+          const remaining = deadline - Date.now();
+          if (
+            process.platform !== "win32" ||
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              (error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY")
+            ) ||
+            remaining <= 0
+          )
+            throw error;
+          await sleep(Math.min(10 * 2 ** retry++, 100, remaining));
+        }
+      }
     } finally {
       await rm(temporary, { force: true });
     }
@@ -186,7 +212,7 @@ export class FileCredentials implements CredentialStore {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
         data = new Map();
         checkLock();
-        await this.persist(data);
+        await this.persist(data, checkLock);
       }
       signal?.throwIfAborted();
       checkLock();
