@@ -142,7 +142,7 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
-Esc or Ctrl-C aborts the front only, Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
+Esc aborts the front only. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
 `/login` opens private provider selection even on a fresh home without model credentials. Codex always uses device-code OAuth: open the displayed URL on any browser and approve its code, with no local callback server. Cloudflare uses API-key and account-ID prompts. Esc/Ctrl-C cancels. Prompts, codes and keys stay outside chat/editor history and logs; keys are masked. Only completion/cancellation or a credential-free failure notice goes into the TUI transcript.
 `/reload` re-reads config, extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Model roles and stream options apply from subsequent model-request boundaries; already prepared requests keep those values. Retry/compaction policy resolves at later scheduler boundaries, following Durable's runtime contract. TUI settings refresh on success; already running shell calls keep their environment. Home-file edits need no reload.
@@ -171,7 +171,7 @@ Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate 
 Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
 The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls.
 
-`/abort` (or interactive Ctrl-C) stops the front only.
+`/abort` (or interactive Esc) stops the front only.
 `/stop` explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
 `/quit` or SIGTERM closes storage without cancelling accepted work.
 It then stops running tool processes, closes provider connections pi-ai keeps cached (Codex websockets), and exits; if anything else still holds the process, it exits after one second anyway.

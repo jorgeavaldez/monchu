@@ -114,6 +114,23 @@ it("shows reload errors, retains settings on failure, and recovers on the next r
   });
 }, 30_000);
 
+it("clears the editor on Ctrl-C without aborting the front, and exits on a quick second press", async () => {
+  await withTerminal(60, "dark", async (screen) => {
+    screen.sendInput("draft");
+    await visible(screen, "draft");
+    screen.sendInput("\x03");
+    await waitFor(async () => !(await screen.flushAndGetViewport()).join("\n").includes("draft"));
+    // Outside the 500 ms double-press window, Ctrl-C only clears again.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    screen.sendInput("\x03");
+    const cleared = (await screen.flushAndGetViewport()).join("\n");
+    expect(cleared).not.toContain("front stopped");
+    expect(screen.stopped).toBe(false);
+    screen.sendInput("\x03");
+    await waitFor(() => screen.stopped);
+  });
+});
+
 it("keeps Cloudflare login prompts out of chat, editor history and raw terminal output", async () => {
   const value = await setup({ provider: "cloudflare-workers-ai" });
   const home = join(value.directory, "home");

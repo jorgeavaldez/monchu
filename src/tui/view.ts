@@ -131,6 +131,7 @@ export class MonchuTui {
   private loader: Loader | undefined;
   private statusText = "";
   private expanded = false;
+  private lastCtrlC = 0;
   private selector: AgentSelector | undefined;
   private loginCancel: (() => void) | undefined;
   private readonly loginStatus = new Container();
@@ -202,11 +203,18 @@ export class MonchuTui {
         }
         return;
       }
+      if (this.selector) return;
       if (matchesKey(data, "ctrl+c")) {
-        handlers.abort();
+        // As in Pi: clear the editor; a second press within 500 ms exits.
+        const now = Date.now();
+        if (now - this.lastCtrlC < 500) handlers.exit();
+        else {
+          this.lastCtrlC = now;
+          this.editor.setText("");
+          this.ui.requestRender();
+        }
         return { consume: true };
       }
-      if (this.selector) return;
       if (matchesKey(data, "escape") && !this.editor.isShowingAutocomplete()) {
         handlers.abort();
         return { consume: true };
