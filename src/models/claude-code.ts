@@ -495,6 +495,8 @@ export function createClaudeCodeProvider(
               plugins: [],
               settingSources: [],
               strictMcpConfig: true,
+              // As in Pi's Claude bridge. Omitted, Claude Code starts in `auto`, whose classifier would gate Monchu's tools.
+              permissionMode: "bypassPermissions",
               settings: {
                 disableAllHooks: true,
                 claudeMdExcludes: ["**"],

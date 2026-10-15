@@ -158,6 +158,7 @@ describe("Claude Code subscription provider", () => {
       plugins: [],
       settingSources: [],
       strictMcpConfig: true,
+      permissionMode: "bypassPermissions",
       persistSession: true,
       effort: "high",
       env: {
