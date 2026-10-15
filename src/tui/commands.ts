@@ -28,11 +28,11 @@ export const commands: Record<
   "/goals": { usage: "", help: "list ongoing endeavors and open commitments" },
   "/model": {
     usage: "[search]",
-    help: "pick the shown conversation's model; Ctrl+S also saves it as the role default",
+    help: "pick the model of a conversation or the front/worker default",
   },
   "/thinking": {
     usage: "",
-    help: "pick the shown conversation's thinking level; Ctrl+S also saves it as the role default",
+    help: "pick the thinking level of a conversation or the front/worker default",
   },
   "/queue": { usage: "", help: "edit, steer or delete the shown conversation's queued messages" },
   "/stop": { usage: "<name>", help: "cancel a worker and its work" },

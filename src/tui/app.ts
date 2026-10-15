@@ -13,6 +13,11 @@ import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { presentation } from "./state.ts";
 import { MonchuTui } from "./view.ts";
 
+/** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
+type PickTarget =
+  | { kind: "conversation"; name: string | undefined }
+  | { kind: "default"; role: "front" | "worker" };
+
 /** Terminal adapter. Input admission and all side effects remain backend-owned. */
 export async function runTerminal(
   backend: Monchu,
@@ -174,6 +179,64 @@ export async function runTerminal(
     show();
   }
 
+  /** The model or thinking selector for one conversation or role default; Enter applies, Ctrl+S also saves. */
+  async function pickFor(
+    command: "/model" | "/thinking",
+    target: PickTarget,
+    search: string | undefined,
+  ): Promise<void> {
+    const name = target.kind === "default" ? `${target.role} default` : (target.name ?? "root");
+    const choice =
+      target.kind === "default"
+        ? await backend.roleChoice(target.role)
+        : await backend.modelChoice(target.name);
+    const pick = (change: ModelPick, save: boolean) => {
+      view.closeSelector();
+      inputs = inputs
+        .then(async () => {
+          const value =
+            "model" in change
+              ? `model · ${change.model.provider}/${change.model.modelId}`
+              : `thinking · ${change.thinkingLevel}`;
+          if (target.kind === "default") {
+            await backend.saveDefault(target.role, change);
+            view.notice(`${name} ${value} · saved`);
+          } else {
+            await backend.pickModel(change, save, target.name);
+            const role = target.name === undefined ? "front" : "worker";
+            view.notice(
+              `${name} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`,
+            );
+          }
+        })
+        .catch(fail);
+    };
+    // A role default saves on Enter, so it has no separate Ctrl+S.
+    const conversation = target.kind === "conversation";
+    view.showSelector(
+      command === "/model"
+        ? new ModelSelectorComponent(
+            choice.model,
+            choice.models,
+            (model) => pick({ model: { provider: model.provider, modelId: model.id } }, false),
+            () => view.closeSelector(),
+            search,
+            conversation
+              ? (model) => pick({ model: { provider: model.provider, modelId: model.id } }, true)
+              : undefined,
+            { provider: choice.defaults.provider, id: choice.defaults.modelId },
+          )
+        : new ThinkingSelectorComponent(
+            choice.thinkingLevel,
+            choice.thinkingLevels,
+            (thinkingLevel) => pick({ thinkingLevel }, false),
+            () => view.closeSelector(),
+            conversation ? (thinkingLevel) => pick({ thinkingLevel }, true) : undefined,
+            choice.defaults.thinkingLevel,
+          ),
+    );
+  }
+
   async function handle(raw: string, whenBusy: WhenBusy): Promise<void> {
     if (closing) return;
     const input = parseInput(raw);
@@ -271,7 +334,8 @@ export async function runTerminal(
           break;
         }
         await refreshWorkers();
-        view.selectAgents(
+        view.choose(
+          "View and talk to",
           [
             { value: "", label: "root", description: "Monchu front" },
             // Grouped by status, working first, from the same live views as the dock's counts.
@@ -296,45 +360,35 @@ export async function runTerminal(
         break;
       case "/model":
       case "/thinking": {
-        // The pick applies to the conversation shown when the selector opened.
-        const name = selected;
-        const target = name ?? "root";
-        const role = name === undefined ? "front" : "worker";
-        const choice = await backend.modelChoice(name);
-        const pick = (change: ModelPick, save: boolean) => {
-          view.closeSelector();
-          inputs = inputs
-            .then(async () => {
-              await backend.pickModel(change, save, name);
-              const value =
-                "model" in change
-                  ? `model · ${change.model.provider}/${change.model.modelId}`
-                  : `thinking · ${change.thinkingLevel}`;
-              view.notice(
-                `${target} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`,
-              );
-            })
-            .catch(fail);
-        };
-        view.showSelector(
-          input.command === "/model"
-            ? new ModelSelectorComponent(
-                choice.model,
-                choice.models,
-                (model) => pick({ model: { provider: model.provider, modelId: model.id } }, false),
-                () => view.closeSelector(),
-                input.text || undefined,
-                (model) => pick({ model: { provider: model.provider, modelId: model.id } }, true),
-                { provider: choice.defaults.provider, id: choice.defaults.modelId },
-              )
-            : new ThinkingSelectorComponent(
-                choice.thinkingLevel,
-                choice.thinkingLevels,
-                (thinkingLevel) => pick({ thinkingLevel }, false),
-                () => view.closeSelector(),
-                (thinkingLevel) => pick({ thinkingLevel }, true),
-                choice.defaults.thinkingLevel,
-              ),
+        // First what to change, the shown conversation first, then the model or thinking level for it.
+        await refreshWorkers();
+        const targets = new Map<string, PickTarget>([
+          [selected === undefined ? "root" : selected, { kind: "conversation", name: selected }],
+          ...[undefined, ...workers.keys()]
+            .filter((name) => name !== selected)
+            .map((name): [string, PickTarget] => [name ?? "root", { kind: "conversation", name }]),
+          ["front default", { kind: "default", role: "front" }],
+          ["worker default", { kind: "default", role: "worker" }],
+        ]);
+        const command = input.command;
+        const search = "text" in input ? input.text || undefined : undefined;
+        view.choose(
+          command === "/model" ? "Pick the model of" : "Pick the thinking level of",
+          [...targets].map(([label, target]) => ({
+            value: label,
+            label,
+            description:
+              target.kind === "default"
+                ? target.role === "front"
+                  ? "saved; the root follows it unless picked for the root"
+                  : "saved; new workers start with it"
+                : "this conversation; Ctrl+S also saves its role default",
+          })),
+          (label) => {
+            const target = targets.get(label);
+            if (target !== undefined)
+              inputs = inputs.then(() => pickFor(command, target, search)).catch(fail);
+          },
         );
         break;
       }

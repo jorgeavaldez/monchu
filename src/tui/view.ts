@@ -103,7 +103,8 @@ function queuedLine(item: QueuedItem): string {
   return `${theme.fg("warning", `│ you · ${mode}`)}${theme.fg("userMessageText", ` · ${firstLine(item.text)}`)}`;
 }
 
-class AgentSelector extends Container implements Focusable {
+/** A filterable list in the editor's place: the agent menu, and the first step of the model and thinking menus. */
+class ListSelector extends Container implements Focusable {
   readonly input = new Input();
   readonly listContainer = new Container();
   list: SelectList;
@@ -112,12 +113,17 @@ class AgentSelector extends Container implements Focusable {
   readonly select: (value: string) => void;
   readonly cancel: () => void;
 
-  constructor(items: SelectItem[], select: (value: string) => void, cancel: () => void) {
+  constructor(
+    title: string,
+    items: SelectItem[],
+    select: (value: string) => void,
+    cancel: () => void,
+  ) {
     super();
     this.items = items;
     this.select = select;
     this.cancel = cancel;
-    this.addChild(new Text("View and talk to (Esc to cancel):", 1, 0));
+    this.addChild(new Text(`${title} (Esc to cancel):`, 1, 0));
     this.addChild(this.input);
     this.addChild(this.listContainer);
     this.list = this.build(items);
@@ -149,7 +155,7 @@ class AgentSelector extends Container implements Focusable {
   }
 
   private build(items: SelectItem[]): SelectList {
-    // Every agent stays visible, so the menu is the full list behind the dock's compact counts.
+    // Every item stays visible, so the agent menu is the full list behind the dock's compact counts.
     const list = new SelectList(items, Math.max(1, this.items.length), getSelectListTheme());
     list.onSelect = (item) => this.select(item.value);
     list.onCancel = this.cancel;
@@ -627,8 +633,9 @@ export class MonchuTui {
     this.restoreEditor();
   }
 
-  selectAgents(items: SelectItem[], select: (value: string) => void): void {
-    this.selector = new AgentSelector(
+  choose(title: string, items: SelectItem[], select: (value: string) => void): void {
+    this.selector = new ListSelector(
+      title,
       items,
       (value) => {
         this.restoreEditor();

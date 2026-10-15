@@ -147,6 +147,8 @@ it("drops a closed worker from the roster at once and returns its selected view 
     await visible(screen, "Workers · 1 idle · /agents");
     send(screen, "/agents reader");
     await visible(screen, "worker: reader");
+    // The dock counts a worker idle once its run ends; closing also waits for its report's delivery to finish.
+    await waitFor(async () => (await backend.workers())[0]?.busy === false);
     // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
     await backend.submit("close reader", "close-reader", "followUp");
     const back = await visible(screen, "worker reader closed · back to root");
@@ -164,11 +166,35 @@ it("drops a closed worker from the roster at once and returns its selected view 
   });
 }, 30_000);
 
-it("picks the shown conversation's model with Enter and saves its role default with Ctrl+S", async () => {
+it("drills down from /model to a conversation or role default, and saves a role default with Ctrl+S", async () => {
   await withTerminal(60, "dark", async (screen, backend, home) => {
     const path = join(home, "config.json");
+    // The worker default is set without any worker, and the root keeps its model.
+    send(screen, "/model");
+    const menu = (await visible(screen, "Pick the model of")).join("\n");
+    expect(menu).toMatch(/root[\s\S]*front default[\s\S]*worker default/);
+    screen.sendInput("worker default");
+    screen.sendInput("\r");
+    await visible(screen, "Only showing models from configured providers");
+    screen.sendInput("front");
+    await visible(screen, "→   front [faux]");
+    screen.sendInput("\r");
+    await visible(screen, "worker default model · faux/front · saved");
+    expect((await loadConfig(home)).worker.modelId).toBe("front");
+    expect((await backend.modelChoice()).model?.id).toBe("front");
+    send(screen, "/thinking");
+    await visible(screen, "Pick the thinking level of");
+    screen.sendInput("worker default");
+    screen.sendInput("\r");
+    await visible(screen, "Thinking Level");
+    screen.sendInput("\r");
+    await visible(screen, "worker default thinking · ");
+    await backend.saveDefault("worker", { model: { provider: "faux", modelId: "worker" } });
+
     const written = await readFile(path, "utf8");
     send(screen, "/model");
+    await visible(screen, "Pick the model of");
+    screen.sendInput("\r");
     const picker = await visible(screen, "Only showing models from configured providers");
     // As in Pi: the current model first, marked, then the default; the key hints below.
     const rows = picker.filter((line) => line.includes("[faux]"));
@@ -182,6 +208,8 @@ it("picks the shown conversation's model with Enter and saves its role default w
     expect(await readFile(path, "utf8")).toBe(written);
     // The picked model now leads, ahead of the default; the dev front model answers as the root again.
     send(screen, "/model");
+    await visible(screen, "Pick the model of");
+    screen.sendInput("\r");
     const repicked = (await visible(screen, "→ ✓ worker [faux]")).filter((line) =>
       line.includes("[faux]"),
     );
@@ -194,7 +222,10 @@ it("picks the shown conversation's model with Enter and saves its role default w
     await visible(screen, "Faux front: result received.");
     send(screen, "/agents reader");
     await visible(screen, "worker: reader · worker");
+    // The shown worker leads the menu.
     send(screen, "/model");
+    await visible(screen, "Pick the model of");
+    screen.sendInput("\r");
     await visible(screen, "→ ✓ worker [faux] · default");
     screen.sendInput("front");
     await visible(screen, "→   front [faux]");
@@ -207,6 +238,8 @@ it("picks the shown conversation's model with Enter and saves its role default w
     expect((await loadConfig(home)).front.modelId).toBe("front");
     expect((await backend.modelChoice()).model?.id).toBe("front");
     send(screen, "/thinking");
+    await visible(screen, "Pick the thinking level of");
+    screen.sendInput("\r");
     await visible(screen, "Thinking Level");
     screen.sendInput("\x1b");
     await waitFor(

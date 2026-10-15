@@ -417,6 +417,19 @@ export class Monchu {
    * that role's default in `config.json`: `front` for the root, `worker` for workers. Existing workers keep theirs.
    */
   async pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void> {
+    this.checkPick(pick);
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    if (saveDefault) await this.saveDefault(workerName === undefined ? "front" : "worker", pick);
+    await conversation.commit(async (tx) => {
+      if (workerName === undefined)
+        (await tx.doc(FrontPicks, conversation.id))["model" in pick ? "model" : "thinkingLevel"] =
+          !saveDefault;
+      await configure(tx, conversation.id, pick);
+    }, context);
+  }
+
+  /** Picks come from the terminal: refuse unknown models and levels before anything is written. */
+  private checkPick(pick: ModelPick): void {
     if (this.closing !== undefined) throw new Error("Monchu is closing");
     if ("model" in pick) {
       if (this.models.getModel(pick.model.provider, pick.model.modelId) === undefined)
@@ -425,11 +438,32 @@ export class Monchu {
         );
     } else if (!isThinkingLevel(pick.thinkingLevel))
       throw new Error(`Unknown thinking level ${String(pick.thinkingLevel)}`);
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    if (saveDefault) {
-      const role = workerName === undefined ? "front" : "worker";
-      // The saved default must work on its own model, which may not be the model this conversation is on.
-      await this.extensions.saveRole(role, "model" in pick ? pick.model : pick, (saved) => {
+  }
+
+  /** A role default's model and thinking level from `config.json`, and the chat models with credentials. */
+  async roleChoice(role: "front" | "worker") {
+    const saved = this.extensions.config[role];
+    const model = this.models.getModel(saved.provider, saved.modelId);
+    return {
+      model,
+      thinkingLevel: saved.thinkingLevel,
+      thinkingLevels: model === undefined ? thinkingLevels : getSupportedThinkingLevels(model),
+      defaults: saved,
+      models: await this.models.getAvailable(),
+    };
+  }
+
+  /**
+   * Save a model or thinking level as a role's default in `config.json`. New workers use the worker default; the root
+   * follows the front default in the fields not picked for it. Existing workers keep theirs.
+   */
+  async saveDefault(role: "front" | "worker", pick: ModelPick): Promise<void> {
+    this.checkPick(pick);
+    // The saved default must work on its own model, which may not be the model a conversation is on.
+    const saved = await this.extensions.saveRole(
+      role,
+      "model" in pick ? pick.model : pick,
+      (saved) => {
         const model = this.models.getModel(saved.provider, saved.modelId);
         if (model === undefined)
           throw new Error(`Monchu has no configured model ${saved.provider}/${saved.modelId}`);
@@ -438,14 +472,9 @@ export class Monchu {
           throw new Error(
             `${saved.provider}/${saved.modelId} does not support thinking level ${saved.thinkingLevel} (supported: ${levels.join(", ")}); the ${role} default was not saved`,
           );
-      });
-    }
-    await conversation.commit(async (tx) => {
-      if (workerName === undefined)
-        (await tx.doc(FrontPicks, conversation.id))["model" in pick ? "model" : "thinkingLevel"] =
-          !saveDefault;
-      await configure(tx, conversation.id, pick);
-    }, context);
+      },
+    );
+    if (role === "front") await applyFrontRole(this.front, saved);
   }
 
   async changeDirectory(path: string, workerName?: string): Promise<string> {
