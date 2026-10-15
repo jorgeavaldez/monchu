@@ -63,7 +63,6 @@ export async function runTerminal(
         name: worker.summary.name,
         busy: presentation(worker.state.value).busy,
       })),
-      selected,
     );
   }
 
@@ -243,11 +242,16 @@ export async function runTerminal(
         view.selectAgents(
           [
             { value: "", label: "root", description: "Monchu front" },
-            ...[...workers.values()].map(({ summary }) => ({
-              value: summary.name,
-              label: summary.name,
-              description: describe(summary),
-            })),
+            // Grouped by status, working first, from the same live views as the dock's counts.
+            ...[...workers.values()]
+              .map(({ summary, state }) => ({ summary, busy: presentation(state.value).busy }))
+              .sort((a, b) => Number(b.busy) - Number(a.busy))
+              .map(({ summary, busy }) => ({
+                value: summary.name,
+                // Status in the label: narrow terminals hide descriptions.
+                label: `${summary.name} · ${busy ? "working" : "idle"}`,
+                description: summary.cwd ?? "",
+              })),
           ],
           (name) => {
             inputs = inputs.then(() => switchTo(name || undefined)).catch(fail);

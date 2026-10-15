@@ -49,7 +49,7 @@ export const help = [
     `${`${command} ${usage}`.padEnd(26)}${help}`.trimEnd(),
   ),
   "Esc interrupts a running front. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
-  "Ctrl-O expands tools. Shift-Enter or backslash-Enter inserts a newline.",
+  "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
   "Plain messages go to the conversation shown; root commands always target the root.",
 ].join("\n");
 

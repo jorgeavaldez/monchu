@@ -332,10 +332,11 @@ describe.each([
       await visible(screen, "Faux worker progress: checking.");
       await visible(screen, "worker · reader · completed");
       await visible(screen, "Faux front: result received.");
-      await visible(screen, "reader: idle");
+      await visible(screen, "Workers · 1 idle · /agents");
       send(screen, "/agents");
       const panel = await visible(screen, "View and talk to");
-      expect(panel.join("\n")).toContain("reader");
+      // The menu lists each worker with its status, behind the dock's compact counts.
+      expect(panel.join("\n")).toContain("reader · idle");
       screen.sendInput("reader"); // filter, then select with the actual keyboard path
       screen.sendInput("\r");
       await visible(screen, "worker: reader");
@@ -343,9 +344,11 @@ describe.each([
       await visible(screen, "received · worker reader");
       await waitFor(async () => {
         const lines = await screen.flushAndGetViewport();
+        // The worker answers the new message; its first answer may have scrolled above it.
+        const more = lines.findIndex((line) => line.trim() === "more");
         return (
-          lines.some((line) => line.trim() === "more") &&
-          lines.join("\n").match(/Faux worker result: done\./g)?.length === 2
+          more !== -1 &&
+          lines.slice(more).some((line) => line.includes("Faux worker result: done."))
         );
       });
       send(screen, "/agents root");

@@ -9,7 +9,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { help, parseInput } from "../src/tui/commands.ts";
 import { presentation } from "../src/tui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
-import { cleanup, context, lastMessage, open, route, setup, waitFor } from "./support.ts";
+import { startWorker } from "../src/workers.ts";
+import {
+  cleanup,
+  context,
+  deliveryTaskId,
+  fauxRole,
+  lastMessage,
+  open,
+  route,
+  setup,
+  textOf,
+  waitFor,
+} from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 afterEach(cleanup);
@@ -263,15 +275,15 @@ describe("committed Durable presentation", () => {
       ).wait(context);
       await root.waitForIdle(context);
       ui.apply(state.value);
-      ui.setWorkers([{ name: "w", busy: true }], undefined);
+      ui.setWorkers([{ name: "w", busy: true }]);
       await waitFor(async () => {
         const lines = (await screen.flushAndGetViewport()).join("\n");
-        return lines.includes("settled answer") && lines.includes("w: working");
+        return lines.includes("settled answer") && lines.includes("Workers · 1 working · /agents");
       });
       const written = screen.output.length;
       // Each worker revision re-shows the root view and the worker line unchanged.
       ui.apply(state.value);
-      ui.setWorkers([{ name: "w", busy: true }], undefined);
+      ui.setWorkers([{ name: "w", busy: true }]);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.output.length).toBe(written);
       ui.apply(state.value, undefined, true);
@@ -333,6 +345,69 @@ describe("committed Durable presentation", () => {
       expect(await viewport()).not.toContain("first note line");
       screen.sendInput("\x0f"); // Ctrl-O expands every card, including settled ones
       await waitFor(async () => (await viewport()).includes("second note line"));
+      expect(value.reports).toEqual([]);
+    } finally {
+      stop();
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  });
+
+  it("collapses worker reports with a per-message toggle, keeps front replies whole, and dates them", async () => {
+    const value = await setup();
+    const paragraphs = (label: string) =>
+      Array.from({ length: 8 }, (_, index) => `${label} line ${index + 1}`).join("\n\n");
+    route(value.faux, (context) =>
+      fauxAssistantMessage(
+        paragraphs(textOf(lastMessage(context.messages)) === "inspect" ? "report" : "front reply"),
+      ),
+    );
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(60, 40);
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    const stop = state.subscribe((view) => ui.apply(view));
+    const viewport = async () => {
+      ui.ui.renderNow();
+      return (await screen.flushAndGetViewport()).join("\n");
+    };
+    try {
+      ui.start();
+      await root.commit(
+        (tx) => startWorker(tx, root.id, "w", "inspect", value.directory, "start:w", fauxRole),
+        context,
+      );
+      await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
+      await root.waitForIdle(context);
+      const collapsed = await viewport();
+      expect(collapsed).toContain("▸ worker · w · completed");
+      expect(collapsed).toContain("report line 1");
+      expect(collapsed).not.toContain("report line 3");
+      expect(collapsed).toMatch(/more lines · click or Ctrl-O to expand/);
+      // The front's reply stays whole, then shows when it was sent.
+      const lines = collapsed.split("\n");
+      const last = lines.findIndex((line) => line.includes("front reply line 8"));
+      expect(lines.findIndex((line) => line.includes("front reply line 1"))).toBeGreaterThan(-1);
+      expect(lines[last + 1]).toContain(String(new Date().getFullYear()));
+      // A click on the report toggles only that message, from the keyboard-free pointer path.
+      const row = lines.findIndex((line) => line.includes("worker · w · completed"));
+      screen.sendInput(`\x1b[<0;5;${row + 1}M`);
+      screen.sendInput(`\x1b[<0;5;${row + 1}m`);
+      await waitFor(async () => (await viewport()).includes("report line 8"));
+      expect(await viewport()).toContain("▾ worker · w · completed");
+      // A second press within 500 ms would be a double click.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      screen.sendInput(`\x1b[<0;5;${row + 1}M`);
+      screen.sendInput(`\x1b[<0;5;${row + 1}m`);
+      await waitFor(async () => !(await viewport()).includes("report line 8"));
+      screen.sendInput("\x0f"); // Ctrl-O expands every worker message too
+      await waitFor(async () => (await viewport()).includes("report line 8"));
       expect(value.reports).toEqual([]);
     } finally {
       stop();

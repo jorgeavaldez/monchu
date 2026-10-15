@@ -20,6 +20,7 @@
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
+import { WorkerMessageComponent } from "./components/worker-message.ts";
 import { getMarkdownTheme, getSelectListTheme } from "./theme/theme.ts";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
@@ -97,7 +98,8 @@ class AgentSelector extends Container implements Focusable {
   }
 
   private build(items: SelectItem[]): SelectList {
-    const list = new SelectList(items, 6, getSelectListTheme());
+    // Every agent stays visible, so the menu is the full list behind the dock's compact counts.
+    const list = new SelectList(items, Math.max(1, this.items.length), getSelectListTheme());
     list.onSelect = (item) => this.select(item.value);
     list.onCancel = this.cancel;
     this.listContainer.clear();
@@ -211,6 +213,7 @@ export class MonchuTui {
   private readonly transcript: ScrollView;
   private readonly tools = new Map<string, ToolExecutionComponent>();
   private readonly cards: ToolExecutionComponent[] = [];
+  private readonly workerMessages: WorkerMessageComponent[] = [];
   private readonly unfinished = new Set<ToolExecutionComponent>();
   private readonly streamedCalls = new Set<string>();
   private readonly notices: string[] = [];
@@ -318,6 +321,7 @@ export class MonchuTui {
       if (matchesKey(data, "ctrl+o")) {
         this.expanded = !this.expanded;
         for (const card of this.cards) card.setExpanded(this.expanded);
+        for (const message of this.workerMessages) message.setExpanded(this.expanded);
         this.ui.requestRender();
         return { consume: true };
       }
@@ -433,15 +437,16 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  setWorkers(
-    items: readonly { name: string; busy: boolean }[],
-    selected: string | undefined,
-  ): void {
+  setWorkers(items: readonly { name: string; busy: boolean }[]): void {
     // Every revision of any shown or worker view lands here; render only when the styled line changes.
+    // Counts only: /agents lists every worker, and the footer names the one shown.
+    const working = items.filter((item) => item.busy).length;
+    const counts = [
+      ...(items.length > working ? [`${items.length - working} idle`] : []),
+      ...(working ? [`${working} working`] : []),
+    ];
     const line = items.length
-      ? getSelectListTheme().description(
-          `Workers · ${items.map((item) => `${item.name}${selected === item.name ? " (shown)" : ""}: ${item.busy ? "working" : "idle"}`).join(" · ")} · /agents`,
-        )
+      ? getSelectListTheme().description(`Workers · ${counts.join(" · ")} · /agents`)
       : "";
     if (line === this.workersLine) return;
     this.workersLine = line;
@@ -470,6 +475,7 @@ export class MonchuTui {
     if (rebuilt) {
       this.chat.clear();
       this.cards.length = 0;
+      this.workerMessages.length = 0;
       this.tools.clear();
       this.unfinished.clear();
       this.streamedCalls.clear();
@@ -557,15 +563,14 @@ export class MonchuTui {
     const worker = workerNotice(entry);
     const message = entry.model?.[0];
     if (worker) {
+      const component = new WorkerMessageComponent(worker, (changed) => {
+        this.chat.changed(changed);
+        this.ui.requestRender();
+      });
+      component.setExpanded(this.expanded);
+      this.workerMessages.push(component);
       this.chat.addChild(new Spacer(1));
-      this.chat.addChild(
-        new Text(
-          getSelectListTheme().selectedText(`worker · ${worker.name} · ${worker.status}`),
-          1,
-          0,
-        ),
-      );
-      this.chat.addChild(new Markdown(worker.text, 1, 0, getMarkdownTheme()));
+      this.chat.addChild(component);
     } else if (entry.kind === "pi.user" && message?.role === "user") {
       const text =
         typeof message.content === "string"
@@ -587,6 +592,20 @@ export class MonchuTui {
       container.clear();
       // Monchu's component never renders private thinking content.
       container.addChild(new AssistantMessageComponent(message));
+      // When the reply was sent: the request start plus its duration, in local time.
+      if (message.content.some((part) => part.type === "text" && part.text.trim()))
+        container.addChild(
+          new Text(
+            getSelectListTheme().description(
+              new Date(message.timestamp + (message.durationMs ?? 0)).toLocaleString(undefined, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }),
+            ),
+            1,
+            0,
+          ),
+        );
       this.streaming = undefined;
       for (const part of message.content) {
         if (part.type !== "toolCall") continue;
