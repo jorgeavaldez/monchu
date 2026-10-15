@@ -25,7 +25,13 @@ import type { ModelRole } from "./config.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 type WorkerRecords = {
-  workers: { name: string; conversationId: ConversationId; reported: EntryId[] }[];
+  workers: {
+    name: string;
+    conversationId: ConversationId;
+    reported: EntryId[];
+    /** Retired from the active roster; the conversation stays and `reopenWorker` resumes it. Absent means open. */
+    closed?: true;
+  }[];
   deliveries: { requestId: string; name: string; taskId: TaskId }[];
 };
 
@@ -81,6 +87,21 @@ export async function hasPendingDelivery(
   return pendingDelivery(await tx.doc(WorkersDoc, parentId), name, (id) => tx.task(id));
 }
 
+/** Release parked provider resources for a worker and its sub-workers; the next request acquires them again. */
+async function releaseProviders(
+  reader: Pick<Harness, "snapshot">,
+  workerId: ConversationId,
+  context: Context,
+): Promise<void> {
+  const released = [workerId];
+  for (const id of released) {
+    const provider = await reader.snapshot(ProviderDoc, id, context);
+    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
+    const children = await reader.snapshot(WorkersDoc, id, context);
+    released.push(...(children?.workers.map((child) => child.conversationId) ?? []));
+  }
+}
+
 /** Cancel the worker's current work, pending deliveries, and nested background work. */
 export async function stopWorker(
   api: Pick<ToolExecutionApi, "snapshot" | "conversation">,
@@ -95,13 +116,37 @@ export async function stopWorker(
   if (worker === undefined) throw new Error("Worker conversation is missing");
   await worker.abort(context, { background: true });
   // Generation signals end at each tool boundary; release parked provider resources for the stopped subtree too.
-  const stopped = [worker.id];
-  for (const id of stopped) {
-    const provider = await api.snapshot(ProviderDoc, id, context);
-    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
-    const children = await api.snapshot(WorkersDoc, id, context);
-    stopped.push(...(children?.workers.map((child) => child.conversationId) ?? []));
-  }
+  await releaseProviders(api, worker.id, context);
+}
+
+/**
+ * Retire an idle worker from the active roster. Its conversation and history stay; new messages are rejected until
+ * `reopenWorker`. Returns false when it was already closed.
+ */
+export async function closeWorker(
+  tx: Tx,
+  parentId: ConversationId,
+  name: string,
+): Promise<boolean> {
+  const state = await tx.doc(WorkersDoc, parentId);
+  const worker = named(state.workers, name);
+  if (worker.closed) return false;
+  // Checked in the closing commit, so no delivery or run can start between the check and the close.
+  const live = await tx.doc(LiveDoc, worker.conversationId);
+  const inbox = await tx.doc(InboxDoc, worker.conversationId);
+  if (
+    live.run !== undefined ||
+    inbox.items.length > 0 ||
+    (await pendingDelivery(state, name, (id) => tx.task(id)))
+  )
+    throw new Error(`${name} is busy; let it finish or stop it before closing`);
+  worker.closed = true;
+  return true;
+}
+
+/** Return a closed worker to the active roster; its conversation continues where it stopped. */
+export async function reopenWorker(tx: Tx, parentId: ConversationId, name: string): Promise<void> {
+  delete named((await tx.doc(WorkersDoc, parentId)).workers, name).closed;
 }
 
 /** Keep every active delivery and its settled answer, plus a recent completed retry window. */
@@ -393,8 +438,10 @@ export async function startWorker(
   const state = await tx.doc(WorkersDoc, parentId);
   const previous = state.deliveries.find((item) => item.requestId === requestId);
   if (previous !== undefined) return named(state.workers, previous.name).conversationId;
-  if (state.workers.some((item) => item.name === name))
-    throw new Error(`${name} already exists; send it a message instead`);
+  const existing = state.workers.find((item) => item.name === name);
+  if (existing?.closed)
+    throw new Error(`${name} is closed; reopen it with reopen_worker or choose another name`);
+  if (existing !== undefined) throw new Error(`${name} already exists; send it a message instead`);
   await pruneRecords(tx, parentId);
   const anchor = await tx.createTask(Anchor, null, {
     conversationId: parentId,
@@ -431,6 +478,7 @@ export async function messageWorker(
   const state = await tx.doc(WorkersDoc, parentId);
   const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
+    if (worker.closed) throw new Error(`${name} is closed; reopen it with reopen_worker first`);
     await pruneRecords(tx, parentId);
     const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "steer" };
     const taskId = await tx.createTask(Delivery, input, {
@@ -444,27 +492,46 @@ export async function messageWorker(
   return worker.conversationId;
 }
 
+/** Open workers, or every worker with `includeClosed`. */
 export async function listWorkers(
   reader: Pick<Harness, "snapshot" | "getTask">,
   parentId: ConversationId,
   context: Context,
+  includeClosed = false,
 ) {
   const state = await reader.snapshot(WorkersDoc, parentId, context);
   if (state === undefined) return [];
   return Promise.all(
-    state.workers.map(async (worker) => {
-      const live = await reader.snapshot(LiveDoc, worker.conversationId, context);
-      const agent = await reader.snapshot(AgentDoc, worker.conversationId, context);
-      return {
-        name: worker.name,
-        conversationId: worker.conversationId,
-        cwd: agent?.cwd,
-        busy:
-          live?.run !== undefined ||
-          (await pendingDelivery(state, worker.name, (id) => reader.getTask(id, context))),
-      };
-    }),
+    state.workers
+      .filter((worker) => includeClosed || worker.closed !== true)
+      .map(async (worker) => {
+        const live = await reader.snapshot(LiveDoc, worker.conversationId, context);
+        const agent = await reader.snapshot(AgentDoc, worker.conversationId, context);
+        return {
+          name: worker.name,
+          conversationId: worker.conversationId,
+          cwd: agent?.cwd,
+          closed: worker.closed === true,
+          busy:
+            live?.run !== undefined ||
+            (await pendingDelivery(state, worker.name, (id) => reader.getTask(id, context))),
+        };
+      }),
   );
+}
+
+/** Names of open sub-workers at any depth below `workerId` that are running or have a pending delivery. */
+async function busySubWorkers(
+  reader: Pick<Harness, "snapshot" | "getTask">,
+  workerId: ConversationId,
+  context: Context,
+): Promise<string[]> {
+  const busy: string[] = [];
+  for (const child of await listWorkers(reader, workerId, context)) {
+    if (child.busy) busy.push(child.name);
+    busy.push(...(await busySubWorkers(reader, child.conversationId, context)));
+  }
+  return busy;
 }
 
 /**
@@ -537,17 +604,58 @@ export function createWorkerTools(role: ModelRole) {
       defineTool({
         name: "worker_status",
         description:
-          "List this conversation's persistent background workers, their directories, and whether they have pending work.",
-        parameters: Type.Object({}),
+          "List this conversation's persistent background workers, their directories, and whether they have pending work. Closed workers are listed only with include_closed.",
+        parameters: Type.Object({ include_closed: Type.Optional(Type.Boolean()) }),
         replay: "safe",
-        execute: async (_args, api, context) => ({
+        execute: async (args, api, context) => ({
           content: [
             {
               type: "text",
-              text: JSON.stringify(await listWorkers(api, api.conversationId, context)),
+              text: JSON.stringify(
+                await listWorkers(api, api.conversationId, context, args.include_closed === true),
+              ),
             },
           ],
         }),
+      }),
+      defineTool({
+        name: "close_worker",
+        description:
+          "Close a finished worker you no longer need: it leaves the active roster and rejects new messages. Only an idle worker with no pending deliveries or busy sub-workers closes; its conversation and history are kept, and reopen_worker resumes it. Idle alone does not mean finished: keep workers that may be reused.",
+        parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
+        // Closing a closed worker changes nothing, and releasing provider resources again is harmless.
+        replay: "safe",
+        execute: async (args, api, context) => {
+          const workerId = await workerConversationId(api, api.conversationId, args.name, context);
+          // Sub-workers start only from the worker's own runs, which the closing commit rules out.
+          const busy = await busySubWorkers(api, workerId, context);
+          if (busy.length > 0)
+            throw new Error(`${args.name} has busy sub-workers: ${busy.join(", ")}`);
+          const closed = await api.commit(
+            (tx) => closeWorker(tx, api.conversationId, args.name),
+            context,
+          );
+          await releaseProviders(api, workerId, context);
+          return {
+            content: [
+              {
+                type: "text",
+                text: closed ? `Closed ${args.name}.` : `${args.name} was already closed.`,
+              },
+            ],
+          };
+        },
+      }),
+      defineTool({
+        name: "reopen_worker",
+        description:
+          "Reopen a closed worker: it returns to the active roster and accepts messages again, continuing its conversation.",
+        parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
+        replay: "safe",
+        execute: async (args, api, context) => {
+          await api.commit((tx) => reopenWorker(tx, api.conversationId, args.name), context);
+          return { content: [{ type: "text", text: `Reopened ${args.name}.` }] };
+        },
       }),
       defineTool({
         name: "post_update",

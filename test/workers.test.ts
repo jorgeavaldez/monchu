@@ -1,11 +1,19 @@
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { InboxDoc, type Conversation, type Harness } from "@earendil-works/pi-durable";
+import { InboxDoc, LiveDoc, type Conversation, type Harness } from "@earendil-works/pi-durable";
 import assert from "node:assert";
 import { once } from "node:events";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { messageWorker, startWorker, workerNotice, WorkersDoc } from "../src/workers.ts";
+import {
+  closeWorker,
+  listWorkers,
+  messageWorker,
+  reopenWorker,
+  startWorker,
+  workerNotice,
+  WorkersDoc,
+} from "../src/workers.ts";
 import {
   allEntries,
   cleanup,
@@ -18,6 +26,7 @@ import {
   route,
   setup,
   textOf,
+  toolResults,
   waitFor,
 } from "./support.ts";
 
@@ -607,6 +616,137 @@ describe("background workers", () => {
     release();
     await settle(harness, root);
     expect(await transcript(root)).toEqual(["user", "answer"]);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+});
+
+describe("worker lifecycle", () => {
+  it("closes only an idle worker, hides it, rejects messages until reopened, and keeps it across restart", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    route(value.faux, async (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "hold worker") await held;
+      return fauxAssistantMessage([fauxText(`answered ${text.split("\n", 1)[0]}`)]);
+    });
+    let { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "hold worker", value.directory, "start:0", fauxRole),
+      context,
+    );
+    await waitFor(
+      async () => (await harness.snapshot(LiveDoc, workerId, context))?.run !== undefined,
+    );
+    await expect(root.commit((tx) => closeWorker(tx, root.id, "w"), context)).rejects.toThrow(
+      "w is busy",
+    );
+    release();
+    await settle(harness, root);
+    expect(await root.commit((tx) => closeWorker(tx, root.id, "w"), context)).toBe(true);
+    expect(await root.commit((tx) => closeWorker(tx, root.id, "w"), context)).toBe(false);
+
+    expect(await listWorkers(harness, root.id, context)).toEqual([]);
+    expect(await listWorkers(harness, root.id, context, true)).toMatchObject([
+      { name: "w", closed: true, busy: false },
+    ]);
+    await expect(
+      root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:0"), context),
+    ).rejects.toThrow("w is closed; reopen it with reopen_worker first");
+    await expect(
+      root.commit(
+        (tx) => startWorker(tx, root.id, "w", "new", value.directory, "start:1", fauxRole),
+        context,
+      ),
+    ).rejects.toThrow("w is closed");
+    // A retry of a message accepted before the close still resolves to the same worker.
+    expect(
+      await root.commit((tx) => messageWorker(tx, root.id, "w", "hold worker", "start:0"), context),
+    ).toBe(workerId);
+    const history = await transcript(await conversationOf(harness, workerId));
+    expect(history).toEqual(["user", "answer"]);
+
+    await harness.close(context);
+    ({ harness, root } = await open(value));
+    expect(await listWorkers(harness, root.id, context)).toEqual([]);
+    await root.commit((tx) => reopenWorker(tx, root.id, "w"), context);
+    expect(await listWorkers(harness, root.id, context)).toMatchObject([
+      { name: "w", closed: false },
+    ]);
+    await root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:1"), context);
+    await settle(harness, root);
+    // The reopened worker continues the same conversation.
+    expect(await transcript(await conversationOf(harness, workerId))).toEqual([
+      "user",
+      "answer",
+      "user",
+      "answer",
+    ]);
+    await harness.close(context);
+    ({ harness, root } = await open(value));
+    expect(await listWorkers(harness, root.id, context)).toMatchObject([
+      { name: "w", closed: false },
+    ]);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
+  it("refuses close_worker while a sub-worker is busy, then closes and lists through the front's tools", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: Record<string, { tool: string; args: Record<string, string | boolean> }> = {
+      spawn: { tool: "start_worker", args: { name: "child", task: "hold child" } },
+      close: { tool: "close_worker", args: { name: "w" } },
+      status: { tool: "worker_status", args: { include_closed: true } },
+      reopen: { tool: "reopen_worker", args: { name: "w" } },
+    };
+    route(value.faux, async (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "hold child") await held;
+      const call = lastMessage(request.messages)?.role === "user" ? calls[text] : undefined;
+      return call === undefined
+        ? fauxAssistantMessage([fauxText("ok")])
+        : fauxAssistantMessage([fauxToolCall(call.tool, call.args)], { stopReason: "toolUse" });
+    });
+    const { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "spawn", value.directory, "start:0", fauxRole),
+      context,
+    );
+    const worker = await conversationOf(harness, workerId);
+    await waitFor(async () => (await listWorkers(harness, workerId, context))[0]?.busy === true);
+    await settle(harness, root);
+    await worker.waitForIdle(context);
+    let asked = 0;
+    const ask = async (content: string) => {
+      await (
+        await root.submit({ type: "input", content, requestId: `${content}:${++asked}` }, context)
+      ).wait(context);
+      return (await toolResults(root)).at(-1);
+    };
+    const refused = await ask("close");
+    expect(refused?.isError).toBe(true);
+    expect(textOf(refused)).toContain("w has busy sub-workers: child");
+
+    release();
+    await waitFor(async () => (await listWorkers(harness, workerId, context))[0]?.busy === false);
+    await settle(harness, worker);
+    await settle(harness, root);
+    const closed = await ask("close");
+    expect(closed?.isError).toBe(false);
+    expect(textOf(closed)).toBe("Closed w.");
+    expect(textOf(await ask("status"))).toContain('"name":"w"');
+    expect(textOf((await toolResults(root)).at(-1))).toContain('"closed":true');
+    expect(await listWorkers(harness, root.id, context)).toEqual([]);
+    expect(textOf(await ask("reopen"))).toBe("Reopened w.");
+    expect(await listWorkers(harness, root.id, context)).toMatchObject([{ name: "w" }]);
+    await settle(harness, root);
     expect(value.reports).toEqual([]);
     await harness.close(context);
   });
