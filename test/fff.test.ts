@@ -39,7 +39,7 @@ describe("fff tools on real native indexes", () => {
       await backend.changeDirectory(cwd);
       for (const [index, content] of ["find", "grep"].entries()) {
         if (index === 1) await backend.reload();
-        await backend.submit(content, `fff-reload-${index}`);
+        await backend.submit(content, `fff-reload-${index}`, "followUp");
         await waitFor(
           () =>
             state.value.entries

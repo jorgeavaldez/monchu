@@ -8,7 +8,6 @@ import { openDevMonchu } from "../src/dev-faux.ts";
 import { loadConfig } from "../src/config.ts";
 import { monchuHome } from "../src/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
-import { followUpKey } from "../src/tui/commands.ts";
 import {
   cleanup,
   fauxRole,
@@ -149,7 +148,7 @@ it("drops a closed worker from the roster at once and returns its selected view 
     send(screen, "/agents reader");
     await visible(screen, "worker: reader");
     // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
-    await backend.submit("close reader", "close-reader");
+    await backend.submit("close reader", "close-reader", "followUp");
     const back = await visible(screen, "worker reader closed · back to root");
     expect(back.join("\n")).toContain("root · front");
     await waitFor(
@@ -217,7 +216,7 @@ it("picks the shown conversation's model with Enter and saves its role default w
 }, 30_000);
 
 describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
-  it("steers a running reply with Enter and queues a follow-up with Pi's follow-up key", async () => {
+  it("steers a running reply in Alt+S steer mode and queues a follow-up otherwise", async () => {
     const value = await setup();
     const release = Promise.withResolvers<void>();
     // The user messages of each request in the held conversation, whose first message is `hold`.
@@ -245,11 +244,8 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
     const backend = await Monchu.open(home, value.faux.provider);
     const screen = new VirtualTerminal(60, 40);
     const running = runTerminal(backend, screen);
-    const followUp = followUpKey === "ctrl+q" ? "\x11" : "\x1b\r";
     try {
       await visible(screen, "Monchu · /help");
-      // With nothing typed, the follow-up key submits nothing.
-      screen.sendInput(followUp);
       if (target === "root") send(screen, "hold");
       else {
         await backend.startWorker("w", "hold", "start:w");
@@ -257,13 +253,15 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
         await visible(screen, "worker: w");
       }
       await waitFor(() => requests.length === 1);
+      screen.sendInput("\x1bs");
+      await visible(screen, "steer (Alt+S)");
       send(screen, "steer note");
-      await visible(screen, "│ steer · steer note");
-      screen.sendInput("later note");
-      await visible(screen, "later note");
-      screen.sendInput(followUp);
-      const queued = await visible(screen, "│ follow-up · later note");
-      // The editor is cleared as Enter clears it; only the dock shows the queued text.
+      await visible(screen, "│ you · steer · steer note");
+      screen.sendInput("\x1bs");
+      await visible(screen, "follow-up (Alt+S)");
+      send(screen, "later note");
+      const queued = await visible(screen, "│ you · follow-up · later note");
+      // The editor is cleared on send; only the dock shows the queued text.
       expect(queued.filter((line) => line.includes("later note"))).toHaveLength(1);
       release.resolve();
       await visible(screen, "answered later note");
@@ -273,9 +271,9 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
         ["hold", "steer note"],
         ["hold", "steer note", "later note"],
       ]);
-      // While idle, the follow-up key sends at once, as Enter does.
-      screen.sendInput("idle note");
-      screen.sendInput(followUp);
+      // While idle, a message sends at once in either mode.
+      screen.sendInput("\x1bs");
+      send(screen, "idle note");
       await visible(screen, "answered idle note");
       expect(requests.at(-1)?.at(-1)).toBe("idle note");
     } finally {

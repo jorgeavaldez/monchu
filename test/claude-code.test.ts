@@ -498,7 +498,7 @@ describe("Claude Code subscription provider", () => {
     const view = await backend.viewState();
     try {
       for (const n of [1, 2]) {
-        await backend.submit("turn" + n, "turn" + n);
+        await backend.submit("turn" + n, "turn" + n, "followUp");
         await waitFor(() =>
           view.value.entries.some((entry) =>
             entry.model?.some(
@@ -513,7 +513,7 @@ describe("Claude Code subscription provider", () => {
       await backend.compact(undefined);
       await waitFor(() => view.value.entries.some((entry) => CompactionEntry.is(entry)));
       expect(script.requests[2]?.input.options?.persistSession).toBe(false);
-      await backend.submit("after compaction", "after-compaction");
+      await backend.submit("after compaction", "after-compaction", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           entry.model?.some(
@@ -524,7 +524,7 @@ describe("Claude Code subscription provider", () => {
       expect(script.requests[3]?.path).toBe(original);
       expect(JSON.stringify(script.requests[3]?.history)).toContain("answer3");
       await backend.reset(undefined);
-      await backend.submit("after reset", "after-reset");
+      await backend.submit("after reset", "after-reset", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           entry.model?.some(
@@ -564,7 +564,7 @@ describe("Claude Code subscription provider", () => {
         return prompt.append ?? "";
       });
     try {
-      await backend.submit("front", "front-request");
+      await backend.submit("front", "front-request", "followUp");
       await waitFor(() => script.requests.length === 1);
       await backend.changeDirectory(project);
       await backend.startWorker("reader", "inspect", "worker-request");
@@ -626,7 +626,7 @@ PROJECT RULES
       await openClaudeModels(value.directory, script.provider, token);
       const backend = await Monchu.open(value.directory, script.provider);
       try {
-        if (target === "front") await backend.submit("block", "block-front");
+        if (target === "front") await backend.submit("block", "block-front", "followUp");
         else await backend.startWorker("blocked", "block", "block-worker");
         await waitFor(async () => {
           try {

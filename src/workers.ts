@@ -477,7 +477,7 @@ export async function messageWorker(
   name: string,
   message: string,
   requestId: string,
-  whenBusy: WhenBusy = "steer",
+  whenBusy: WhenBusy,
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const worker = named(state.workers, name);
@@ -600,6 +600,7 @@ export function createWorkerTools(role: () => ModelRole) {
                 args.name,
                 args.message,
                 `tool:${api.taskId}:${api.callId}`,
+                "steer",
               ),
             context,
           );

@@ -142,9 +142,10 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
-Esc interrupts a running front only and does nothing while it is idle. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
+Esc interrupts a running front only and does nothing while it is idle; your own messages still queued for the front come back into the editor, oldest first, ahead of anything typed. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
-As in Pi, Enter while the shown conversation is replying steers that reply: the message joins it at the next tool boundary. Pi's follow-up key, Alt+Enter (Ctrl+Q on Windows and WSL, where terminals take Alt+Enter), queues the message until the reply finishes instead; while idle it sends like Enter. The dock shows each queued message as `steer` or `follow-up`.
+Alt+S toggles what a message sent to a busy conversation, the root or a worker, does: follow-up (the default) waits for the current reply to finish; steer joins it after its current tool round. Steer mode turns the editor border yellow, and the footer names the mode.
+The dock lists queued input by sender: yours behind a yellow `you · <mode>` rule, a worker's reply behind a purple rule and an update behind a gray one, as in the transcript.
 `/model [search]` and `/thinking` open Pi's model and thinking-level selectors for the conversation shown, the root or the worker selected with `/agents`. The current model is listed first and the role default second, from providers with credentials.
 Enter changes only that conversation, from its next model request; `config.json` is untouched, and the notice says `this conversation only`. A root pick is stored with the root, separately for the model and the thinking level, so startup, `/reload` and `/new` keep it instead of the `front` default; edits to `front` in `config.json` apply only to the field not picked. To make the root follow `front` again, pick the value you want and press Ctrl+S: that saves it as the default and clears the root's pick for that field. Workers never re-read their default after they start.
 Ctrl+S also saves the pick as its role's default (`front` for the root, `worker` for workers), which clears the root's pick; new workers use the saved worker default at once, and existing workers keep theirs. It refuses, changing nothing, a role whose default model doesn't support the saved thinking level (the picker lists the shown conversation's levels, which may be another model's). Saves and `/reload` never overlap.
@@ -184,7 +185,7 @@ Unfinished work resumes when the backend opens, whether or not a terminal is att
 A worker's result reaches the parent as a labelled follow-up input, so the front gets a turn: it tells Jorge in a line or two and continues with the next step.
 While the front is busy, the report queues until its current answer, then starts one turn; it never lands between a tool call and its result.
 Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
-`/abort` withdraws queued input: a withdrawn report is posted again, a withdrawn update is dropped.
+`/abort` withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
 Non-fatal runtime failures appear as `system · warning` and are appended to `~/.monchu/monchu.log`.
 Reports do not authorize new actions.
 

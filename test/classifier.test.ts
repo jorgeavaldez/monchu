@@ -67,7 +67,7 @@ async function withAssessment(extensions: readonly Extension[] = []) {
   value.registry.install(assessment.extension);
   const opened = await open(value);
   const send = async (message: string) =>
-    (await assessment.submit(opened.root, message, `test:${message}`, "steer", context)).wait(
+    (await assessment.submit(opened.root, message, `test:${message}`, "followUp", context)).wait(
       context,
     );
   const items = async () =>

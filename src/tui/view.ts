@@ -55,7 +55,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { escalationSummary } from "../classifier.ts";
 import { parseWorkerNotice, workerNotice, type WhenBusy } from "../workers.ts";
-import { commands, followUpKey } from "./commands.ts";
+import { commands } from "./commands.ts";
 import { presentation, type QueuedItem } from "./state.ts";
 
 /**
@@ -79,24 +79,27 @@ function firstLine(text: string): string {
 }
 
 /**
- * A queued inbox row: input waiting for a boundary has a yellow rule and its mode, then its source when it is not the
- * user's own text, then its first line; a passive write stays muted.
+ * A queued inbox row, styled by who sent it: the user's own message has a yellow `you` rule and its text in the user's
+ * color; a worker's keeps its transcript style, a purple rule and name for a reply or failure and gray for an update;
+ * an effort assessment and a passive write stay muted. Every input row names its mode.
  */
 function queuedLine(item: QueuedItem): string {
   const muted = getSelectListTheme().description;
   if (item.mode === "write") return muted(`│ write · ${item.text}`);
+  const mode = item.mode === "steer" ? "steer" : "follow-up";
   const worker = parseWorkerNotice(item.text);
-  const assessment = worker === undefined ? escalationSummary(item.text) : undefined;
-  const source =
-    worker !== undefined
-      ? `${worker.name} ${worker.status === "completed" ? "reply" : worker.status} · `
-      : assessment !== undefined
-        ? "effort assessment · "
-        : "";
-  const text = worker?.text ?? assessment ?? item.text;
-  return `${theme.fg("warning", `│ ${item.mode === "steer" ? "steer" : "follow-up"}`)}${muted(
-    ` · ${source}${firstLine(text)}`,
-  )}`;
+  if (worker !== undefined) {
+    const update = worker.status === "update";
+    const kind = update ? "update" : worker.status === "completed" ? "reply" : "failed";
+    return `${theme.fg(update ? "borderMuted" : "borderAccent", "│")} ${theme.fg(
+      update ? "muted" : "accent",
+      `${worker.name} ${kind}`,
+    )}${muted(` · ${mode} · ${firstLine(worker.text)}`)}`;
+  }
+  const assessment = escalationSummary(item.text);
+  if (assessment !== undefined)
+    return muted(`│ effort assessment · ${mode} · ${firstLine(assessment)}`);
+  return `${theme.fg("warning", `│ you · ${mode}`)}${theme.fg("userMessageText", ` · ${firstLine(item.text)}`)}`;
 }
 
 class AgentSelector extends Container implements Focusable {
@@ -346,6 +349,9 @@ export class MonchuTui {
   private readonly loginPrompt = new Container();
   private conversationId: number | undefined;
   private cwd: string;
+  // What a message sent to a busy conversation does; Alt+S toggles it for the root and workers alike.
+  private mode: WhenBusy = "followUp";
+  private location = "";
 
   constructor(
     terminal: Terminal,
@@ -373,7 +379,7 @@ export class MonchuTui {
       if (!text.trim()) return;
       this.editor.addToHistory(text);
       this.editor.setText("");
-      handlers.submit(text, "steer");
+      handlers.submit(text, this.mode);
     };
     this.editorContainer.addChild(this.editor);
     this.transcript = new ScrollView(this.chat, {
@@ -428,14 +434,9 @@ export class MonchuTui {
         handlers.abort();
         return { consume: true };
       }
-      // As in Pi: the follow-up key queues the editor's message behind a running reply instead of steering it.
-      if (matchesKey(data, followUpKey) && !this.editor.isShowingAutocomplete()) {
-        const text = this.editor.getExpandedText().trim();
-        if (text) {
-          this.editor.addToHistory(text);
-          this.editor.setText("");
-          handlers.submit(text, "followUp");
-        }
+      if (matchesKey(data, "alt+s")) {
+        this.mode = this.mode === "steer" ? "followUp" : "steer";
+        this.showMode();
         return { consume: true };
       }
       if (matchesKey(data, "ctrl+d") && !this.editor.getText()) {
@@ -581,6 +582,31 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
+  /** Put withdrawn queued messages back in the editor, oldest first, ahead of anything already typed. */
+  restoreQueued(texts: readonly string[]): void {
+    const combined = [...texts, this.editor.getText()].filter((text) => text.trim());
+    this.editor.setText(combined.join("\n\n"));
+    this.ui.requestRender();
+  }
+
+  /** Steer mode is yellow on the editor's border and named in the footer; follow-up keeps the plain border. */
+  private showMode(): void {
+    const steer = this.mode === "steer";
+    this.editor.borderColor = steer
+      ? (text) => theme.fg("warning", text)
+      : (text) => getSelectListTheme().selectedText(text);
+    const muted = getSelectListTheme().description;
+    this.footer.clear();
+    this.footer.addChild(
+      new TruncatedText(
+        `${steer ? theme.fg("warning", "steer") : muted("follow-up")}${muted(` (Alt+S) · ${this.location}`)}`,
+        1,
+        0,
+      ),
+    );
+    this.ui.requestRender();
+  }
+
   notice(text: string, kind: NoticeKind = "system"): void {
     this.posted.push({ text, kind });
     this.chat.addChild(new Spacer(1));
@@ -721,18 +747,9 @@ export class MonchuTui {
         : undefined;
       if (this.loader) this.status.addChild(this.loader);
     }
-    this.footer.clear();
-    this.footer.addChild(
-      new TruncatedText(
-        getSelectListTheme().description(
-          `${selected === undefined ? "root" : `worker: ${selected}`} · ${state.model} · ${this.cwd}`,
-        ),
-        1,
-        0,
-      ),
-    );
+    this.location = `${selected === undefined ? "root" : `worker: ${selected}`} · ${state.model} · ${this.cwd}`;
     // The alt screen rewrites every changed row; a forced render would clear the screen first and flash.
-    this.ui.requestRender();
+    this.showMode();
   }
 
   private addEntry(entry: EntryRecord): void {

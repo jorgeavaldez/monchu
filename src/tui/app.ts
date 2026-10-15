@@ -5,8 +5,8 @@ import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendi
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
-import type { WhenBusy } from "../workers.ts";
 import { formatOpenGoals } from "../goals.ts";
+import type { WhenBusy } from "../workers.ts";
 import { help, parseInput } from "./commands.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
@@ -74,12 +74,16 @@ export async function runTerminal(
   }
 
   let inputs = Promise.resolve();
+  async function abort(): Promise<void> {
+    view.restoreQueued(await backend.abort());
+    view.notice("front stopped; workers continue");
+  }
   const interrupt = () => {
     if (login !== undefined) {
       login.abort();
       return;
     }
-    inputs = inputs.then(() => handle("/abort")).catch(fail);
+    inputs = inputs.then(abort).catch(fail);
   };
   const view = new MonchuTui(terminal, backend.home, {
     submit: (text, whenBusy) => {
@@ -158,7 +162,7 @@ export async function runTerminal(
     show();
   }
 
-  async function handle(raw: string, whenBusy: WhenBusy = "steer"): Promise<void> {
+  async function handle(raw: string, whenBusy: WhenBusy): Promise<void> {
     if (closing) return;
     const input = parseInput(raw);
     if (!input) return;
@@ -236,8 +240,7 @@ export async function runTerminal(
         exit();
         break;
       case "/abort":
-        await backend.abort();
-        view.notice("front stopped; workers continue");
+        await abort();
         break;
       case "/workers": {
         await refreshWorkers();
@@ -351,7 +354,7 @@ export async function runTerminal(
         await refreshWorkers();
         break;
       case "/tell":
-        await backend.messageWorker(input.name, input.text, randomUUID());
+        await backend.messageWorker(input.name, input.text, randomUUID(), whenBusy);
         view.notice(`${input.name} · message committed`, "message");
         await refreshWorkers();
         break;

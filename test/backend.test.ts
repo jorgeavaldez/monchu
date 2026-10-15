@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { loadConfig } from "../src/config.ts";
+import { presentation } from "../src/tui/state.ts";
+import { workerNotice } from "../src/workers.ts";
 import {
   cleanup,
   fauxRole,
@@ -238,7 +240,7 @@ describe("backend", () => {
     const { home, backend } = await openBackend(value);
     const state = await backend.viewState();
     try {
-      await backend.submit("held", "held");
+      await backend.submit("held", "held", "followUp");
       await started.promise;
       await writeFile(
         join(home, "config.json"),
@@ -269,7 +271,7 @@ describe("backend", () => {
           entry.model?.some((message) => message.role === "assistant"),
         ),
       );
-      await backend.submit("next", "next");
+      await backend.submit("next", "next", "followUp");
       await waitFor(() => requests.some((request) => request.text === "next"));
       await backend.startWorker("new", "worker request", "new-worker");
       await waitFor(() => requests.some((request) => request.text === "worker request"));
@@ -325,7 +327,7 @@ describe("backend", () => {
       const backend = await Monchu.open(value.directory, value.faux.provider);
       const state = await backend.viewState();
       try {
-        await backend.submit("check env", "env");
+        await backend.submit("check env", "env", "followUp");
         await waitFor(() =>
           state.value.entries.some((entry) =>
             entry.model?.some(
@@ -418,7 +420,7 @@ describe("backend", () => {
         "Reload failed: Monchu has no configured model openai-codex/no-such-model",
       );
       expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);
-      await backend.submit("after failure", "after-failure");
+      await backend.submit("after failure", "after-failure", "followUp");
       await waitFor(() => requests.length === 1);
       expect(requests).toEqual(["faux-1"]);
 
@@ -459,7 +461,7 @@ describe("backend", () => {
     });
     const { backend } = await openBackend(value);
     try {
-      await backend.submit("root request", "root");
+      await backend.submit("root request", "root", "followUp");
       await backend.startWorker("w", "worker request", "start:w");
       await waitFor(() => tools.has("root request") && tools.has("worker request"));
       for (const name of ["root request", "worker request"])
@@ -538,7 +540,7 @@ describe("backend", () => {
     let backend = opened.backend;
     const path = join(home, "config.json");
     const sent = async (text: string) => {
-      await backend.submit(text, text);
+      await backend.submit(text, text, "followUp");
       await waitFor(() => requests.some((request) => request.text === text));
       return requests.find((request) => request.text === text)?.model;
     };
@@ -637,4 +639,67 @@ describe("backend", () => {
       await backend.close();
     }
   }, 30000);
+
+  it("queues messages as steer or follow-up, and abort hands back only the user's own queued text", async () => {
+    const value = await setup();
+    let holding = true;
+    // The front and one worker hold their runs until aborted; everything else answers at once.
+    route(value.faux, async (request, options) => {
+      const text = textOf(lastMessage(request.messages));
+      if ((text === "hold front" && holding) || text === "hold worker") {
+        const signal = options?.signal;
+        if (signal === undefined) throw new Error("Hold requires cancellation");
+        if (!signal.aborted) await once(signal, "abort");
+      }
+      return fauxAssistantMessage(`done ${text}`);
+    });
+    const { backend } = await openBackend(value);
+    const root = await backend.viewState();
+    try {
+      await backend.submit("hold front", "hold", "followUp");
+      await waitFor(() => presentation(root.value).busy);
+      // A worker's report queues behind the held front with the user's own messages.
+      await backend.startWorker("quick", "quick", "start:quick");
+      await waitFor(() => presentation(root.value).queue.length === 1);
+      await backend.submit("one", "one", "followUp");
+      await backend.submit("two", "two", "steer");
+      await waitFor(() => presentation(root.value).queue.length === 3);
+      expect(presentation(root.value).queue.slice(1)).toEqual([
+        { mode: "followUp", text: "one" },
+        { mode: "steer", text: "two" },
+      ]);
+
+      // Messages to a busy worker take the chosen mode too.
+      await backend.startWorker("held", "hold worker", "start:held");
+      const worker = await backend.viewState("held");
+      try {
+        await waitFor(() => presentation(worker.value).busy);
+        await backend.messageWorker("held", "later", "later", "followUp");
+        await waitFor(() => presentation(worker.value).queue.length === 1);
+        expect(presentation(worker.value).queue).toEqual([{ mode: "followUp", text: "later" }]);
+      } finally {
+        worker.dispose();
+      }
+      await backend.stopWorker("held");
+
+      holding = false;
+      expect(await backend.abort()).toEqual(["one", "two"]);
+      // The withdrawn report is posted again and answered; the user's messages never reach the transcript.
+      await waitFor(() =>
+        root.value.entries.some((entry) => workerNotice(entry)?.name === "quick"),
+      );
+      await waitFor(() => !presentation(root.value).busy);
+      const users = root.value.entries.flatMap((entry) => {
+        const message = entry.model?.[0];
+        return message?.role === "user" && workerNotice(entry) === undefined
+          ? [textOf(message)]
+          : [];
+      });
+      expect(users).toEqual(["hold front"]);
+      expect(presentation(root.value).queue).toEqual([]);
+    } finally {
+      root.dispose();
+      await backend.close();
+    }
+  });
 });

@@ -422,7 +422,7 @@ describe("committed Durable presentation", () => {
   });
 
   it.each(["dark", "light"])(
-    "shows each event kind by style: queued and steered input yellow, worker replies purple, updates gray (%s)",
+    "shows each event kind by style: my queued input yellow, worker replies purple, updates gray (%s)",
     async (name) => {
       const value = await setup();
       const held = Promise.withResolvers<void>();
@@ -503,15 +503,20 @@ describe("committed Durable presentation", () => {
         ui.notice("reader · received", "message");
         const dock = await viewport();
         const queued = dock.join("\n");
-        for (const text of [
-          "│ follow-up · queued first …",
-          "│ steer · steer now",
-          "│ follow-up · reader update · checking files …",
-          "│ follow-up · reader reply · report line one …",
-          "│ message · reader · received",
-        ]) {
+        // Queued rows keep the sender's style: mine yellow, in the user's text color; a worker's as in the transcript.
+        const userText = await color(theme.fg("userMessageText", "x"));
+        for (const [text, ruled, body] of [
+          ["│ you · follow-up · queued first …", yellow, userText],
+          ["│ you · steer · steer now", yellow, userText],
+          ["│ reader update · follow-up · checking files …", gray, muted],
+          ["│ reader reply · follow-up · report line one …", purple, muted],
+          ["│ message · reader · received", yellow, muted],
+        ] as const) {
           expect(queued).toContain(text);
-          expect(await rule(dock, (line) => line.includes(text))).toBe(yellow);
+          const match = (line: string) => line.includes(text);
+          expect(await rule(dock, match)).toBe(ruled);
+          const row = dock.findIndex(match);
+          expect(await screen.foreground(row, (dock[row] ?? "").lastIndexOf("·") + 2)).toBe(body);
         }
         // The worker wrapper's labels and guidance never reach the screen.
         expect(queued).not.toMatch(/not a new user instruction|\[followUp\]|\[steer\]|\[Worker /);
@@ -541,7 +546,6 @@ describe("committed Durable presentation", () => {
           expect(await screen.foreground(row, 0)).toBe(gray);
         expect(await screen.foreground(update, 2)).toBe(muted);
         // The user's own messages, multiline ones too, and the front's reply keep their plain look.
-        const userText = await color(theme.fg("userMessageText", "x"));
         for (const text of ["hold front", "queued first", "queued second", "steer now"]) {
           const row = lines.findIndex((line) => line.trim() === text);
           expect(row, text).toBeGreaterThan(-1);
@@ -563,6 +567,73 @@ describe("committed Durable presentation", () => {
       }
     },
   );
+
+  it("toggles steer and follow-up with Alt+S, shows the mode, and restores queued text ahead of a draft", async () => {
+    const value = await setup();
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(60, 20);
+    const sent: [string, string][] = [];
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: (text, whenBusy) => sent.push([text, whenBusy]),
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    const viewport = async () => {
+      ui.ui.renderNow();
+      return screen.flushAndGetViewport();
+    };
+    // The editor's bottom border: the last full rule above the footer.
+    const border = async () => {
+      const lines = await viewport();
+      const row = lines.findLastIndex((line) => line.startsWith("───"));
+      return screen.foreground(row, 0);
+    };
+    const probe = new VirtualTerminal(4, 1);
+    probe.write(theme.fg("warning", "─"));
+    const yellow = await probe.foreground(0, 0);
+    try {
+      ui.apply(state.value);
+      ui.start();
+      expect((await viewport()).join("\n")).toContain("follow-up (Alt+S) · root");
+      expect(await border()).not.toBe(yellow);
+      screen.sendInput("a");
+      screen.sendInput("\r");
+      screen.sendInput("\x1bs");
+      await waitFor(async () => (await viewport()).join("\n").includes("steer (Alt+S) · root"));
+      expect(await border()).toBe(yellow);
+      screen.sendInput("b");
+      screen.sendInput("\r");
+      screen.sendInput("\x1bs");
+      screen.sendInput("c");
+      screen.sendInput("\r");
+      await waitFor(() => sent.length === 3);
+      expect(sent).toEqual([
+        ["a", "followUp"],
+        ["b", "steer"],
+        ["c", "followUp"],
+      ]);
+      expect(await border()).not.toBe(yellow);
+
+      screen.sendInput("draft");
+      await waitFor(async () => (await viewport()).join("\n").includes("draft"));
+      ui.restoreQueued(["one", "two\nlines"]);
+      const lines = (await viewport()).map((line) => line.replace(/│/g, "").trim());
+      const at = (text: string) => lines.indexOf(text);
+      expect(at("one")).toBeGreaterThan(-1);
+      expect([at("one"), at("two"), at("lines"), at("draft")]).toEqual([
+        at("one"),
+        at("one") + 2,
+        at("one") + 3,
+        at("one") + 5,
+      ]);
+    } finally {
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  });
 
   it("keeps placed worker updates and reports in worker style without their wrapper after every refresh", async () => {
     const value = await setup();

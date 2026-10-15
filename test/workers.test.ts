@@ -111,7 +111,7 @@ describe("background workers", () => {
     for (let index = 0; index < 205; index++) {
       if (index > 0)
         await root.commit(
-          (tx) => messageWorker(tx, root.id, "w", "work", `request:${index}`),
+          (tx) => messageWorker(tx, root.id, "w", "work", `request:${index}`, "steer"),
           context,
         );
       await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
@@ -139,7 +139,10 @@ describe("background workers", () => {
         context,
       ),
     ).toBe(workerId);
-    await root.commit((tx) => messageWorker(tx, root.id, "w", "ignored", "request:203"), context);
+    await root.commit(
+      (tx) => messageWorker(tx, root.id, "w", "ignored", "request:203", "steer"),
+      context,
+    );
     expect(await harness.snapshot(WorkersDoc, root.id, context)).toEqual(before);
     expect(value.reports).toEqual([]);
     await harness.close(context);
@@ -162,7 +165,7 @@ describe("background workers", () => {
     );
     for (let index = 1; index < 205; index++)
       await root.commit(
-        (tx) => messageWorker(tx, root.id, "w", "work", `pending:${index}`),
+        (tx) => messageWorker(tx, root.id, "w", "work", `pending:${index}`, "steer"),
         context,
       );
     const before = await harness.snapshot(WorkersDoc, root.id, context);
@@ -202,7 +205,7 @@ describe("background workers", () => {
     for (let index = 0; index < 205; index++) {
       if (index > 0)
         await root.commit(
-          (tx) => messageWorker(tx, root.id, "w", "work", `held:${index}`),
+          (tx) => messageWorker(tx, root.id, "w", "work", `held:${index}`, "steer"),
           context,
         );
       const taskId = await deliveryTaskId(harness, root.id, -1);
@@ -654,7 +657,7 @@ describe("worker lifecycle", () => {
       { name: "w", closed: true, busy: false },
     ]);
     await expect(
-      root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:0"), context),
+      root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:0", "steer"), context),
     ).rejects.toThrow("w is closed; reopen it with reopen_worker first");
     await expect(
       root.commit(
@@ -664,7 +667,10 @@ describe("worker lifecycle", () => {
     ).rejects.toThrow("w is closed");
     // A retry of a message accepted before the close still resolves to the same worker.
     expect(
-      await root.commit((tx) => messageWorker(tx, root.id, "w", "hold worker", "start:0"), context),
+      await root.commit(
+        (tx) => messageWorker(tx, root.id, "w", "hold worker", "start:0", "steer"),
+        context,
+      ),
     ).toBe(workerId);
     const history = await transcript(await conversationOf(harness, workerId));
     expect(history).toEqual(["user", "answer"]);
@@ -676,7 +682,7 @@ describe("worker lifecycle", () => {
     expect(await listWorkers(harness, root.id, context)).toMatchObject([
       { name: "w", closed: false },
     ]);
-    await root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:1"), context);
+    await root.commit((tx) => messageWorker(tx, root.id, "w", "more", "more:1", "steer"), context);
     await settle(harness, root);
     // The reopened worker continues the same conversation.
     expect(await transcript(await conversationOf(harness, workerId))).toEqual([

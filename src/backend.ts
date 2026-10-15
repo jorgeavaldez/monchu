@@ -14,6 +14,7 @@ import {
   configure,
   defineDoc,
   Harness,
+  InboxDoc,
   LiveDoc,
   ProviderDoc,
   type Conversation,
@@ -25,7 +26,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AssessmentsDoc, type Assessment } from "./classifier.ts";
+import { AssessmentsDoc, escalationSummary, type Assessment } from "./classifier.ts";
 import {
   isThinkingLevel,
   loadConfig,
@@ -42,6 +43,7 @@ import {
   hasPendingDelivery,
   listWorkers,
   messageWorker,
+  parseWorkerNotice,
   startWorker,
   stopWorker,
   workerConversationId,
@@ -205,10 +207,10 @@ export class Monchu {
   }
 
   /**
-   * Resolves on durable admission, never on the model answer. Retry with the same request ID. While the front is busy,
-   * the message steers its current run, or with `followUp` waits for the run to finish.
+   * Resolves on durable admission, never on the model answer. Retry with the same request ID. `whenBusy` decides
+   * whether a message reaching a busy front steers its run or waits for it to finish.
    */
-  async submit(message: string, requestId: string, whenBusy: WhenBusy = "steer"): Promise<void> {
+  async submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
     const assessment = this.extensions.assessment;
@@ -279,7 +281,7 @@ export class Monchu {
     name: string,
     message: string,
     requestId: string,
-    whenBusy: WhenBusy = "steer",
+    whenBusy: WhenBusy,
   ): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
@@ -307,10 +309,34 @@ export class Monchu {
     await stopWorker(this.harness, this.front.id, name, context);
   }
 
-  async abort(): Promise<void> {
+  /**
+   * Stop the front only. Returns the user's own queued messages, oldest first, withdrawn so the caller can put them
+   * back in the editor. The abort withdraws the rest as before: a worker report is posted again, an update is dropped.
+   */
+  async abort(): Promise<string[]> {
+    const restored = await this.front.commit(async (tx) => {
+      const inbox = await tx.doc(InboxDoc, this.front.id);
+      const mine = inbox.items.flatMap((item) =>
+        item.mode !== "write" &&
+        typeof item.content === "string" &&
+        parseWorkerNotice(item.content) === undefined &&
+        escalationSummary(item.content) === undefined
+          ? [{ id: item.id, text: item.content }]
+          : [],
+      );
+      for (const { id } of mine) {
+        tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
+        inbox.items.splice(
+          inbox.items.findIndex((item) => item.id === id),
+          1,
+        );
+      }
+      return mine.map((item) => item.text);
+    }, context);
     await this.front.abort(context);
     const provider = await this.harness.snapshot(ProviderDoc, this.front.id, context);
     if (provider !== undefined) cleanupSessionResources(provider.sessionId);
+    return restored;
   }
 
   /** The model and thinking level of the root or a worker, its role's default, and the chat models with credentials. */
