@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
-import { initTheme } from "../src/tui/theme/theme.ts";
+import { WorkerMessageComponent } from "../src/tui/components/worker-message.ts";
+import { initTheme, theme } from "../src/tui/theme/theme.ts";
 import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
@@ -416,6 +417,30 @@ describe("committed Durable presentation", () => {
       await harness.close(context);
     }
   });
+
+  it.each(["dark", "light"])(
+    "fills every worker message row with its own gray background (%s)",
+    (name) => {
+      initTheme(name);
+      const background = theme.bg("workerMessageBg", "").slice(0, -"\x1b[49m".length);
+      for (const other of ["userMessageBg", "toolPendingBg", "toolSuccessBg"] as const)
+        expect(theme.bg(other, "")).not.toContain(background);
+      const text = Array.from({ length: 6 }, (_, index) => `report line ${index + 1}`).join("\n\n");
+      const message = new WorkerMessageComponent(
+        { name: "w", status: "completed", text },
+        () => {},
+      );
+      for (const expanded of [false, true]) {
+        message.setExpanded(expanded);
+        const lines = message.render(40);
+        expect(lines.length).toBeGreaterThan(4);
+        for (const line of lines) {
+          expect(line).toContain(background);
+          expect(visibleWidth(line)).toBe(40);
+        }
+      }
+    },
+  );
 
   it("shows running bash output as it grows and settles the card when it finishes", async () => {
     const value = await setup();

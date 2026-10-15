@@ -43,7 +43,8 @@ type ThemeBg =
   | "customMessageBg"
   | "toolPendingBg"
   | "toolSuccessBg"
-  | "toolErrorBg";
+  | "toolErrorBg"
+  | "workerMessageBg";
 
 function isBackground(token: string): token is ThemeBg {
   return (
@@ -53,7 +54,8 @@ function isBackground(token: string): token is ThemeBg {
     token === "customMessageBg" ||
     token === "toolPendingBg" ||
     token === "toolSuccessBg" ||
-    token === "toolErrorBg"
+    token === "toolErrorBg" ||
+    token === "workerMessageBg"
   );
 }
 function isForeground(token: string): token is ThemeColor {

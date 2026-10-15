@@ -333,6 +333,26 @@ describe.each([
       await visible(screen, "worker · reader · completed");
       await visible(screen, "Faux front: result received.");
       await visible(screen, "Workers · 1 idle · /agents");
+      // Overflow the transcript so the row above the bar is the last message's timestamp, not filler.
+      screen.resize(columns, 14);
+      let docked: string[] = [];
+      await waitFor(async () => {
+        docked = await screen.flushAndGetViewport();
+        return (
+          docked.some((line) => line.includes("result received.")) &&
+          docked.some((line) => line.includes("Workers · 1 idle"))
+        );
+      });
+      const bar = docked.findIndex((line) => line.includes("Workers · 1 idle"));
+      // A blank row separates the bar from the last message's timestamp.
+      expect(docked[bar - 1]?.trim()).toBe("");
+      expect(docked[bar - 2]).toMatch(/\d{4}, \d+:\d{2}/);
+      // The footer keeps the view and model but drops the command hints.
+      const footer = docked.findLast((line) => line.includes("root · "));
+      expect(footer).toBeDefined();
+      expect(footer).not.toContain("/agents");
+      expect(footer).not.toContain("/help");
+      screen.resize(columns, 40);
       send(screen, "/agents");
       const panel = await visible(screen, "View and talk to");
       // The menu lists each worker with its status, behind the dock's compact counts.

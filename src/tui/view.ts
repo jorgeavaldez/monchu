@@ -451,7 +451,11 @@ export class MonchuTui {
     if (line === this.workersLine) return;
     this.workersLine = line;
     this.workers.clear();
-    if (line) this.workers.addChild(new TruncatedText(line, 1, 0));
+    // A blank row keeps the bar apart from the last message's timestamp.
+    if (line) {
+      this.workers.addChild(new Spacer(1));
+      this.workers.addChild(new TruncatedText(line, 1, 0));
+    }
     this.ui.requestRender();
   }
 
@@ -549,7 +553,7 @@ export class MonchuTui {
     this.footer.addChild(
       new TruncatedText(
         getSelectListTheme().description(
-          `${selected === undefined ? "root" : `worker: ${selected}`} · ${state.model} · /agents · /help · ${this.cwd}`,
+          `${selected === undefined ? "root" : `worker: ${selected}`} · ${state.model} · ${this.cwd}`,
         ),
         1,
         0,
