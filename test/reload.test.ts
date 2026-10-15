@@ -259,6 +259,8 @@ describe("in-process reload", () => {
       "goals",
       "memory",
       "identity",
+      "jj",
+      "herdr",
       "classifier",
     ]);
     const sections: string[] = [];

@@ -153,9 +153,10 @@ Ctrl+S also saves the pick as its role's default (`front` for the root, `worker`
 `/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
-All roles receive the same installed tools: read, write, edit, bash, `fffind`, `ffgrep`, worker management, and `codemode`. File/shell tools come from Durable, including optional `powershell`. The search tools port @ff-labs/pi-fff 0.11.0's tool logic (MIT) on @ff-labs/fff-node 0.11.0: git-aware fuzzy/glob path search and smart-case content search, with filters, context, fuzzy fallback, and pagination. Native indexes follow each conversation's execution directory and support paths outside it; Monchu owns and closes their handles across reloads. fff ships android-arm64, so searches are not skipped on Termux. Tool selection comes from `config.json` settings; `grep`, `find`, and `ls` are no longer built-ins.
+All roles receive the same installed tools: read, write, edit, bash, `fffind`, `ffgrep`, `jj`, `jj_write`, `herdr`, worker management, and `codemode`. File/shell tools come from Durable, including optional `powershell`. The search tools port @ff-labs/pi-fff 0.11.0's tool logic (MIT) on @ff-labs/fff-node 0.11.0: git-aware fuzzy/glob path search and smart-case content search, with filters, context, fuzzy fallback, and pagination. Native indexes follow each conversation's execution directory and support paths outside it; Monchu owns and closes their handles across reloads. fff ships android-arm64, so searches are not skipped on Termux. Tool selection comes from `config.json` settings; `grep`, `find`, and `ls` are no longer built-ins.
 `codemode` runs model-written JavaScript in Pi's QuickJS sandbox; scripts call the other tools as `await tools.<name>(args)`, and `store()`/`load()` values persist per conversation.
 Nested calls run inside the one codemode tool call, so a crash does not replay the script.
+`jj` (replay-safe reads: status, log, diff, show, file contents, bookmarks, operation log) and `jj_write` (describe, commit, new, bookmark set/move, git fetch/push; never replayed) take a required absolute `cwd` and return structured JSON. Bookmark writes need an explicit revision and refuse an empty, undescribed target unless allowed. `herdr` launches, prompts, reads, and retires Herdr agents locally (when Monchu runs inside Herdr) or in a named session over SSH; it is never replayed and reports which mutations are uncertain. Both port the user's Pi tools.
 A worker starts with a fresh transcript and an explicit goal/context bundle, not the entire front history.
 
 The root conversation keeps ongoing endeavors and Monchu's own commitments in the `monchu.goals` document (version 2).
@@ -240,6 +241,8 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
 - `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
 - `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
+- `src/jj.ts`: the `jj` and `jj_write` tools over the jj CLI.
+- `src/herdr.ts`: the `herdr` tool over the local Herdr CLI or SSH.
 - `src/fff.ts`: Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases.
 - `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
 - `src/skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.

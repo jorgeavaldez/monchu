@@ -33,6 +33,8 @@ type Reloadable = {
   memory: typeof import("./memory.ts");
   identity: typeof import("./identity.ts");
   classifier: typeof import("./classifier.ts");
+  jj: typeof import("./jj.ts");
+  herdr: typeof import("./herdr.ts");
 };
 
 async function freshImport<Name extends keyof Reloadable>(
@@ -79,6 +81,11 @@ async function build(
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
   const identity = (await load("identity")).createIdentity(home, reportSkipped);
+  const { Jj } = await load("jj");
+  const herdr = (await load("herdr")).createHerdr({
+    command: { executable: "herdr", args: [] },
+    env: process.env,
+  });
   const assessment =
     config.classifier === null
       ? undefined
@@ -97,6 +104,8 @@ async function build(
       Goals,
       memory,
       identity,
+      Jj,
+      herdr,
       ...(assessment === undefined ? [] : [assessment.extension]),
     ],
     root: [Goals, memory],
