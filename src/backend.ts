@@ -151,7 +151,7 @@ export class Monchu {
       const front = await harness.root(context, { agent: { cwd: home } });
       await front.configure(
         {
-          // Workers follow the host default, which leaves the root-only extensions out.
+          // Goals and memory are not in the host default. Workers get them too: a new worker copies this agent.
           extensions: { add: extensions.root },
           instructions: FRONT_INSTRUCTIONS,
         },

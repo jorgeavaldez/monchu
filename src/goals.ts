@@ -70,7 +70,8 @@ const text = (maxLength: number, description: string) =>
   Type.String({ minLength: 1, maxLength, pattern: "\\S", description });
 
 /**
- * Root-only: hosts exclude it from the default selection and add it to the root conversation.
+ * Hosts leave it out of the default selection and add it to the root; workers inherit it from the root's agent.
+ * Each conversation's tools and section use that conversation's own goals document.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Goals = defineExtension({

@@ -11,7 +11,7 @@ const file = StringEnum(["user", "memory"] as const, {
 const entry = Type.String({ minLength: 1, pattern: "\\S", description: "One complete entry" });
 const match = Type.String({ minLength: 1, pattern: "\\S", description: "Unique entry substring" });
 
-/** Root-only memory edits, always under the host's home, never the conversation's cwd.
+/** Memory edits for every role, always under the host's home, never the conversation's cwd.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createMemory(home: string) {

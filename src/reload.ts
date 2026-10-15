@@ -48,7 +48,7 @@ type Build = {
   /** Imported modules in installation order. */
   modules: (keyof Reloadable)[];
   extensions: Extension[];
-  /** Extensions only the root conversation gets. */
+  /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */
   root: Extension[];
   settings: Settings;
   config: MonchuConfig;
@@ -220,12 +220,12 @@ export class Extensions {
     return this.current.assessment;
   }
 
-  /** Extensions only the root conversation gets. */
+  /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */
   get root(): readonly Extension[] {
     return this.current.root;
   }
 
-  /** Every installed extension except the root-only ones. */
+  /** Every installed extension except the ones only added to the root. */
   defaults(): readonly Extension[] {
     const names = new Set(this.current.extensions.map((extension) => extension.name));
     for (const extension of this.current.root) names.delete(extension.name);

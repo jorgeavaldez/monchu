@@ -162,7 +162,7 @@ The root conversation keeps ongoing endeavors and Monchu's own commitments in th
 A goal is an ongoing project or workstream, never a single request.
 Each goal has an id, kind (`endeavor` or `commitment`), title, status (`active`, `waiting`, `done`, `dropped`), optional project (directory or repository) and vault note (for example `projects/monchu`), current workstream, next step, linked worker names, and an update time.
 When a request touches a project, update its existing goal's workstream, next step, and workers.
-The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`; both are root-only, so workers do not get them.
+The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`. Workers have both tools too: they inherit the root's extension selection when created. Each conversation's goal tools and section use that conversation's own document, so a worker's goals are not the root's.
 Active and waiting goals render as the `goals` prompt section in stored order; Durable resends a section only when its text changes.
 Open goals are always kept; done and dropped goals are kept for the 20 most recently changed.
 `/goals` lists the open goals.
@@ -170,7 +170,7 @@ The document is not transcript, so `/new`, compaction, and restarts keep it, and
 `/compact` always asks the summary to keep open goal ids, kinds, titles, project/vault links, workstreams, next steps, and workers, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
 
-The root-only `memory` tool edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
+The `memory` tool, available to the root and workers alike, edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
 Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate adds do nothing.
 Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
 The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls.
@@ -233,7 +233,7 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
-- `src/memory.ts`: bounded, atomic root-only home-memory edits.
+- `src/memory.ts`: bounded, atomic home-memory edits for every role.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
 - `src/context.ts`: home/bundled skill metadata as a prompt section, the config-backed in-memory settings snapshot, and Durable run policy.

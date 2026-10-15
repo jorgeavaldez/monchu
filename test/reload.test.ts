@@ -331,7 +331,8 @@ describe("in-process reload", () => {
     }
   });
 
-  it("keeps goals and memory root-only in the real manifest", async () => {
+  // Workers still get them by inheriting the root's selection; see the backend's worker tool test.
+  it("adds goals and memory to the root, not the host default, in the real manifest", async () => {
     const value = await setup();
     scriptedClassifier(value.models);
     const extensions = await Extensions.load(value.models, config, value.directory, () => {});

@@ -446,6 +446,39 @@ describe("backend", () => {
     }
   });
 
+  it("gives workers the root's memory and goal tools: a worker inherits the root's extension selection", async () => {
+    const value = await setup();
+    const tools = new Map<string, string[]>();
+    route(value.faux, async (request) => {
+      const text = textOf(lastMessage(request.messages));
+      tools.set(
+        text,
+        getCurrentTools(request.messages).map((tool) => tool.name),
+      );
+      return fauxAssistantMessage("ok");
+    });
+    const { backend } = await openBackend(value);
+    try {
+      await backend.submit("root request", "root");
+      await backend.startWorker("w", "worker request", "start:w");
+      await waitFor(() => tools.has("root request") && tools.has("worker request"));
+      for (const name of ["root request", "worker request"])
+        expect(tools.get(name)).toEqual(
+          expect.arrayContaining([
+            "memory",
+            "update_goal",
+            "list_goals",
+            "codemode",
+            "start_worker",
+            "reload_extensions",
+          ]),
+        );
+      expect(tools.get("worker request")).toEqual(expect.arrayContaining(["post_update"]));
+    } finally {
+      await backend.close();
+    }
+  });
+
   it("changes directories only while idle, stops a worker explicitly, and refuses reload once closing", async () => {
     const value = await setup();
     // A worker holds its run until it is stopped; everything else answers at once.
