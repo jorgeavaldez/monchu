@@ -306,6 +306,13 @@ export class Monchu {
         }
         return modules;
       })
+      .catch(async (error: unknown) => {
+        // The caller shows the failure; the log keeps it after the terminal is gone.
+        await this.reports.log(
+          `Reload failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        throw error;
+      })
       .finally(() => {
         this.reloading = undefined;
       });
@@ -391,8 +398,13 @@ class Reports {
     this.path = path;
   }
 
+  /** Append to the log only, for failures the caller already shows. Never rejects. */
+  log(message: string): Promise<void> {
+    return appendFile(this.path, `${new Date().toISOString()} ${message}\n`).catch(() => {});
+  }
+
   report(message: string): void {
-    appendFile(this.path, `${new Date().toISOString()} ${message}\n`).catch(() => {});
+    void this.log(message);
     if (this.listeners.size === 0) {
       this.pending = [...this.pending, message].slice(-20);
       return;
@@ -401,11 +413,9 @@ class Reports {
       try {
         listener(message);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        appendFile(
-          this.path,
-          `${new Date().toISOString()} Report listener failed: ${reason}\n`,
-        ).catch(() => {});
+        void this.log(
+          `Report listener failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }

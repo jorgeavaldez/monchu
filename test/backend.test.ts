@@ -389,6 +389,62 @@ describe("backend", () => {
       .toBe(true);
   });
 
+  it("logs reload failures and reports reload warnings, keeping the previous front on failure", async () => {
+    const value = await setup();
+    const requests: string[] = [];
+    route(value.faux, (_request, _options, _state, model) => {
+      requests.push(model.id);
+      return fauxAssistantMessage("ok");
+    });
+    const { home, backend } = await openBackend(value);
+    const state = await backend.viewState();
+    const warnings: string[] = [];
+    const unsubscribe = backend.onReport((message) => warnings.push(message));
+    try {
+      await writeFile(
+        join(home, "config.json"),
+        JSON.stringify({
+          front: { ...fauxRole, provider: "openai-codex", modelId: "no-such-model" },
+          worker: fauxRole,
+          classifier: null,
+        }),
+      );
+      await expect(backend.reload()).rejects.toThrow(
+        "Monchu has no configured model openai-codex/no-such-model",
+      );
+      // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
+      expect(await readFile(join(home, "monchu.log"), "utf8")).toContain(
+        "Reload failed: Monchu has no configured model openai-codex/no-such-model",
+      );
+      expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);
+      await backend.submit("after failure", "after-failure");
+      await waitFor(() => requests.length === 1);
+      expect(requests).toEqual(["faux-1"]);
+
+      await writeFile(
+        join(home, "config.json"),
+        JSON.stringify({
+          front: fauxRole,
+          worker: fauxRole,
+          classifier: null,
+          settings: { defaultTools: ["fffind"] },
+        }),
+      );
+      await backend.reload();
+      const warning =
+        "Monchu defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins";
+      expect(warnings).toContain(warning);
+      // Reports deliberately doesn't await logging; wait for the actual file contents, not a delay.
+      await expect
+        .poll(async () => (await readFile(join(home, "monchu.log"), "utf8")).includes(warning))
+        .toBe(true);
+    } finally {
+      unsubscribe();
+      state.dispose();
+      await backend.close();
+    }
+  });
+
   it("changes directories only while idle, stops a worker explicitly, and refuses reload once closing", async () => {
     const value = await setup();
     // A worker holds its run until it is stopped; everything else answers at once.
