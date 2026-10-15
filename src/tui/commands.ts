@@ -52,6 +52,18 @@ export const commands: Record<
   "/quit": { usage: "", help: "save and close" },
 };
 
+/**
+ * Pi's `app.message.followUp`: Alt+Enter, or Ctrl+Q where terminals take Alt+Enter (Windows, WSL). Enter steers a
+ * running reply instead.
+ */
+export const followUpKey =
+  process.platform === "win32" ||
+  (process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP))
+    ? "ctrl+q"
+    : "alt+enter";
+
+const followUpKeyText = followUpKey === "ctrl+q" ? "Ctrl+Q" : "Alt+Enter";
+
 export const help = [
   "Commands:",
   ...Object.entries(commands).map(([command, { usage, help }]) =>
@@ -59,6 +71,7 @@ export const help = [
   ),
   "Esc interrupts a running front. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
+  `Enter while a reply runs steers it; ${followUpKeyText} queues a follow-up for after it finishes.`,
   "Plain messages, /model and /thinking go to the conversation shown; root commands always target the root.",
 ].join("\n");
 

@@ -5,7 +5,13 @@ import {
   fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { defineExtension, defineTask, type Extension, UserEntry } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  defineTask,
+  type Extension,
+  InboxDoc,
+  UserEntry,
+} from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AssessmentsDoc,
@@ -61,7 +67,9 @@ async function withAssessment(extensions: readonly Extension[] = []) {
   value.registry.install(assessment.extension);
   const opened = await open(value);
   const send = async (message: string) =>
-    (await assessment.submit(opened.root, message, `test:${message}`, context)).wait(context);
+    (await assessment.submit(opened.root, message, `test:${message}`, "steer", context)).wait(
+      context,
+    );
   const items = async () =>
     (await opened.harness.snapshot(AssessmentsDoc, opened.root.id, context))?.items ?? [];
   /** Wait for the assessment task of the input at `index`, which must exist. */
@@ -70,7 +78,7 @@ async function withAssessment(extensions: readonly Extension[] = []) {
     if (item === undefined) throw new Error(`No assessment at ${index}`);
     await opened.harness.waitForTask(item.taskId, context);
   };
-  return { ...value, ...opened, classifier, send, items, settle };
+  return { ...value, ...opened, assessment, classifier, send, items, settle };
 }
 
 async function userTexts(root: Parameters<typeof allEntries>[0]): Promise<string[]> {
@@ -105,6 +113,29 @@ describe("effort assessment", () => {
       effort: "single_turn",
     });
     expect(await userTexts(test.root)).toEqual(["refactor the worker module"]);
+    await test.harness.close(context);
+  });
+
+  it("queues assessed input by its busy mode: steer the running reply or follow it", async () => {
+    const test = await withAssessment();
+    test.classifier.answer = async () => assessed("single_turn", 0.9, "contained", 0.9);
+    const release = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    route(test.faux, async (request) => {
+      if (textOf(lastMessage(request.messages)) === "hold") {
+        started.resolve();
+        await release.promise;
+      }
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const first = await test.assessment.submit(test.root, "hold", "hold", "steer", context);
+    await started.promise;
+    await test.assessment.submit(test.root, "steer note", "steer", "steer", context);
+    await test.assessment.submit(test.root, "later note", "later", "followUp", context);
+    const inbox = await test.harness.snapshot(InboxDoc, test.root.id, context);
+    expect(inbox?.items.map((item) => item.mode)).toEqual(["steer", "followUp"]);
+    release.resolve();
+    await first.wait(context);
     await test.harness.close(context);
   });
 

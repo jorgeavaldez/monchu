@@ -1,4 +1,4 @@
-import { createProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,17 @@ import { openDevMonchu } from "../src/dev-faux.ts";
 import { loadConfig } from "../src/config.ts";
 import { monchuHome } from "../src/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
-import { cleanup, fauxRole, prepareHome, route, setup, waitFor } from "./support.ts";
+import { followUpKey } from "../src/tui/commands.ts";
+import {
+  cleanup,
+  fauxRole,
+  lastMessage,
+  prepareHome,
+  route,
+  setup,
+  textOf,
+  waitFor,
+} from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 async function withTerminal(
@@ -205,6 +215,78 @@ it("picks the shown conversation's model with Enter and saves its role default w
     );
   });
 }, 30_000);
+
+describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
+  it("steers a running reply with Enter and queues a follow-up with Pi's follow-up key", async () => {
+    const value = await setup();
+    const release = Promise.withResolvers<void>();
+    // The user messages of each request in the held conversation, whose first message is `hold`.
+    const requests: string[][] = [];
+    route(value.faux, async (request) => {
+      const users = request.messages.flatMap((message) =>
+        message.role === "user" ? [textOf(message)] : [],
+      );
+      if (users[0] === "hold") requests.push(users);
+      if (textOf(lastMessage(request.messages)) === "hold") {
+        await release.promise;
+        return fauxAssistantMessage([fauxToolCall("read", { path: "missing.txt" })], {
+          stopReason: "toolUse",
+        });
+      }
+      return fauxAssistantMessage(`answered ${users.at(-1)}`);
+    });
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    );
+    prepareHome(home);
+    const backend = await Monchu.open(home, value.faux.provider);
+    const screen = new VirtualTerminal(60, 40);
+    const running = runTerminal(backend, screen);
+    const followUp = followUpKey === "ctrl+q" ? "\x11" : "\x1b\r";
+    try {
+      await visible(screen, "Monchu · /help");
+      // With nothing typed, the follow-up key submits nothing.
+      screen.sendInput(followUp);
+      if (target === "root") send(screen, "hold");
+      else {
+        await backend.startWorker("w", "hold", "start:w");
+        send(screen, "/agents w");
+        await visible(screen, "worker: w");
+      }
+      await waitFor(() => requests.length === 1);
+      send(screen, "steer note");
+      await visible(screen, "│ steer · steer note");
+      screen.sendInput("later note");
+      await visible(screen, "later note");
+      screen.sendInput(followUp);
+      const queued = await visible(screen, "│ follow-up · later note");
+      // The editor is cleared as Enter clears it; only the dock shows the queued text.
+      expect(queued.filter((line) => line.includes("later note"))).toHaveLength(1);
+      release.resolve();
+      await visible(screen, "answered later note");
+      // The steer joins the running reply after its tool result; the follow-up waits until that reply is done.
+      expect(requests).toEqual([
+        ["hold"],
+        ["hold", "steer note"],
+        ["hold", "steer note", "later note"],
+      ]);
+      // While idle, the follow-up key sends at once, as Enter does.
+      screen.sendInput("idle note");
+      screen.sendInput(followUp);
+      await visible(screen, "answered idle note");
+      expect(requests.at(-1)?.at(-1)).toBe("idle note");
+    } finally {
+      release.resolve();
+      send(screen, "/quit");
+      await running;
+      await backend.close();
+      await cleanup();
+    }
+  }, 30_000);
+});
 
 it("ignores Esc while the front is idle and interrupts it while it runs", async () => {
   await withTerminal(60, "dark", async (screen) => {

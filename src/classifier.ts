@@ -14,7 +14,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { ClassifierRole } from "./config.ts";
-import { WorkersDoc } from "./workers.ts";
+import { WorkersDoc, type WhenBusy } from "./workers.ts";
 
 /** Below this confidence an assessment informs the front but never triggers an escalation. */
 const SURE = 0.7;
@@ -252,7 +252,13 @@ export function createEffortAssessment(
      * Admit the user's message to the front, then start its assessment. Resolves on admission; neither the front's reply
      * nor this call waits for the classifier. A retry with the same request ID reuses the submission and assessment.
      */
-    async submit(front: Conversation, message: string, requestId: string, context: Context) {
+    async submit(
+      front: Conversation,
+      message: string,
+      requestId: string,
+      whenBusy: WhenBusy,
+      context: Context,
+    ) {
       const recent = (await front.context(context)).messages
         .flatMap((item) =>
           item.role === "system"
@@ -271,7 +277,7 @@ export function createEffortAssessment(
         )
         .slice(-6);
       const submission = await front.submit(
-        { type: "input", content: message, requestId },
+        { type: "input", content: message, requestId, whenBusy },
         context,
       );
       await front.commit((tx) => assess(tx, front.id, submission.id, message, recent), context);

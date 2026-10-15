@@ -5,6 +5,7 @@ import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendi
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
+import type { WhenBusy } from "../workers.ts";
 import { formatOpenGoals } from "../goals.ts";
 import { help, parseInput } from "./commands.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -81,8 +82,8 @@ export async function runTerminal(
     inputs = inputs.then(() => handle("/abort")).catch(fail);
   };
   const view = new MonchuTui(terminal, backend.home, {
-    submit: (text) => {
-      inputs = inputs.then(() => handle(text)).catch(fail);
+    submit: (text, whenBusy) => {
+      inputs = inputs.then(() => handle(text, whenBusy)).catch(fail);
     },
     // As in Pi, Esc interrupts only a front that shows activity (a run, retry, or compaction).
     abort: () => {
@@ -157,7 +158,7 @@ export async function runTerminal(
     show();
   }
 
-  async function handle(raw: string): Promise<void> {
+  async function handle(raw: string, whenBusy: WhenBusy = "steer"): Promise<void> {
     if (closing) return;
     const input = parseInput(raw);
     if (!input) return;
@@ -357,8 +358,8 @@ export async function runTerminal(
       case "message": {
         // Capture focus now: a later view switch must not redirect an already submitted input.
         const name = selected;
-        if (name === undefined) await backend.submit(input.text, randomUUID());
-        else await backend.messageWorker(name, input.text, randomUUID());
+        if (name === undefined) await backend.submit(input.text, randomUUID(), whenBusy);
+        else await backend.messageWorker(name, input.text, randomUUID(), whenBusy);
         if (name === undefined) view.notice("received · root");
         else view.notice(`${name} · received`, "message");
         if (name !== undefined) await refreshWorkers();

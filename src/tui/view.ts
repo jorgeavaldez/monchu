@@ -54,8 +54,8 @@ import {
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { escalationSummary } from "../classifier.ts";
-import { parseWorkerNotice, workerNotice } from "../workers.ts";
-import { commands } from "./commands.ts";
+import { parseWorkerNotice, workerNotice, type WhenBusy } from "../workers.ts";
+import { commands, followUpKey } from "./commands.ts";
 import { presentation, type QueuedItem } from "./state.ts";
 
 /**
@@ -350,7 +350,7 @@ export class MonchuTui {
   constructor(
     terminal: Terminal,
     home: string,
-    handlers: { submit(text: string): void; abort(): void; exit(): void },
+    handlers: { submit(text: string, whenBusy: WhenBusy): void; abort(): void; exit(): void },
   ) {
     this.cwd = home;
     // As in Pi, the editor draws its own cursor; a shown hardware cursor is moved and re-shown every frame.
@@ -373,7 +373,7 @@ export class MonchuTui {
       if (!text.trim()) return;
       this.editor.addToHistory(text);
       this.editor.setText("");
-      handlers.submit(text);
+      handlers.submit(text, "steer");
     };
     this.editorContainer.addChild(this.editor);
     this.transcript = new ScrollView(this.chat, {
@@ -426,6 +426,16 @@ export class MonchuTui {
       }
       if (matchesKey(data, "escape") && !this.editor.isShowingAutocomplete()) {
         handlers.abort();
+        return { consume: true };
+      }
+      // As in Pi: the follow-up key queues the editor's message behind a running reply instead of steering it.
+      if (matchesKey(data, followUpKey) && !this.editor.isShowingAutocomplete()) {
+        const text = this.editor.getExpandedText().trim();
+        if (text) {
+          this.editor.addToHistory(text);
+          this.editor.setText("");
+          handlers.submit(text, "followUp");
+        }
         return { consume: true };
       }
       if (matchesKey(data, "ctrl+d") && !this.editor.getText()) {

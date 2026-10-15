@@ -45,6 +45,7 @@ import {
   startWorker,
   stopWorker,
   workerConversationId,
+  type WhenBusy,
 } from "./workers.ts";
 import { resolveDirectory } from "./workdir.ts";
 
@@ -203,14 +204,17 @@ export class Monchu {
     return conversation.viewState(context);
   }
 
-  /** Resolves on durable admission, never on the model answer. Retry with the same request ID. */
-  async submit(message: string, requestId: string): Promise<void> {
+  /**
+   * Resolves on durable admission, never on the model answer. Retry with the same request ID. While the front is busy,
+   * the message steers its current run, or with `followUp` waits for the run to finish.
+   */
+  async submit(message: string, requestId: string, whenBusy: WhenBusy = "steer"): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
     const assessment = this.extensions.assessment;
     if (assessment === undefined)
-      await this.front.submit({ type: "input", content: message, requestId }, context);
-    else await assessment.submit(this.front, message, requestId, context);
+      await this.front.submit({ type: "input", content: message, requestId, whenBusy }, context);
+    else await assessment.submit(this.front, message, requestId, whenBusy, context);
   }
 
   /** Effort assessments of front inputs as they settle, newest last. Returns a stop function. */
@@ -270,11 +274,17 @@ export class Monchu {
     this.harness.resume();
   }
 
-  async messageWorker(name: string, message: string, requestId: string): Promise<void> {
+  /** Steers a busy worker's run, or with `followUp` waits for it to finish. */
+  async messageWorker(
+    name: string,
+    message: string,
+    requestId: string,
+    whenBusy: WhenBusy = "steer",
+  ): Promise<void> {
     if (!message.trim() || !requestId.trim())
       throw new Error("Message and request ID are required");
     await this.front.commit(
-      (tx) => messageWorker(tx, this.front.id, name, message, requestId),
+      (tx) => messageWorker(tx, this.front.id, name, message, requestId, whenBusy),
       context,
     );
     this.harness.resume();

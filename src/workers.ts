@@ -305,12 +305,15 @@ const Anchor = defineTask<null, { phase: "finish" }, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
+/** What input does when it reaches a busy conversation: steer the current run, or wait for it to finish. */
+export type WhenBusy = "steer" | "followUp";
+
 type DeliveryInput = {
   parentId: ConversationId;
   name: string;
   message: string;
   requestId: string;
-  whenBusy: "steer" | "followUp";
+  whenBusy: WhenBusy;
 };
 
 const Delivery = defineTask<
@@ -474,13 +477,14 @@ export async function messageWorker(
   name: string,
   message: string,
   requestId: string,
+  whenBusy: WhenBusy = "steer",
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
     if (worker.closed) throw new Error(`${name} is closed; reopen it with reopen_worker first`);
     await pruneRecords(tx, parentId);
-    const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "steer" };
+    const input: DeliveryInput = { parentId, name, message, requestId, whenBusy };
     const taskId = await tx.createTask(Delivery, input, {
       conversationId: worker.conversationId,
       ownership: { kind: "conversation" },
