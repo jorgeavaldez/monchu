@@ -28,6 +28,8 @@ Ask when scope or a design decision materially changes the outcome.
   Optimize upfront loadouts without creating arbitrary role-based capability bans.
 - The vault is a curated human second brain, not an append-only runtime log.
   Follow its domain, linking, publication, and concurrent-edit rules.
+- The home's editable files (manuals, memories, skills, souls, `config.json`) sync across devices through the private `jorgeavaldez/monchu-home` repository.
+  Credentials, Durable stores, and other runtime state stay per-device; add any new runtime file to the home's `.gitignore`.
 
 ## Durable integration
 

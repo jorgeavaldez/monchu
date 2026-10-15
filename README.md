@@ -113,7 +113,10 @@ Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 - `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
-For a source-controlled home, ignore `/auth.json*`, `/fff/`, `/claude/`, `/monchu.sqlite*`, `/owner.sqlite*`, and `/monchu.log`. Never sync credentials or a live database.
+Jorge's home is a jj repository shared across devices through the private `jorgeavaldez/monchu-home`. Its `.gitignore` excludes `auth.json`, `fff/`, `claude/`, the SQLite stores and their sidecars, and `monchu.log`. Never sync credentials or a live database.
+
+To run Monchu on another device, clone this repository and run `mise run install`, clone `monchu-home` as `~/.monchu`, use `/login` for that device's credentials, and add the device to `DEVICES.md`.
+Chat history and workers stay on the device that created them.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
 `owner.sqlite` holds a process-lifetime exclusive lock so only one runtime owns that home.
