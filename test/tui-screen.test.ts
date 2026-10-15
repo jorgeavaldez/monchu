@@ -388,13 +388,17 @@ describe.each([
     });
   }, 30_000);
 
-  it("labels worker updates/reports, selects and messages a worker, and shows reload success", async () => {
+  it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen) => {
       send(screen, "/work reader inspect");
-      await visible(screen, "worker · reader · update");
-      await visible(screen, "Faux worker progress: checking.");
-      await visible(screen, "worker · reader · completed");
+      // The worker's name is the only label: the rule's style tells an update from a report.
+      const update = await visible(screen, "│ Faux worker progress: checking.");
+      expect(update[update.findIndex((line) => line.includes("worker progress")) - 1]).toMatch(
+        /^│ reader\s*$/,
+      );
       await visible(screen, "Faux front: result received.");
+      const shown = (await screen.flushAndGetViewport()).join("\n");
+      expect(shown).not.toMatch(/worker · reader|not a new user instruction/);
       await visible(screen, "Workers · 1 idle · /agents");
       // Overflow the transcript so the row above the bar is the last message's timestamp, not filler.
       screen.resize(columns, 14);
@@ -424,7 +428,7 @@ describe.each([
       screen.sendInput("\r");
       await visible(screen, "worker: reader");
       send(screen, "more");
-      await visible(screen, "received · worker reader");
+      await visible(screen, "│ steer · reader · received");
       await waitFor(async () => {
         const lines = await screen.flushAndGetViewport();
         // The worker answers the new message; its first answer may have scrolled above it.

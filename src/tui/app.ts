@@ -291,7 +291,7 @@ export async function runTerminal(
         break;
       case "/tell":
         await backend.messageWorker(input.name, input.text, randomUUID());
-        view.notice(`worker ${input.name} · message committed`);
+        view.notice(`${input.name} · message committed`, "steer");
         await refreshWorkers();
         break;
       case "message": {
@@ -299,7 +299,8 @@ export async function runTerminal(
         const name = selected;
         if (name === undefined) await backend.submit(input.text, randomUUID());
         else await backend.messageWorker(name, input.text, randomUUID());
-        view.notice(name === undefined ? "received · root" : `received · worker ${name}`);
+        if (name === undefined) view.notice("received · root");
+        else view.notice(`${name} · received`, "steer");
         if (name !== undefined) await refreshWorkers();
         break;
       }

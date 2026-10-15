@@ -7,7 +7,12 @@ import {
 } from "@earendil-works/pi-ai";
 import { defineExtension, defineTask, type Extension, UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import { AssessmentsDoc, createEffortAssessment, ESCALATION_PREFIX } from "../src/classifier.ts";
+import {
+  AssessmentsDoc,
+  createEffortAssessment,
+  ESCALATION_PREFIX,
+  escalationSummary,
+} from "../src/classifier.ts";
 import { startWorker, WorkersDoc } from "../src/workers.ts";
 import {
   allEntries,
@@ -147,6 +152,9 @@ describe("effort assessment", () => {
     expect(texts[1]).toMatch(
       /^\[Effort assessment: effort sustained \(92%\), scope expanding \(80%\)/,
     );
+    // Clients show only the assessment, without the label's prose.
+    expect(escalationSummary(texts[1] ?? "")).toBe("effort sustained (92%), scope expanding (80%)");
+    expect(escalationSummary("[Effort assessment is a user's own words")).toBeUndefined();
     expect((await test.items())[0]?.escalated).toBe(true);
     await test.harness.close(context);
   });

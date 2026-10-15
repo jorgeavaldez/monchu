@@ -171,6 +171,15 @@ export class VirtualTerminal implements Terminal {
     return this.getViewport();
   }
 
+  /** The foreground of one visible cell as `mode:color`, so tests compare colors as the screen shows them. */
+  async foreground(row: number, column: number): Promise<string> {
+    await this.flush();
+    const buffer = this.xterm.buffer.active;
+    const cell = buffer.getLine(buffer.viewportY + row)?.getCell(column);
+    if (cell === undefined) throw new Error(`No cell at ${row}:${column}`);
+    return `${cell.getFgColorMode()}:${cell.getFgColor()}`;
+  }
+
   /**
    * Get the visible viewport (what's currently on screen)
    */

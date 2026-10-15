@@ -226,7 +226,12 @@ function noticeText(notice: WorkerNotice): string {
 export function workerNotice(entry: EntryRecord): WorkerNotice | undefined {
   const message = UserEntry.is(entry) ? entry.model?.[0] : undefined;
   if (message?.role !== "user" || typeof message.content !== "string") return undefined;
-  const [label = "", guidance, ...text] = message.content.split("\n");
+  return parseWorkerNotice(message.content);
+}
+
+/** The worker notice an input's text carries, placed or still queued; `undefined` for any other text. */
+export function parseWorkerNotice(content: string): WorkerNotice | undefined {
+  const [label = "", guidance, ...text] = content.split("\n");
   if (guidance !== NOTICE_GUIDANCE) return undefined;
   const update = UPDATE_LABEL.exec(label)?.[1];
   if (update !== undefined) return { name: update, status: "update", text: text.join("\n") };

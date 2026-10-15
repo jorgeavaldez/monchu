@@ -187,7 +187,7 @@ describe("committed Durable presentation", () => {
       await waitFor(async () =>
         Boolean((await harness.snapshot(InboxDoc, root.id, context))?.items.length),
       );
-      expect(presentation(state.value).queue).toContain("[followUp] queued");
+      expect(presentation(state.value).queue).toContainEqual({ mode: "followUp", text: "queued" });
       await first.wait(context);
       await root.waitForIdle(context);
       expect(thought).toBe(true);
@@ -388,7 +388,7 @@ describe("committed Durable presentation", () => {
       await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
       await root.waitForIdle(context);
       const collapsed = await viewport();
-      expect(collapsed).toContain("▸ worker · w · completed");
+      expect(collapsed).toMatch(/│ ▸ w\s*\n/);
       expect(collapsed).toContain("report line 1");
       expect(collapsed).not.toContain("report line 3");
       expect(collapsed).toMatch(/more lines · click or Ctrl-O to expand/);
@@ -398,11 +398,11 @@ describe("committed Durable presentation", () => {
       expect(lines.findIndex((line) => line.includes("front reply line 1"))).toBeGreaterThan(-1);
       expect(lines[last + 1]).toContain(String(new Date().getFullYear()));
       // A click on the report toggles only that message, from the keyboard-free pointer path.
-      const row = lines.findIndex((line) => line.includes("worker · w · completed"));
+      const row = lines.findIndex((line) => /^│ ▸ w\s*$/.test(line));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
       screen.sendInput(`\x1b[<0;5;${row + 1}m`);
       await waitFor(async () => (await viewport()).includes("report line 8"));
-      expect(await viewport()).toContain("▾ worker · w · completed");
+      expect(await viewport()).toMatch(/│ ▾ w\s*\n/);
       // A second press within 500 ms would be a double click.
       await new Promise((resolve) => setTimeout(resolve, 600));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
@@ -420,40 +420,203 @@ describe("committed Durable presentation", () => {
   });
 
   it.each(["dark", "light"])(
-    "fills every worker message row with its own gray background (%s)",
+    "shows each event kind by style: queued and steered input yellow, worker replies purple, updates gray (%s)",
+    async (name) => {
+      const value = await setup();
+      const held = Promise.withResolvers<void>();
+      route(value.faux, async (request) => {
+        const last = lastMessage(request.messages);
+        const text = textOf(last);
+        if (text === "hold front") {
+          await held.promise;
+          return fauxAssistantMessage([fauxText("front reply")]);
+        }
+        if (text === "inspect")
+          return fauxAssistantMessage(
+            [fauxToolCall("post_update", { text: "checking files\nhalfway there" })],
+            { stopReason: "toolUse" },
+          );
+        if (last?.role === "toolResult")
+          return fauxAssistantMessage([fauxText("report line one\nreport line two")]);
+        return fauxAssistantMessage([fauxText("noted")]);
+      });
+      const { harness, root } = await open(value);
+      initTheme(name);
+      // The color a cell shows for styled text, read from a terminal of its own.
+      const color = async (styled: string) => {
+        const probe = new VirtualTerminal(4, 1);
+        probe.write(styled);
+        return probe.foreground(0, 0);
+      };
+      const yellow = await color(theme.fg("warning", "│"));
+      const purple = await color(theme.fg("borderAccent", "│"));
+      const gray = await color(theme.fg("borderMuted", "│"));
+      const muted = await color(theme.fg("muted", "x"));
+      expect(new Set([yellow, purple, gray, muted]).size).toBe(4);
+      const screen = new VirtualTerminal(60, 80);
+      const ui = new MonchuTui(screen, value.directory, {
+        submit: () => {},
+        abort: () => {},
+        exit: () => {},
+      });
+      const state = await root.viewState(context);
+      const stop = state.subscribe((view) => ui.apply(view));
+      const viewport = async () => {
+        ui.ui.renderNow();
+        return screen.flushAndGetViewport();
+      };
+      // The rule's color where a row starts with it, after any padding.
+      const rule = async (lines: string[], match: (line: string) => boolean) => {
+        const row = lines.findIndex(match);
+        expect(row, lines.join("\n")).toBeGreaterThan(-1);
+        const line = lines[row] ?? "";
+        expect(line.trimStart().startsWith("│"), line).toBe(true);
+        return screen.foreground(row, line.indexOf("│"));
+      };
+      try {
+        ui.start();
+        await root.submit({ type: "input", content: "hold front", requestId: "hold" }, context);
+        await root.submit(
+          {
+            type: "input",
+            content: "queued first\nqueued second",
+            whenBusy: "followUp",
+            requestId: "follow",
+          },
+          context,
+        );
+        await root.submit(
+          { type: "input", content: "steer now", whenBusy: "steer", requestId: "steer" },
+          context,
+        );
+        await root.commit(
+          (tx) =>
+            startWorker(tx, root.id, "reader", "inspect", value.directory, "start:r", fauxRole),
+          context,
+        );
+        // The worker's update and report queue behind the held front with the user's own input.
+        await waitFor(
+          async () => (await harness.snapshot(InboxDoc, root.id, context))?.items.length === 4,
+        );
+        ui.notice("reader · received", "steer");
+        const dock = await viewport();
+        const queued = dock.join("\n");
+        for (const text of [
+          "│ follow-up · queued first …",
+          "│ steer · steer now",
+          "│ follow-up · reader update · checking files …",
+          "│ follow-up · reader reply · report line one …",
+          "│ steer · reader · received",
+        ]) {
+          expect(queued).toContain(text);
+          expect(await rule(dock, (line) => line.includes(text))).toBe(yellow);
+        }
+        // The worker wrapper's labels and guidance never reach the screen.
+        expect(queued).not.toMatch(/not a new user instruction|\[followUp\]|\[steer\]|\[Worker /);
+        expect(queued).not.toContain("Tell the user");
+
+        held.resolve();
+        await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
+        await waitFor(
+          async () => (await harness.snapshot(InboxDoc, root.id, context))?.items.length === 0,
+        );
+        await root.waitForIdle(context);
+        ui.ui.scrollToTop();
+        const lines = await viewport();
+        const chat = lines.join("\n");
+        expect(chat).not.toMatch(/not a new user instruction|Tell the user|worker · |\[Worker /);
+        // A report: the worker's name behind a purple rule, every body line on its own ruled row.
+        const report = lines.findIndex((line) => line.startsWith("│ report line one"));
+        expect(lines[report - 1]).toMatch(/^│ reader\s*$/);
+        expect(lines[report + 1]).toMatch(/^│ report line two\s*$/);
+        for (const row of [report - 1, report, report + 1])
+          expect(await screen.foreground(row, 0)).toBe(purple);
+        // An update: a gray rule and muted text, its lines kept.
+        const update = lines.findIndex((line) => line.startsWith("│ checking files"));
+        expect(lines[update - 1]).toMatch(/^│ reader\s*$/);
+        expect(lines[update + 1]).toMatch(/^│ halfway there\s*$/);
+        for (const row of [update - 1, update, update + 1])
+          expect(await screen.foreground(row, 0)).toBe(gray);
+        expect(await screen.foreground(update, 2)).toBe(muted);
+        // The user's own messages, multiline ones too, and the front's reply keep their plain look.
+        const userText = await color(theme.fg("userMessageText", "x"));
+        for (const text of ["hold front", "queued first", "queued second", "steer now"]) {
+          const row = lines.findIndex((line) => line.trim() === text);
+          expect(row, text).toBeGreaterThan(-1);
+          expect(lines[row]).not.toContain("│");
+          expect(await screen.foreground(row, 1)).toBe(userText);
+        }
+        expect(lines.findIndex((line) => line.trim() === "queued second")).toBe(
+          lines.findIndex((line) => line.trim() === "queued first") + 1,
+        );
+        const reply = lines.findIndex((line) => line.trim() === "front reply");
+        expect(reply).toBeGreaterThan(-1);
+        expect(lines[reply]).not.toContain("│");
+        expect(value.reports).toEqual([]);
+      } finally {
+        stop();
+        state.dispose();
+        ui.stop();
+        await harness.close(context);
+      }
+    },
+  );
+
+  it.each(["dark", "light"])(
+    "draws worker replies as gray cards behind a purple rule and updates as a muted rule (%s)",
     (name) => {
       initTheme(name);
       const background = theme.bg("workerMessageBg", "").slice(0, -"\x1b[49m".length);
       for (const other of ["userMessageBg", "toolPendingBg", "toolSuccessBg"] as const)
         expect(theme.bg(other, "")).not.toContain(background);
+      const purple = theme.fg("borderAccent", "│");
+      const gray = theme.fg("borderMuted", "│");
       const text = Array.from({ length: 6 }, (_, index) => `report line ${index + 1}`).join("\n\n");
-      const message = new WorkerMessageComponent(
-        { name: "w", status: "completed", text },
-        () => {},
-      );
-      for (const expanded of [false, true]) {
-        message.setExpanded(expanded);
-        const lines = message.render(40);
-        expect(lines.length).toBeGreaterThan(4);
-        for (const line of lines) {
-          expect(line).toContain(background);
-          expect(visibleWidth(line)).toBe(40);
-        }
-      }
-      // Exactly one padded row above and below, matching the user input box, short or long.
       const padding = (lines: string[]) => {
-        const blank = lines.map((line) => stripTerminalSequences(line).trim() === "");
+        const blank = lines.map(
+          (line) => stripTerminalSequences(line).replace("│", "").trim() === "",
+        );
         return [blank.indexOf(false), blank.length - 1 - blank.lastIndexOf(false)];
       };
-      const short = new WorkerMessageComponent(
-        { name: "w", status: "update", text: "hi" },
-        () => {},
-      );
-      message.setExpanded(false);
-      for (const lines of [short.render(40), message.render(40)]) {
-        expect(padding(lines)).toEqual([1, 1]);
-        expect(stripTerminalSequences(lines[1] ?? "")).toContain("worker · w");
+      for (const status of ["completed", "failed"] as const) {
+        const message = new WorkerMessageComponent({ name: "w", status, text }, () => {});
+        for (const expanded of [false, true]) {
+          message.setExpanded(expanded);
+          const lines = message.render(40);
+          expect(lines.length).toBeGreaterThan(4);
+          for (const line of lines) {
+            expect(line).toContain(background);
+            expect(line).toContain(purple);
+            expect(line).not.toContain(gray);
+            expect(visibleWidth(line)).toBe(40);
+          }
+          // Exactly one padded row above and below, matching the user input box, short or long.
+          expect(padding(lines)).toEqual([1, 1]);
+          // Only the name, and a failure in the error color: no status prose.
+          const header = stripTerminalSequences(lines[1] ?? "").trim();
+          expect(header).toBe(
+            `│ ${expanded ? "▾" : "▸"} w${status === "failed" ? " · failed" : ""}`,
+          );
+          if (status === "failed") expect(lines[1]).toContain(theme.fg("error", " · failed"));
+        }
       }
+      const update = new WorkerMessageComponent(
+        { name: "w", status: "update", text: "checking\nhalfway" },
+        () => {},
+      ).render(40);
+      // An update has no card: a muted rule and muted text on every row, and no padding rows.
+      expect(update.map((line) => stripTerminalSequences(line).trimEnd())).toEqual([
+        "│ w",
+        "│ checking",
+        "│ halfway",
+      ]);
+      for (const line of update) {
+        expect(line).toContain(gray);
+        expect(line).not.toContain(purple);
+        expect(line).not.toContain(background);
+        expect(visibleWidth(line)).toBe(40);
+      }
+      expect(update[1]).toContain(theme.fg("muted", "checking"));
       expect(padding(new UserMessageComponent("hi").render(40))).toEqual([1, 1]);
     },
   );

@@ -21,7 +21,7 @@ import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { WorkerMessageComponent } from "./components/worker-message.ts";
-import { getMarkdownTheme, getSelectListTheme } from "./theme/theme.ts";
+import { getMarkdownTheme, getSelectListTheme, theme } from "./theme/theme.ts";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import {
@@ -49,10 +49,48 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { ESCALATION_PREFIX } from "../classifier.ts";
-import { workerNotice } from "../workers.ts";
+import { escalationSummary } from "../classifier.ts";
+import { parseWorkerNotice, workerNotice } from "../workers.ts";
 import { commands } from "./commands.ts";
-import { presentation } from "./state.ts";
+import { presentation, type QueuedItem } from "./state.ts";
+
+/** A chat notice's kind: Monchu's own status, or a message steered to a worker. */
+type NoticeTone = "system" | "steer";
+
+/** A notice's styled line: a steer has a yellow rule and label, as queued input does in the dock. */
+function noticeLine(text: string, tone: NoticeTone): string {
+  const muted = getSelectListTheme().description;
+  return tone === "steer"
+    ? `${theme.fg("warning", "│ steer")}${muted(` · ${text}`)}`
+    : muted(`system · ${text}`);
+}
+
+/** The first line of a text, marked when more follows: dock rows show one line each. */
+function firstLine(text: string): string {
+  const [line = "", ...rest] = text.trim().split(/\r\n|\r|\n/);
+  return rest.length ? `${line} …` : line;
+}
+
+/**
+ * A queued inbox row: input waiting for a boundary has a yellow rule and its mode, then its source when it is not the
+ * user's own text, then its first line; a passive write stays muted.
+ */
+function queuedLine(item: QueuedItem): string {
+  const muted = getSelectListTheme().description;
+  if (item.mode === "write") return muted(`│ write · ${item.text}`);
+  const worker = parseWorkerNotice(item.text);
+  const assessment = worker === undefined ? escalationSummary(item.text) : undefined;
+  const source =
+    worker !== undefined
+      ? `${worker.name} ${worker.status === "completed" ? "reply" : worker.status} · `
+      : assessment !== undefined
+        ? "effort assessment · "
+        : "";
+  const text = worker?.text ?? assessment ?? item.text;
+  return `${theme.fg("warning", `│ ${item.mode === "steer" ? "steer" : "follow-up"}`)}${muted(
+    ` · ${source}${firstLine(text)}`,
+  )}`;
+}
 
 class AgentSelector extends Container implements Focusable {
   readonly input = new Input();
@@ -282,7 +320,7 @@ export class MonchuTui {
   private readonly workerMessages: WorkerMessageComponent[] = [];
   private readonly unfinished = new Set<ToolExecutionComponent>();
   private readonly streamedCalls = new Set<string>();
-  private readonly notices: string[] = [];
+  private readonly notices: { text: string; tone: NoticeTone }[] = [];
   private renderedIds: number[] = [];
   private applied: ConversationView | undefined;
   private workersLine = "";
@@ -510,10 +548,10 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  notice(text: string): void {
-    this.notices.push(text);
+  notice(text: string, tone: NoticeTone = "system"): void {
+    this.notices.push({ text, tone });
     this.chat.addChild(new Spacer(1));
-    this.chat.addChild(new Text(getSelectListTheme().description(`system · ${text}`), 1, 0));
+    this.chat.addChild(new Text(noticeLine(text, tone), 1, 0));
     this.ui.requestRender();
   }
 
@@ -596,9 +634,9 @@ export class MonchuTui {
         card.updatePartialOutput(output.text, output.details);
     }
     if (rebuilt) {
-      for (const text of this.notices) {
+      for (const { text, tone } of this.notices) {
         this.chat.addChild(new Spacer(1));
-        this.chat.addChild(new Text(getSelectListTheme().description(`system · ${text}`), 1, 0));
+        this.chat.addChild(new Text(noticeLine(text, tone), 1, 0));
       }
       this.transcript.scrollToEnd();
     }
@@ -613,8 +651,7 @@ export class MonchuTui {
     }
     this.chat.settle(settled);
     this.queue.clear();
-    for (const line of state.queue)
-      this.queue.addChild(new TruncatedText(getSelectListTheme().description(line), 1, 0));
+    for (const item of state.queue) this.queue.addChild(new TruncatedText(queuedLine(item), 1, 0));
     if (state.status !== this.statusText) {
       this.statusText = state.status;
       this.loader?.stop();
@@ -660,15 +697,12 @@ export class MonchuTui {
         typeof message.content === "string"
           ? message.content
           : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+      const assessment = escalationSummary(text);
       this.chat.addChild(new Spacer(1));
       this.chat.addChild(
-        text.startsWith(ESCALATION_PREFIX)
-          ? new Text(
-              getSelectListTheme().description(`system · escalation · ${text.split("\n", 1)[0]}`),
-              1,
-              0,
-            )
-          : new UserMessageComponent(text),
+        assessment === undefined
+          ? new UserMessageComponent(text)
+          : new Text(getSelectListTheme().description(`system · escalation · ${assessment}`), 1, 0),
       );
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const container = this.streaming ?? new Container();

@@ -21,6 +21,15 @@ const SURE = 0.7;
 
 /** Marks the follow-up input an escalation submits, so a client can label it as system context. */
 export const ESCALATION_PREFIX = "[Effort assessment";
+const ESCALATION_SUFFIX = ". Not a new user instruction.]";
+
+/** The assessment an escalation input's text reports, for clients that label it; `undefined` for any other text. */
+export function escalationSummary(content: string): string | undefined {
+  const [label = ""] = content.split("\n", 1);
+  const start = `${ESCALATION_PREFIX}: `;
+  if (!label.startsWith(start) || !label.endsWith(ESCALATION_SUFFIX)) return undefined;
+  return label.slice(start.length, -ESCALATION_SUFFIX.length);
+}
 
 const questions = {
   effort: {
@@ -196,7 +205,7 @@ export function createEffortAssessment(
             await front.submit(
               {
                 type: "input",
-                content: `${ESCALATION_PREFIX}: ${describe(result)}. Not a new user instruction.]\nThe user's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, start a worker now with a self-contained goal, context, and constraints, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
+                content: `${ESCALATION_PREFIX}: ${describe(result)}${ESCALATION_SUFFIX}\nThe user's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, start a worker now with a self-contained goal, context, and constraints, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
                 whenBusy: "followUp",
                 requestId: `assessment:${task.id}`,
               },
