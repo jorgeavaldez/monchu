@@ -14,7 +14,13 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
 import type { EffortAssessment } from "./classifier.ts";
-import { loadConfig, type MonchuConfig, type Settings } from "./config.ts";
+import {
+  loadConfig,
+  saveRole,
+  type ModelRole,
+  type MonchuConfig,
+  type Settings,
+} from "./config.ts";
 import { resolveRoles } from "./models/index.ts";
 
 /** Reloadable modules. Static imports inside them stay cached. */
@@ -57,6 +63,7 @@ async function build(
   home: string,
   reportMissing: (path: string) => void,
   finders: FffFinders,
+  workerRole: () => ModelRole,
 ): Promise<Build> {
   resolveRoles(models, config);
   const version = randomUUID();
@@ -67,7 +74,7 @@ async function build(
   };
   const context = (await load("context")).createContext(home, config.settings);
   const tools = (await load("pi-tools")).createPiTools(context.settings, finders);
-  const workers = (await load("workers")).createWorkerTools(config.worker);
+  const workers = (await load("workers")).createWorkerTools(workerRole);
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
@@ -129,6 +136,7 @@ export class Extensions {
   private readonly reportMissing: (path: string) => void;
   private current: Build;
   private reloading: Promise<readonly string[]> | undefined;
+  private saving: Promise<ModelRole> | undefined;
 
   private constructor(
     models: Models,
@@ -161,8 +169,17 @@ export class Extensions {
       report(`Missing Monchu home file (skipped): ${path}`);
     };
     const finders = new FffFinders(home, report);
-    const current = await build(models, config, home, reportMissing, finders);
-    const extensions = new Extensions(models, home, report, reportMissing, current, finders);
+    // Worker tools run only after construction; until then nothing can call the role getter.
+    let extensions: Extensions | undefined;
+    const current = await build(
+      models,
+      config,
+      home,
+      reportMissing,
+      finders,
+      () => extensions?.config.worker ?? config.worker,
+    );
+    extensions = new Extensions(models, home, report, reportMissing, current, finders);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
@@ -170,6 +187,28 @@ export class Extensions {
 
   get config(): MonchuConfig {
     return this.current.config;
+  }
+
+  /**
+   * Save a role default to `config.json` (see `saveRole`); new workers use it without a reload. Saves and reloads never
+   * overlap, so a reload that read the old file cannot replace the saved role.
+   */
+  async saveRole(
+    role: "front" | "worker",
+    change: Partial<ModelRole>,
+    check: (saved: ModelRole) => void,
+  ): Promise<ModelRole> {
+    while (this.reloading !== undefined || this.saving !== undefined)
+      await Promise.allSettled([this.reloading, this.saving]);
+    const saving = saveRole(this.home, role, change, check);
+    this.saving = saving;
+    try {
+      const saved = await saving;
+      this.current = { ...this.current, config: { ...this.current.config, [role]: saved } };
+      return saved;
+    } finally {
+      this.saving = undefined;
+    }
   }
 
   /** The loaded run settings. */
@@ -204,6 +243,7 @@ export class Extensions {
    */
   reload(applyConfig?: (config: MonchuConfig) => Promise<void>): Promise<readonly string[]> {
     this.reloading ??= (async () => {
+      await this.saving?.catch(() => {});
       await buildForReload();
       const config = await loadConfig(this.home);
       if (
@@ -212,7 +252,14 @@ export class Extensions {
         config.claude.longContextExtraUsage !== this.current.config.claude.longContextExtraUsage
       )
         throw new Error("Claude Code host settings changed; use /restart to apply them");
-      const next = await build(this.models, config, this.home, this.reportMissing, this.finders);
+      const next = await build(
+        this.models,
+        config,
+        this.home,
+        this.reportMissing,
+        this.finders,
+        () => this.config.worker,
+      );
       validateExtensions(this.registry, next.extensions);
       await applyConfig?.(config);
       for (const extension of next.extensions) this.registry.install(extension);
@@ -230,9 +277,10 @@ export class Extensions {
     await this.finders.close();
   }
 
-  /** Resolves once no reload is running, whether or not it succeeded. */
+  /** Resolves once no reload or role save is running, whether or not it succeeded. */
   async settled(): Promise<void> {
-    await this.reloading?.catch(() => {});
+    while (this.reloading !== undefined || this.saving !== undefined)
+      await Promise.allSettled([this.reloading, this.saving]);
   }
 }
 

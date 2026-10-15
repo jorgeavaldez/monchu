@@ -155,6 +155,57 @@ it("drops a closed worker from the roster at once and returns its selected view 
   });
 }, 30_000);
 
+it("picks the shown conversation's model with Enter and saves its role default with Ctrl+S", async () => {
+  await withTerminal(60, "dark", async (screen, backend, home) => {
+    const path = join(home, "config.json");
+    const written = await readFile(path, "utf8");
+    send(screen, "/model");
+    const picker = await visible(screen, "Only showing models from configured providers");
+    // As in Pi: the current model first, marked, then the default; the key hints below.
+    const rows = picker.filter((line) => line.includes("[faux]"));
+    expect(rows[0]).toMatch(/→ ✓ front \[faux\] · default/);
+    expect(rows[1]).toMatch(/^\s+worker \[faux\]/);
+    expect(picker.join("\n")).toContain("Enter to select · Ctrl+S to set as default");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\r");
+    const picked = await visible(screen, "root model · faux/worker · this conversation only");
+    expect(picked.findLast((line) => line.includes("root · "))).toContain("root · worker");
+    expect(await readFile(path, "utf8")).toBe(written);
+    // The picked model now leads, ahead of the default; the dev front model answers as the root again.
+    send(screen, "/model");
+    const repicked = (await visible(screen, "→ ✓ worker [faux]")).filter((line) =>
+      line.includes("[faux]"),
+    );
+    expect(repicked[1]).toMatch(/^\s+front \[faux\] · default/);
+    screen.sendInput("\x1b[B");
+    screen.sendInput("\r");
+    await visible(screen, "root model · faux/front");
+    // A worker's pick goes to that worker; Ctrl+S also saves the worker default.
+    send(screen, "/work reader inspect");
+    await visible(screen, "Faux front: result received.");
+    send(screen, "/agents reader");
+    await visible(screen, "worker: reader · worker");
+    send(screen, "/model");
+    await visible(screen, "→ ✓ worker [faux] · default");
+    screen.sendInput("front");
+    await visible(screen, "→   front [faux]");
+    screen.sendInput("\x13");
+    const saved = await visible(screen, "reader model · faux/front · saved as worker");
+    expect(saved.findLast((line) => line.includes("worker: reader"))).toContain(
+      "worker: reader · front",
+    );
+    expect((await loadConfig(home)).worker.modelId).toBe("front");
+    expect((await loadConfig(home)).front.modelId).toBe("front");
+    expect((await backend.modelChoice()).model?.id).toBe("front");
+    send(screen, "/thinking");
+    await visible(screen, "Thinking Level");
+    screen.sendInput("\x1b");
+    await waitFor(
+      async () => !(await screen.flushAndGetViewport()).join("\n").includes("Thinking Level"),
+    );
+  });
+}, 30_000);
+
 it("ignores Esc while the front is idle and interrupts it while it runs", async () => {
   await withTerminal(60, "dark", async (screen) => {
     screen.sendInput("\x1b");

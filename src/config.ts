@@ -23,7 +23,8 @@ SOFTWARE.
 */
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { TerminalCapabilities } from "@earendil-works/pi-tui";
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type ModelRole = {
@@ -140,7 +141,7 @@ const defaults: MonchuConfig = {
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
 };
 
-const thinkingLevels = [
+export const thinkingLevels = [
   "off",
   "minimal",
   "low",
@@ -150,7 +151,7 @@ const thinkingLevels = [
   "max",
 ] as const satisfies readonly ModelThinkingLevel[];
 
-function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
+export function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
   return thinkingLevels.some((level) => level === value);
 }
 
@@ -330,18 +331,67 @@ function runSettings(value: unknown): RunSettings {
   return settings;
 }
 
+/** The file's text, or `undefined` when it does not exist. */
+async function readRaw(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function parseJson(raw: string, path: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /** A missing file means defaults. Invalid content fails startup instead of guessing. */
 export async function loadConfig(home: string): Promise<MonchuConfig> {
   const path = join(home, "config.json");
-  let raw: string;
+  const raw = await readRaw(path);
+  return raw === undefined ? defaults : parseConfig(parseJson(raw, path), path);
+}
+
+/**
+ * Save one role's default into `<home>/config.json`, keeping every other field as written. The whole result passes the
+ * startup validator and `check` before a temporary file atomically replaces it; an invalid file is never rewritten.
+ */
+export async function saveRole(
+  home: string,
+  role: "front" | "worker",
+  change: Partial<ModelRole>,
+  check: (saved: ModelRole) => void,
+): Promise<ModelRole> {
+  const path = join(home, "config.json");
+  const raw = await readRaw(path);
+  const value = raw === undefined ? {} : parseJson(raw, path);
+  const current = parseConfig(value, path);
+  if (!isObject(value)) throw new Error(`Invalid ${path}: expected a JSON object`);
+  const next = { ...value, [role]: { ...current[role], ...change } };
+  const saved = parseConfig(next, path)[role];
+  check(saved);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify(next, null, 2)}
+`,
+    { flag: "wx" },
+  );
   try {
-    raw = await readFile(path, "utf8");
+    await rename(temporary, path);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return defaults;
+    await rm(temporary, { force: true });
     throw error;
   }
+  return saved;
+}
+
+function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
-    const value: unknown = JSON.parse(raw);
     if (!isObject(value)) throw new Error("expected a JSON object");
     const known = ["front", "worker", "classifier", "cloudflareAccountId", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));

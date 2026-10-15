@@ -4,9 +4,11 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
-import type { Monchu } from "../backend.ts";
+import type { ModelPick, Monchu } from "../backend.ts";
 import { formatOpenGoals } from "../goals.ts";
 import { help, parseInput } from "./commands.ts";
+import { ModelSelectorComponent } from "./components/model-selector.ts";
+import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { presentation } from "./state.ts";
 import { MonchuTui } from "./view.ts";
 
@@ -276,6 +278,50 @@ export async function runTerminal(
       case "/goals":
         view.showPanel("Goals", formatOpenGoals(await backend.goals()));
         break;
+      case "/model":
+      case "/thinking": {
+        // The pick applies to the conversation shown when the selector opened.
+        const name = selected;
+        const target = name ?? "root";
+        const role = name === undefined ? "front" : "worker";
+        const choice = await backend.modelChoice(name);
+        const pick = (change: ModelPick, save: boolean) => {
+          view.closeSelector();
+          inputs = inputs
+            .then(async () => {
+              await backend.pickModel(change, save, name);
+              const value =
+                "model" in change
+                  ? `model · ${change.model.provider}/${change.model.modelId}`
+                  : `thinking · ${change.thinkingLevel}`;
+              view.notice(
+                `${target} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`,
+              );
+            })
+            .catch(fail);
+        };
+        view.showSelector(
+          input.command === "/model"
+            ? new ModelSelectorComponent(
+                choice.model,
+                choice.models,
+                (model) => pick({ model: { provider: model.provider, modelId: model.id } }, false),
+                () => view.closeSelector(),
+                input.text || undefined,
+                (model) => pick({ model: { provider: model.provider, modelId: model.id } }, true),
+                { provider: choice.defaults.provider, id: choice.defaults.modelId },
+              )
+            : new ThinkingSelectorComponent(
+                choice.thinkingLevel,
+                choice.thinkingLevels,
+                (thinkingLevel) => pick({ thinkingLevel }, false),
+                () => view.closeSelector(),
+                (thinkingLevel) => pick({ thinkingLevel }, true),
+                choice.defaults.thinkingLevel,
+              ),
+        );
+        break;
+      }
       case "/stop":
         await backend.stopWorker(input.text);
         view.notice(`stopped worker · ${input.text}`);

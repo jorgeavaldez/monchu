@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, resolveSettings } from "../src/config.ts";
+import { loadConfig, resolveSettings, saveRole } from "../src/config.ts";
 import { harnessSettings } from "../src/context.ts";
 import { setup, cleanup } from "./support.ts";
 
@@ -152,5 +152,62 @@ describe("config", () => {
     [{ front: { provider: "p", modelId: "m", key: "secret" } }, "unknown fields: key"],
   ])("rejects %j", async (config, message) => {
     await expect(loadConfig(await home(config))).rejects.toThrow(message);
+  });
+
+  it("saves one role default atomically, keeping every other field and filling the role from its effective value", async () => {
+    const directory = await home({
+      cloudflareAccountId: "0123456789abcdef0123456789abcdef",
+      worker: { provider: "openai", modelId: "gpt-6-sol" },
+      settings: { theme: "light" },
+    });
+    const accept = () => {};
+    expect(await saveRole(directory, "worker", { thinkingLevel: "low" }, accept)).toEqual({
+      provider: "openai",
+      modelId: "gpt-6-sol",
+      thinkingLevel: "low",
+    });
+    expect(
+      await saveRole(
+        directory,
+        "front",
+        { provider: "claude-code", modelId: "claude-opus-5-5" },
+        accept,
+      ),
+    ).toEqual({ provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "low" });
+    expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8"))).toEqual({
+      cloudflareAccountId: "0123456789abcdef0123456789abcdef",
+      worker: { provider: "openai", modelId: "gpt-6-sol", thinkingLevel: "low" },
+      settings: { theme: "light" },
+      front: { provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "low" },
+    });
+    expect(await readdir(directory)).toEqual(["config.json"]);
+    // A missing file starts from the defaults and writes only the saved role.
+    const fresh = await home();
+    await saveRole(fresh, "front", { thinkingLevel: "medium" }, accept);
+    expect(JSON.parse(await readFile(join(fresh, "config.json"), "utf8"))).toEqual({
+      front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "medium" },
+    });
+  });
+
+  it("never rewrites an invalid file or writes a role that fails validation or the caller's check", async () => {
+    const accept = () => {};
+    const invalid = await home({ bogus: 1 });
+    const before = await readFile(join(invalid, "config.json"), "utf8");
+    await expect(saveRole(invalid, "front", { thinkingLevel: "low" }, accept)).rejects.toThrow(
+      "unknown fields: bogus",
+    );
+    expect(await readFile(join(invalid, "config.json"), "utf8")).toBe(before);
+    const valid = await home({});
+    await expect(saveRole(valid, "worker", { modelId: " " }, accept)).rejects.toThrow(
+      "worker.modelId must be a string",
+    );
+    const reject = (saved: { thinkingLevel: string }) => {
+      throw new Error(`no ${saved.thinkingLevel}`);
+    };
+    await expect(saveRole(valid, "worker", { thinkingLevel: "max" }, reject)).rejects.toThrow(
+      "no max",
+    );
+    expect(await readFile(join(valid, "config.json"), "utf8")).toBe("{}");
+    expect(await readdir(valid)).toEqual(["config.json"]);
   });
 });

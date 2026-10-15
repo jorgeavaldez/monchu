@@ -538,7 +538,7 @@ async function busySubWorkers(
  * Request IDs include the call ID so several calls inside one codemode script stay distinct.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createWorkerTools(role: ModelRole) {
+export function createWorkerTools(role: () => ModelRole) {
   return defineExtension({
     name: "monchu.workers",
     tasks: [Anchor, Delivery],
@@ -557,6 +557,7 @@ export function createWorkerTools(role: ModelRole) {
           const agent = await api.agent(context);
           if (agent.cwd === undefined) throw new Error("Conversation has no execution directory");
           const cwd = await resolveDirectory(args.cwd ?? agent.cwd, agent.cwd);
+          const defaults = role();
           const id = await api.commit(
             (tx) =>
               startWorker(
@@ -566,7 +567,7 @@ export function createWorkerTools(role: ModelRole) {
                 args.task,
                 cwd,
                 `tool:${api.taskId}:${api.callId}`,
-                role,
+                defaults,
               ),
             context,
           );

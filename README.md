@@ -58,7 +58,7 @@ There is no silent model/provider fallback.
 ```
 
 Unknown fields or unknown models fail startup. `"classifier": null` turns classification off.
-The front role is applied at startup and on `/reload`, from its next model request; new workers use the current worker role. Existing workers keep their stored role.
+The front role is applied at startup and on `/reload`, from its next model request, except for a model or thinking level picked for the root with `/model` or `/thinking`; new workers use the current worker role. Existing workers keep their stored role.
 
 `settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults shown above.
 It also accepts `shellPath`, `shellCommandPrefix`, `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
@@ -106,7 +106,7 @@ Skills load in place at startup and on reload from `<home>/skills` and this chec
 
 Home paths owned by Monchu (all relative to `<home>`, default `~/.monchu`):
 
-- `config.json`: optional model roles and validated run settings; no secrets.
+- `config.json`: optional model roles and validated run settings; no secrets. Only Ctrl+S in `/model` or `/thinking` writes it: the whole result passes the startup validator, then replaces the file atomically.
 - `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
 - `fff/`: frecency and query-history databases for native file/content search; no Pi or editor databases are reused.
 - `claude/`: isolated Claude Code config/execution directory and persisted Claude session mirrors; not the durable conversation store.
@@ -144,6 +144,9 @@ The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
 Esc interrupts a running front only and does nothing while it is idle. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
+`/model [search]` and `/thinking` open Pi's model and thinking-level selectors for the conversation shown, the root or the worker selected with `/agents`. The current model is listed first and the role default second, from providers with credentials.
+Enter changes only that conversation, from its next model request; `config.json` is untouched, and the notice says `this conversation only`. A root pick is stored with the root, separately for the model and the thinking level, so startup, `/reload` and `/new` keep it instead of the `front` default; edits to `front` in `config.json` apply only to the field not picked. To make the root follow `front` again, pick the value you want and press Ctrl+S: that saves it as the default and clears the root's pick for that field. Workers never re-read their default after they start.
+Ctrl+S also saves the pick as its role's default (`front` for the root, `worker` for workers), which clears the root's pick; new workers use the saved worker default at once, and existing workers keep theirs. It refuses, changing nothing, a role whose default model doesn't support the saved thinking level (the picker lists the shown conversation's levels, which may be another model's). Saves and `/reload` never overlap.
 `/login` opens private provider selection even on a fresh home without model credentials. Codex always uses device-code OAuth: open the displayed URL on any browser and approve its code, with no local callback server. Cloudflare uses API-key and account-ID prompts. Esc/Ctrl-C cancels. Prompts, codes and keys stay outside chat/editor history and logs; keys are masked. Only completion/cancellation or a credential-free failure notice goes into the TUI transcript.
 `/reload` re-reads config, extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Model roles and stream options apply from subsequent model-request boundaries; already prepared requests keep those values. Retry/compaction policy resolves at later scheduler boundaries, following Durable's runtime contract. TUI settings refresh on success; already running shell calls keep their environment. Home-file edits need no reload.
 `/restart` is Jorge's explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.

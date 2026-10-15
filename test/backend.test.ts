@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
+import { loadConfig } from "../src/config.ts";
 import {
   cleanup,
   fauxRole,
@@ -476,4 +477,131 @@ describe("backend", () => {
     }
     await expect(backend.reload()).rejects.toThrow("Monchu is closing");
   });
+
+  it("keeps a picked root model through reload and reopen, and saves role defaults only with Ctrl+S", async () => {
+    const value = await setup({
+      models: [
+        { id: "faux-1" },
+        { id: "picked", reasoning: true },
+        { id: "saved", reasoning: true },
+        { id: "edited", reasoning: true },
+      ],
+    });
+    const requests: { text: string; model: string }[] = [];
+    route(value.faux, async (request, _options, _state, model) => {
+      const text = textOf(lastMessage(request.messages));
+      requests.push({ text, model: model.id });
+      if (text === "spawn")
+        return fauxAssistantMessage(
+          [fauxToolCall("start_worker", { name: "w3", task: "fourth" })],
+          {
+            stopReason: "toolUse",
+          },
+        );
+      return fauxAssistantMessage("ok");
+    });
+    const opened = await openBackend(value);
+    const { home } = opened;
+    let backend = opened.backend;
+    const path = join(home, "config.json");
+    const sent = async (text: string) => {
+      await backend.submit(text, text);
+      await waitFor(() => requests.some((request) => request.text === text));
+      return requests.find((request) => request.text === text)?.model;
+    };
+    try {
+      // Enter changes only the root; config.json is untouched.
+      const written = await readFile(path, "utf8");
+      await backend.pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
+      expect(await readFile(path, "utf8")).toBe(written);
+      expect(await backend.modelChoice()).toMatchObject({
+        model: { id: "picked" },
+        defaults: { modelId: "faux-1" },
+      });
+      expect(await sent("first")).toBe("picked");
+      // Reload applies an edited default only to the fields not picked for the root.
+      await writeFile(
+        path,
+        JSON.stringify({
+          front: { ...fauxRole, modelId: "edited", thinkingLevel: "high" },
+          worker: fauxRole,
+          classifier: null,
+        }),
+      );
+      await backend.reload();
+      expect(await backend.modelChoice()).toMatchObject({
+        model: { id: "picked" },
+        thinkingLevel: "high",
+        defaults: { modelId: "edited" },
+      });
+      await backend.close();
+      backend = await Monchu.open(home, value.faux.provider);
+      expect(await backend.modelChoice()).toMatchObject({
+        model: { id: "picked" },
+        thinkingLevel: "high",
+      });
+      expect(await sent("after reopen")).toBe("picked");
+      // A fresh context keeps the pick too.
+      await backend.reset(undefined);
+      expect((await backend.modelChoice()).model?.id).toBe("picked");
+
+      // Ctrl+S on a worker saves the worker default: new workers get it, existing ones keep theirs.
+      await backend.startWorker("w0", "first worker", "w0");
+      await backend.startWorker("w1", "second worker", "w1");
+      await backend.pickModel({ model: { provider: "faux", modelId: "saved" } }, true, "w1");
+      expect((await loadConfig(home)).worker).toEqual({ ...fauxRole, modelId: "saved" });
+      expect((await backend.modelChoice("w0")).model?.id).toBe("faux-1");
+      expect(await backend.modelChoice("w1")).toMatchObject({
+        model: { id: "saved" },
+        defaults: { modelId: "saved" },
+      });
+      await backend.startWorker("w2", "third worker", "w2");
+      expect((await backend.modelChoice("w2")).model?.id).toBe("saved");
+      await sent("spawn");
+      await waitFor(async () => (await backend.workers()).some((worker) => worker.name === "w3"));
+      expect((await backend.modelChoice("w3")).model?.id).toBe("saved");
+      await backend.pickModel({ thinkingLevel: "low" }, false, "w0");
+      expect((await backend.modelChoice("w0")).thinkingLevel).toBe("low");
+      expect((await loadConfig(home)).worker.thinkingLevel).toBe("off");
+
+      // Ctrl+S on the root saves the front default and clears the pick, so later edits apply on reload.
+      await backend.pickModel({ model: { provider: "faux", modelId: "saved" } }, true);
+      expect((await loadConfig(home)).front).toEqual({
+        ...fauxRole,
+        modelId: "saved",
+        thinkingLevel: "high",
+      });
+      const config = await loadConfig(home);
+      await writeFile(path, JSON.stringify({ ...config, front: fauxRole }));
+      await backend.reload();
+      expect(await backend.modelChoice()).toMatchObject({
+        model: { id: "faux-1" },
+        thinkingLevel: "off",
+      });
+
+      // A thinking level the shown conversation's model supports is saved only if the role default's model does too.
+      await backend.pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
+      expect((await backend.modelChoice()).thinkingLevels).toContain("high");
+      const unsaved = await readFile(path, "utf8");
+      await expect(backend.pickModel({ thinkingLevel: "high" }, true)).rejects.toThrow(
+        "faux/faux-1 does not support thinking level high (supported: off); the front default was not saved",
+      );
+      expect(await readFile(path, "utf8")).toBe(unsaved);
+      expect(await backend.modelChoice()).toMatchObject({
+        thinkingLevel: "off",
+        defaults: { thinkingLevel: "off" },
+      });
+      await backend.pickModel({ thinkingLevel: "high" }, false);
+      expect((await backend.modelChoice()).thinkingLevel).toBe("high");
+
+      // Unknown models fail at the boundary without writing.
+      const before = await readFile(path, "utf8");
+      await expect(
+        backend.pickModel({ model: { provider: "faux", modelId: "missing" } }, true),
+      ).rejects.toThrow("no configured model faux/missing");
+      expect(await readFile(path, "utf8")).toBe(before);
+    } finally {
+      await backend.close();
+    }
+  }, 30000);
 });

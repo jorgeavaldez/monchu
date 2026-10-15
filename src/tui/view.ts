@@ -536,6 +536,19 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
+  /** Shows a selector in the editor's place until its owner calls `closeSelector`. */
+  showSelector(selector: Component & Focusable): void {
+    this.selector = selector;
+    this.editorContainer.clear();
+    this.editorContainer.addChild(selector);
+    this.ui.setFocus(selector);
+    this.ui.requestRender();
+  }
+
+  closeSelector(): void {
+    this.restoreEditor();
+  }
+
   /** Shows read-only text pinned above the footer until Esc, Enter, q or Ctrl-C closes it. */
   showPanel(title: string, text: string): void {
     this.selector = new TextPanel(

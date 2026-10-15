@@ -1,17 +1,23 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   cleanupSessionResources,
+  getSupportedThinkingLevels,
+  type Api,
   type AuthInteraction,
   type AuthType,
+  type Model,
+  type ModelThinkingLevel,
   type Provider,
   type Models,
 } from "@earendil-works/pi-ai";
 import {
   configure,
+  defineDoc,
   Harness,
   LiveDoc,
   ProviderDoc,
   type Conversation,
+  type ModelRef,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -20,7 +26,13 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, type Assessment } from "./classifier.ts";
-import { loadConfig, type Settings } from "./config.ts";
+import {
+  isThinkingLevel,
+  loadConfig,
+  thinkingLevels,
+  type ModelRole,
+  type Settings,
+} from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
@@ -37,6 +49,33 @@ import {
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+/**
+ * Which of the root's model fields were picked for this conversation only. Startup and reload apply `config.front`
+ * to the other fields; saving a field as the default clears its pick.
+ */
+const FrontPicks = defineDoc<{ model: boolean; thinkingLevel: boolean }>({
+  kind: "monchu.front-picks",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ model: false, thinkingLevel: false }),
+});
+
+/** Apply the configured front role from the next request, keeping the fields picked for the root only. */
+async function applyFrontRole(front: Conversation, role: ModelRole): Promise<void> {
+  await front.commit(async (tx) => {
+    const picks = await tx.doc(FrontPicks, front.id);
+    await configure(tx, front.id, {
+      ...(picks.model ? {} : { model: { provider: role.provider, modelId: role.modelId } }),
+      ...(picks.thinkingLevel ? {} : { thinkingLevel: role.thinkingLevel }),
+    });
+  }, context);
+}
+
+/** A model or thinking-level pick from the terminal, for the root or a worker. */
+export type ModelPick = { model: ModelRef } | { thinkingLevel: ModelThinkingLevel };
 
 /** One runtime/store owner. No terminal, transport, or rendering dependencies. */
 export class Monchu {
@@ -109,17 +148,16 @@ export class Monchu {
         context,
       );
       const front = await harness.root(context, { agent: { cwd: home } });
-      // The configured front role applies from the next request; a running request keeps its model.
       await front.configure(
         {
-          model: { provider: config.front.provider, modelId: config.front.modelId },
-          thinkingLevel: config.front.thinkingLevel,
           // Workers follow the host default, which leaves the root-only extensions out.
           extensions: { add: extensions.root },
           instructions: FRONT_INSTRUCTIONS,
         },
         context,
       );
+      // The configured front role applies from the next request; a running request keeps its model.
+      await applyFrontRole(front, config.front);
       const backend = new Monchu(home, owner, harness, front, models, reports, extensions, envs);
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
@@ -265,6 +303,66 @@ export class Monchu {
     if (provider !== undefined) cleanupSessionResources(provider.sessionId);
   }
 
+  /** The model and thinking level of the root or a worker, its role's default, and the chat models with credentials. */
+  async modelChoice(workerName?: string): Promise<{
+    model: Model<Api> | undefined;
+    thinkingLevel: ModelThinkingLevel;
+    thinkingLevels: readonly ModelThinkingLevel[];
+    defaults: ModelRole;
+    models: readonly Model<Api>[];
+  }> {
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    const agent = await conversation.agent(context);
+    const model =
+      agent.model === undefined
+        ? undefined
+        : this.models.getModel(agent.model.provider, agent.model.modelId);
+    return {
+      model,
+      thinkingLevel: agent.thinkingLevel,
+      thinkingLevels: model === undefined ? thinkingLevels : getSupportedThinkingLevels(model),
+      defaults:
+        workerName === undefined ? this.extensions.config.front : this.extensions.config.worker,
+      models: await this.models.getAvailable(),
+    };
+  }
+
+  /**
+   * Change the root's or a worker's model or thinking level from its next request. `saveDefault` also writes it to
+   * that role's default in `config.json`: `front` for the root, `worker` for workers. Existing workers keep theirs.
+   */
+  async pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void> {
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    if ("model" in pick) {
+      if (this.models.getModel(pick.model.provider, pick.model.modelId) === undefined)
+        throw new Error(
+          `Monchu has no configured model ${pick.model.provider}/${pick.model.modelId}`,
+        );
+    } else if (!isThinkingLevel(pick.thinkingLevel))
+      throw new Error(`Unknown thinking level ${String(pick.thinkingLevel)}`);
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    if (saveDefault) {
+      const role = workerName === undefined ? "front" : "worker";
+      // The saved default must work on its own model, which may not be the model this conversation is on.
+      await this.extensions.saveRole(role, "model" in pick ? pick.model : pick, (saved) => {
+        const model = this.models.getModel(saved.provider, saved.modelId);
+        if (model === undefined)
+          throw new Error(`Monchu has no configured model ${saved.provider}/${saved.modelId}`);
+        const levels = getSupportedThinkingLevels(model);
+        if (!levels.includes(saved.thinkingLevel))
+          throw new Error(
+            `${saved.provider}/${saved.modelId} does not support thinking level ${saved.thinkingLevel} (supported: ${levels.join(", ")}); the ${role} default was not saved`,
+          );
+      });
+    }
+    await conversation.commit(async (tx) => {
+      if (workerName === undefined)
+        (await tx.doc(FrontPicks, conversation.id))["model" in pick ? "model" : "thinkingLevel"] =
+          !saveDefault;
+      await configure(tx, conversation.id, pick);
+    }, context);
+  }
+
   async changeDirectory(path: string, workerName?: string): Promise<string> {
     const conversation = workerName === undefined ? this.front : await this.worker(workerName);
     const agent = await conversation.agent(context);
@@ -288,13 +386,7 @@ export class Monchu {
     this.reloading ??= this.extensions
       .reload(async (config) => {
         // Durable captures model and stream options during request preparation; later phases resolve current policy.
-        await this.front.configure(
-          {
-            model: { provider: config.front.provider, modelId: config.front.modelId },
-            thinkingLevel: config.front.thinkingLevel,
-          },
-          context,
-        );
+        await applyFrontRole(this.front, config.front);
       })
       .then((modules) => {
         for (const listener of this.reloadListeners) {

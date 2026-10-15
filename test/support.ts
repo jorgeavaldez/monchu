@@ -245,7 +245,7 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(createWorkerTools(fauxRole));
+  registry.install(createWorkerTools(() => fauxRole));
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));
   directories.add(directory);

@@ -9,9 +9,10 @@ type Input =
         | "/goals"
         | "/reload"
         | "/restart"
-        | "/login";
+        | "/login"
+        | "/thinking";
     }
-  | { command: "/new" | "/compact" | "/cd" | "/stop" | "/agents"; text: string }
+  | { command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model"; text: string }
   | { command: "/work" | "/tell" | "/cd-worker"; name: string; text: string };
 
 /** Every command once, in help order; parsing, help, and autocomplete all read this table. */
@@ -24,6 +25,14 @@ export const commands: Record<
   "/workers": { usage: "", help: "list workers and directories" },
   "/agents": { usage: "[name|root]", help: "view and talk to a worker; root is the default" },
   "/goals": { usage: "", help: "list ongoing endeavors and open commitments" },
+  "/model": {
+    usage: "[search]",
+    help: "pick the shown conversation's model; Ctrl+S also saves it as the role default",
+  },
+  "/thinking": {
+    usage: "",
+    help: "pick the shown conversation's thinking level; Ctrl+S also saves it as the role default",
+  },
   "/stop": { usage: "<name>", help: "cancel a worker and its work" },
   "/abort": { usage: "", help: "stop the front only; workers continue" },
   "/new": { usage: "[handoff]", help: "fresh root context" },
@@ -50,7 +59,7 @@ export const help = [
   ),
   "Esc interrupts a running front. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
-  "Plain messages go to the conversation shown; root commands always target the root.",
+  "Plain messages, /model and /thinking go to the conversation shown; root commands always target the root.",
 ].join("\n");
 
 /** Parse once at the input boundary; directory/message tails may contain spaces and newlines. */
@@ -67,6 +76,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/workers":
     case "/goals":
     case "/login":
+    case "/thinking":
     case "/reload":
     case "/restart":
       if (rest) throw new Error(`Usage: ${command}`);
@@ -74,6 +84,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/new":
     case "/compact":
     case "/agents":
+    case "/model":
       return { command, text: rest };
     case "/cd":
     case "/stop":
