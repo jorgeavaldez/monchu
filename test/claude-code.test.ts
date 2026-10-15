@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import assert from "node:assert";
 import { spawn } from "node:child_process";
-import { chmod, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
@@ -537,6 +537,50 @@ describe("Claude Code subscription provider", () => {
       expect(script.requests[4]?.history).toEqual([]);
     } finally {
       view.dispose();
+      await backend.close();
+    }
+  });
+
+  it("gives Claude Code workers the shared manual and their project files, and front-only files only to the front, through the system prompt", async () => {
+    const value = await setup();
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ front: role, worker: role, classifier: null, claude: config }),
+    );
+    await writeFile(join(value.directory, "AGENTS.md"), "SHARED MANUAL");
+    await writeFile(join(value.directory, "FRONT.md"), "FRONT ONLY");
+    const project = join(value.directory, "project");
+    await mkdir(project);
+    await writeFile(join(project, "AGENTS.md"), "PROJECT RULES");
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "done" }]);
+    });
+    await openClaudeModels(value.directory, script.provider, token);
+    const backend = await Monchu.open(value.directory, script.provider);
+    const prompts = () =>
+      script.requests.map(({ input }) => {
+        const prompt = input.options?.systemPrompt;
+        assert(typeof prompt === "object" && !Array.isArray(prompt) && prompt.type === "preset");
+        return prompt.append ?? "";
+      });
+    try {
+      await backend.submit("front", "front-request");
+      await waitFor(() => script.requests.length === 1);
+      await backend.changeDirectory(project);
+      await backend.startWorker("reader", "inspect", "worker-request");
+      await waitFor(() => script.requests.length === 2);
+      const [front, worker] = prompts();
+      expect(front).toContain("SHARED MANUAL");
+      expect(front).toContain("FRONT ONLY");
+      expect(worker).toContain("SHARED MANUAL");
+      expect(worker).not.toContain("FRONT ONLY");
+      expect(front).not.toContain("PROJECT RULES");
+      expect(worker).toContain(
+        `<project_instructions path="${join(project, "AGENTS.md")}">
+PROJECT RULES
+</project_instructions>`,
+      );
+    } finally {
       await backend.close();
     }
   });

@@ -61,7 +61,7 @@ async function build(
   models: Models,
   config: MonchuConfig,
   home: string,
-  reportMissing: (path: string) => void,
+  reportSkipped: (warning: string) => void,
   finders: FffFinders,
   workerRole: () => ModelRole,
 ): Promise<Build> {
@@ -78,7 +78,7 @@ async function build(
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
-  const identity = (await load("identity")).createIdentity(home, reportMissing);
+  const identity = (await load("identity")).createIdentity(home, reportSkipped);
   const assessment =
     config.classifier === null
       ? undefined
@@ -133,7 +133,7 @@ export class Extensions {
   private readonly home: string;
   private readonly finders: FffFinders;
   private readonly report: (warning: string) => void;
-  private readonly reportMissing: (path: string) => void;
+  private readonly reportSkipped: (warning: string) => void;
   private current: Build;
   private reloading: Promise<readonly string[]> | undefined;
   private saving: Promise<ModelRole> | undefined;
@@ -142,7 +142,7 @@ export class Extensions {
     models: Models,
     home: string,
     report: (warning: string) => void,
-    reportMissing: (path: string) => void,
+    reportSkipped: (warning: string) => void,
     current: Build,
     finders: FffFinders,
   ) {
@@ -151,7 +151,7 @@ export class Extensions {
     this.home = home;
     this.finders = finders;
     this.report = report;
-    this.reportMissing = reportMissing;
+    this.reportSkipped = reportSkipped;
     this.current = current;
   }
 
@@ -162,11 +162,11 @@ export class Extensions {
     home: string,
     report: (warning: string) => void,
   ): Promise<Extensions> {
-    const missingFiles = new Set<string>();
-    const reportMissing = (path: string) => {
-      if (missingFiles.has(path)) return;
-      missingFiles.add(path);
-      report(`Missing Monchu home file (skipped): ${path}`);
+    const skippedFiles = new Set<string>();
+    const reportSkipped = (warning: string) => {
+      if (skippedFiles.has(warning)) return;
+      skippedFiles.add(warning);
+      report(warning);
     };
     const finders = new FffFinders(home, report);
     // Worker tools run only after construction; until then nothing can call the role getter.
@@ -175,11 +175,11 @@ export class Extensions {
       models,
       config,
       home,
-      reportMissing,
+      reportSkipped,
       finders,
       () => extensions?.config.worker ?? config.worker,
     );
-    extensions = new Extensions(models, home, report, reportMissing, current, finders);
+    extensions = new Extensions(models, home, report, reportSkipped, current, finders);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
@@ -256,7 +256,7 @@ export class Extensions {
         this.models,
         config,
         this.home,
-        this.reportMissing,
+        this.reportSkipped,
         this.finders,
         () => this.config.worker,
       );

@@ -1,5 +1,5 @@
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { glob, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { glob, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, hostname, release, type, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,10 +23,17 @@ import {
 
 afterEach(cleanup);
 
-const homeFiles = ["SOUL.md", "AGENTS.md", "DEVICES.md", "memories/USER.md", "memories/MEMORY.md"];
+const homeFiles = [
+  "SOUL.md",
+  "AGENTS.md",
+  "FRONT.md",
+  "DEVICES.md",
+  "memories/USER.md",
+  "memories/MEMORY.md",
+];
 
 describe("Monchu home context", () => {
-  it("reads all five files for the front on every request, but only memories and devices for workers", async () => {
+  it("reads all home files for the front on every request, but only the shared manual, memories, and devices for workers", async () => {
     const value = await setup();
     const home = value.directory;
     await mkdir(join(home, "memories"));
@@ -67,14 +74,101 @@ describe("Monchu home context", () => {
       for (const delivery of state?.deliveries ?? [])
         await harness.waitForTask(delivery.taskId, context);
       const worker = requests.find(({ message }) => message === "inspect");
-      for (const file of ["memories/USER.md", "memories/MEMORY.md", "DEVICES.md"])
+      for (const file of ["AGENTS.md", "memories/USER.md", "memories/MEMORY.md", "DEVICES.md"])
         expect(worker?.home).toContain(`<home_file path="${join(home, file)}">`);
       expect(worker?.home).toContain("EDITED MEMORY");
-      expect(worker?.home).not.toMatch(/SOUL\.md|AGENTS\.md/);
+      expect(worker?.home).not.toMatch(/SOUL\.md|FRONT\.md/);
       expect(worker?.instructions).toBe(
         "<instructions>\nYou are Monchu's background worker reader: a delegated agent doing one bounded job on the user's behalf. Do the job in your brief and nothing broader. Your final answer is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.\n</instructions>",
       );
       expect(value.reports).toEqual([]);
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("gives workers their execution directory's context files like Pi, outermost first, without repeating home's", async () => {
+    const value = await setup();
+    const home = value.directory;
+    const outer = join(home, "outer");
+    const repo = join(outer, "repo");
+    const cwd = join(repo, "src");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(join(outer, "AGENTS.md"));
+    await writeFile(join(home, "AGENTS.md"), "SHARED MANUAL");
+    await writeFile(join(outer, "CLAUDE.md"), "OUTER CLAUDE");
+    await writeFile(join(repo, "AGENTS.md"), "REPO AGENTS");
+    await writeFile(join(repo, "AGENTS.override.md"), "REPO OVERRIDE");
+    value.registry.install(createIdentity(home, () => {}));
+    const requests: { message: string; home: string; project: string[] }[] = [];
+    route(value.faux, (request) => {
+      requests.push({
+        message: textOf(lastMessage(request.messages)),
+        home: sectionTexts(request.messages, "home").join("\n"),
+        project: sectionTexts(request.messages, "project"),
+      });
+      return fauxAssistantMessage("ok");
+    });
+    const { harness, root } = await open(value);
+    try {
+      await root.configure({ cwd }, context);
+      await (await root.submit({ type: "input", content: "front" }, context)).wait(context);
+      await root.commit(
+        (tx) => startWorker(tx, root.id, "nested", "nested", cwd, "nested-request", fauxRole),
+        context,
+      );
+      await root.commit(
+        (tx) => startWorker(tx, root.id, "homed", "homed", home, "homed-request", fauxRole),
+        context,
+      );
+      const state = await harness.snapshot(WorkersDoc, root.id, context);
+      for (const delivery of state?.deliveries ?? [])
+        await harness.waitForTask(delivery.taskId, context);
+      expect(requests.find(({ message }) => message === "front")?.project).toEqual([]);
+      const nested = requests.find(({ message }) => message === "nested");
+      expect(nested?.home).toContain("SHARED MANUAL");
+      expect(nested?.project).toEqual([
+        `<project>\n<project_instructions path="${join(outer, "CLAUDE.md")}">\nOUTER CLAUDE\n</project_instructions>\n\n<project_instructions path="${join(repo, "AGENTS.override.md")}">\nREPO OVERRIDE\n</project_instructions>\n</project>`,
+      ]);
+      const homed = requests.find(({ message }) => message === "homed");
+      expect(homed?.home).toContain("SHARED MANUAL");
+      expect(homed?.project).toEqual([]);
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("skips an unreadable context file with one warning and still loads the rest of the project context", async () => {
+    const value = await setup();
+    const outer = join(value.directory, "outer");
+    const cwd = join(outer, "repo");
+    await mkdir(cwd, { recursive: true });
+    // A self-referencing symlink fails every read with ELOOP, on Windows and Linux alike.
+    await symlink("AGENTS.override.md", join(outer, "AGENTS.override.md"));
+    await writeFile(join(outer, "AGENTS.md"), "OUTER AGENTS");
+    await writeFile(join(cwd, "AGENTS.md"), "REPO AGENTS");
+    const warnings: string[] = [];
+    value.registry.install(createIdentity(value.directory, (warning) => warnings.push(warning)));
+    const projects: string[] = [];
+    route(value.faux, (request) => {
+      projects.push(sectionTexts(request.messages, "project").join("\n"));
+      return fauxAssistantMessage("ok");
+    });
+    const { harness, root } = await open(value);
+    try {
+      await root.commit(
+        (tx) => startWorker(tx, root.id, "reader", "inspect", cwd, "worker-request", fauxRole),
+        context,
+      );
+      const state = await harness.snapshot(WorkersDoc, root.id, context);
+      for (const delivery of state?.deliveries ?? [])
+        await harness.waitForTask(delivery.taskId, context);
+      const project = projects.at(-1) ?? "";
+      expect(project).toContain("OUTER AGENTS");
+      expect(project).toContain("REPO AGENTS");
+      expect(warnings.filter((warning) => !warning.startsWith("Missing Monchu home file"))).toEqual(
+        [`Unreadable context file (skipped): ${join(outer, "AGENTS.override.md")}: ELOOP`],
+      );
     } finally {
       await harness.close(context);
     }
@@ -217,7 +311,7 @@ describe("Monchu home context", () => {
     }
   });
 
-  it("does not load or write Pi instructions, skills, packages, or execution-directory resources", async () => {
+  it("does not load or write Pi instructions, skills, packages, or the front's execution-directory resources", async () => {
     const value = await setup();
     const { agentDir, directory } = value;
     const project = join(directory, "project");
