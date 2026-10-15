@@ -54,15 +54,18 @@ import { parseWorkerNotice, workerNotice } from "../workers.ts";
 import { commands } from "./commands.ts";
 import { presentation, type QueuedItem } from "./state.ts";
 
-/** A chat notice's kind: Monchu's own status, or a message steered to a worker. */
-type NoticeTone = "system" | "steer";
+/**
+ * What a chat notice reports: Monchu's own status, or input delivered to a worker. A delivery says `start` or
+ * `message`, never `steer`: whether it steers a run depends on the worker's state when it arrives, not when it is sent.
+ */
+type NoticeKind = "system" | "start" | "message";
 
-/** A notice's styled line: a steer has a yellow rule and label, as queued input does in the dock. */
-function noticeLine(text: string, tone: NoticeTone): string {
+/** A notice's styled line: a delivery has a yellow rule and label, as queued input does in the dock. */
+function noticeLine(text: string, kind: NoticeKind): string {
   const muted = getSelectListTheme().description;
-  return tone === "steer"
-    ? `${theme.fg("warning", "│ steer")}${muted(` · ${text}`)}`
-    : muted(`system · ${text}`);
+  return kind === "system"
+    ? muted(`system · ${text}`)
+    : `${theme.fg("warning", `│ ${kind}`)}${muted(` · ${text}`)}`;
 }
 
 /** The first line of a text, marked when more follows: dock rows show one line each. */
@@ -320,7 +323,7 @@ export class MonchuTui {
   private readonly workerMessages: WorkerMessageComponent[] = [];
   private readonly unfinished = new Set<ToolExecutionComponent>();
   private readonly streamedCalls = new Set<string>();
-  private readonly notices: { text: string; tone: NoticeTone }[] = [];
+  private readonly notices: { text: string; kind: NoticeKind }[] = [];
   private renderedIds: number[] = [];
   private applied: ConversationView | undefined;
   private workersLine = "";
@@ -548,10 +551,10 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  notice(text: string, tone: NoticeTone = "system"): void {
-    this.notices.push({ text, tone });
+  notice(text: string, kind: NoticeKind = "system"): void {
+    this.notices.push({ text, kind });
     this.chat.addChild(new Spacer(1));
-    this.chat.addChild(new Text(noticeLine(text, tone), 1, 0));
+    this.chat.addChild(new Text(noticeLine(text, kind), 1, 0));
     this.ui.requestRender();
   }
 
@@ -634,9 +637,9 @@ export class MonchuTui {
         card.updatePartialOutput(output.text, output.details);
     }
     if (rebuilt) {
-      for (const { text, tone } of this.notices) {
+      for (const { text, kind } of this.notices) {
         this.chat.addChild(new Spacer(1));
-        this.chat.addChild(new Text(noticeLine(text, tone), 1, 0));
+        this.chat.addChild(new Text(noticeLine(text, kind), 1, 0));
       }
       this.transcript.scrollToEnd();
     }

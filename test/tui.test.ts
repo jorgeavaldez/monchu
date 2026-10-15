@@ -13,8 +13,10 @@ import { presentation } from "../src/tui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
 import { startWorker } from "../src/workers.ts";
 import {
+  allEntries,
   cleanup,
   context,
+  conversationOf,
   deliveryTaskId,
   fauxRole,
   lastMessage,
@@ -498,7 +500,7 @@ describe("committed Durable presentation", () => {
         await waitFor(
           async () => (await harness.snapshot(InboxDoc, root.id, context))?.items.length === 4,
         );
-        ui.notice("reader · received", "steer");
+        ui.notice("reader · received", "message");
         const dock = await viewport();
         const queued = dock.join("\n");
         for (const text of [
@@ -506,7 +508,7 @@ describe("committed Durable presentation", () => {
           "│ steer · steer now",
           "│ follow-up · reader update · checking files …",
           "│ follow-up · reader reply · report line one …",
-          "│ steer · reader · received",
+          "│ message · reader · received",
         ]) {
           expect(queued).toContain(text);
           expect(await rule(dock, (line) => line.includes(text))).toBe(yellow);
@@ -561,6 +563,113 @@ describe("committed Durable presentation", () => {
       }
     },
   );
+
+  it("keeps placed worker updates and reports in worker style without their wrapper after every refresh", async () => {
+    const value = await setup();
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      if (textOf(last) === "inspect")
+        return fauxAssistantMessage(
+          [fauxToolCall("post_update", { text: "checking files\nhalfway there" })],
+          { stopReason: "toolUse" },
+        );
+      if (last?.role === "toolResult") return fauxAssistantMessage([fauxText("report body")]);
+      return fauxAssistantMessage([fauxText("front reply")]);
+    });
+    initTheme("dark");
+    const probe = async (styled: string) => {
+      const cell = new VirtualTerminal(4, 1);
+      cell.write(styled);
+      return cell.foreground(0, 0);
+    };
+    const purple = await probe(theme.fg("borderAccent", "│"));
+    const gray = await probe(theme.fg("borderMuted", "│"));
+    const muted = await probe(theme.fg("muted", "x"));
+    // The committed view once, as the app's subscription delivers it.
+    const snapshot = async (conversation: typeof root) => {
+      const state = await conversation.viewState(context);
+      const view = state.value;
+      state.dispose();
+      return view;
+    };
+    let { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "reader", "inspect", value.directory, "start:r", fauxRole),
+      context,
+    );
+    await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
+    await root.waitForIdle(context);
+    // The transcript keeps the model's input whole: the label and guidance are hidden only on screen.
+    const stored = (await allEntries(root)).flatMap((entry) =>
+      entry.kind === "pi.user" ? [textOf(entry.model?.[0])] : [],
+    );
+    expect(stored.filter((text) => text.includes("not a new user instruction"))).toHaveLength(2);
+    expect(stored.some((text) => text.includes("Tell the user"))).toBe(true);
+
+    // Each refresh path must draw the placed update gray and the report purple, with no wrapper text.
+    const expectStyled = async (screen: VirtualTerminal, ui: MonchuTui, refresh: string) => {
+      ui.ui.scrollToTop();
+      ui.ui.renderNow();
+      const lines = await screen.flushAndGetViewport();
+      const shown = lines.join("\n");
+      expect(shown, refresh).not.toMatch(
+        /not a new user instruction|Tell the user|\[Worker |\[Background worker /,
+      );
+      const update = lines.findIndex((line) => line.startsWith("│ checking files"));
+      expect(update, `${refresh}\n${shown}`).toBeGreaterThan(0);
+      expect(lines[update - 1], refresh).toMatch(/^│ reader\s*$/);
+      expect(lines[update + 1], refresh).toMatch(/^│ halfway there\s*$/);
+      for (const row of [update - 1, update, update + 1])
+        expect(await screen.foreground(row, 0), refresh).toBe(gray);
+      expect(await screen.foreground(update, 2), refresh).toBe(muted);
+      const report = lines.findIndex((line) => line.startsWith("│ report body"));
+      expect(lines[report - 1], refresh).toMatch(/^│ reader\s*$/);
+      expect(await screen.foreground(report, 0), refresh).toBe(purple);
+    };
+
+    let screen = new VirtualTerminal(60, 40);
+    let ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    try {
+      ui.start();
+      ui.apply(await snapshot(root));
+      await expectStyled(screen, ui, "first render");
+      // A forced rebuild, as /reload and a resize-driven rebuild do.
+      ui.apply(await snapshot(root), undefined, true);
+      await expectStyled(screen, ui, "forced rebuild");
+      // Viewing the worker and coming back rebuilds the root transcript from its entries.
+      const worker = await conversationOf(harness, workerId);
+      ui.apply(await snapshot(worker), "reader");
+      ui.ui.renderNow();
+      // The worker's own transcript, not the root's: the front's reply is absent.
+      expect((await screen.flushAndGetViewport()).join("\n")).not.toContain("front reply");
+      ui.apply(await snapshot(root));
+      await expectStyled(screen, ui, "back from the worker view");
+    } finally {
+      ui.stop();
+      await harness.close(context);
+    }
+    // A restart: the reopened store and a new terminal draw the same styles from the stored entries alone.
+    ({ harness, root } = await open(value));
+    screen = new VirtualTerminal(60, 40);
+    ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      abort: () => {},
+      exit: () => {},
+    });
+    try {
+      ui.start();
+      ui.apply(await snapshot(root));
+      await expectStyled(screen, ui, "reopened");
+      expect(value.reports).toEqual([]);
+    } finally {
+      ui.stop();
+      await harness.close(context);
+    }
+  });
 
   it.each(["dark", "light"])(
     "draws worker replies as gray cards behind a purple rule and updates as a muted rule (%s)",

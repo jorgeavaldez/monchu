@@ -391,6 +391,7 @@ describe.each([
   it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen) => {
       send(screen, "/work reader inspect");
+      await visible(screen, "│ start · reader · creation committed");
       // The worker's name is the only label: the rule's style tells an update from a report.
       const update = await visible(screen, "│ Faux worker progress: checking.");
       expect(update[update.findIndex((line) => line.includes("worker progress")) - 1]).toMatch(
@@ -428,7 +429,7 @@ describe.each([
       screen.sendInput("\r");
       await visible(screen, "worker: reader");
       send(screen, "more");
-      await visible(screen, "│ steer · reader · received");
+      await visible(screen, "│ message · reader · received");
       await waitFor(async () => {
         const lines = await screen.flushAndGetViewport();
         // The worker answers the new message; its first answer may have scrolled above it.
