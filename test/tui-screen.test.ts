@@ -1,4 +1,4 @@
-import { createProvider } from "@earendil-works/pi-ai";
+import { createProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { openDevMonchu } from "../src/dev-faux.ts";
 import { loadConfig } from "../src/config.ts";
 import { monchuHome } from "../src/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
-import { cleanup, fauxRole, prepareHome, setup, waitFor } from "./support.ts";
+import { cleanup, fauxRole, prepareHome, route, setup, waitFor } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 async function withTerminal(
@@ -167,6 +167,49 @@ it("ignores Esc while the front is idle and interrupts it while it runs", async 
     const stopped = await visible(screen, "front stopped; workers continue");
     expect(stopped.join("\n")).not.toContain("DONE");
   });
+});
+
+it("keeps notices beside their entries through compaction and says the context was compacted", async () => {
+  const value = await setup();
+  route(value.faux, () => fauxAssistantMessage("noted"));
+  await writeFile(
+    join(value.directory, "config.json"),
+    JSON.stringify({
+      front: fauxRole,
+      worker: fauxRole,
+      classifier: null,
+      settings: { compaction: { keepRecentTokens: 1 } },
+    }),
+  );
+  const backend = await Monchu.open(value.directory, value.faux.provider);
+  const screen = new VirtualTerminal(60, 40);
+  const running = runTerminal(backend, screen);
+  try {
+    await visible(screen, "Monchu · /help");
+    for (const [index, text] of ["first", "second"].entries()) {
+      send(screen, text);
+      await waitFor(async () => {
+        const chat = (await screen.flushAndGetViewport()).join("\n");
+        return chat.match(/noted/g)?.length === index + 1;
+      });
+    }
+    send(screen, "/compact");
+    const lines = await visible(screen, "system · context compacted · manual");
+    const chat = lines.map((line) => line.trim()).filter(Boolean);
+    // Only the kept reply remains; the notices about summarized entries are not replayed beneath it.
+    expect(chat[0]).toBe("[Earlier context summarized]");
+    expect(chat[1]).toBe("noted");
+    expect(chat.slice(3, 5)).toEqual([
+      "system · compaction started",
+      "system · context compacted · manual",
+    ]);
+    expect(chat.join("\n")).not.toMatch(/Monchu · \/help|received · root/);
+  } finally {
+    send(screen, "/quit");
+    await running;
+    await backend.close();
+    await cleanup();
+  }
 });
 
 it("keeps Cloudflare login prompts out of chat, editor history and raw terminal output", async () => {

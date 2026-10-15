@@ -23,7 +23,11 @@ import { UserMessageComponent } from "./components/user-message.ts";
 import { WorkerMessageComponent } from "./components/worker-message.ts";
 import { getMarkdownTheme, getSelectListTheme, theme } from "./theme/theme.ts";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
-import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
+import {
+  CompactionEntry,
+  type ConversationView,
+  type EntryRecord,
+} from "@earendil-works/pi-durable";
 import {
   CombinedAutocompleteProvider,
   Container,
@@ -323,7 +327,10 @@ export class MonchuTui {
   private readonly workerMessages: WorkerMessageComponent[] = [];
   private readonly unfinished = new Set<ToolExecutionComponent>();
   private readonly streamedCalls = new Set<string>();
-  private readonly notices: { text: string; kind: NoticeKind }[] = [];
+  /** Notices posted since the last apply, which places each after an entry. */
+  private readonly posted: { text: string; kind: NoticeKind }[] = [];
+  /** Placed notices, each after the entry it follows; `undefined` when no entry was shown. */
+  private readonly notices: { text: string; kind: NoticeKind; after: number | undefined }[] = [];
   private renderedIds: number[] = [];
   private applied: ConversationView | undefined;
   private workersLine = "";
@@ -552,7 +559,7 @@ export class MonchuTui {
   }
 
   notice(text: string, kind: NoticeKind = "system"): void {
-    this.notices.push({ text, kind });
+    this.posted.push({ text, kind });
     this.chat.addChild(new Spacer(1));
     this.chat.addChild(new Text(noticeLine(text, kind), 1, 0));
     this.ui.requestRender();
@@ -590,6 +597,15 @@ export class MonchuTui {
       force ||
       this.conversationId !== view.conversation.id ||
       this.renderedIds.some((id, index) => view.entries[index]?.id !== id);
+    // A compaction commits a new head marker; a summary already shown, or shown on opening, is not news.
+    const head = view.entries[0];
+    const compacted =
+      CompactionEntry.is(head) &&
+      this.conversationId === view.conversation.id &&
+      this.renderedIds.length > 0 &&
+      !this.renderedIds.includes(head.id)
+        ? head.data.reason
+        : undefined;
     this.conversationId = view.conversation.id;
     if (
       state.partial === undefined &&
@@ -597,6 +613,10 @@ export class MonchuTui {
       !view.entries.slice(this.renderedIds.length).some((entry) => entry.kind === "pi.assistant")
     )
       rebuilt = true;
+    // A notice follows the entries shown when it was posted; a rebuild, such as a view switch, moves it below the new ones.
+    if (!rebuilt)
+      for (const notice of this.posted.splice(0))
+        this.notices.push({ ...notice, after: this.renderedIds.at(-1) });
     if (rebuilt) {
       this.chat.clear();
       this.cards.length = 0;
@@ -611,7 +631,22 @@ export class MonchuTui {
     for (const entry of view.entries.slice(this.renderedIds.length)) {
       this.addEntry(entry);
       this.renderedIds.push(entry.id);
+      // A rebuild puts each notice back after its entry; notices about entries no longer shown stay out.
+      if (rebuilt)
+        for (const notice of this.notices) {
+          if (notice.after !== entry.id) continue;
+          this.chat.addChild(new Spacer(1));
+          this.chat.addChild(new Text(noticeLine(notice.text, notice.kind), 1, 0));
+        }
     }
+    if (rebuilt)
+      for (const notice of this.posted.splice(0)) {
+        this.chat.addChild(new Spacer(1));
+        this.chat.addChild(new Text(noticeLine(notice.text, notice.kind), 1, 0));
+        this.notices.push({ ...notice, after: this.renderedIds.at(-1) });
+      }
+    // The summary marker heads the transcript, far above the reader; say so where they are looking.
+    if (compacted !== undefined) this.notice(`context compacted · ${compacted}`);
     if (state.partial !== undefined) {
       if (!this.streaming) {
         this.streaming = new Container();
@@ -636,13 +671,7 @@ export class MonchuTui {
       if (output.text || output.details !== undefined)
         card.updatePartialOutput(output.text, output.details);
     }
-    if (rebuilt) {
-      for (const { text, kind } of this.notices) {
-        this.chat.addChild(new Spacer(1));
-        this.chat.addChild(new Text(noticeLine(text, kind), 1, 0));
-      }
-      this.transcript.scrollToEnd();
-    }
+    if (rebuilt) this.transcript.scrollToEnd();
     // Cache everything before the first entry a run may still change: the streaming reply or an unfinished card.
     // Cards report later changes themselves, so once the run is over even a card left without a result settles.
     if (!state.busy) this.unfinished.clear();
