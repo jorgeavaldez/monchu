@@ -49,7 +49,9 @@ export class WorkerMessageComponent implements Component {
       0,
       background,
     ).render(width);
-    if (!this.long || this.expanded) return [...header, ...body];
+    // One gray row above and below, as the user input and tool cards pad theirs.
+    const pad = background(" ".repeat(width));
+    if (!this.long || this.expanded) return [pad, ...header, ...body, pad];
     const hidden = body.length - PREVIEW_LINES;
     const hint = truncateToWidth(
       list.description(
@@ -59,9 +61,11 @@ export class WorkerMessageComponent implements Component {
       "...",
     );
     return [
+      pad,
       ...header,
       ...body.slice(0, PREVIEW_LINES),
       background(hint + " ".repeat(Math.max(0, width - visibleWidth(hint)))),
+      pad,
     ];
   }
 

@@ -1,8 +1,9 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
+import { UserMessageComponent } from "../src/tui/components/user-message.ts";
 import { WorkerMessageComponent } from "../src/tui/components/worker-message.ts";
 import { initTheme, theme } from "../src/tui/theme/theme.ts";
 import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -439,6 +440,21 @@ describe("committed Durable presentation", () => {
           expect(visibleWidth(line)).toBe(40);
         }
       }
+      // Exactly one padded row above and below, matching the user input box, short or long.
+      const padding = (lines: string[]) => {
+        const blank = lines.map((line) => stripTerminalSequences(line).trim() === "");
+        return [blank.indexOf(false), blank.length - 1 - blank.lastIndexOf(false)];
+      };
+      const short = new WorkerMessageComponent(
+        { name: "w", status: "update", text: "hi" },
+        () => {},
+      );
+      message.setExpanded(false);
+      for (const lines of [short.render(40), message.render(40)]) {
+        expect(padding(lines)).toEqual([1, 1]);
+        expect(stripTerminalSequences(lines[1] ?? "")).toContain("worker · w");
+      }
+      expect(padding(new UserMessageComponent("hi").render(40))).toEqual([1, 1]);
     },
   );
 
