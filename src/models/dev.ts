@@ -32,6 +32,10 @@ export function createDevProvider(): Provider {
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",
         });
+      if (text.startsWith("close "))
+        return fauxAssistantMessage([fauxToolCall("close_worker", { name: text.slice(6) })], {
+          stopReason: "toolUse",
+        });
       if (text === "goal")
         return fauxAssistantMessage(
           [

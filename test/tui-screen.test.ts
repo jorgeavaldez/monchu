@@ -131,6 +131,30 @@ it("clears the editor on Ctrl-C without aborting the front, and exits on a quick
   });
 });
 
+it("drops a closed worker from the roster at once and returns its selected view to the root", async () => {
+  await withTerminal(60, "dark", async (screen, backend) => {
+    send(screen, "/work reader inspect");
+    await visible(screen, "Faux front: result received.");
+    await visible(screen, "Workers · 1 idle · /agents");
+    send(screen, "/agents reader");
+    await visible(screen, "worker: reader");
+    // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
+    await backend.submit("close reader", "close-reader");
+    const back = await visible(screen, "worker reader closed · back to root");
+    expect(back.join("\n")).toContain("root · front");
+    await waitFor(
+      async () => !(await screen.flushAndGetViewport()).join("\n").includes("Workers ·"),
+    );
+    expect(await backend.workers()).toEqual([]);
+    send(screen, "/agents reader");
+    await visible(screen, "No worker named reader");
+    // The editor stays usable and talks to the root.
+    send(screen, "hello");
+    await visible(screen, "Faux reply: hello");
+    expect(screen.stopped).toBe(false);
+  });
+}, 30_000);
+
 it("ignores Esc while the front is idle and interrupts it while it runs", async () => {
   await withTerminal(60, "dark", async (screen) => {
     screen.sendInput("\x1b");

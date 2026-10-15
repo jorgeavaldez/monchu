@@ -97,7 +97,21 @@ export async function runTerminal(
     refreshing = (async () => {
       while (refreshAgain && !closing) {
         refreshAgain = false;
-        for (const summary of await backend.workers()) {
+        const summaries = await backend.workers();
+        if (closing) return;
+        // A closed worker leaves the active list: drop its view, and return a selected view to the root.
+        const active = new Set(summaries.map((summary) => summary.name));
+        for (const [name, worker] of workers) {
+          if (active.has(name)) continue;
+          worker.stop();
+          worker.state.dispose();
+          workers.delete(name);
+          if (selected === name) {
+            selected = undefined;
+            view.notice(`worker ${name} closed · back to root`);
+          }
+        }
+        for (const summary of summaries) {
           if (closing) return;
           const existing = workers.get(summary.name);
           if (existing) {
