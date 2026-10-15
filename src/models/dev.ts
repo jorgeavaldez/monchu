@@ -32,6 +32,19 @@ export function createDevProvider(): Provider {
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",
         });
+      if (text === "goal")
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("update_goal", {
+              id: "smoke",
+              title: "Smoke goal",
+              kind: "endeavor",
+              workstream: "Checking the goals panel wraps a long workstream under its field",
+              next: "first step\r\nsecond step\nthird step\nfourth step\nfifth step",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
       if (text.startsWith("[Worker")) return fauxAssistantMessage("Faux front: progress received.");
       if (text.startsWith("[Background worker"))
         return fauxAssistantMessage("Faux front: result received.");

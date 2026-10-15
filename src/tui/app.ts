@@ -260,7 +260,7 @@ export async function runTerminal(
         break;
       }
       case "/goals":
-        view.notice(formatOpenGoals(await backend.goals()));
+        view.showPanel("Goals", formatOpenGoals(await backend.goals()));
         break;
       case "/stop":
         await backend.stopWorker(input.text);

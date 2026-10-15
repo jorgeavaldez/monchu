@@ -39,8 +39,10 @@ import {
   Spacer,
   Text,
   TruncatedText,
+  truncateToWidth,
   TuiAltScreen,
   VStack,
+  wrapTextWithAnsi,
   type Component,
   type Focusable,
   type SelectItem,
@@ -106,6 +108,70 @@ class AgentSelector extends Container implements Focusable {
     this.listContainer.addChild(list);
     return list;
   }
+}
+
+/**
+ * Read-only text pinned in the editor's place, as the agent menu is: never transcript. Each source line wraps under
+ * its own indent; long text scrolls within a height capped by the terminal, re-measured every frame.
+ */
+class TextPanel implements Component, Focusable {
+  focused = false;
+  private readonly title: string;
+  private readonly lines: string[];
+  private readonly rows: () => number;
+  private readonly close: () => void;
+  private offset = 0;
+  private visible = 1;
+
+  constructor(title: string, text: string, rows: () => number, close: () => void) {
+    this.title = title;
+    this.lines = text.split(/\r\n|\r|\n/);
+    this.rows = rows;
+    this.close = close;
+  }
+
+  render(width: number): string[] {
+    const theme = getSelectListTheme();
+    const body = this.lines.flatMap((line) => {
+      const indent = " ".repeat(line.length - line.trimStart().length);
+      const wrapped = wrapTextWithAnsi(line.trimStart(), Math.max(1, width - 2 - indent.length));
+      return wrapped.map((part) => truncateToWidth(` ${indent}${part}`, width, ""));
+    });
+    // The whole panel, with its rules, title and hint, takes at most 60% of the rows; the transcript keeps the rest.
+    this.visible = Math.max(3, Math.min(body.length, Math.floor(this.rows() * 0.6) - 4));
+    this.offset = Math.max(0, Math.min(this.offset, body.length - this.visible));
+    const scroll =
+      body.length > this.visible
+        ? ` · ${this.offset + 1}-${this.offset + this.visible} of ${body.length} · ↑↓ PgUp PgDn`
+        : "";
+    const rule = theme.description("─".repeat(width));
+    return [
+      rule,
+      truncateToWidth(` ${theme.selectedText(this.title)}`, width, "..."),
+      ...body.slice(this.offset, this.offset + this.visible),
+      truncateToWidth(theme.description(` Esc to close${scroll}`), width, "..."),
+      rule,
+    ];
+  }
+
+  handleInput(data: string): void {
+    const keys = getKeybindings();
+    if (keys.matches(data, "tui.select.up")) this.offset -= 1;
+    else if (keys.matches(data, "tui.select.down")) this.offset += 1;
+    else if (keys.matches(data, "tui.select.pageUp")) this.offset -= this.visible;
+    else if (keys.matches(data, "tui.select.pageDown")) this.offset += this.visible;
+    else if (
+      keys.matches(data, "tui.select.cancel") ||
+      keys.matches(data, "tui.select.confirm") ||
+      matchesKey(data, "ctrl+c") ||
+      data === "q"
+    )
+      this.close();
+    // render clamps the offset to the content it measures.
+    this.offset = Math.max(0, this.offset);
+  }
+
+  invalidate(): void {}
 }
 
 /**
@@ -226,7 +292,7 @@ export class MonchuTui {
   private statusText = "";
   private expanded = false;
   private lastCtrlC = 0;
-  private selector: AgentSelector | undefined;
+  private selector: (Component & Focusable) | undefined;
   private loginCancel: (() => void) | undefined;
   private readonly loginStatus = new Container();
   private readonly loginPrompt = new Container();
@@ -414,6 +480,20 @@ export class MonchuTui {
         this.restoreEditor();
         select(value);
       },
+      () => this.restoreEditor(),
+    );
+    this.editorContainer.clear();
+    this.editorContainer.addChild(this.selector);
+    this.ui.setFocus(this.selector);
+    this.ui.requestRender();
+  }
+
+  /** Shows read-only text pinned above the footer until Esc, Enter, q or Ctrl-C closes it. */
+  showPanel(title: string, text: string): void {
+    this.selector = new TextPanel(
+      title,
+      text,
+      () => this.ui.terminal.rows,
       () => this.restoreEditor(),
     );
     this.editorContainer.clear();

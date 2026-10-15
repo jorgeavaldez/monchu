@@ -325,6 +325,69 @@ describe.each([
     });
   }, 30_000);
 
+  it("pins /goals above the footer with field line breaks, scrolls on resize, and closes back to the editor", async () => {
+    await withTerminal(columns, theme, async (screen) => {
+      send(screen, "goal");
+      await visible(screen, "Faux tool finished.");
+      send(screen, "/goals");
+      const panel = await visible(screen, "Esc to close");
+      const title = panel.findIndex((line) => line.trim() === "Goals");
+      const hint = panel.findIndex((line) => line.includes("Esc to close"));
+      // Pinned in the editor's place: below the transcript, directly above the footer; never a chat notice.
+      expect(title).toBeGreaterThan(
+        panel.findIndex((line) => line.includes("Faux tool finished.")),
+      );
+      expect(panel[hint + 1]?.trim()).toMatch(/^─+$/);
+      expect(panel[hint + 2]).toContain("root · ");
+      // The update_goal card above shows the goal; nothing is appended after the front's answer.
+      const answered = panel.findIndex((line) => line.includes("Faux tool finished."));
+      expect(panel.slice(answered + 1, title).join("\n")).not.toMatch(/smoke|system ·/i);
+      expect(panel.join("")).not.toContain("\r");
+      // Each stored line break, CRLF or LF, becomes its own row indented under its field.
+      const next = panel.findIndex(
+        (line, index) => index > title && line.includes("next: first step"),
+      );
+      expect(next).toBeGreaterThan(title);
+      for (const [index, step] of ["second", "third", "fourth", "fifth"].entries())
+        expect(panel[next + 1 + index]).toMatch(new RegExp(`^ {5}${step} step\\s*$`));
+      // A wrapped field continues under its own indent.
+      const workstream = panel.findIndex(
+        (line, index) => index > title && line.includes("workstream: Checking"),
+      );
+      expect(panel[workstream + 1]).toMatch(/^ {3}\S/);
+      // Typing goes to the panel, not the editor.
+      screen.sendInput("z");
+      // A short terminal caps the panel and scrolls it.
+      screen.resize(columns, 14);
+      const short = await visible(screen, "1-4 of");
+      expect(short).toHaveLength(14);
+      expect(short.at(-1)).toContain("root · ");
+      expect(short.findIndex((line) => line.trim() === "Goals")).toBeGreaterThanOrEqual(14 - 9);
+      screen.sendInput("\x1b[B");
+      await visible(screen, "2-5 of");
+      screen.resize(columns, 40);
+      await visible(screen, "next: first step");
+      screen.sendInput("\x1b");
+      await waitFor(
+        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc to close"),
+      );
+      const closed = await screen.flushAndGetViewport();
+      const done = closed.findIndex((line) => line.includes("Faux tool finished."));
+      expect(closed.slice(done + 1).join("\n")).not.toMatch(/smoke|system ·|Goals/i);
+      screen.sendInput("draft");
+      const editing = await visible(screen, "draft");
+      expect(editing.join("\n")).not.toContain("zdraft");
+      screen.sendInput("\x03");
+      // q closes it too.
+      send(screen, "/goals");
+      await visible(screen, "Esc to close");
+      screen.sendInput("q");
+      await waitFor(
+        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc to close"),
+      );
+    });
+  }, 30_000);
+
   it("labels worker updates/reports, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen) => {
       send(screen, "/work reader inspect");

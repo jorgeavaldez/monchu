@@ -40,17 +40,21 @@ export const GOALS_COMPACTION_FOCUS =
 
 const isOpen = (goal: Goal) => goal.status === "active" || goal.status === "waiting";
 
+// Stored text may carry its own line breaks; continuation lines stay indented under their field.
+const field = (label: string, value: string) =>
+  `  ${label}: ${value.split(/\r\n|\r|\n/).join("\n    ")}`;
+
 /** Stable text for the given goals, in stored order: unchanged goals render identically. */
 function formatGoals(goals: readonly Goal[]): string {
   return goals
     .map((goal) =>
       [
-        `- [${goal.id}] ${goal.title} (${goal.status}, ${goal.kind})`,
-        ...(goal.project === undefined ? [] : [`  project: ${goal.project}`]),
-        ...(goal.vault === undefined ? [] : [`  vault: ${goal.vault}`]),
-        `  workstream: ${goal.workstream}`,
-        ...(goal.workers.length === 0 ? [] : [`  workers: ${goal.workers.join(", ")}`]),
-        `  next: ${goal.next}`,
+        `- [${goal.id}] ${goal.title.replace(/\s*[\r\n]+\s*/g, " ")} (${goal.status}, ${goal.kind})`,
+        ...(goal.project === undefined ? [] : [field("project", goal.project)]),
+        ...(goal.vault === undefined ? [] : [field("vault", goal.vault)]),
+        field("workstream", goal.workstream),
+        ...(goal.workers.length === 0 ? [] : [field("workers", goal.workers.join(", "))]),
+        field("next", goal.next),
       ].join("\n"),
     )
     .join("\n");

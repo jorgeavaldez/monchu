@@ -52,6 +52,21 @@ const create = {
 };
 
 describe("goals", () => {
+  it("keeps stored line breaks indented under their field and the title on one line", () => {
+    const goal = {
+      ...create,
+      title: "Keep\r\nMonchu moving",
+      kind: "endeavor" as const,
+      status: "active" as const,
+      workers: [],
+      next: "first\r\nsecond\nthird\rfourth",
+      updatedAt: 0,
+    };
+    expect(formatOpenGoals([goal])).toBe(
+      "- [monchu] Keep Monchu moving (active, endeavor)\n  project: /projects/monchu\n  vault: projects/monchu\n  workstream: Memory and ongoing goals\n  next: first\n    second\n    third\n    fourth",
+    );
+  });
+
   it("creates an ongoing endeavor, patches workstream and next, links workers, and closes it", async () => {
     const test = await withGoals({
       create: { tool: "update_goal", args: create },
