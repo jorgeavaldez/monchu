@@ -89,6 +89,18 @@ export async function runTerminal(
     submit: (text, whenBusy) => {
       inputs = inputs.then(() => handle(text, whenBusy)).catch(fail);
     },
+    editQueued: (id, change) => {
+      // The queue shown now: a later view switch must not redirect the edit.
+      const name = selected;
+      inputs = inputs
+        .then(async () => {
+          if (await backend.editQueued(name, id, change)) return;
+          view.notice("that message already left the queue");
+          // An edit that came too late stays in the editor, to send as a new message.
+          if (change.kind === "text") view.restoreQueued([change.text]);
+        })
+        .catch(fail);
+    },
     // As in Pi, Esc interrupts only a front that shows activity (a run, retry, or compaction).
     abort: () => {
       if (root !== undefined && presentation(root.value).status) interrupt();
@@ -326,6 +338,9 @@ export async function runTerminal(
         );
         break;
       }
+      case "/queue":
+        view.openQueue();
+        break;
       case "/stop":
         await backend.stopWorker(input.text);
         view.notice(`stopped worker · ${input.text}`);

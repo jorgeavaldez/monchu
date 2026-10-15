@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { loadConfig } from "../src/config.ts";
 import { presentation } from "../src/tui/state.ts";
-import { workerNotice } from "../src/workers.ts";
+import { parseWorkerNotice, workerNotice } from "../src/workers.ts";
 import {
   cleanup,
   fauxRole,
@@ -664,7 +664,7 @@ describe("backend", () => {
       await backend.submit("one", "one", "followUp");
       await backend.submit("two", "two", "steer");
       await waitFor(() => presentation(root.value).queue.length === 3);
-      expect(presentation(root.value).queue.slice(1)).toEqual([
+      expect(presentation(root.value).queue.slice(1)).toMatchObject([
         { mode: "followUp", text: "one" },
         { mode: "steer", text: "two" },
       ]);
@@ -676,7 +676,9 @@ describe("backend", () => {
         await waitFor(() => presentation(worker.value).busy);
         await backend.messageWorker("held", "later", "later", "followUp");
         await waitFor(() => presentation(worker.value).queue.length === 1);
-        expect(presentation(worker.value).queue).toEqual([{ mode: "followUp", text: "later" }]);
+        expect(presentation(worker.value).queue).toMatchObject([
+          { mode: "followUp", text: "later" },
+        ]);
       } finally {
         worker.dispose();
       }
@@ -697,6 +699,105 @@ describe("backend", () => {
       });
       expect(users).toEqual(["hold front"]);
       expect(presentation(root.value).queue).toEqual([]);
+    } finally {
+      root.dispose();
+      await backend.close();
+    }
+  });
+
+  it("edits queued messages in place for the root and a worker, and a deleted report stays deleted", async () => {
+    const value = await setup();
+    const release = Promise.withResolvers<void>();
+    route(value.faux, async (request, options) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "hold front") await release.promise;
+      if (text === "hold worker") {
+        const signal = options?.signal;
+        if (signal === undefined) throw new Error("Hold requires cancellation");
+        if (!signal.aborted) await once(signal, "abort");
+      }
+      return fauxAssistantMessage(`done ${text}`);
+    });
+    const { backend } = await openBackend(value);
+    const root = await backend.viewState();
+    const queue = () => presentation(root.value).queue;
+    try {
+      await backend.submit("hold front", "hold", "followUp");
+      await waitFor(() => presentation(root.value).busy);
+      await backend.startWorker("quick", "quick", "start:quick");
+      await waitFor(() => queue().length === 1);
+      await backend.submit("one", "one", "followUp");
+      await backend.submit("two", "two", "followUp");
+      await waitFor(() => queue().length === 3);
+      const [report, one, two] = queue();
+      if (report === undefined || one === undefined || two === undefined)
+        throw new Error("Queue is missing items");
+
+      expect(
+        await backend.editQueued(undefined, one.id, { kind: "text", text: "one edited" }),
+      ).toBe(true);
+      expect(await backend.editQueued(undefined, two.id, { kind: "mode", mode: "steer" })).toBe(
+        true,
+      );
+      // A report's new text replaces only its body; it stays a report from its worker.
+      await backend.editQueued(undefined, report.id, { kind: "text", text: "edited report" });
+      await waitFor(() => queue()[1]?.text === "one edited");
+      expect(parseWorkerNotice(queue()[0]?.text ?? "")).toEqual({
+        name: "quick",
+        status: "completed",
+        text: "edited report",
+      });
+      expect(queue().map(({ id, mode }) => ({ id, mode }))).toEqual([
+        { id: report.id, mode: "followUp" },
+        { id: one.id, mode: "followUp" },
+        { id: two.id, mode: "steer" },
+      ]);
+      expect(await backend.editQueued(undefined, report.id, { kind: "delete" })).toBe(true);
+      expect(await backend.editQueued(undefined, report.id, { kind: "delete" })).toBe(false);
+      await expect(
+        backend.editQueued(undefined, one.id, { kind: "text", text: " " }),
+      ).rejects.toThrow("needs text");
+
+      // A worker's queue edits the same way; deleting a message reports the failure to the front.
+      await backend.startWorker("held", "hold worker", "start:held");
+      const worker = await backend.viewState("held");
+      try {
+        await waitFor(() => presentation(worker.value).busy);
+        await backend.messageWorker("held", "later", "later", "followUp");
+        await waitFor(() => presentation(worker.value).queue.length === 1);
+        const [later] = presentation(worker.value).queue;
+        if (later === undefined) throw new Error("Worker queue is missing its message");
+        await backend.editQueued("held", later.id, { kind: "text", text: "sooner" });
+        await backend.editQueued("held", later.id, { kind: "mode", mode: "steer" });
+        await waitFor(() => presentation(worker.value).queue[0]?.mode === "steer");
+        expect(presentation(worker.value).queue).toEqual([
+          { id: later.id, mode: "steer", text: "sooner" },
+        ]);
+        await backend.editQueued("held", later.id, { kind: "delete" });
+        await waitFor(() => presentation(worker.value).queue.length === 0);
+      } finally {
+        worker.dispose();
+      }
+
+      release.resolve();
+      await waitFor(() =>
+        root.value.entries.some(
+          (entry) =>
+            workerNotice(entry)?.name === "held" && workerNotice(entry)?.text === "deleted",
+        ),
+      );
+      await waitFor(() => !presentation(root.value).busy && queue().length === 0);
+      await backend.stopWorker("held");
+      // Past the reporter's 250 ms poll: a deleted report is never posted again.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const users = root.value.entries.flatMap((entry) => {
+        const message = entry.model?.[0];
+        return message?.role === "user" && workerNotice(entry) === undefined
+          ? [textOf(message)]
+          : [];
+      });
+      expect(users).toEqual(["hold front", "one edited", "two"]);
+      expect(root.value.entries.some((entry) => workerNotice(entry)?.name === "quick")).toBe(false);
     } finally {
       root.dispose();
       await backend.close();

@@ -7,6 +7,7 @@ type Input =
         | "/abort"
         | "/workers"
         | "/goals"
+        | "/queue"
         | "/reload"
         | "/restart"
         | "/login"
@@ -33,6 +34,7 @@ export const commands: Record<
     usage: "",
     help: "pick the shown conversation's thinking level; Ctrl+S also saves it as the role default",
   },
+  "/queue": { usage: "", help: "edit, steer or delete the shown conversation's queued messages" },
   "/stop": { usage: "<name>", help: "cancel a worker and its work" },
   "/abort": { usage: "", help: "stop the front only; workers continue" },
   "/new": { usage: "[handoff]", help: "fresh root context" },
@@ -60,6 +62,7 @@ export const help = [
   "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
   "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
+  "Alt+Q opens /queue.",
   "Plain messages, /model and /thinking go to the conversation shown; root commands always target the root.",
 ].join("\n");
 
@@ -76,6 +79,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/abort":
     case "/workers":
     case "/goals":
+    case "/queue":
     case "/login":
     case "/thinking":
     case "/reload":

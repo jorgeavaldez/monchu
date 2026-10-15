@@ -164,6 +164,7 @@ describe("committed Durable presentation", () => {
     const screen = new VirtualTerminal(40, 20);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -189,7 +190,9 @@ describe("committed Durable presentation", () => {
       await waitFor(async () =>
         Boolean((await harness.snapshot(InboxDoc, root.id, context))?.items.length),
       );
-      expect(presentation(state.value).queue).toContainEqual({ mode: "followUp", text: "queued" });
+      expect(presentation(state.value).queue).toContainEqual(
+        expect.objectContaining({ mode: "followUp", text: "queued" }),
+      );
       await first.wait(context);
       await root.waitForIdle(context);
       expect(thought).toBe(true);
@@ -232,6 +235,7 @@ describe("committed Durable presentation", () => {
       const screen = new VirtualTerminal(32, 20);
       const ui = new MonchuTui(screen, value.directory, {
         submit: () => {},
+        editQueued: () => {},
         abort: () => {},
         exit: () => {},
       });
@@ -268,6 +272,7 @@ describe("committed Durable presentation", () => {
     const screen = new VirtualTerminal(40, 20);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -317,6 +322,7 @@ describe("committed Durable presentation", () => {
     const screen = new VirtualTerminal(40, 20);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -372,6 +378,7 @@ describe("committed Durable presentation", () => {
     const screen = new VirtualTerminal(60, 40);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -458,6 +465,7 @@ describe("committed Durable presentation", () => {
       const screen = new VirtualTerminal(60, 80);
       const ui = new MonchuTui(screen, value.directory, {
         submit: () => {},
+        editQueued: () => {},
         abort: () => {},
         exit: () => {},
       });
@@ -576,6 +584,7 @@ describe("committed Durable presentation", () => {
     const sent: [string, string][] = [];
     const ui = new MonchuTui(screen, value.directory, {
       submit: (text, whenBusy) => sent.push([text, whenBusy]),
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -629,6 +638,93 @@ describe("committed Durable presentation", () => {
         at("one") + 5,
       ]);
     } finally {
+      state.dispose();
+      ui.stop();
+      await harness.close(context);
+    }
+  });
+
+  it("edits, toggles and deletes queued messages from the Alt+Q panel, keeping the draft aside while editing", async () => {
+    const value = await setup();
+    const release = Promise.withResolvers<void>();
+    route(value.faux, async (request) => {
+      if (textOf(lastMessage(request.messages)) === "hold front") await release.promise;
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const { harness, root } = await open(value);
+    initTheme("dark");
+    const screen = new VirtualTerminal(80, 30);
+    const edits: unknown[] = [];
+    const ui = new MonchuTui(screen, value.directory, {
+      submit: () => {},
+      editQueued: (id, change) => edits.push({ id, ...change }),
+      abort: () => {},
+      exit: () => {},
+    });
+    const state = await root.viewState(context);
+    const stop = state.subscribe((view) => ui.apply(view));
+    const viewport = async () => {
+      ui.ui.renderNow();
+      return (await screen.flushAndGetViewport()).join("\n");
+    };
+    const shows = async (text: string) => {
+      try {
+        await waitFor(async () => (await viewport()).includes(text), 2000);
+      } catch (error) {
+        throw new Error(`Missing ${JSON.stringify(text)}:\n${await viewport()}`, { cause: error });
+      }
+    };
+    try {
+      ui.start();
+      await root.submit({ type: "input", content: "hold front", requestId: "hold" }, context);
+      await waitFor(() => presentation(state.value).busy);
+      for (const content of ["first", "second"])
+        await root.submit({ type: "input", content, requestId: content }, context);
+      await waitFor(() => presentation(state.value).queue.length === 2);
+      const [first, second] = presentation(state.value).queue;
+      if (first === undefined || second === undefined) throw new Error("Queue is missing items");
+      await shows("↳ Alt+Q to edit, steer or delete");
+
+      screen.sendInput("draft");
+      screen.sendInput("\x1bq");
+      await shows("Enter edit · Alt+S steer/follow-up · Del delete");
+      const panel = await viewport();
+      expect(panel).toContain("›│ you · follow-up · first");
+      // The panel lists the queue in the dock's place instead of twice.
+      expect(panel.match(/you · follow-up · second/g)).toHaveLength(1);
+      expect(panel).not.toContain("Alt+Q to edit");
+
+      screen.sendInput("\x1b[B");
+      screen.sendInput("\x1bs");
+      screen.sendInput("\x1b[3~");
+      await waitFor(() => edits.length === 2);
+      expect(edits).toEqual([
+        { id: second.id, kind: "mode", mode: "steer" },
+        { id: second.id, kind: "delete" },
+      ]);
+
+      // Enter opens the message in the editor; Esc cancels and the draft comes back.
+      screen.sendInput("\x1b[A");
+      screen.sendInput("\r");
+      await shows("editing a queued message · Enter saves · Esc cancels");
+      screen.sendInput("\x1b");
+      await shows("Enter edit · Alt+S");
+      expect(edits).toHaveLength(2);
+      screen.sendInput("\r");
+      await shows("editing a queued message");
+      screen.sendInput(" again");
+      screen.sendInput("\r");
+      await waitFor(() => edits.length === 3);
+      expect(edits[2]).toEqual({ id: first.id, kind: "text", text: "first again" });
+      await shows("Enter edit · Alt+S");
+      screen.sendInput("\x1b");
+      await waitFor(async () => !(await viewport()).includes("Enter edit · Alt+S"));
+      const closed = await viewport();
+      expect(closed).toContain("draft");
+      expect(closed).not.toContain("editing a queued message");
+    } finally {
+      release.resolve();
+      stop();
       state.dispose();
       ui.stop();
       await harness.close(context);
@@ -701,6 +797,7 @@ describe("committed Durable presentation", () => {
     let screen = new VirtualTerminal(60, 40);
     let ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -728,6 +825,7 @@ describe("committed Durable presentation", () => {
     screen = new VirtualTerminal(60, 40);
     ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });
@@ -820,6 +918,7 @@ describe("committed Durable presentation", () => {
     const screen = new VirtualTerminal(40, 20);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });

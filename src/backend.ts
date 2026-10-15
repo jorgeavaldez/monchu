@@ -40,9 +40,11 @@ import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { openModels } from "./models/index.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
+  DELETED_FROM_QUEUE,
   hasPendingDelivery,
   listWorkers,
   messageWorker,
+  noticeText,
   parseWorkerNotice,
   startWorker,
   stopWorker,
@@ -79,6 +81,12 @@ async function applyFrontRole(front: Conversation, role: ModelRole): Promise<voi
 
 /** A model or thinking-level pick from the terminal, for the root or a worker. */
 export type ModelPick = { model: ModelRef } | { thinkingLevel: ModelThinkingLevel };
+
+/** An edit to a still-queued input: new text, a new busy mode, or deleting it. */
+export type QueueChange =
+  | { kind: "text"; text: string }
+  | { kind: "mode"; mode: WhenBusy }
+  | { kind: "delete" };
 
 /** One runtime/store owner. No terminal, transport, or rendering dependencies. */
 export class Monchu {
@@ -305,6 +313,45 @@ export class Monchu {
     return conversation;
   }
 
+  /**
+   * Change a still-queued input of the root, or of the named worker, in place, keeping its place in the queue. A worker
+   * notice keeps its label: new text replaces only its body. A deleted input settles unanswered, so a worker report is
+   * dropped and a message to a worker reports a failure to its parent. Returns false once the input left the queue.
+   */
+  async editQueued(
+    workerName: string | undefined,
+    id: number,
+    change: QueueChange,
+  ): Promise<boolean> {
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    // Only the front's inputs are assessed. A re-assessment reads the front's context first; the commit can't.
+    const assessment = workerName === undefined ? this.extensions.assessment : undefined;
+    const recent =
+      assessment !== undefined && change.kind === "text"
+        ? await assessment.recent(this.front, context)
+        : [];
+    return conversation.commit(async (tx) => {
+      const inbox = await tx.doc(InboxDoc, conversation.id);
+      const index = inbox.items.findIndex((item) => item.id === id);
+      const item = inbox.items[index];
+      if (item === undefined || item.mode === "write") return false;
+      if (change.kind === "mode") item.mode = change.mode;
+      else if (change.kind === "delete") {
+        tx.settleSubmission(item.id, { status: "unanswered", reason: DELETED_FROM_QUEUE });
+        inbox.items.splice(index, 1);
+        await assessment?.revise(tx, conversation.id, item.id, undefined);
+      } else {
+        if (!change.text.trim()) throw new Error("A queued message needs text");
+        if (typeof item.content !== "string") throw new Error("Only text messages can be edited");
+        const notice = parseWorkerNotice(item.content);
+        item.content =
+          notice === undefined ? change.text : noticeText({ ...notice, text: change.text });
+        await assessment?.revise(tx, conversation.id, item.id, { message: change.text, recent });
+      }
+      return true;
+    }, context);
+  }
+
   async stopWorker(name: string): Promise<void> {
     await stopWorker(this.harness, this.front.id, name, context);
   }
@@ -330,6 +377,8 @@ export class Monchu {
           inbox.items.findIndex((item) => item.id === id),
           1,
         );
+        // The front never gets it, so its assessment neither advises nor escalates.
+        await this.extensions.assessment?.revise(tx, this.front.id, id, undefined);
       }
       return mine.map((item) => item.text);
     }, context);

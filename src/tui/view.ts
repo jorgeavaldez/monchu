@@ -53,6 +53,7 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
+import type { QueueChange } from "../backend.ts";
 import { escalationSummary } from "../classifier.ts";
 import { parseWorkerNotice, workerNotice, type WhenBusy } from "../workers.ts";
 import { commands } from "./commands.ts";
@@ -223,6 +224,81 @@ class TextPanel implements Component, Focusable {
 }
 
 /**
+ * The shown conversation's queue in the editor's place, one row per item as the dock shows it. The selection follows its
+ * item while the queue changes underneath; a passive write is listed but takes no action.
+ */
+class QueuePanel implements Component, Focusable {
+  focused = false;
+  private items: readonly QueuedItem[];
+  private selected: number | undefined;
+  private readonly act: (item: QueuedItem, action: "edit" | "toggle" | "delete") => void;
+  private readonly close: () => void;
+
+  constructor(
+    items: readonly QueuedItem[],
+    act: (item: QueuedItem, action: "edit" | "toggle" | "delete") => void,
+    close: () => void,
+  ) {
+    this.items = items;
+    this.selected = items[0]?.id;
+    this.act = act;
+    this.close = close;
+  }
+
+  update(items: readonly QueuedItem[]): void {
+    const index = this.items.findIndex((item) => item.id === this.selected);
+    this.items = items;
+    // When the selected item leaves the queue, select the one that took its place.
+    if (!items.some((item) => item.id === this.selected))
+      this.selected = items[Math.min(Math.max(0, index), items.length - 1)]?.id;
+  }
+
+  render(width: number): string[] {
+    const theme = getSelectListTheme();
+    const rule = theme.description("─".repeat(width));
+    const rows = this.items.length
+      ? this.items.map((item) =>
+          truncateToWidth(
+            `${item.id === this.selected ? theme.selectedText("›") : " "}${queuedLine(item)}`,
+            width,
+            "...",
+          ),
+        )
+      : [theme.description("  Nothing queued")];
+    return [
+      rule,
+      truncateToWidth(` ${theme.selectedText("Queue")}`, width, "..."),
+      ...rows,
+      truncateToWidth(
+        theme.description(
+          " ↑↓ select · Enter edit · Alt+S steer/follow-up · Del delete · Esc close",
+        ),
+        width,
+        "...",
+      ),
+      rule,
+    ];
+  }
+
+  handleInput(data: string): void {
+    const keys = getKeybindings();
+    const index = this.items.findIndex((item) => item.id === this.selected);
+    const item = this.items[index];
+    if (keys.matches(data, "tui.select.up"))
+      this.selected = this.items[Math.max(0, index - 1)]?.id ?? this.selected;
+    else if (keys.matches(data, "tui.select.down"))
+      this.selected = this.items[Math.min(this.items.length - 1, index + 1)]?.id ?? this.selected;
+    else if (keys.matches(data, "tui.select.cancel") || matchesKey(data, "ctrl+c")) this.close();
+    else if (item === undefined || item.mode === "write") return;
+    else if (keys.matches(data, "tui.select.confirm")) this.act(item, "edit");
+    else if (matchesKey(data, "alt+s")) this.act(item, "toggle");
+    else if (matchesKey(data, "delete")) this.act(item, "delete");
+  }
+
+  invalidate(): void {}
+}
+
+/**
  * The chat document. Layout renders the whole scroll content every frame, so re-rendering every entry made each
  * frame cost grow with the conversation. Children before the settled index keep their lines per width until
  * `changed` names one of them or the tree is invalidated; later children render every frame. Every entry stays
@@ -314,6 +390,14 @@ class SecretInput extends Input {
   }
 }
 
+/** What the terminal asks of its owner; input admission and every side effect stay there. */
+type Handlers = {
+  submit(text: string, whenBusy: WhenBusy): void;
+  editQueued(id: number, change: QueueChange): void;
+  abort(): void;
+  exit(): void;
+};
+
 /** Pi's viewport/editor/message components over committed Durable views. No agent loop lives here. */
 export class MonchuTui {
   readonly ui: TuiAltScreen;
@@ -352,12 +436,13 @@ export class MonchuTui {
   // What a message sent to a busy conversation does; Alt+S toggles it for the root and workers alike.
   private mode: WhenBusy = "followUp";
   private location = "";
+  private queueItems: readonly QueuedItem[] = [];
+  // A queued message open in the editor, and the draft it set aside; Enter saves the edit, Esc cancels it.
+  private editing: { id: number; draft: string } | undefined;
+  private readonly handlers: Handlers;
 
-  constructor(
-    terminal: Terminal,
-    home: string,
-    handlers: { submit(text: string, whenBusy: WhenBusy): void; abort(): void; exit(): void },
-  ) {
+  constructor(terminal: Terminal, home: string, handlers: Handlers) {
+    this.handlers = handlers;
     this.cwd = home;
     // As in Pi, the editor draws its own cursor; a shown hardware cursor is moved and re-shown every frame.
     this.ui = new TuiAltScreen(terminal, false, home);
@@ -377,6 +462,11 @@ export class MonchuTui {
     );
     this.editor.onSubmit = (text) => {
       if (!text.trim()) return;
+      if (this.editing !== undefined) {
+        handlers.editQueued(this.editing.id, { kind: "text", text });
+        this.endEdit();
+        return;
+      }
       this.editor.addToHistory(text);
       this.editor.setText("");
       handlers.submit(text, this.mode);
@@ -431,7 +521,12 @@ export class MonchuTui {
         return { consume: true };
       }
       if (matchesKey(data, "escape") && !this.editor.isShowingAutocomplete()) {
-        handlers.abort();
+        if (this.editing !== undefined) this.endEdit();
+        else handlers.abort();
+        return { consume: true };
+      }
+      if (matchesKey(data, "alt+q") && this.editing === undefined) {
+        this.openQueue();
         return { consume: true };
       }
       if (matchesKey(data, "alt+s")) {
@@ -579,6 +674,61 @@ export class MonchuTui {
     this.editorContainer.clear();
     this.editorContainer.addChild(this.editor);
     this.ui.setFocus(this.editor);
+    this.renderQueue();
+  }
+
+  /**
+   * Lists the shown conversation's queue in the editor's place. Enter opens a message in the editor; a worker notice
+   * opens only its body, and an effort assessment is not editable. Alt+S and Delete apply at once.
+   */
+  openQueue(): void {
+    this.selector = new QueuePanel(
+      this.queueItems,
+      (item, action) => {
+        if (action === "toggle")
+          this.handlers.editQueued(item.id, {
+            kind: "mode",
+            mode: item.mode === "steer" ? "followUp" : "steer",
+          });
+        else if (action === "delete") this.handlers.editQueued(item.id, { kind: "delete" });
+        else if (escalationSummary(item.text) === undefined) {
+          this.editing = { id: item.id, draft: this.editor.getText() };
+          this.restoreEditor();
+          this.editor.setText(parseWorkerNotice(item.text)?.text ?? item.text);
+          this.showMode();
+        }
+      },
+      () => this.restoreEditor(),
+    );
+    this.editorContainer.clear();
+    this.editorContainer.addChild(this.selector);
+    this.ui.setFocus(this.selector);
+    // The panel lists the queue; the dock would repeat it.
+    this.renderQueue();
+  }
+
+  /** Leave a queued message's edit, saved or not: the set-aside draft returns, then the queue reopens. */
+  private endEdit(): void {
+    this.editor.setText(this.editing?.draft ?? "");
+    this.editing = undefined;
+    this.showMode();
+    this.openQueue();
+  }
+
+  private renderQueue(): void {
+    this.queue.clear();
+    if (!(this.selector instanceof QueuePanel)) {
+      for (const item of this.queueItems)
+        this.queue.addChild(new TruncatedText(queuedLine(item), 1, 0));
+      if (this.queueItems.some((item) => item.mode !== "write"))
+        this.queue.addChild(
+          new TruncatedText(
+            getSelectListTheme().description("↳ Alt+Q to edit, steer or delete"),
+            1,
+            0,
+          ),
+        );
+    }
     this.ui.requestRender();
   }
 
@@ -596,10 +746,14 @@ export class MonchuTui {
       ? (text) => theme.fg("warning", text)
       : (text) => getSelectListTheme().selectedText(text);
     const muted = getSelectListTheme().description;
+    const editing =
+      this.editing === undefined
+        ? ""
+        : `${theme.fg("warning", "editing a queued message")}${muted(" · Enter saves · Esc cancels · ")}`;
     this.footer.clear();
     this.footer.addChild(
       new TruncatedText(
-        `${steer ? theme.fg("warning", "steer") : muted("follow-up")}${muted(` (Alt+S) · ${this.location}`)}`,
+        `${editing}${steer ? theme.fg("warning", "steer") : muted("follow-up")}${muted(` (Alt+S) · ${this.location}`)}`,
         1,
         0,
       ),
@@ -731,8 +885,9 @@ export class MonchuTui {
       if (index !== -1) settled = Math.min(settled, index);
     }
     this.chat.settle(settled);
-    this.queue.clear();
-    for (const item of state.queue) this.queue.addChild(new TruncatedText(queuedLine(item), 1, 0));
+    this.queueItems = state.queue;
+    if (this.selector instanceof QueuePanel) this.selector.update(state.queue);
+    this.renderQueue();
     if (state.status !== this.statusText) {
       this.statusText = state.status;
       this.loader?.stop();

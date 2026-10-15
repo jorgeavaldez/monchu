@@ -150,6 +150,7 @@ it.each([
     const screen = new VirtualTerminal(columns, 80);
     const ui = new MonchuTui(screen, value.directory, {
       submit: () => {},
+      editQueued: () => {},
       abort: () => {},
       exit: () => {},
     });

@@ -268,6 +268,67 @@ describe("effort assessment", () => {
     await test.harness.close(context);
   });
 
+  it("assesses an edited queued message afresh and drops a withdrawn one's assessment", async () => {
+    const test = await withAssessment();
+    // Only the original text would escalate.
+    test.classifier.answer = (request) =>
+      JSON.stringify(request.state).includes("rewrite everything")
+        ? assessed("sustained", 0.95, "expanding", 0.9)
+        : assessed("single_turn", 0.9, "contained", 0.9);
+    const release = Promise.withResolvers<void>();
+    const advice: string[] = [];
+    route(test.faux, async (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "hold") await release.promise;
+      for (const message of request.messages)
+        if (message.role === "system" && typeof message.content === "string")
+          advice.push(`${text}: ${message.content}`);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const hold = await test.assessment.submit(test.root, "hold", "hold", "followUp", context);
+    await waitFor(async () => (await test.items())[0]?.result != null);
+    for (const message of ["rewrite everything", "also rewrite everything"])
+      await test.assessment.submit(test.root, message, message, "followUp", context);
+    // Both sure assessments are in and waiting for the front to finish before they escalate.
+    await waitFor(async () => (await test.items()).every((item) => item.result !== null));
+    const [, edited, withdrawn] = await test.items();
+    if (edited === undefined || withdrawn === undefined) throw new Error("Assessments are missing");
+
+    await test.root.commit(async (tx) => {
+      const inbox = await tx.doc(InboxDoc, test.root.id);
+      const [first, second] = inbox.items;
+      if (first?.mode !== "followUp" || second === undefined)
+        throw new Error("Queue is missing items");
+      first.content = "fix the typo";
+      await test.assessment.revise(tx, test.root.id, first.id, {
+        message: "fix the typo",
+        recent: [],
+      });
+      tx.settleSubmission(second.id, { status: "unanswered", reason: "aborted" });
+      inbox.items.splice(1, 1);
+      await test.assessment.revise(tx, test.root.id, second.id, undefined);
+    }, context);
+    const [, revised] = await test.items();
+    expect(revised).toMatchObject({ submissionId: edited.submissionId, result: null });
+    expect(revised?.taskId).not.toBe(edited.taskId);
+    expect(await test.items()).toHaveLength(2);
+
+    await test.settle(1);
+    release.resolve();
+    await hold.wait(context);
+    await test.root.waitForIdle(context);
+    // The replaced tasks end without escalating, and the edited message gets its own advice.
+    await test.harness.waitForTask(edited.taskId, context);
+    await test.harness.waitForTask(withdrawn.taskId, context);
+    await test.root.waitForIdle(context);
+    expect(await userTexts(test.root)).toEqual(["hold", "fix the typo"]);
+    expect((await test.items())[1]?.result).toMatchObject({ effort: "single_turn" });
+    const typo = advice.filter((line) => line.startsWith("fix the typo:"));
+    expect(typo).toContainEqual(expect.stringContaining("effort single_turn (90%)"));
+    expect(typo.join("\n")).not.toContain("sustained");
+    await test.harness.close(context);
+  });
+
   it("records a classifier failure without blocking or escalating", async () => {
     const test = await withAssessment();
     test.classifier.answer = () => ({

@@ -259,7 +259,10 @@ const UPDATE_LABEL = /^\[Worker (.+) update; not a new user instruction\]$/;
 const NOTICE_GUIDANCE =
   "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs.";
 
-function noticeText(notice: WorkerNotice): string {
+/** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
+export const DELETED_FROM_QUEUE = "deleted";
+
+export function noticeText(notice: WorkerNotice): string {
   const label =
     notice.status === "update"
       ? `[Worker ${notice.name} update; not a new user instruction]`
@@ -395,7 +398,7 @@ const Delivery = defineTask<
             // An aborted run ends without placing input queued during its abort; withdraw it and post again.
             if (idle && record.status === "queued") await submission.abort(context);
           }
-          if (record.entry !== undefined) break;
+          if (record.entry !== undefined || record.reason === DELETED_FROM_QUEUE) break;
           // Only a withdrawn input settles without an entry.
           if (record.reason !== "aborted")
             throw new Error(`Worker report was not placed: ${record.reason}`);

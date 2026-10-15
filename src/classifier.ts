@@ -97,10 +97,12 @@ function describe(result: AssessmentResult): string {
   return `effort ${result.effort} (${percent(result.effortConfidence)}), scope ${result.scope} (${percent(result.scopeConfidence)})`;
 }
 
+type Recent = { role: "user" | "assistant" | "toolResult"; text: string }[];
+
 type AssessInput = {
   submissionId: SubmissionId;
   message: string;
-  recent: { role: "user" | "assistant" | "toolResult"; text: string }[];
+  recent: Recent;
   /** The parent's lifetime count of started deliveries before this input. */
   started: number;
 };
@@ -122,11 +124,10 @@ export function createEffortAssessment(
   if (model === undefined)
     throw new Error(`Pi has no configured classifier model ${role.provider}/${role.modelId}`);
 
+  /** The task's record; `undefined` once a revision replaced or dropped it, and the task's answer no longer counts. */
   async function record(tx: Tx, task: { id: TaskId; conversationId: ConversationId }) {
     const state = await tx.doc(AssessmentsDoc, task.conversationId);
-    const item = state.items.find((entry) => entry.taskId === task.id);
-    if (item === undefined) throw new Error("Assessment record is missing");
-    return item;
+    return state.items.find((entry) => entry.taskId === task.id);
   }
 
   const Assess = defineTask<AssessInput, AssessState, AssessmentResult>({
@@ -178,8 +179,10 @@ export function createEffortAssessment(
               : null,
           };
         await runtime.commit(async (tx) => {
-          (await record(tx, { id: task.id, conversationId: runtime.conversationId })).result =
-            result;
+          const item = await record(tx, { id: task.id, conversationId: runtime.conversationId });
+          if (item === undefined)
+            return { status: "terminal", outcome: { status: "completed", result } };
+          item.result = result;
           return { status: "running", checkpoint: { phase: "escalate", result } };
         }, context);
       },
@@ -194,11 +197,11 @@ export function createEffortAssessment(
           await runtime.commit(async (tx) => {
             const state = await tx.doc(AssessmentsDoc, runtime.conversationId);
             const workers = await tx.doc(WorkersDoc, runtime.conversationId);
+            const item = await record(tx, { id: task.id, conversationId: runtime.conversationId });
             const superseded = state.items.at(-1)?.submissionId !== task.input.submissionId;
             const delegated = workers.started > task.input.started;
-            escalate = !superseded && !delegated;
-            (await record(tx, { id: task.id, conversationId: runtime.conversationId })).escalated =
-              escalate;
+            escalate = item !== undefined && !superseded && !delegated;
+            if (item !== undefined) item.escalated = escalate;
             return undefined;
           }, context);
           if (escalate)
@@ -222,15 +225,13 @@ export function createEffortAssessment(
       runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
   });
 
-  async function assess(
+  async function start(
     tx: Tx,
     frontId: ConversationId,
     submissionId: SubmissionId,
     message: string,
-    recent: AssessInput["recent"],
-  ): Promise<void> {
-    const state = await tx.doc(AssessmentsDoc, frontId);
-    if (state.items.some((item) => item.submissionId === submissionId)) return;
+    recent: Recent,
+  ): Promise<Assessment> {
     const workers = await tx.doc(WorkersDoc, frontId);
     const input: AssessInput = {
       submissionId,
@@ -243,8 +244,28 @@ export function createEffortAssessment(
       ownership: { kind: "conversation" },
       background: true,
     });
-    state.items.push({ submissionId, taskId, result: null, escalated: false });
-    state.items.splice(0, Math.max(0, state.items.length - 50));
+    return { submissionId, taskId, result: null, escalated: false };
+  }
+
+  /** The front's last few messages as the classifier reads them. */
+  async function recentOf(front: Conversation, context: Context): Promise<Recent> {
+    return (await front.context(context)).messages
+      .flatMap((item) =>
+        item.role === "system"
+          ? []
+          : [
+              {
+                role: item.role,
+                text: (typeof item.content === "string"
+                  ? item.content
+                  : item.content
+                      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                      .join("\n")
+                ).slice(0, 1500),
+              },
+            ],
+      )
+      .slice(-6);
   }
 
   return {
@@ -259,29 +280,36 @@ export function createEffortAssessment(
       whenBusy: WhenBusy,
       context: Context,
     ) {
-      const recent = (await front.context(context)).messages
-        .flatMap((item) =>
-          item.role === "system"
-            ? []
-            : [
-                {
-                  role: item.role,
-                  text: (typeof item.content === "string"
-                    ? item.content
-                    : item.content
-                        .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                        .join("\n")
-                  ).slice(0, 1500),
-                },
-              ],
-        )
-        .slice(-6);
+      const recent = await recentOf(front, context);
       const submission = await front.submit(
         { type: "input", content: message, requestId, whenBusy },
         context,
       );
-      await front.commit((tx) => assess(tx, front.id, submission.id, message, recent), context);
+      await front.commit(async (tx) => {
+        const state = await tx.doc(AssessmentsDoc, front.id);
+        if (state.items.some((item) => item.submissionId === submission.id)) return;
+        state.items.push(await start(tx, front.id, submission.id, message, recent));
+        state.items.splice(0, Math.max(0, state.items.length - 50));
+      }, context);
       return submission;
+    },
+    recent: recentOf,
+    /**
+     * Follow a queued input the user edited or withdrew, inside the commit that changes it: an edit is assessed afresh
+     * in the same place among the assessments, and a withdrawn input's assessment is dropped, so neither advice nor an
+     * escalation comes from text the front never gets. A replaced task's answer no longer counts.
+     */
+    async revise(
+      tx: Tx,
+      frontId: ConversationId,
+      submissionId: SubmissionId,
+      edit: { message: string; recent: Recent } | undefined,
+    ): Promise<void> {
+      const state = await tx.doc(AssessmentsDoc, frontId);
+      const index = state.items.findIndex((item) => item.submissionId === submissionId);
+      if (index === -1) return;
+      if (edit === undefined) state.items.splice(index, 1);
+      else state.items[index] = await start(tx, frontId, submissionId, edit.message, edit.recent);
     },
     extension: defineExtension({
       name: "monchu.classifier",

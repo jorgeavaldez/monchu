@@ -25,8 +25,8 @@ function text(content: JsonValue | undefined): string {
     .join("");
 }
 
-/** A queued inbox item: input with its busy mode and text, or a passive write with its entry kind. */
-export type QueuedItem = { mode: "steer" | "followUp" | "write"; text: string };
+/** A queued inbox item by submission ID: input with its busy mode and text, or a passive write with its entry kind. */
+export type QueuedItem = { id: number; mode: "steer" | "followUp" | "write"; text: string };
 
 /** Only fields the terminal displays; no casts from Durable's erased JSON documents. */
 export function presentation(view: ConversationView) {
@@ -73,10 +73,12 @@ export function presentation(view: ConversationView) {
   const inbox = view.docs["pi.inbox"];
   const queue = (Array.isArray(inbox?.items) ? inbox.items : []).map((value): QueuedItem => {
     const item = object(value);
-    if (item?.mode === "write") return { mode: "write", text: scalar(object(item.entry)?.kind) };
-    if (item?.mode !== "steer" && item?.mode !== "followUp")
+    if (typeof item?.id !== "number") throw new Error("Invalid inbox item in the Durable view");
+    if (item.mode === "write")
+      return { id: item.id, mode: "write", text: scalar(object(item.entry)?.kind) };
+    if (item.mode !== "steer" && item.mode !== "followUp")
       throw new Error("Invalid inbox item in the Durable view");
-    return { mode: item.mode, text: text(item.content) };
+    return { id: item.id, mode: item.mode, text: text(item.content) };
   });
   const model = object(agent?.model);
   return {
