@@ -781,8 +781,22 @@ PROJECT RULES
       ] as const) {
         await (await conversation.submit({ type: "input", content: name }, context)).wait(context);
       }
-      expect(script.requests[2]?.path).toBe(script.requests[0]?.path);
-      expect(script.requests[3]?.path).toBe(script.requests[1]?.path);
+      // The first two requests race, so pair each conversation's requests by their prompt, not their order.
+      const paths = (name: string) =>
+        script.requests
+          .filter((request) => {
+            const content = request.prompt[0]?.message.content;
+            return (
+              Array.isArray(content) &&
+              content.some((block) => block.type === "text" && block.text === name)
+            );
+          })
+          .map((request) => request.path);
+      for (const name of ["front", "worker"]) {
+        const [first, second] = paths(name);
+        expect(first).toBeDefined();
+        expect(second).toBe(first);
+      }
     } finally {
       await harness.close(context);
     }

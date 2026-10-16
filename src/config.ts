@@ -142,7 +142,7 @@ export type McpServerConfig = {
   enabled?: boolean;
 };
 
-export type McpExposure = "direct" | "deferred";
+type McpExposure = "direct" | "deferred";
 
 /** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
 export type MonchuConfig = {
