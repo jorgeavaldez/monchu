@@ -90,7 +90,7 @@ export type ResourceDiagnostic = {
   collision?: { name: string; winnerPath: string; loserPath: string };
 };
 
-interface Skill {
+export interface Skill {
   name: string;
   description: string;
   filePath: string;
@@ -312,6 +312,18 @@ function loadSkillFromFile(filePath: string): {
     },
     diagnostics,
   };
+}
+
+/**
+ * A skill's instructions as a user message, as Pi's `/skill:name` sends them: its body in a `skill` block, then the
+ * user's text.
+ */
+export function skillMessage(skill: Skill, text: string): string {
+  const content = readFileSync(skill.filePath, "utf8").replace(/\r\n/g, "\n");
+  const end = content.startsWith("---") ? content.indexOf("\n---", 3) : -1;
+  const body = (end === -1 ? content : content.slice(content.indexOf("\n", end + 4) + 1)).trim();
+  const block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${dirname(skill.filePath)}.\n\n${body}\n</skill>`;
+  return text ? `${block}\n\n${text}` : block;
 }
 
 /**

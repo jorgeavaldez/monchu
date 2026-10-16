@@ -35,42 +35,30 @@ afterEach(cleanup);
 describe("terminal input boundary", () => {
   it("keeps multiline messages and paths intact", () => {
     expect(parseInput("  hello\nworld ")).toEqual({ command: "message", text: "hello\nworld" });
-    expect(parseInput("/work reader first line\nsecond line")).toEqual({
-      command: "/work",
-      name: "reader",
+    expect(parseInput("/skill:review first line\nsecond line")).toEqual({
+      command: "skill",
+      name: "review",
       text: "first line\nsecond line",
     });
-    expect(parseInput("/cd-worker reader C:\\a directory")).toEqual({
-      command: "/cd-worker",
-      name: "reader",
-      text: "C:\\a directory",
-    });
+    expect(parseInput("/cd C:\\a directory")).toEqual({ command: "/cd", text: "C:\\a directory" });
     expect(parseInput(" \n ")).toBeUndefined();
   });
 
   it("preserves all existing commands and adds worker focus", () => {
-    for (const command of [
-      "/quit",
-      "/help",
-      "/abort",
-      "/workers",
-      "/goals",
-      "/reload",
-      "/restart",
-      "/login",
-    ])
+    for (const command of ["/quit", "/help", "/goals", "/reload", "/restart", "/login"])
       expect(parseInput(command)).toEqual({ command });
-    for (const command of ["/new", "/compact", "/agents"])
+    for (const command of ["/new", "/compact", "/agents", "/stop"])
       expect(parseInput(command)).toEqual({ command, text: "" });
     for (const command of ["/cd", "/stop", "/agents", "/new", "/compact"])
       expect(parseInput(`${command} target`)).toEqual({ command, text: "target" });
-    expect(parseInput("/tell w more")).toEqual({ command: "/tell", name: "w", text: "more" });
     for (const invalid of [
       "/work name",
-      "/tell",
-      "/cd-worker w",
+      "/tell w more",
+      "/workers",
+      "/abort",
+      "/cd-worker w x",
+      "/skill:",
       "/cd",
-      "/stop",
       "/quit now",
       "/login key",
       "/reload now",
@@ -80,7 +68,7 @@ describe("terminal input boundary", () => {
       expect(() => parseInput(invalid)).toThrow();
     expect(help).toContain("/reload");
     expect(help).toContain("/restart");
-    expect(help).toContain("User-only");
+    expect(help).toContain("/skill:<name>");
   });
 
   it("restores the terminal and stops input before /restart re-executes in place, reopens storage, and propagates the code", async () => {

@@ -1,4 +1,5 @@
 import { Type, type Models } from "@earendil-works/pi-ai";
+import type { Skill } from "./skills/index.ts";
 import {
   createRegistry,
   defineDoc,
@@ -64,6 +65,8 @@ type Build = {
   /** Group extension names that conversations on the Claude Code bridge load from the start. */
   preload: string[];
   settings: Settings;
+  /** Home and bundled skills, which the editor offers as `/skill:name`. */
+  skills: Skill[];
   config: MonchuConfig;
   assessment: EffortAssessment | undefined;
   warnings: string[];
@@ -129,6 +132,7 @@ async function build(
     groups: search.groups,
     preload: search.preload,
     settings: context.settings,
+    skills: context.skills,
     config,
     assessment,
     warnings: [...context.warnings, ...tools.warnings, ...mcpConfig.errors, ...mcp.warnings],
@@ -257,6 +261,11 @@ export class Extensions {
   /** The loaded run settings. */
   get settings(): Settings {
     return this.current.settings;
+  }
+
+  /** The skills of the last successful build. */
+  get skills(): readonly Skill[] {
+    return this.current.skills;
   }
 
   /** Group extension names that conversations on the Claude Code bridge load from the start. */

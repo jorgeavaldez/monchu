@@ -317,7 +317,7 @@ export function parseWorkerNotice(content: string): WorkerNotice | undefined {
   return { name, status: status === "completed" ? "completed" : "failed", text: text.join("\n") };
 }
 
-/** A report is posted again after `/abort` withdraws it; each post has its own request ID. */
+/** A report is posted again after stopping the front withdraws it; each post has its own request ID. */
 function reportRequestId(taskId: TaskId, attempt: number): string {
   return attempt === 0 ? `worker-report:${taskId}` : `worker-report:${taskId}:${attempt}`;
 }
@@ -417,7 +417,7 @@ const Delivery = defineTask<
       if (result !== null) {
         const parent = await runtime.conversation(parentId, context);
         if (parent === undefined) throw new Error("Worker parent conversation is missing");
-        // A follow-up starts the parent's turn when idle, or waits for its current answer. `/abort` withdraws queued
+        // A follow-up starts the parent's turn when idle, or waits for its current answer. Stopping the front withdraws queued
         // input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
         for (let attempt = 0; ; attempt++) {
           const submission = await parent.submit(

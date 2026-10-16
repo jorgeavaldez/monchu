@@ -32,6 +32,13 @@ export function createDevProvider(): Provider {
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",
         });
+      // `work <name> <task>` starts a worker through the front, as a real front delegates.
+      if (/^work \S+ \S/.test(text)) {
+        const [, name = "", task = ""] = /^work (\S+) ([\s\S]+)$/.exec(text) ?? [];
+        return fauxAssistantMessage([fauxToolCall("start_worker", { name, task })], {
+          stopReason: "toolUse",
+        });
+      }
       if (text.startsWith("close "))
         return fauxAssistantMessage([fauxToolCall("close_worker", { name: text.slice(6) })], {
           stopReason: "toolUse",

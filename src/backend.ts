@@ -59,6 +59,7 @@ import {
 } from "./workers.ts";
 import { preloadGroups } from "./tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
+import { skillMessage } from "./skills/index.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -244,6 +245,18 @@ export class Monchu {
       }
       throw error;
     }
+  }
+
+  /** Home and bundled skills as of the last successful load or reload. */
+  skills(): readonly { name: string; description: string }[] {
+    return this.extensions.skills.map(({ name, description }) => ({ name, description }));
+  }
+
+  /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
+  skillInput(name: string, text: string): string {
+    const skill = this.extensions.skills.find((item) => item.name === name);
+    if (skill === undefined) throw new Error(`No skill named ${name}`);
+    return skillMessage(skill, text);
   }
 
   /** The run settings of the last successful load or reload. */

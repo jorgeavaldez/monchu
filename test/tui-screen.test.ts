@@ -147,7 +147,7 @@ it("clears the editor on Ctrl-C without aborting the front, and exits on a quick
 
 it("drops a closed worker from the roster at once and returns its selected view to the root", async () => {
   await withTerminal(60, "dark", async (screen, backend) => {
-    send(screen, "/work reader inspect");
+    await backend.startWorker("reader", "inspect", "start:reader");
     await visible(screen, "Faux front: result received.");
     await visible(screen, "Workers · ○ 1 idle · /agents");
     send(screen, "/agents reader");
@@ -168,6 +168,38 @@ it("drops a closed worker from the roster at once and returns its selected view 
     send(screen, "hello");
     await visible(screen, "Faux reply: hello");
     expect(screen.stopped).toBe(false);
+  });
+}, 30_000);
+
+it("lists every command with its help and each skill as skill:<name> in the typeahead, and sends a skill", async () => {
+  await withTerminal(60, "dark", async (screen, backend, home) => {
+    await mkdir(join(home, "skills", "review"), { recursive: true });
+    await writeFile(
+      join(home, "skills", "review", "SKILL.md"),
+      "---\nname: review\ndescription: Review a change adversarially\n---\nRead the diff first.\n",
+    );
+    await backend.reload();
+    screen.sendInput("/re");
+    const commands = await visible(screen, "restart Monchu");
+    // Help beside each command, even on a narrow screen.
+    expect(commands.join("\n")).toMatch(/reload.*apply config, skill and extension/);
+    expect(commands.join("\n")).toMatch(/restart.*restart Monchu for its own/);
+    for (let index = 0; index < 3; index++) screen.sendInput("\x7f");
+    screen.sendInput("/skill:");
+    const skills = await visible(screen, "skill:review");
+    expect(skills.join("\n")).toMatch(/skill:review.*Review a change/);
+    for (let index = 0; index < 7; index++) screen.sendInput("\x7f");
+    // Typed in one burst, the typeahead may still be settling; Enter goes in once it has.
+    screen.sendInput("/skill:review check this");
+    await visible(screen, "/skill:review check this");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    screen.sendInput("\r");
+    // The skill's instructions go with the text, frontmatter stripped.
+    await visible(screen, "Read the diff first.");
+    const sent = await visible(screen, "check this");
+    expect(sent.join("\n")).not.toContain("description: Review");
+    send(screen, "/skill:missing go");
+    await visible(screen, "No skill named missing");
   });
 }, 30_000);
 
@@ -223,7 +255,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     screen.sendInput("\r");
     await visible(screen, "root model · faux/front");
     // A worker's pick goes to that worker; Ctrl+S also saves the worker default.
-    send(screen, "/work reader inspect");
+    await backend.startWorker("reader", "inspect", "start:reader");
     await visible(screen, "Faux front: result received.");
     send(screen, "/agents reader");
     expect((await visible(screen, "• reader")).at(-1)).toMatch(/worker\s*$/);
@@ -658,9 +690,8 @@ describe.each([
   }, 30_000);
 
   it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
-    await withTerminal(columns, theme, async (screen) => {
-      send(screen, "/work reader inspect");
-      await visible(screen, "│ start · reader · creation committed");
+    await withTerminal(columns, theme, async (screen, backend) => {
+      await backend.startWorker("reader", "inspect", "start:reader");
       // The worker's name is the only label: the rule's style tells an update from a report.
       const update = await visible(screen, "│ Faux worker progress: checking.");
       expect(update[update.findIndex((line) => line.includes("worker progress")) - 1]).toMatch(

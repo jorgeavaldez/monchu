@@ -72,6 +72,7 @@ export function createContext(home: string, runSettings: RunSettings) {
   const skillPrompt = formatSkillsForPrompt(skills).trim();
   return {
     settings,
+    skills,
     extension: defineExtension({
       name: "monchu.context",
       hooks: [

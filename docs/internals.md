@@ -72,8 +72,9 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 `/agents` opens a live panel of the root and every worker: status (working, or idle with how long ago it last did something), context fill, and directory where it fits.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
-Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
-Esc interrupts a running front only and does nothing while it is idle; your own messages still queued for the front come back into the editor, oldest first, ahead of anything typed. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output. Tools without their own renderer (goals, memory, workers, jj, herdr, codemode, search) collapse to a `▸` header row and a one-row result summary with its line count; Ctrl-O or a click shows every argument and the whole output. A sign-in URL in `/login` shows unpadded on rows of its own; a tap or Alt+O opens it in the browser (`termux-open-url`, `open`, `xdg-open` or Windows' URL handler, never a shell) and Ctrl+X copies it exactly (the platform clipboard command, else OSC 52). A tap on any link in a reply opens it too.
+Plain messages, `/model`, `/thinking`, `/stop` and `/cd` go to the conversation shown; `/new` and `/compact` always target the root. The editor's typeahead lists every command with its help, then each home or bundled skill as `/skill:<name>`, which sends that skill's instructions with your text, as Pi does.
+`/reload` applies config, skill and extension edits in process: running work keeps going. `/restart` re-executes Monchu for changes to its own code: accepted work pauses and resumes after, so a step in flight (a model request or a running tool) is cut and runs again or is reported interrupted.
+Esc interrupts a running front only and does nothing while it is idle; your own messages still queued for the front come back into the editor, oldest first, ahead of anything typed. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output. Tools without their own renderer (goals, memory, workers, jj, herdr, codemode, search) collapse to a `▸` header row and a one-row result summary with its line count; Ctrl-O or a click shows every argument and the whole output. A sign-in URL in `/login` shows unpadded on rows of its own and opens in the browser by itself, as in Pi, except over SSH or without a screen to open on (a device code page waits for you to read the code); a tap or Alt+O opens it in the browser (`termux-open-url`, `open`, `xdg-open` or Windows' URL handler, never a shell) and Ctrl+X copies it exactly (the platform clipboard command, else OSC 52). A tap on any link in a reply opens it too.
 Shift-Enter or backslash-Enter adds a newline.
 Alt+S toggles what a message sent to a busy conversation, the root or a worker, does: follow-up (the default) waits for the current reply to finish; steer joins it after its current tool round. Steer mode turns the editor border yellow, and the footer names the mode; otherwise the border takes the shown conversation's thinking-level color, as in Pi.
 The footer is Pi's: the directory and shown conversation with the input mode, then token totals of the active context, context fill against the model's window (yellow past 70%, red past 90%, `?` until a reply measures it, `(auto)` with auto-compaction), and the model with its thinking level. While a worker is shown, the root's context stays beside the worker's. Narrow terminals drop the totals first.
@@ -111,15 +112,15 @@ Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate 
 Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
 The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls.
 
-`/abort` (or interactive Esc while it runs) stops the front only.
-`/stop` explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
+`/stop` on the root (or interactive Esc while it runs) stops the front only.
+`/stop <name>`, or `/stop` while a worker is shown, explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.
 `/quit` or SIGTERM closes storage without cancelling accepted work.
 It then stops running tool processes, closes provider connections pi-ai keeps cached (Codex websockets), and exits; if anything else still holds the process, it exits after one second anyway.
 Unfinished work resumes when the backend opens, whether or not a terminal is attached; the terminal starts from a snapshot.
 A worker's result reaches the parent as a labelled follow-up input, so the front gets a turn: it tells you in a line or two and continues with the next step.
 While the front is busy, the report queues until its current answer, then starts one turn; it never lands between a tool call and its result.
 Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
-`/abort` withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
+Stopping the front withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
 Non-fatal runtime failures appear as `system · warning` and are appended to `~/.monchu/monchu.log`.
 Reports do not authorize new actions.
 
@@ -141,7 +142,7 @@ Normal startup is unchanged.
 The inherited `MONCHU_DEV_HOME` preserves that temporary home through `/restart`; paths outside the temp directory are rejected.
 The home is printed at startup and kept for inspection; delete it after exiting.
 
-Smoke steps: send `hello`, then `read` (a real read tool call on a missing file), then `/work reader inspect`.
+Smoke steps: send `hello`, then `read` (a real read tool call on a missing file), then `work reader inspect` (the faux front starts a worker).
 Expect a streaming faux reply, a tool error, labelled worker progress/result lines, and the front's acknowledgement.
 Use `/agents`, Down to `reader`, Enter, and send `more`; `/agents root` returns to the front.
 Run `/reload` and expect `reloaded · context, ...`.
@@ -201,7 +202,7 @@ Each admitted message gets one assessment task (keyed by submission) in `monchu.
 An escalation is skipped when the front started or messaged a worker for that message, when a newer message arrived, or when Clef is unsure.
 Classifier failures are visible and never escalate; there is no fallback classifier.
 `/new [handoff]` starts a fresh model context (Durable `reset`); storage keeps every entry and the worker registry.
-Reports are submitted with stable request IDs (`worker-report:<task>`, then `:<n>` for re-posts after `/abort`), so recovery submits each report once; the reporter finishes once the parent's transcript holds it.
+Reports are submitted with stable request IDs (`worker-report:<task>`, then `:<n>` for re-posts after the front is stopped), so recovery submits each report once; the reporter finishes once the parent's transcript holds it.
 Interrupted external side effects are not exactly-once: unsafe tools are not blindly replayed.
 SQLite uses Durable's WAL/NORMAL policy; process-crash recovery does not promise that newest commits survive power loss.
 

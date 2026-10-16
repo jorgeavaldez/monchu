@@ -72,10 +72,10 @@ import { commands } from "./commands.ts";
 import { presentation, type QueuedItem } from "./state.ts";
 
 /**
- * What a chat notice reports: Monchu's own status, or input delivered to a worker. A delivery says `start` or
+ * What a chat notice reports: Monchu's own status, the startup header, or input delivered to a worker. A delivery says
  * `message`, never `steer`: whether it steers a run depends on the worker's state when it arrives, not when it is sent.
  */
-type NoticeKind = "system" | "start" | "message" | "intro";
+type NoticeKind = "system" | "message" | "intro";
 
 /**
  * A notice's styled line: a delivery has a yellow rule and label, as queued input does in the dock. Monchu's own status
@@ -436,6 +436,7 @@ export class MonchuTui {
   // A queued message open in the editor, and the draft it set aside; Enter saves the edit, Esc cancels it.
   private editing: { id: number; draft: string } | undefined;
   private readonly handlers: Handlers;
+  private readonly home: string;
 
   constructor(terminal: Terminal, home: string, handlers: Handlers) {
     this.handlers = handlers;
@@ -451,12 +452,8 @@ export class MonchuTui {
       },
       { paddingX: 1 },
     );
-    this.editor.setAutocompleteProvider(
-      new CombinedAutocompleteProvider(
-        Object.keys(commands).map((command) => ({ name: command.slice(1) })),
-        home,
-      ),
-    );
+    this.home = home;
+    this.setSkills([]);
     this.editor.onSubmit = (text) => {
       if (!text.trim()) return;
       if (this.editing !== undefined) {
@@ -560,6 +557,27 @@ export class MonchuTui {
     });
   }
 
+  /** The typeahead: every command with its help and usage, then each skill as `skill:<name>` with its description. */
+  setSkills(skills: readonly { name: string; description: string }[]): void {
+    this.editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider(
+        [
+          ...Object.entries(commands).map(([command, { usage, help }]) => ({
+            name: command.slice(1),
+            description: help,
+            ...(usage ? { argumentHint: usage } : {}),
+          })),
+          ...skills.map((skill) => ({
+            name: `skill:${skill.name}`,
+            description: skill.description,
+            argumentHint: "[text]",
+          })),
+        ],
+        this.home,
+      ),
+    );
+  }
+
   start(): void {
     this.ui.start();
   }
@@ -579,9 +597,10 @@ export class MonchuTui {
 
   /**
    * Login status text; with `url`, the URL first on rows of its own with no padding, so a selection copies only the
-   * URL, then a hint row: a tap or Alt+O opens it in the browser and Ctrl+X copies it.
+   * URL, then a hint row: a tap or Alt+O opens it in the browser and Ctrl+X copies it. `open` also opens it at once,
+   * as Pi opens a sign-in URL.
    */
-  loginMessage(message: string, url?: string): void {
+  loginMessage(message: string, url?: string, open = false): void {
     this.loginStatus.clear();
     this.loginUrl = undefined;
     if (url !== undefined) {
@@ -599,6 +618,7 @@ export class MonchuTui {
       this.loginStatus.addChild(hint);
     }
     if (message) this.loginStatus.addChild(new Text(message, 1, 0));
+    if (open) this.openLoginUrl();
     this.ui.requestRender();
   }
 
@@ -614,7 +634,7 @@ export class MonchuTui {
       if (this.loginUrl !== shown) return;
       this.setLoginHint(
         opened
-          ? theme.fg("success", "opened in the browser")
+          ? `${theme.fg("success", "opened in the browser")}${getSelectListTheme().description(" · Alt+O again · Ctrl+X copy")}`
           : theme.fg("error", "no browser launcher; Ctrl+X to copy"),
       );
       this.ui.requestRender();

@@ -15,6 +15,7 @@ import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
 import type { Meter } from "./components/footer.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { contextUsage, lastActive, presentation } from "./state.ts";
+import { browserHere } from "./system.ts";
 import { MonchuTui } from "./view.ts";
 
 /** Providers /login offers, in menu order. */
@@ -70,7 +71,6 @@ export async function runTerminal(
   let stopReload: (() => void) | undefined;
   let login: AbortController | undefined;
   type Worker = Awaited<ReturnType<Monchu["workers"]>>[number];
-  const describe = (worker: Worker) => `${worker.busy ? "working" : "idle"} | ${worker.cwd}`;
   const workers = new Map<
     string,
     { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
@@ -404,7 +404,7 @@ export async function runTerminal(
               server,
               {
                 showAuthorizationUrl: (url) =>
-                  view.loginMessage("Waiting for the browser · Esc to cancel", url),
+                  view.loginMessage("Waiting for the browser · Esc to cancel", url, browserHere()),
                 promptForRedirectUrl: (signal) =>
                   view
                     .promptLogin(
@@ -464,7 +464,8 @@ export async function runTerminal(
                     );
                     break;
                   case "auth_url":
-                    view.loginMessage("", event.url);
+                    // As in Pi: a sign-in page opens by itself; a device code is read first, so its page waits.
+                    view.loginMessage("", event.url, browserHere());
                     break;
                   case "info":
                   case "progress":
@@ -503,20 +504,6 @@ export async function runTerminal(
         closing = true;
         exit();
         break;
-      case "/abort":
-        await abort();
-        break;
-      case "/workers": {
-        await refreshWorkers();
-        view.notice(
-          workers.size
-            ? [...workers.values()]
-                .map(({ summary }) => `${summary.name}: ${describe(summary)}`)
-                .join("\n")
-            : "No workers yet.",
-        );
-        break;
-      }
       case "/agents": {
         if (input.text) {
           await switchTo(input.text === "root" ? undefined : input.text);
@@ -570,11 +557,18 @@ export async function runTerminal(
       case "/queue":
         view.openQueue();
         break;
-      case "/stop":
-        await backend.stopWorker(input.text);
-        view.notice(`stopped worker · ${input.text}`);
+      case "/stop": {
+        // The named worker, else the shown conversation: the root's front stops as Esc stops it.
+        const name = input.text || selected;
+        if (name === undefined) {
+          await abort();
+          break;
+        }
+        await backend.stopWorker(name);
+        view.notice(`stopped worker · ${name}`);
         await refreshWorkers();
         break;
+      }
       case "/new":
         await backend.reset(input.text);
         view.notice(input.text ? "new context · handoff carried" : "new context");
@@ -583,30 +577,21 @@ export async function runTerminal(
         await backend.compact(input.text);
         view.notice("compaction started");
         break;
-      case "/cd":
-        view.notice(`directory · ${await backend.changeDirectory(input.text)}`);
+      case "/cd": {
+        const name = selected;
+        const directory = await backend.changeDirectory(input.text, name);
+        view.notice(`${name ?? "root"} directory · ${directory}`);
+        if (name !== undefined) await refreshWorkers();
         break;
-      case "/cd-worker":
-        view.notice(
-          `${input.name} directory · ${await backend.changeDirectory(input.text, input.name)}`,
-        );
-        await refreshWorkers();
-        break;
-      case "/work":
-        await backend.startWorker(input.name, input.text, randomUUID());
-        view.notice(`${input.name} · creation committed`, "start");
-        await refreshWorkers();
-        break;
-      case "/tell":
-        await backend.messageWorker(input.name, input.text, randomUUID(), whenBusy);
-        view.notice(`${input.name} · message committed`, "message");
-        await refreshWorkers();
-        break;
+      }
+      case "skill":
       case "message": {
         // Capture focus now: a later view switch must not redirect an already submitted input.
         const name = selected;
-        if (name === undefined) await backend.submit(input.text, randomUUID(), whenBusy);
-        else await backend.messageWorker(name, input.text, randomUUID(), whenBusy);
+        const text =
+          input.command === "skill" ? backend.skillInput(input.name, input.text) : input.text;
+        if (name === undefined) await backend.submit(text, randomUUID(), whenBusy);
+        else await backend.messageWorker(name, text, randomUUID(), whenBusy);
         if (name === undefined) view.notice("received · root");
         else view.notice(`${name} · received`, "message");
         if (name !== undefined) await refreshWorkers();
@@ -633,7 +618,9 @@ export async function runTerminal(
         exit();
       }
     });
+    view.setSkills(backend.skills());
     stopReload = backend.onReload(() => {
+      view.setSkills(backend.skills());
       applyTheme();
       show(true);
     });
