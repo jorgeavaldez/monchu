@@ -2,8 +2,9 @@
 
 ## Context and scope
 
-Monchu is Jorge's personal everything agent, built around Pi Durable.
-Read `README.md`, then resolve `OBSIDIAN_VAULT_PATH` and read the vault's live `AGENTS.md`, `projects/monchu.md`, and `projects/monchu/foundation.md`.
+Monchu is a personal everything agent, built around Pi Durable.
+Read `README.md` and `docs/internals.md`.
+The maintainer's planning lives in their notes vault: when `OBSIDIAN_VAULT_PATH` is set and holds `projects/monchu.md`, read the vault's live `AGENTS.md`, `projects/monchu.md`, and `projects/monchu/foundation.md` first.
 The vault owns product intent, roadmap, decisions, and task tracking.
 This repository owns implementation and code-specific documentation.
 Do not duplicate the plan here.
@@ -28,13 +29,14 @@ Ask when scope or a design decision materially changes the outcome.
   Optimize upfront loadouts without creating arbitrary role-based capability bans.
 - The vault is a curated human second brain, not an append-only runtime log.
   Follow its domain, linking, publication, and concurrent-edit rules.
-- The home's editable files (manuals, memories, skills, souls, `config.json`) sync across devices through the private `jorgeavaldez/monchu-home` repository.
-  Credentials, Durable stores, and other runtime state stay per-device; add any new runtime file to the home's `.gitignore`.
+- The home's editable files (manuals, memories, skills, souls, `config.json`) may sync across devices through a private repository.
+  Credentials, Durable stores, and other runtime state stay per-device; add any new runtime file to `home-template/.gitignore` (and tell existing homes to add it).
+- Shipped code, skills, templates, and docs assume nothing about one person's layout (dotfiles, repo paths, notes, accounts): discover it or ask.
 
 ## Durable integration
 
 - Inspect the installed declarations and lockfile first.
-  Durable is experimental; local Pi source is at `~/proj/pi`.
+  Durable is experimental; read Pi's source (a local checkout or the published package) before adapting it.
 - Use Durable for conversations, accepted input, task state, committed output, and application documents.
   Do not smuggle a separate non-durable agent loop behind a tool.
 - Give each store one owning process.
@@ -84,7 +86,7 @@ Ask when scope or a design decision materially changes the outcome.
   A lint disable needs a reason on the same line and no alternative; the existing ones are for computed `import()`.
 - **No compatibility shims.** Change an API and update every caller; delete the old shape and its tests.
   Do not keep code for old stored data, checkpoints, or call shapes.
-  A change to a stored shape ships with a migration only when Jorge wants existing data kept; otherwise he decides on a fresh database.
+  A change to a stored shape ships with a migration only when the maintainer wants existing data kept; otherwise they decide on a fresh database.
 - **Tests.** Run real Durable Harnesses on SQLite in temp directories with Pi's faux providers, through Monchu's public seams.
   No `vi` (mocks, spies, stubs, fake timers) and no patching of Monchu code.
   Shared helpers live only in `test/support.ts`; call `setup()` and `cleanup()` so each test has its own home.

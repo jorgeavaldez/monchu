@@ -1,9 +1,10 @@
-import { monchuHome } from "./home.ts";
+import { monchuHome, seedHome } from "./home.ts";
 
 try {
   const home = await monchuHome(process.env.MONCHU_DEV_FAUX === "1");
   // Inherited by /restart so smoke mode reopens the same isolated home.
   if (process.env.MONCHU_DEV_FAUX === "1") process.env.MONCHU_DEV_HOME = home;
+  const seeded = await seedHome(home);
   const { Monchu } = await import("./backend.ts");
   const { runTerminal } = await import("./tui/app.ts");
   const { herdrAgent } = await import("./herdr-agent.ts");
@@ -12,7 +13,7 @@ try {
       ? await (await import("./dev-faux.ts")).openDevMonchu(home)
       : await Monchu.open(home);
   try {
-    await runTerminal(backend, undefined, herdrAgent(process.env));
+    await runTerminal(backend, undefined, herdrAgent(process.env), seeded);
   } finally {
     await backend.close();
   }

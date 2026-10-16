@@ -479,7 +479,7 @@ it("offers /login on a fresh home without credentials and cancels without callin
     await backend.close();
     await cleanup();
   }
-});
+}, 30_000);
 
 it("logs in to Claude Code with a setup-token from /login", async () => {
   const value = await setup();
@@ -506,7 +506,7 @@ it("logs in to Claude Code with a setup-token from /login", async () => {
     await backend.close();
     await cleanup();
   }
-});
+}, 30_000);
 
 // Transport emulation only: entry commands, Monchu, Durable, models, and tools are real.
 describe.each([

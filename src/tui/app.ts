@@ -36,6 +36,8 @@ export async function runTerminal(
   backend: Monchu,
   terminal: Terminal = new ProcessTerminal(),
   herdr?: HerdrAgent,
+  /** Startup notes shown below the header, such as a freshly seeded home. */
+  notes: readonly string[] = [],
 ): Promise<void> {
   if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
     throw new Error("Monchu's TUI needs an interactive terminal.");
@@ -311,20 +313,19 @@ export async function runTerminal(
   }
 
   /** First-run guidance: which providers still need /login, and whether Clef is off for lack of one. */
-  async function loginHint(startup: boolean): Promise<void> {
-    const needs = await backend.loginNeeds();
+  async function loginHint(
+    startup: boolean,
+    needs?: Awaited<ReturnType<Monchu["loginNeeds"]>>,
+  ): Promise<void> {
+    needs ??= await backend.loginNeeds();
     const label = (id: string) => LOGIN_PROVIDERS.find((entry) => entry.id === id)?.label ?? id;
     if (needs.chat.length > 0)
       view.notice(
-        [
-          `login needed · ${needs.chat.map(label).join(", ")}`,
-          "Run /login and pick it. To use another provider, log in to that one,",
-          "then pick its models with /model; Ctrl+S saves them as the defaults.",
-        ].join("\n"),
+        `login needed · ${needs.chat.map(label).join(", ")}. Run /login and pick it. To use another provider instead, log in to it, then pick its models with /model and press Ctrl+S to save them as the defaults.`,
       );
     if (needs.classifier !== undefined && (startup || needs.chat.length === 0))
       view.notice(
-        `routing advice off · /login → ${label(needs.classifier)} turns it on; "classifier": null in config.json hides this`,
+        `routing advice (Clef) is off · optional: /login → Cloudflare turns it on; "classifier": null in config.json hides this`,
       );
   }
 
@@ -341,6 +342,7 @@ export async function runTerminal(
         break;
       case "/login": {
         const controller = new AbortController();
+        let loggedIn = false;
         login = controller;
         show();
         view.beginLogin(() => controller.abort());
@@ -405,7 +407,7 @@ export async function runTerminal(
             },
           );
           view.notice(`logged in · ${provider}`);
-          await loginHint(false);
+          loggedIn = true;
         } catch {
           // Provider failures can include entered credentials. Never echo raw login errors.
           view.notice(
@@ -418,6 +420,8 @@ export async function runTerminal(
           view.endLogin();
           show();
         }
+        // After the editor is back, so typing never races the check.
+        if (loggedIn) await loginHint(false);
         break;
       }
       case "/reload": {
@@ -578,6 +582,8 @@ export async function runTerminal(
       hydrated = true;
     });
     await refreshWorkers();
+    // Read before input starts, so the startup hint never lands mid-command.
+    const needs = await backend.loginNeeds();
     view.start();
     stopScheme = view.ui.onTerminalColorSchemeChange((next) => {
       scheme = next;
@@ -593,7 +599,8 @@ export async function runTerminal(
     }
     show(true);
     view.intro(backend.home);
-    await loginHint(true);
+    for (const note of notes) view.notice(note);
+    await loginHint(true, needs);
     await exited;
   } finally {
     closing = true;

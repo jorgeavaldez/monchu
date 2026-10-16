@@ -1,0 +1,29 @@
+# Runtime state: one live Durable store per device, never versioned or synced.
+*.sqlite
+*.sqlite-*
+*.db
+*-wal
+*-shm
+*.lock
+*.log
+run/
+tmp/
+
+# Credentials stay on the device that logged in.
+auth.json
+auth.json*
+.env
+*.env
+
+# Claude Code's isolated config, sessions and transcript mirrors.
+claude/
+
+# Search indexes (frecency/history databases).
+fff/
+
+# MCP tool listings, cached per device.
+mcp-tools.json
+mcp-tools.json.*.tmp
+
+# Device-local skills: context that must stay on one machine (for example work).
+skills/local/
