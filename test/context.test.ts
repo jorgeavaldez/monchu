@@ -208,6 +208,39 @@ describe("Monchu home context", () => {
     }
   });
 
+  it("names home files near their size budget to the front, never truncating them, and warns once", async () => {
+    const value = await setup();
+    const warnings: string[] = [];
+    const extensions = await Extensions.load(
+      value.models,
+      await loadConfig(value.directory),
+      value.directory,
+      (warning) => warnings.push(warning),
+    );
+    const front = "f".repeat(11000);
+    await writeFile(join(value.directory, "FRONT.md"), front);
+    await writeFile(join(value.directory, "AGENTS.md"), "small manual");
+    let home = "";
+    route(value.faux, (request) => {
+      home = sectionTexts(request.messages, "home").join("\n");
+      return fauxAssistantMessage("ok");
+    });
+    const { harness, root } = await open({ ...value, registry: extensions.registry });
+    try {
+      for (const content of ["first", "second"])
+        await (await root.submit({ type: "input", content }, context)).wait(context);
+      expect(home).toContain(front);
+      expect(home).toContain("<home_budget>");
+      expect(home).toContain("FRONT.md: 11000/12000 characters\n");
+      expect(home).not.toContain("AGENTS.md: ");
+      expect(warnings.filter((warning) => warning.startsWith("Home file near"))).toEqual([
+        "Home file near its size budget: FRONT.md: budget 12000 characters",
+      ]);
+    } finally {
+      await harness.close(context);
+    }
+  });
+
   it("supplies device facts to all roles and tracks execution cwd independently of home", async () => {
     const value = await setup();
     value.registry.install(createIdentity(value.directory, () => {}));
