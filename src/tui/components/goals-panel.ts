@@ -96,8 +96,10 @@ export class GoalsPanel implements Component, Focusable {
     const rule = list.description("─".repeat(width));
     const goal = this.goals.find((item) => item.id === this.detail);
     const body = goal === undefined ? this.list(width) : this.goal(goal, width);
-    // The whole panel, with its rules, title and hint, takes at most 60% of the rows; the transcript keeps the rest.
-    const room = Math.max(3, Math.floor(this.rows() * 0.6) - 4);
+    // The panel takes 60% of the rows, and more on a short screen, such as a phone with its keyboard open, where the
+    // transcript above it keeps a few rows.
+    const rows = this.rows();
+    const room = Math.max(3, Math.floor(rows * 0.6) - 4, rows - 10);
     this.visible = Math.min(body.lines.length, room);
     if (body.focus !== undefined)
       this.offset = Math.min(
@@ -152,12 +154,22 @@ export class GoalsPanel implements Component, Focusable {
       lines.push(
         `${row}${" ".repeat(Math.max(1, width - visibleWidth(row) - visibleWidth(when)))}${when}`,
       );
-      // Only the selected goal previews its next step: the list stays one row per goal.
+      // Only the selected goal previews its next step, in up to two readable rows: the list stays one row per goal.
       if (selected) {
-        const next = goal.next.split(/\r\n|\r|\n/)[0] ?? "";
+        const next = wrapTextWithAnsi(goal.next.replace(/\s+/g, " "), Math.max(1, width - 9));
         lines.push(
-          truncateToWidth(`    ${theme.fg("dim", "next")} ${list.description(next)}`, width, "..."),
+          ...next
+            .slice(0, 2)
+            .map((line, index) =>
+              truncateToWidth(
+                `    ${index === 0 ? theme.fg("accent", "next") : "    "} ${theme.fg("text", line)}`,
+                width,
+                "",
+              ),
+            ),
         );
+        if (next.length > 2)
+          lines[lines.length - 1] = truncateToWidth(`${lines.at(-1) ?? ""}…`, width, "…");
         focus = { start, end: lines.length };
       }
     }
@@ -175,11 +187,12 @@ export class GoalsPanel implements Component, Focusable {
         "...",
       ),
       "",
-      label("Now"),
-      ...block(goal.workstream, 3, width),
-      "",
+      // Next leads: it is what to act on, and a short screen shows it without scrolling.
       label("Next"),
       ...block(goal.next, 3, width),
+      "",
+      label("Now"),
+      ...block(goal.workstream, 3, width),
     ];
     if (goal.workers.length) {
       lines.push("", label("Workers"));
