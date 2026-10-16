@@ -345,14 +345,40 @@ export async function runTerminal(
         show();
         view.beginLogin(() => controller.abort());
         try {
+          const mcp = await backend.oauthServers();
           const provider = await view.promptLogin(
             {
               type: "select",
               message: "Choose provider:",
-              options: LOGIN_PROVIDERS,
+              options: [
+                ...LOGIN_PROVIDERS,
+                ...mcp.map((name) => ({
+                  id: `mcp:${name}`,
+                  label: `${name} MCP server (browser)`,
+                })),
+              ],
             },
             controller.signal,
           );
+          const server = mcp.find((name) => provider === `mcp:${name}`);
+          if (server !== undefined) {
+            try {
+              await backend.mcpLogin(
+                server,
+                (url) => view.loginMessage(`Open ${url}\nWaiting for the browser · Esc to cancel`),
+                controller.signal,
+              );
+              view.notice(`logged in · ${server} MCP server; its tools are loaded`);
+            } catch (error) {
+              // MCP sign-in takes nothing typed, so its errors carry no credentials.
+              view.notice(
+                controller.signal.aborted
+                  ? "login cancelled"
+                  : `${server} sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+            break;
+          }
           await backend.login(
             provider,
             provider === "cloudflare-workers-ai" ? "api_key" : "oauth",

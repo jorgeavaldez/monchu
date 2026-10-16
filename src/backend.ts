@@ -248,6 +248,22 @@ export class Monchu {
     };
   }
 
+  /** MCP servers `/login` can sign in to. */
+  oauthServers(): Promise<string[]> {
+    return this.extensions.oauthServers();
+  }
+
+  /** Private terminal interaction only: sign in to an MCP server in the browser, then reload to offer its tools. */
+  async mcpLogin(
+    name: string,
+    open: (authorizationUrl: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    await this.extensions.mcpLogin(name, open, signal);
+    await this.reload();
+  }
+
   /** Successful reload notifications; callers re-read the single settings owner. */
   onReload(listener: () => void): () => void {
     this.reloadListeners.add(listener);

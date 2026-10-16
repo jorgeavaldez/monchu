@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
-import { McpClients } from "./mcp.ts";
+import { McpClients, usesOAuth } from "./mcp.ts";
 import type { EffortAssessment } from "./classifier.ts";
 import {
   loadConfig,
@@ -299,6 +299,24 @@ export class Extensions {
       this.reloading = undefined;
     });
     return this.reloading;
+  }
+
+  /** Enabled MCP servers that sign in with OAuth, for `/login`. */
+  async oauthServers(): Promise<string[]> {
+    return Object.entries(await loadMcpServers(this.home))
+      .filter(([, config]) => config.enabled !== false && usesOAuth(config))
+      .map(([name]) => name);
+  }
+
+  /** Sign in to an OAuth MCP server and cache its tools; a reload then installs them. */
+  async mcpLogin(
+    name: string,
+    open: (authorizationUrl: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const config = (await loadMcpServers(this.home))[name];
+    if (config === undefined) throw new Error(`No MCP server ${name} in mcp.json`);
+    await this.clients.login(name, config, open, signal);
   }
 
   /** Release host-owned search indexes and MCP servers after Durable stops its calls. */

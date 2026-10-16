@@ -7,6 +7,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { McpServerConfig } from "./config.ts";
+import { McpOAuth, McpSignInRequired } from "./mcp-auth.ts";
+
+/** HTTP servers sign in with OAuth unless their configured headers already authorize them. */
+export function usesOAuth(config: McpServerConfig): boolean {
+  return (
+    config.url !== undefined &&
+    !Object.keys(config.headers ?? {}).some((key) => key.toLowerCase() === "authorization")
+  );
+}
 
 /** A tool as a server lists it, kept in the cache file. */
 export type McpTool = {
@@ -129,6 +138,7 @@ export class McpClients {
   private readonly cachePath: string;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly report: (warning: string) => void;
+  private readonly oauth: McpOAuth;
   private readonly connections = new Map<string, Connection>();
   /** Servers whose live listing was compared with the cache in this process. */
   private readonly checked = new Set<string>();
@@ -141,6 +151,7 @@ export class McpClients {
     report: (warning: string) => void,
   ) {
     this.cachePath = join(home, "mcp-tools.json");
+    this.oauth = new McpOAuth(home);
     this.env = env;
     this.report = report;
   }
@@ -188,6 +199,21 @@ export class McpClients {
     }
   }
 
+  /** Sign in to an OAuth server through the browser, then list its tools again. */
+  async login(
+    name: string,
+    config: McpServerConfig,
+    open: (authorizationUrl: string) => void,
+    signal: AbortSignal,
+  ): Promise<McpListing> {
+    if (config.url === undefined || !usesOAuth(config))
+      throw new Error(`MCP server ${name} does not sign in with OAuth`);
+    await this.oauth.login(name, config.url, open, signal);
+    const existing = this.connections.get(name);
+    if (existing !== undefined) await this.disconnect(name, existing);
+    return this.refresh(name, config);
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     await Promise.all(
@@ -209,8 +235,23 @@ export class McpClients {
     } catch (error) {
       await this.disconnect(name, connection);
       const detail = tail(connection.stderr);
+      const missing =
+        error instanceof Error && "code" in error && error.code === "ENOENT" && config.command
+          ? `${config.command} is not installed or not on PATH here, so ${name}'s tools are off on this device`
+          : undefined;
+      if (
+        error instanceof McpSignInRequired ||
+        (error instanceof Error && error.cause instanceof McpSignInRequired)
+      )
+        throw new McpSignInRequired(
+          `MCP server ${name} needs sign-in: run /login and pick ${name}`,
+          {
+            cause: error,
+          },
+        );
       throw new Error(
-        `MCP server ${name} did not list its tools: ${error instanceof Error ? error.message : String(error)}${detail ? `\n${detail}` : ""}`,
+        missing ??
+          `MCP server ${name} did not list its tools: ${error instanceof Error ? error.message : String(error)}${detail ? `\n${detail}` : ""}`,
         { cause: error },
       );
     } finally {
@@ -269,7 +310,7 @@ export class McpClients {
       fingerprint: key,
       client: (async () => {
         const client = new Client({ name: "monchu", version: "1.0.0" });
-        const transport = this.transport(config, stderr);
+        const transport = this.transport(name, config, stderr);
         // A server that exits drops its connection; the next call starts it again.
         transport.onclose = () => {
           if (this.connections.get(name) === connection) this.connections.delete(name);
@@ -289,7 +330,7 @@ export class McpClients {
     return connection;
   }
 
-  private transport(config: McpServerConfig, stderr: { text: string }): Transport {
+  private transport(name: string, config: McpServerConfig, stderr: { text: string }): Transport {
     const expand = (values: Record<string, string> | undefined) =>
       Object.fromEntries(
         Object.entries(values ?? {}).map(([key, value]) => [
@@ -305,6 +346,7 @@ export class McpClients {
       return httpTransport(
         new StreamableHTTPClientTransport(new URL(config.url), {
           requestInit: { headers: expand(config.headers) },
+          ...(usesOAuth(config) ? { authProvider: this.oauth.provider(name, config.url) } : {}),
         }),
       );
     if (config.command === undefined) throw new Error("MCP server needs command or url");
