@@ -107,6 +107,8 @@ describe("memory", () => {
     value.registry.install(createMemory(value.directory));
     const jj = (...argv: string[]) =>
       execFileSync("jj", argv, { cwd: value.directory, encoding: "utf8" });
+    // Like a seeded home, the store and config stay out of the working copy.
+    await writeFile(join(value.directory, ".gitignore"), "*.sqlite*\nconfig.json\n.gitignore\n");
     jj("git", "init", ".");
     jj("config", "set", "--repo", "user.name", "Monchu Test");
     jj("config", "set", "--repo", "user.email", "test@example.com");
@@ -128,7 +130,10 @@ describe("memory", () => {
       expect(jj("log", "--no-graph", "-r", "@-", "-T", "description").trim()).toBe(
         "memory: add in memories/USER.md",
       );
-      expect(jj("diff", "--name-only", "-r", "@-").trim()).toBe("memories/USER.md");
+      // jj prints native separators.
+      expect(jj("diff", "--name-only", "-r", "@-").trim().replaceAll("\\", "/")).toBe(
+        "memories/USER.md",
+      );
       expect(jj("diff", "--name-only", "-r", "@").trim()).toBe("other.txt");
     } finally {
       await harness.close(context);

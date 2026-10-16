@@ -334,12 +334,12 @@ export class McpClients {
     } catch (error) {
       await this.disconnect(name, connection);
       const detail = tail(connection.stderr);
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        error.code === "ENOENT" &&
-        "command" in config
-      )
+      // On Windows the SDK runs an unresolved command through cmd.exe, which starts fine and then says so on stderr.
+      const notFound =
+        (error instanceof Error && "code" in error && error.code === "ENOENT") ||
+        (process.platform === "win32" &&
+          /is not recognized as an internal or external command/.test(detail));
+      if (notFound && "command" in config)
         throw new McpUnavailable(
           "missing",
           `${config.command} is not installed or not on PATH here, so ${name}'s tools are off on this device`,

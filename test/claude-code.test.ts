@@ -1012,10 +1012,10 @@ PROJECT RULES
 
   it("resolves a PATH wrapper and removes inherited credentials and billing switches in a separate process", async () => {
     const value = await setup();
-    const executable = join(
-      value.directory,
-      process.platform === "win32" ? "claude.EXE" : "claude",
-    );
+    // Outside the home, whose claude/ directory holds Claude Code's config and workdir.
+    const bin = join(value.directory, "bin");
+    await mkdir(bin);
+    const executable = join(bin, process.platform === "win32" ? "claude.EXE" : "claude");
     await writeFile(executable, "not executed by the injected query");
     await chmod(executable, 0o700);
     const module = new URL("../src/models/claude-code.ts", import.meta.url).href;
@@ -1039,7 +1039,7 @@ PROJECT RULES
         {
           env: {
             ...process.env,
-            PATH: value.directory,
+            PATH: bin,
             ANTHROPIC_API_KEY: "not-inherited",
             ANTHROPIC_AUTH_TOKEN: "not-inherited",
             ANTHROPIC_BASE_URL: "https://not-used.invalid",

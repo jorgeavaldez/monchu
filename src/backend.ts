@@ -695,8 +695,9 @@ export class Monchu {
     process.stdin.pause();
     const argv = [...process.execArgv, ...process.argv.slice(1)];
     // Replacing the process keeps one Monchu per terminal however often it restarts; spawning leaves each old process
-    // waiting on its child, and Android kills Termux once too many pile up. Windows has no execve.
-    if (typeof process.execve === "function")
+    // waiting on its child, and Android kills Termux once too many pile up. Windows has no execve: Node defines it there
+    // but it throws.
+    if (process.platform !== "win32" && typeof process.execve === "function")
       process.execve(process.execPath, [process.execPath, ...argv]);
     return new Promise<never>((_resolve, reject) => {
       const child = spawn(process.execPath, argv, {
