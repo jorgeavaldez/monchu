@@ -437,6 +437,8 @@ export class MonchuTui {
   private editing: { id: number; draft: string } | undefined;
   private readonly handlers: Handlers;
   private readonly home: string;
+  // Every command and `/skill:<name>`, for Enter while the typeahead's list is open.
+  private commandNames = new Set<string>();
 
   constructor(terminal: Terminal, home: string, handlers: Handlers) {
     this.handlers = handlers;
@@ -517,6 +519,17 @@ export class MonchuTui {
         return;
       }
       if (this.selector) return;
+      // The typeahead's list can lag a burst of typing, a phone keyboard's whole words, or a paste: Enter would then
+      // apply a suggestion for an older prefix. A command already typed in full, or with arguments, goes as typed.
+      if (
+        this.editor.isShowingAutocomplete() &&
+        getKeybindings().matches(data, "tui.input.submit") &&
+        this.typedInFull(this.editor.getText())
+      ) {
+        // Setting the same text closes the list; the editor then submits it unchanged.
+        this.editor.setText(this.editor.getExpandedText());
+        return;
+      }
       if (matchesKey(data, "ctrl+c")) {
         // As in Pi: clear the editor; a second press within 500 ms exits.
         const now = Date.now();
@@ -558,7 +571,18 @@ export class MonchuTui {
   }
 
   /** The typeahead: every command with its help and usage, then each skill as `skill:<name>` with its description. */
+  /** A slash command with arguments after it, or exactly a known command or skill. */
+  private typedInFull(text: string): boolean {
+    const [, command = "", args] = /^(\/\S*)(\s[\s\S]*)?$/.exec(text.trimStart()) ?? [];
+    if (!command) return false;
+    return args !== undefined || this.commandNames.has(command);
+  }
+
   setSkills(skills: readonly { name: string; description: string }[]): void {
+    this.commandNames = new Set([
+      ...Object.keys(commands),
+      ...skills.map((skill) => `/skill:${skill.name}`),
+    ]);
     this.editor.setAutocompleteProvider(
       new CombinedAutocompleteProvider(
         [

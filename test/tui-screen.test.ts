@@ -189,17 +189,18 @@ it("lists every command with its help and each skill as skill:<name> in the type
     const skills = await visible(screen, "skill:review");
     expect(skills.join("\n")).toMatch(/skill:review.*Review a change/);
     for (let index = 0; index < 7; index++) screen.sendInput("\x7f");
-    // Typed in one burst, the typeahead may still be settling; Enter goes in once it has.
-    screen.sendInput("/skill:review check this");
-    await visible(screen, "/skill:review check this");
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    screen.sendInput("\r");
+    // A burst and an immediate Enter, as a phone keyboard or a paste sends: the text goes exactly as typed, however
+    // far the typeahead's list lags behind it.
+    send(screen, "/skill:review check this");
     // The skill's instructions go with the text, frontmatter stripped.
     await visible(screen, "Read the diff first.");
     const sent = await visible(screen, "check this");
     expect(sent.join("\n")).not.toContain("description: Review");
     send(screen, "/skill:missing go");
     await visible(screen, "No skill named missing");
+    // A command typed in full goes as typed, never as the list's stale first item.
+    send(screen, "/help");
+    await visible(screen, "save and close");
   });
 }, 30_000);
 

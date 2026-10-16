@@ -60,9 +60,9 @@ export const commands: Record<
 export const help = [
   "Commands:",
   ...Object.entries(commands).map(([command, { usage, help }]) =>
-    `${`${command} ${usage}`.padEnd(22)}${help}`.trimEnd(),
+    `${`${command} ${usage}`.padEnd(21)} ${help}`.trimEnd(),
   ),
-  `${"/skill:<name> [text]".padEnd(22)}send a skill's instructions with your text`,
+  `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
   "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
   "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
