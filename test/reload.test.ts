@@ -260,6 +260,9 @@ describe("in-process reload", () => {
       "memory",
       "identity",
       "jj",
+      "mcp-tools",
+      "browser",
+      "tool-search",
       "herdr",
       "classifier",
     ]);

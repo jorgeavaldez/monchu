@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, resolveSettings, saveRole } from "../src/config.ts";
+import { loadConfig, loadMcpServers, resolveSettings, saveRole } from "../src/config.ts";
 import { harnessSettings } from "../src/context.ts";
 import { setup, cleanup } from "./support.ts";
 
@@ -92,6 +92,34 @@ describe("config", () => {
       settings: {},
       claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
     });
+  });
+
+  it("reads MCP servers from mcp.json in Pi's shape", async () => {
+    const directory = await home();
+    const ketch = {
+      command: "fnox",
+      args: ["exec", "--", "ketch", "mcp", "serve"],
+      env: { KETCH_MCP_TOOLS: "search,scrape" },
+      description: "web research",
+      exposure: "deferred",
+      toolExposure: { search: "direct" },
+    };
+    await writeFile(join(directory, "mcp.json"), JSON.stringify({ mcpServers: { ketch } }));
+    expect(await loadMcpServers(directory)).toEqual({ ketch });
+  });
+
+  it.each([
+    [{ mcpServers: { Bad_Name: { command: "x" } } }, "lowercase letters"],
+    [{ mcpServers: { a: {} } }, "exactly one of command or url"],
+    [{ mcpServers: { a: { command: "x", url: "https://x" } } }, "exactly one of command or url"],
+    [{ mcpServers: { a: { url: "ftp://x" } } }, "http or https"],
+    [{ mcpServers: { a: { url: "https://x", env: {} } } }, "a.env needs command"],
+    [{ mcpServers: { a: { command: "x", exposure: "hidden" } } }, "direct or deferred"],
+    [{ mcpServers: { a: { command: "x", typo: 1 } } }, "unknown fields: typo"],
+  ])("rejects mcp.json %j", async (mcp, message) => {
+    const directory = await home();
+    await writeFile(join(directory, "mcp.json"), JSON.stringify(mcp));
+    await expect(loadMcpServers(directory)).rejects.toThrow(message);
   });
 
   it("reads roles, turns the classifier off with null, and keeps the account override", async () => {

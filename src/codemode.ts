@@ -2,14 +2,22 @@ import { isJsonValue, type JsonValue } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
-import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
+import {
+  CodemodeSandbox,
+  renderToolSample,
+  toCodemodeIdentifier,
+  type CodemodeJsonSchema,
+  type CodemodeTool,
+} from "@earendil-works/pi-codemode";
 import {
   defineDoc,
   defineExtension,
   defineTool,
   type ToolExecutionApi,
   type ToolExecutionResult,
+  type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import { isGroupExtension, rankDocuments, toolDocument } from "./tool-search.ts";
 
 const NAME = "codemode";
 
@@ -34,10 +42,71 @@ function resultText(result: ToolExecutionResult, output: string): string {
     .join("\n");
 }
 
+/** What a script sees of a tool: tools resolve to their text output. */
+function sample(tool: ToolRegistration): string {
+  const inputSchema: CodemodeJsonSchema = { ...tool.parameters };
+  return renderToolSample({
+    name: tool.name,
+    description: tool.description,
+    inputSchema,
+    outputSchema: { type: "string" },
+  });
+}
+
+/** A global's spread arguments. */
+function spreadArgs(args: unknown): unknown[] {
+  const list: unknown[] = Array.isArray(args) ? args : [];
+  return list;
+}
+
+/** `searchTools()` and `describeTool()` over every tool a script can call, deferred ones included. */
+function discovery(tools: readonly ToolRegistration[]): CodemodeTool[] {
+  const samples = new Map(tools.map((tool) => [tool.name, sample(tool)]));
+  const entry = (name: string) => ({
+    name: toCodemodeIdentifier(name),
+    description: samples.get(name) ?? "",
+  });
+  return [
+    {
+      name: "searchTools",
+      spread: true,
+      signature:
+        "(query: string, options?: { limit?: number }): Promise<{ name: string; description: string }[]>",
+      execute: (args) => {
+        const [query, options] = spreadArgs(args);
+        if (typeof query !== "string") throw new Error("searchTools() expects a query string");
+        const limit: unknown =
+          typeof options === "object" && options !== null && "limit" in options ? options.limit : 8;
+        if (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0)
+          throw new Error("searchTools() limit must be a positive integer");
+        return rankDocuments(
+          query,
+          tools.map((tool) => toolDocument(tool.name, tool)),
+          limit,
+        ).map(entry);
+      },
+    },
+    {
+      name: "describeTool",
+      spread: true,
+      signature: "(name: string): Promise<string | undefined>",
+      execute: (args) => {
+        const [name] = spreadArgs(args);
+        if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
+        const tool = tools.find(
+          (candidate) => candidate.name === name || toCodemodeIdentifier(candidate.name) === name,
+        );
+        return tool === undefined ? undefined : samples.get(tool.name);
+      },
+    },
+  ];
+}
+
 /**
  * Runs model-written JavaScript in Pi's QuickJS sandbox. Scripts call this conversation's other tools as
  * `await tools.<name>(args)`. Nested calls run inside this one Durable tool call: they share its task, cancellation and
- * committed result, and are not separate tool tasks. A failed script does not undo earlier calls, so this tool is not
+ * committed result, and are not separate tool tasks. Scripts also reach the tools of deferred groups the conversation has
+ * not loaded, without declaring them to the model. A failed script does not undo earlier calls, so this tool is not
  * replayed after a crash.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
@@ -47,7 +116,7 @@ export const Codemode = defineExtension({
     defineTool({
       name: NAME,
       description:
-        "Run JavaScript (an async function body) that calls your other tools as `await tools.<name>(args)` with the same arguments they take directly; each call resolves to the tool's text result and throws on tool errors. `ALL_TOOLS` lists callable tools. Print with text(value) or console.log, or `return` a value. `store(key, value)`/`load(key)` keep JSON values across calls in this conversation. No fetch, timers, require, or filesystem except through tools. Use it to run several tool calls in parallel, loop, or filter large results before they reach you; earlier calls are not undone when a script fails.",
+        "Run JavaScript (an async function body) that calls your other tools as `await tools.<name>(args)` with the same arguments they take directly; each call resolves to the tool's text result and throws on tool errors. Scripts can also call deferred tools you have not loaded: `searchTools(query, { limit? })` ranks every callable tool and returns `{ name, description }` with its TypeScript signature, `describeTool(name)` returns one signature, and `ALL_TOOLS` lists them all. Print with text(value) or console.log, or `return` a value. `store(key, value)`/`load(key)` keep JSON values across calls in this conversation. No fetch, timers, require, or filesystem except through tools. Use it to run several tool calls in parallel, loop, or filter large results before they reach you; earlier calls are not undone when a script fails.",
       parameters: Type.Object({ code: Type.String({ minLength: 1 }) }),
       replay: "unsafe",
       execute: async ({ code }, api, context) => {
@@ -56,52 +125,62 @@ export const Codemode = defineExtension({
         const forward = () => controller.abort(context.abortSignal?.reason);
         context.abortSignal?.addEventListener("abort", forward, { once: true });
         let calls = 0;
-        const tools: CodemodeTool[] = agent.tools
-          .filter((tool) => tool.name !== NAME)
-          .map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            execute: async (args, { signal }) => {
-              if (!isJsonObject(args)) throw new Error(`${tool.name} expects an object argument`);
-              const callId = `${api.callId}/${++calls}`;
-              // pi-ai types the validated arguments as `any`; the tool's own execute narrows them.
-              const validated: unknown = validateToolArguments(tool, {
-                type: "toolCall",
-                id: callId,
-                name: tool.name,
-                arguments: args,
-              });
-              let output = "";
-              // Nested calls see a distinct call ID and keep their running output and details local.
-              const overrides: Partial<ToolExecutionApi> = {
-                callId,
-                // The local sink needs all text, not the outer call's retained tail.
-                outputWindow: undefined,
-                output: (chunk) => {
-                  output += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-                },
-                details: async () => {},
-              };
-              const nested = new Proxy(api, {
-                get(target, property, receiver): unknown {
-                  if (Object.hasOwn(overrides, property))
-                    return Reflect.get(overrides, property, receiver);
-                  const value: unknown = Reflect.get(target, property, target);
-                  return typeof value === "function" ? value.bind(target) : value;
-                },
-              });
-              const result = await tool.execute(
-                validated,
-                nested,
-                withAbortSignal(AbortSignal.any([signal, controller.signal]), context),
-              );
-              const text = resultText(result, output);
-              if (result.isError) throw new Error(text);
-              return text;
-            },
-          }));
+        const offered = new Set(agent.tools.map((tool) => tool.name));
+        const selected = new Set(agent.extensions.map((extension) => extension.name));
+        const deferred = api.registry
+          .installed()
+          .filter((extension) => isGroupExtension(extension.name) && !selected.has(extension.name))
+          .flatMap((extension) => extension.tools ?? [])
+          .filter((tool) => !offered.has(tool.name));
+        const callable = [...agent.tools.filter((tool) => tool.name !== NAME), ...deferred];
+        const tools: CodemodeTool[] = callable.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          execute: async (args, { signal }) => {
+            if (!isJsonObject(args)) throw new Error(`${tool.name} expects an object argument`);
+            const callId = `${api.callId}/${++calls}`;
+            // pi-ai types the validated arguments as `any`; the tool's own execute narrows them.
+            const validated: unknown = validateToolArguments(tool, {
+              type: "toolCall",
+              id: callId,
+              name: tool.name,
+              arguments: args,
+            });
+            let output = "";
+            // Nested calls see a distinct call ID and keep their running output and details local.
+            const overrides: Partial<ToolExecutionApi> = {
+              callId,
+              // The local sink needs all text, not the outer call's retained tail.
+              outputWindow: undefined,
+              output: (chunk) => {
+                output += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+              },
+              details: async () => {},
+            };
+            const nested = new Proxy(api, {
+              get(target, property, receiver): unknown {
+                if (Object.hasOwn(overrides, property))
+                  return Reflect.get(overrides, property, receiver);
+                const value: unknown = Reflect.get(target, property, target);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            });
+            const result = await tool.execute(
+              validated,
+              nested,
+              withAbortSignal(AbortSignal.any([signal, controller.signal]), context),
+            );
+            const text = resultText(result, output);
+            if (result.isError) throw new Error(text);
+            return text;
+          },
+        }));
         const saved = await api.snapshot(CodemodeStore, api.conversationId, context);
-        const sandbox = new CodemodeSandbox({ tools, timeoutMs: 10 * 60_000 });
+        const sandbox = new CodemodeSandbox({
+          tools,
+          globals: discovery(callable),
+          timeoutMs: 10 * 60_000,
+        });
         try {
           const result = await sandbox.execute(code, {
             signal: controller.signal,

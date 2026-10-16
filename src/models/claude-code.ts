@@ -168,6 +168,8 @@ type LiveQuery = {
   pendingResults: Map<string, CallToolResult>;
   toolIds: Set<string>;
   history: string[];
+  /** The tool declarations its MCP server lists; a parked query cannot take new ones. */
+  tools: string;
   parked: boolean;
   preserveSharedSession: boolean;
   pushPrompt: (prompt: ReturnType<typeof claudeTurn>["prompt"]) => Promise<void>;
@@ -336,7 +338,10 @@ export function createClaudeCodeProvider(
         // Durable has no Pi UI rewrite hook. Compare the parked query's actual prefix instead.
         const rewritten =
           existing !== undefined && existing.history.some((value, index) => keys[index] !== value);
-        if (existing !== undefined && (rewritten || !results.length)) {
+        // Tools loaded mid-run (tool_search) reach Claude Code only through a new query.
+        const toolsChanged =
+          existing !== undefined && existing.tools !== JSON.stringify(declarations);
+        if (existing !== undefined && (rewritten || toolsChanged || !results.length)) {
           const state = sessions.get(key);
           if (state !== undefined) {
             state.needsRebuild = true;
@@ -550,6 +555,7 @@ export function createClaudeCodeProvider(
             pendingResults,
             toolIds: new Set(),
             history: keys,
+            tools: JSON.stringify(declarations),
             parked: false,
             preserveSharedSession,
             finished: finished.promise,

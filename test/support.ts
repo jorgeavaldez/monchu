@@ -39,6 +39,7 @@ import {
   createRegistry,
   type EntryRecord,
   Harness,
+  type HarnessSettings,
   type JsonObject,
   type Registry,
   type TaskId,
@@ -264,12 +265,14 @@ export async function setup(options: RegisterFauxProviderOptions = {}): Promise<
 
 export async function open(
   value: Pick<Setup, "directory" | "registry" | "reports"> & { models: Models },
+  settings?: HarnessSettings,
 ): Promise<{ readonly harness: Harness; readonly root: Conversation }> {
   const harness = await Harness.open(
     await openNodeSqliteStorage(join(value.directory, "monchu.sqlite")),
     {
       models: value.models,
       registry: value.registry,
+      ...(settings === undefined ? {} : { settings }),
       env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? value.directory }),
       onReport: (error) => value.reports.push(error),
     },

@@ -13,9 +13,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
+import { McpClients } from "./mcp.ts";
 import type { EffortAssessment } from "./classifier.ts";
 import {
   loadConfig,
+  loadMcpServers,
   saveRole,
   type ModelRole,
   type MonchuConfig,
@@ -35,6 +37,9 @@ type Reloadable = {
   classifier: typeof import("./classifier.ts");
   jj: typeof import("./jj.ts");
   herdr: typeof import("./herdr.ts");
+  "tool-search": typeof import("./tool-search.ts");
+  "mcp-tools": typeof import("./mcp-tools.ts");
+  browser: typeof import("./browser.ts");
 };
 
 async function freshImport<Name extends keyof Reloadable>(
@@ -52,6 +57,8 @@ type Build = {
   extensions: Extension[];
   /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */
   root: Extension[];
+  /** Deferred tool groups: installed, left out of the host default selection, and loaded by `tool_search`. */
+  groups: Extension[];
   settings: Settings;
   config: MonchuConfig;
   assessment: EffortAssessment | undefined;
@@ -65,6 +72,7 @@ async function build(
   home: string,
   reportSkipped: (warning: string) => void,
   finders: FffFinders,
+  clients: McpClients,
   workerRole: () => ModelRole,
 ): Promise<Build> {
   resolveRoles(models, config);
@@ -82,6 +90,9 @@ async function build(
   const memory = (await load("memory")).createMemory(home);
   const identity = (await load("identity")).createIdentity(home, reportSkipped);
   const { Jj } = await load("jj");
+  const mcp = await (await load("mcp-tools")).createMcpTools(await loadMcpServers(home), clients);
+  const { Browser } = await load("browser");
+  const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
   const herdr = (await load("herdr")).createHerdr({
     command: { executable: "herdr", args: [] },
     env: process.env,
@@ -106,13 +117,17 @@ async function build(
       identity,
       Jj,
       herdr,
+      mcp.extension,
+      search.extension,
+      ...search.groups,
       ...(assessment === undefined ? [] : [assessment.extension]),
     ],
     root: [Goals, memory],
+    groups: search.groups,
     settings: context.settings,
     config,
     assessment,
-    warnings: [...context.warnings, ...tools.warnings],
+    warnings: [...context.warnings, ...tools.warnings, ...mcp.warnings],
   };
 }
 
@@ -141,6 +156,7 @@ export class Extensions {
   private readonly models: Models;
   private readonly home: string;
   private readonly finders: FffFinders;
+  private readonly clients: McpClients;
   private readonly report: (warning: string) => void;
   private readonly reportSkipped: (warning: string) => void;
   private current: Build;
@@ -154,8 +170,10 @@ export class Extensions {
     reportSkipped: (warning: string) => void,
     current: Build,
     finders: FffFinders,
+    clients: McpClients,
   ) {
     this.registry = createRegistry();
+    this.clients = clients;
     this.models = models;
     this.home = home;
     this.finders = finders;
@@ -178,6 +196,7 @@ export class Extensions {
       report(warning);
     };
     const finders = new FffFinders(home, report);
+    const clients = new McpClients(home, process.env, report);
     // Worker tools run only after construction; until then nothing can call the role getter.
     let extensions: Extensions | undefined;
     const current = await build(
@@ -186,9 +205,10 @@ export class Extensions {
       home,
       reportSkipped,
       finders,
+      clients,
       () => extensions?.config.worker ?? config.worker,
     );
-    extensions = new Extensions(models, home, report, reportSkipped, current, finders);
+    extensions = new Extensions(models, home, report, reportSkipped, current, finders, clients);
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
@@ -237,7 +257,8 @@ export class Extensions {
   /** Every installed extension except the ones only added to the root. */
   defaults(): readonly Extension[] {
     const names = new Set(this.current.extensions.map((extension) => extension.name));
-    for (const extension of this.current.root) names.delete(extension.name);
+    for (const extension of [...this.current.root, ...this.current.groups])
+      names.delete(extension.name);
     names.add("monchu.reload");
     // Disabled classifier definitions remain installed to finish already accepted assessment tasks.
     return this.registry
@@ -267,6 +288,7 @@ export class Extensions {
         this.home,
         this.reportSkipped,
         this.finders,
+        this.clients,
         () => this.config.worker,
       );
       validateExtensions(this.registry, next.extensions);
@@ -281,9 +303,10 @@ export class Extensions {
     return this.reloading;
   }
 
-  /** Release host-owned search indexes after Durable stops its calls. */
+  /** Release host-owned search indexes and MCP servers after Durable stops its calls. */
   async close(): Promise<void> {
     await this.finders.close();
+    await this.clients.close();
   }
 
   /** Resolves once no reload or role save is running, whether or not it succeeded. */

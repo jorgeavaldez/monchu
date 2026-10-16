@@ -120,6 +120,30 @@ export type ClaudeConfig = {
   longContextExtraUsage: boolean;
 };
 
+/**
+ * One MCP server from `<home>/mcp.json`, in the `mcpServers` shape Pi and other MCP clients use. A server runs a local
+ * `command` over stdio or talks to a streamable HTTP `url`. `${NAME}` in `env` and `headers` values expands from the
+ * environment Monchu started with, so secrets stay out of the file.
+ */
+export type McpServerConfig = {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  /** What the server is for; shown in the deferred-tools prompt section. */
+  description?: string;
+  /** `deferred` (default) keeps the server's tools out of the prompt until `tool_search` loads them. */
+  exposure?: McpExposure;
+  /** Per-tool overrides of `exposure`, by the server's own tool name. */
+  toolExposure?: Record<string, McpExposure>;
+  /** `false` leaves the server configured but unused. */
+  enabled?: boolean;
+};
+
+export type McpExposure = "direct" | "deferred";
+
 /** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
 export type MonchuConfig = {
   front: ModelRole;
@@ -349,11 +373,101 @@ function parseJson(raw: string, path: string): unknown {
   }
 }
 
+function strings(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string"))
+    throw new Error(`${field} must be a string array`);
+  return value;
+}
+
+function stringMap(value: unknown, field: string): Record<string, string> {
+  if (!isObject(value)) throw new Error(`${field} must be an object`);
+  const map: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") throw new Error(`${field}.${key} must be a string`);
+    map[key] = item;
+  }
+  return map;
+}
+
+function exposure(value: unknown, field: string): McpExposure {
+  if (value === "direct" || value === "deferred") return value;
+  throw new Error(`${field} must be direct or deferred`);
+}
+
+function mcpServer(value: unknown, field: string): McpServerConfig {
+  object(value, field, [
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "url",
+    "headers",
+    "description",
+    "exposure",
+    "toolExposure",
+    "enabled",
+  ]);
+  if ((value.command === undefined) === (value.url === undefined))
+    throw new Error(`${field} needs exactly one of command or url`);
+  const server: McpServerConfig = {};
+  for (const key of ["command", "cwd", "url", "description"] as const)
+    if (value[key] !== undefined) server[key] = text(value[key], `${field}.${key}`);
+  if (server.url !== undefined && !/^https?:\/\//.test(server.url))
+    throw new Error(`${field}.url must be an http or https URL`);
+  if (value.command === undefined)
+    for (const key of ["args", "env", "cwd"] as const)
+      if (value[key] !== undefined) throw new Error(`${field}.${key} needs command`);
+  if (value.url === undefined && value.headers !== undefined)
+    throw new Error(`${field}.headers needs url`);
+  if (value.args !== undefined) server.args = strings(value.args, `${field}.args`);
+  if (value.env !== undefined) server.env = stringMap(value.env, `${field}.env`);
+  if (value.headers !== undefined) server.headers = stringMap(value.headers, `${field}.headers`);
+  if (value.exposure !== undefined) server.exposure = exposure(value.exposure, `${field}.exposure`);
+  if (value.toolExposure !== undefined) {
+    if (!isObject(value.toolExposure)) throw new Error(`${field}.toolExposure must be an object`);
+    server.toolExposure = Object.fromEntries(
+      Object.entries(value.toolExposure).map(([tool, item]) => [
+        tool,
+        exposure(item, `${field}.toolExposure.${tool}`),
+      ]),
+    );
+  }
+  if (value.enabled !== undefined) server.enabled = boolean(value.enabled, `${field}.enabled`);
+  return server;
+}
+
+/** `<home>/mcp.json`: `{ "mcpServers": { "<name>": { ... } } }`. Names become tool prefixes such as `ketch_search`. */
+function parseMcp(value: unknown, path: string): Record<string, McpServerConfig> {
+  try {
+    object(value, "mcp.json", ["mcpServers"]);
+    if (value.mcpServers === undefined) return {};
+    if (!isObject(value.mcpServers)) throw new Error("mcpServers must be an object");
+    const servers: Record<string, McpServerConfig> = {};
+    for (const [name, server] of Object.entries(value.mcpServers)) {
+      if (!/^[a-z][a-z0-9-]{0,23}$/.test(name))
+        throw new Error(
+          `mcpServers.${name}: names are lowercase letters, digits and hyphens, at most 24`,
+        );
+      servers[name] = mcpServer(server, `mcpServers.${name}`);
+    }
+    return servers;
+  } catch (error) {
+    throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /** A missing file means defaults. Invalid content fails startup instead of guessing. */
 export async function loadConfig(home: string): Promise<MonchuConfig> {
   const path = join(home, "config.json");
   const raw = await readRaw(path);
   return raw === undefined ? defaults : parseConfig(parseJson(raw, path), path);
+}
+
+/** MCP servers from `<home>/mcp.json`, by name; none when it is missing. Invalid content fails like `config.json`. */
+export async function loadMcpServers(home: string): Promise<Record<string, McpServerConfig>> {
+  const path = join(home, "mcp.json");
+  const raw = await readRaw(path);
+  return raw === undefined ? {} : parseMcp(parseJson(raw, path), path);
 }
 
 /**

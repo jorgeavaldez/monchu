@@ -22,6 +22,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { ModelRole } from "./config.ts";
+import { unloadGroups } from "./tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 type WorkerRecords = {
@@ -460,6 +461,8 @@ export async function startWorker(
     background: true,
   });
   const worker = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
+  // The copied agent carries the parent's loaded tool groups; a worker loads what its own domain needs.
+  await unloadGroups(tx, worker.id);
   await configure(tx, worker.id, {
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,

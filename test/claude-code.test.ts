@@ -478,6 +478,73 @@ describe("Claude Code subscription provider", () => {
     expect(script.closed()).toBe(3);
   });
 
+  it("starts a new query with the parked turn's result when tools are added mid-run", async () => {
+    const value = await setup();
+    let attempt = 0;
+    const listed: string[][] = [];
+    const script = scriptedClaude(value.directory, config, async function* (input) {
+      attempt++;
+      const server = input.options?.mcpServers?.monchu;
+      assert(server?.type === "sdk");
+      const client = new Client({ name: "added", version: "1" });
+      const [left, right] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(right);
+      await client.connect(left);
+      try {
+        listed.push((await client.listTools()).tools.map((tool) => tool.name));
+        if (attempt > 1) {
+          yield* claudeResponse([{ type: "text", text: "used the new tool" }]);
+          return;
+        }
+        const pending = client.callTool({
+          name: "tool_search",
+          arguments: {},
+          _meta: { "claudecode/toolUseId": "search_tool" },
+        });
+        void pending.catch(() => {});
+        yield* claudeResponse([fauxToolCall("tool_search", {}, { id: "search_tool" })], "tool_use");
+        await pending.catch(() => {});
+      } finally {
+        await client.close();
+      }
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const search = { name: "tool_search", description: "load", parameters: Type.Object({}) };
+    const added = { name: "save_note", description: "save", parameters: Type.Object({}) };
+    const options = { sessionId: "loading-conversation" };
+    const prompt: Message = { role: "user", content: "load notes", timestamp: 1 };
+    const first = await models.completeSimple(
+      model,
+      { tools: [search], messages: [prompt] },
+      options,
+    );
+    expect(first.stopReason).toBe("toolUse");
+    const result = await models.completeSimple(
+      model,
+      {
+        tools: [search, added],
+        messages: [
+          prompt,
+          first,
+          {
+            role: "toolResult",
+            toolCallId: "search_tool",
+            toolName: "tool_search",
+            content: [{ type: "text", text: "Loaded notes" }],
+            isError: false,
+            timestamp: 2,
+          },
+        ],
+      },
+      options,
+    );
+    expect(textOf(result)).toBe("used the new tool");
+    expect(listed).toEqual([["tool_search"], ["tool_search", "save_note"]]);
+    expect(JSON.stringify(script.requests[1]?.history)).toContain("Loaded notes");
+  });
+
   it("rebuilds an idle conversation after Durable compaction and starts clean after reset", async () => {
     const value = await setup();
     await writeFile(
