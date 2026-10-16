@@ -23,6 +23,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # Keep LF on Windows too, as the formatter expects.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
       # The tests drive real jj repositories.
