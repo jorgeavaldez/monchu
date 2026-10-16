@@ -250,7 +250,8 @@ async function add(args: string[], options: McpCommandOptions): Promise<number> 
     return 1;
   }
   const path = join(options.home, "mcp.json");
-  const replaced = await addMcpServer(options.home, name, validated);
+  // Written in the order the options name the fields, with aliases resolved.
+  const replaced = await addMcpServer(options.home, name, { ...raw, ...validated });
   log(`${replaced ? "Replaced" : "Added"} MCP server "${name}" in ${path}.`);
   log(
     `Check it with: monchu mcp list${usesOAuth(validated) ? `. If it requires sign-in: monchu mcp login ${name}` : ""}`,
