@@ -9,8 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Goal } from "../../goals.ts";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
-import { age, statusText, type AgentStatus } from "./agents-panel.ts";
-import { shortPath } from "./footer.ts";
+import { age } from "./agents-panel.ts";
 
 /** A goal as the panel lists it: `changed` since the user last opened it. */
 export type GoalRow = Goal & { changed: boolean };
@@ -49,13 +48,13 @@ function block(text: string, indent: number, width: number): string[] {
 
 /**
  * Goals in the editor's place: a concise list, one row per goal, marking goals that changed since last opened (`•`)
- * and goals waiting on the user (`wait`); Enter drills into the goal, its next step first, and Esc comes back. Open goals show first; Tab adds the recently closed ones. Linked workers show
- * their live status. The panel takes at most 60% of the rows and scrolls within it, re-measured every frame.
+ * and goals waiting on the user (`wait`); Enter drills into the goal itself, what is happening now and its next
+ * step, and Esc comes back. Open goals show first; Tab adds the recently closed ones. The panel takes 60% of the rows,
+ * more on a short screen, and scrolls within it, re-measured every frame.
  */
 export class GoalsPanel implements Component, Focusable {
   focused = false;
   private readonly goals: GoalRow[];
-  private readonly statuses: () => ReadonlyMap<string, AgentStatus>;
   private readonly seen: (goal: Goal) => void;
   private readonly rows: () => number;
   private readonly close: () => void;
@@ -67,13 +66,11 @@ export class GoalsPanel implements Component, Focusable {
 
   constructor(
     goals: readonly GoalRow[],
-    statuses: () => ReadonlyMap<string, AgentStatus>,
     seen: (goal: Goal) => void,
     rows: () => number,
     close: () => void,
   ) {
     this.goals = goals.map((goal) => ({ ...goal }));
-    this.statuses = statuses;
     this.seen = seen;
     this.rows = rows;
     this.close = close;
@@ -166,43 +163,20 @@ export class GoalsPanel implements Component, Focusable {
   private goal(goal: Goal, width: number) {
     const list = getSelectListTheme();
     const label = (text: string) => ` ${theme.fg("accent", text)}`;
-    const statuses = this.statuses();
+    // Just the goal: what is happening now, then the next step.
     const lines = [
       truncateToWidth(
-        ` ${word(goal.status)}${list.description(` · ${goal.kind} · ${goal.id} · ${age(goal.updatedAt)} ago`)}`,
+        ` ${word(goal.status)}${list.description(` · ${goal.kind} · ${age(goal.updatedAt)} ago`)}`,
         width,
         "...",
       ),
       "",
-      // Next leads: it is what to act on, and a short screen shows it without scrolling.
-      label("Next"),
-      ...block(goal.next, 3, width),
-      "",
       label("Now"),
       ...block(goal.workstream, 3, width),
+      "",
+      label("Next"),
+      ...block(goal.next, 3, width),
     ];
-    if (goal.workers.length) {
-      lines.push("", label("Workers"));
-      const nameWidth = Math.max(...goal.workers.map((name) => visibleWidth(name)));
-      for (const name of goal.workers) {
-        const status = statuses.get(name);
-        lines.push(
-          truncateToWidth(
-            `   ${name.padEnd(nameWidth)}  ${status === undefined ? list.description("closed") : statusText(status)}`,
-            width,
-            "...",
-          ),
-        );
-      }
-    }
-    if (goal.project !== undefined)
-      lines.push(
-        "",
-        label("Project"),
-        ...block(list.description(shortPath(goal.project)), 3, width),
-      );
-    if (goal.vault !== undefined)
-      lines.push("", label("Vault"), ...block(list.description(goal.vault), 3, width));
     return {
       title: ` ${mark(goal.status)} ${theme.bold(list.selectedText(goal.title.replace(/\s+/g, " ")))}`,
       lines,

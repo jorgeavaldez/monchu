@@ -68,8 +68,6 @@ export async function runTerminal(
   let refreshing: Promise<void> | undefined;
   let refreshAgain = false;
   let lastRootEntry: number | undefined;
-  // Each worker's status as last shown, for linked workers in the goals panel.
-  let statuses: ReadonlyMap<string, AgentStatus> = new Map();
 
   // Herdr alone shows `done`: it turns working then idle into done until its pane is seen.
   function status(busy: boolean): AgentStatus {
@@ -117,7 +115,6 @@ export async function runTerminal(
     const state = selected === undefined ? root : workers.get(selected)?.state;
     if (state) view.apply(state.value, selected, force);
     const rows = agentRows();
-    statuses = new Map(rows.filter((row) => row.value !== "").map((row) => [row.name, row.status]));
     view.setWorkers(rows.filter((row) => row.value !== ""));
     view.updateAgents(rows);
     if (state) {
@@ -411,13 +408,9 @@ export async function runTerminal(
         break;
       }
       case "/goals":
-        view.openGoals(
-          await backend.goals(),
-          () => statuses,
-          (goal) => {
-            inputs = inputs.then(() => backend.seeGoal(goal.id, goal.updatedAt)).catch(fail);
-          },
-        );
+        view.openGoals(await backend.goals(), (goal) => {
+          inputs = inputs.then(() => backend.seeGoal(goal.id, goal.updatedAt)).catch(fail);
+        });
         break;
       case "/model":
       case "/thinking": {

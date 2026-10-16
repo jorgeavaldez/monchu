@@ -580,7 +580,7 @@ describe.each([
       screen.sendInput("\r");
       const detail = await visible(screen, "Esc back");
       expect(detail.join("")).not.toContain("\r");
-      expect(detail.join("\n")).toMatch(/active · endeavor · smoke/);
+      expect(detail.join("\n")).toMatch(/active · endeavor · \d+s ago/);
       // Each stored line break, CRLF or LF, becomes its own row under its heading; a wrapped field keeps its indent.
       const next = detail.findIndex((line) => line.trim() === "Next");
       for (const [index, step] of ["first", "second", "third", "fourth", "fifth"].entries())
@@ -588,9 +588,11 @@ describe.each([
       const now = detail.findIndex((line) => line.trim() === "Now");
       expect(detail[now + 1]).toMatch(/^ {3}Checking/);
       expect(detail[now + 2]).toMatch(/^ {3}\S/);
-      // A linked worker shows its live status; this one was never started.
-      expect(detail.join("\n")).toMatch(/reader\s+closed/);
-      expect(detail.join("\n")).toContain("projects/smoke");
+      // Just the goal: now, then next; no workers, project or vault.
+      expect(detail.findIndex((line) => line.trim() === "Now")).toBeLessThan(next);
+      expect(detail.slice(next).join("\n")).not.toMatch(
+        /Workers|reader|Vault|projects\/smoke|Project/,
+      );
       // A short terminal caps the panel and scrolls it.
       screen.resize(columns, 14);
       const short = await visible(screen, "1-4 of");

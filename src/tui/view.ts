@@ -670,15 +670,10 @@ export class MonchuTui {
   }
 
   /** Shows the goals list in the editor's place, with drilldown, until Esc, q or Ctrl-C closes it. */
-  openGoals(
-    goals: readonly GoalRow[],
-    statuses: () => ReadonlyMap<string, AgentStatus>,
-    seen: (goal: Goal) => void,
-  ): void {
+  openGoals(goals: readonly GoalRow[], seen: (goal: Goal) => void): void {
     this.showSelector(
       new GoalsPanel(
         goals,
-        statuses,
         seen,
         () => this.ui.terminal.rows,
         () => this.restoreEditor(),

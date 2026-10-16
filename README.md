@@ -174,7 +174,7 @@ When a request touches a project, update its existing goal's workstream, next st
 The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`. Workers have both tools too: they inherit the root's extension selection when created. Each conversation's goal tools and section use that conversation's own document, so a worker's goals are not the root's.
 Active and waiting goals render as the `goals` prompt section in stored order; Durable resends a section only when its text changes.
 Open goals are always kept; done and dropped goals are kept for the 20 most recently changed.
-`/goals` lists open goals one row each, with a colored status and age, a `•` on goals changed since you last opened them, and waiting goals in yellow with `wait`; Enter opens the goal (next, now, linked workers with live status, project, vault), Esc goes back, Tab adds the recently closed goals.
+`/goals` lists open goals one row each, with a colored status and age, a `•` on goals changed since you last opened them, and waiting goals in yellow with `wait`; Enter opens the goal itself (now, then next), Esc goes back, Tab adds the recently closed goals.
 The document is not transcript, so `/new`, compaction, and restarts keep it, and the section returns in the next request.
 `/compact` always asks the summary to keep open goal ids, kinds, titles, project/vault links, workstreams, next steps, and workers, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
