@@ -63,7 +63,7 @@ export type ToolGroup = {
   details?(api: ToolExecutionApi, context: Context): Promise<string | undefined>;
 };
 
-export function isGroupExtension(name: string): boolean {
+function isGroupExtension(name: string): boolean {
   return name.startsWith(GROUP_PREFIX);
 }
 

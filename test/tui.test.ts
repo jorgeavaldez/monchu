@@ -135,9 +135,9 @@ describe("terminal input boundary", () => {
     expect(events).toHaveLength(4);
     const [started, pid] = events[0]?.split(" ") ?? [];
     expect(started).toBe("started");
-    // Where execve exists the restarted Monchu is the same process, so restarts never chain processes.
+    // Outside Windows the restarted Monchu is the same process (execve), so restarts never chain processes.
     expect(events.at(-1)).toBe(
-      typeof process.execve === "function"
+      process.platform !== "win32" && typeof process.execve === "function"
         ? `reopened ${pid}`
         : expect.stringMatching(/^reopened /),
     );

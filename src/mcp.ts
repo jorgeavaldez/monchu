@@ -37,7 +37,7 @@ const CONNECT_TIMEOUT_MS = 20_000;
 export type McpState = "connected" | "needs-auth" | "missing" | "failed";
 
 /** A listing failure with the server's state. */
-export class McpUnavailable extends Error {
+class McpUnavailable extends Error {
   readonly state: Exclude<McpState, "connected">;
   constructor(state: Exclude<McpState, "connected">, message: string, options?: ErrorOptions) {
     super(message, options);
@@ -59,7 +59,7 @@ const commandResults = new Map<string, string>();
  * A configuration value as Pi resolves it: `!command` runs the command in a shell and uses its trimmed output (once
  * per process); otherwise `${NAME}` and `$NAME` expand from the environment, and `$$` and `$!` are a literal `$`/`!`.
  */
-export function resolveValue(
+function resolveValue(
   value: string,
   env: Readonly<Record<string, string | undefined>>,
   label: string,

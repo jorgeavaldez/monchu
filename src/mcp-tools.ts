@@ -15,7 +15,7 @@ const MAX_TOOL_NAME_LENGTH = 51;
  * Pi's MCP tool name, `mcp__<server>__<tool>`, with everything but `[A-Za-z0-9_]` as `_` so it is also the codemode
  * identifier. A name that is too long, or taken by another tool after sanitizing, gets a hash suffix.
  */
-export function mcpToolName(server: string, tool: string, isTaken: (name: string) => boolean) {
+function mcpToolName(server: string, tool: string, isTaken: (name: string) => boolean) {
   const name = `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, "_");
   if (name.length <= MAX_TOOL_NAME_LENGTH && !isTaken(name)) return name;
   const hash = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 8);

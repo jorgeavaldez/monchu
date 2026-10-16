@@ -57,7 +57,7 @@ type McpServerBase = {
   preload?: boolean;
 };
 
-export type McpStdioServer = McpServerBase & {
+type McpStdioServer = McpServerBase & {
   type?: "stdio";
   command: string;
   args?: string[];
