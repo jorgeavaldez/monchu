@@ -602,7 +602,7 @@ const modelChoice = {
   thinking: Type.Optional(StringEnum(thinkingLevels)),
 };
 
-export function describeRole(role: Pick<ModelRole, "provider" | "modelId" | "thinkingLevel">) {
+function describeRole(role: Pick<ModelRole, "provider" | "modelId" | "thinkingLevel">) {
   return `${role.provider}/${role.modelId}, thinking ${role.thinkingLevel}`;
 }
 

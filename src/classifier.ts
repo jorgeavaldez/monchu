@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ClassifierRole, WorkerProfile } from "./config.ts";
 import { GoalsDoc } from "./goals.ts";
-import { describeRole, WorkersDoc, type WhenBusy } from "./workers.ts";
+import { WorkersDoc, type WhenBusy } from "./workers.ts";
 
 /** Below this probability of its pick an answer informs the front but never nudges or escalates. */
 const SURE = 0.75;
@@ -52,6 +52,14 @@ export function escalationSummary(content: string): string | undefined {
 /** A worker as the routing helper sees it. */
 type RosterEntry = { name: string; open: boolean; about: string };
 type GoalBrief = { title: string; workstream: string; workers: string[] };
+
+/**
+ * A profile's model as the front reads it. Kept here, not imported: a reload re-imports this module, but its static
+ * imports keep the version loaded at startup, so a new export there breaks every reload until a restart.
+ */
+function describeRole(role: WorkerProfile): string {
+  return `${role.provider}/${role.modelId}, thinking ${role.thinkingLevel}`;
+}
 
 /** How many different model and thinking choices the profiles make. */
 function distinctRoles(profiles: Record<string, WorkerProfile>): number {
