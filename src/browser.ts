@@ -80,6 +80,7 @@ async function capture(api: ToolExecutionApi, args: readonly string[], context: 
  */
 export const Browser: ToolGroup = {
   name: "browser",
+  preload: true,
   summary:
     "drive a real browser with agent-browser: open pages, snapshot, click, fill, screenshot. For pages that need interaction or JavaScript; use web search and scrape for reading. Stop at explicit boundaries; ask before purchases, account or security changes and destructive actions; never bypass CAPTCHAs or drive public search-engine forms",
   tools: [

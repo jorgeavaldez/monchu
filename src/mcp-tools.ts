@@ -79,6 +79,7 @@ export async function createMcpTools(
         name: `mcp-${name}`,
         summary: config.description ?? `tools of the ${name} MCP server`,
         tools: deferred,
+        ...(config.preload === true ? { preload: true } : {}),
         ...(listed.instructions === undefined ? {} : { details: async () => listed.instructions }),
       });
   });

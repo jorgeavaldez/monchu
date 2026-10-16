@@ -141,6 +141,8 @@ export type McpServerConfig = {
   exposure?: McpExposure;
   /** Per-tool overrides of `exposure`, by the server's own tool name. */
   toolExposure?: Record<string, McpExposure>;
+  /** Load the deferred tools from the start in Claude Code conversations, whose cache a later load would miss. */
+  preload?: boolean;
   /** `false` leaves the server configured but unused. */
   enabled?: boolean;
 };
@@ -428,6 +430,7 @@ function mcpServer(value: unknown, field: string): McpServerConfig {
     "description",
     "exposure",
     "toolExposure",
+    "preload",
     "enabled",
   ]);
   if ((value.command === undefined) === (value.url === undefined))
@@ -456,6 +459,7 @@ function mcpServer(value: unknown, field: string): McpServerConfig {
     );
   }
   if (value.enabled !== undefined) server.enabled = boolean(value.enabled, `${field}.enabled`);
+  if (value.preload !== undefined) server.preload = boolean(value.preload, `${field}.preload`);
   return server;
 }
 

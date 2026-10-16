@@ -28,7 +28,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
-import { unloadGroups } from "./tool-search.ts";
+import { preloadGroups, unloadGroups } from "./tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 type WorkerRecords = {
@@ -480,6 +480,7 @@ export async function startWorker(
   cwd: string,
   requestId: string,
   role: ModelRole,
+  preload: readonly string[] = [],
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const previous = state.deliveries.find((item) => item.requestId === requestId);
@@ -503,6 +504,7 @@ export async function startWorker(
     cwd,
     instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
+  await preloadGroups(tx, worker.id, preload);
   state.workers.push({
     name,
     conversationId: worker.id,
@@ -692,6 +694,7 @@ function profileList(profiles: Record<string, WorkerProfile>): string {
 export function createWorkerTools(
   role: () => ModelRole,
   profiles: Record<string, WorkerProfile> = {},
+  preload: readonly string[] = [],
 ) {
   const profilesText = profileList(profiles);
   return defineExtension({
@@ -723,6 +726,7 @@ export function createWorkerTools(
                 cwd,
                 `tool:${api.taskId}:${api.callId}`,
                 picked,
+                preload,
               ),
             context,
           );

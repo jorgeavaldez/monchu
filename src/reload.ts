@@ -59,6 +59,8 @@ type Build = {
   root: Extension[];
   /** Deferred tool groups: installed, left out of the host default selection, and loaded by `tool_search`. */
   groups: Extension[];
+  /** Group extension names that conversations on the Claude Code bridge load from the start. */
+  preload: string[];
   settings: Settings;
   config: MonchuConfig;
   assessment: EffortAssessment | undefined;
@@ -84,7 +86,7 @@ async function build(
   };
   const context = (await load("context")).createContext(home, config.settings);
   const tools = (await load("pi-tools")).createPiTools(context.settings, finders);
-  const workers = (await load("workers")).createWorkerTools(workerRole, config.profiles);
+  const workersModule = await load("workers");
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
@@ -93,6 +95,7 @@ async function build(
   const mcp = await (await load("mcp-tools")).createMcpTools(await loadMcpServers(home), clients);
   const { Browser } = await load("browser");
   const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
+  const workers = workersModule.createWorkerTools(workerRole, config.profiles, search.preload);
   const herdr = (await load("herdr")).createHerdr({
     command: { executable: "herdr", args: [] },
     env: process.env,
@@ -122,6 +125,7 @@ async function build(
     ],
     root: [Goals, memory],
     groups: search.groups,
+    preload: search.preload,
     settings: context.settings,
     config,
     assessment,
@@ -241,6 +245,11 @@ export class Extensions {
   /** The loaded run settings. */
   get settings(): Settings {
     return this.current.settings;
+  }
+
+  /** Group extension names that conversations on the Claude Code bridge load from the start. */
+  get preload(): readonly string[] {
+    return this.current.preload;
   }
 
   get assessment(): EffortAssessment | undefined {

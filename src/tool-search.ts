@@ -50,6 +50,11 @@ export type ToolGroup = {
   /** One line in the deferred-tools section, so the model knows what to search for. */
   readonly summary: string;
   readonly tools: readonly ToolRegistration[];
+  /**
+   * Loaded from the start in conversations on the Claude Code bridge, whose prompt cache does not survive a tool change.
+   * Codex loads tools in place without a cache miss, so its conversations still search for every group.
+   */
+  readonly preload?: boolean;
   /** Guide or instructions returned once when the group loads, instead of sitting in every prompt. */
   details?(api: ToolExecutionApi, context: Context): Promise<string | undefined>;
 };
@@ -72,6 +77,23 @@ export async function unloadGroups(tx: Tx, conversationId: ConversationId): Prom
       ...selected,
       add: selected.add.filter((name) => !isGroupExtension(name)),
     };
+}
+
+/** The provider whose conversations load preloaded groups from the start. */
+const PRELOAD_PROVIDER = "claude-code";
+
+/**
+ * Load the preloaded groups into a conversation on the Claude Code bridge. Groups are only ever added: removing a tool
+ * would cost the cache the preload is there to keep.
+ */
+export async function preloadGroups(
+  tx: Tx,
+  conversationId: ConversationId,
+  preload: readonly string[],
+): Promise<void> {
+  if (preload.length === 0) return;
+  const agent = await tx.doc(AgentDoc, conversationId);
+  if (agent.model?.provider === PRELOAD_PROVIDER) await loadExtensions(tx, conversationId, preload);
 }
 
 /** Select extensions for a conversation from its next request, keeping its other choices. */
@@ -241,7 +263,7 @@ export function createToolSearch(groups: readonly ToolGroup[]) {
   );
   const prompt = groups.length
     ? [
-        "Deferred tools: these groups are not in your tools until you load them. Call tool_search with what you need; it loads the matching groups, with any guide they carry, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
+        "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching groups, with any guide they carry, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
         ...groups.map(
           (group) =>
             `- ${group.name}: ${group.summary} (${group.tools.map((tool) => tool.name).join(", ")})`,
@@ -340,5 +362,9 @@ export function createToolSearch(groups: readonly ToolGroup[]) {
       sections: [section("deferred_tools", () => prompt, { tag: false })],
     }),
     groups: [...extensions.values()] satisfies Extension[],
+    /** Extension names of the groups conversations on the Claude Code bridge load from the start. */
+    preload: groups.flatMap((group) =>
+      group.preload === true ? (extensions.get(group.name)?.name ?? []) : [],
+    ),
   };
 }

@@ -18,6 +18,7 @@ import {
   LiveDoc,
   ProviderDoc,
   type Conversation,
+  type ConversationId,
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -52,7 +53,9 @@ import {
   stopWorker,
   workerConversationId,
   type WhenBusy,
+  WorkersDoc,
 } from "./workers.ts";
+import { preloadGroups } from "./tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -84,13 +87,41 @@ const GoalsSeen = defineDoc<{ seeded: boolean; seen: Record<string, number> }>({
 });
 
 /** Apply the configured front role from the next request, keeping the fields picked for the root only. */
-async function applyFrontRole(front: Conversation, role: ModelRole): Promise<void> {
+async function applyFrontRole(
+  front: Conversation,
+  role: ModelRole,
+  preload: readonly string[],
+): Promise<void> {
   await front.commit(async (tx) => {
     const picks = await tx.doc(FrontPicks, front.id);
     await configure(tx, front.id, {
       ...(picks.model ? {} : { model: { provider: role.provider, modelId: role.modelId } }),
       ...(picks.thinkingLevel ? {} : { thinkingLevel: role.thinkingLevel }),
     });
+    await preloadGroups(tx, front.id, preload);
+  }, context);
+}
+
+/**
+ * Load the preloaded tool groups into the root and every worker under it that runs on the Claude Code bridge, so a
+ * group added to the configuration reaches existing conversations once, at a reload or start, instead of mid-run.
+ */
+async function preloadAll(
+  harness: Harness,
+  front: Conversation,
+  preload: readonly string[],
+): Promise<void> {
+  if (preload.length === 0) return;
+  const ids: ConversationId[] = [];
+  for (const pending = [front.id]; pending.length;) {
+    const id = pending.pop();
+    if (id === undefined) break;
+    ids.push(id);
+    for (const worker of (await harness.snapshot(WorkersDoc, id, context))?.workers ?? [])
+      pending.push(worker.conversationId);
+  }
+  await front.commit(async (tx) => {
+    for (const id of ids) await preloadGroups(tx, id, preload);
   }, context);
 }
 
@@ -194,7 +225,8 @@ export class Monchu {
         context,
       );
       // The configured front role applies from the next request; a running request keeps its model.
-      await applyFrontRole(front, config.front);
+      await applyFrontRole(front, config.front, extensions.preload);
+      await preloadAll(harness, front, extensions.preload);
       const backend = new Monchu(home, owner, harness, front, models, reports, extensions, envs);
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
@@ -365,6 +397,7 @@ export class Monchu {
           cwd,
           requestId,
           this.extensions.config.worker,
+          this.extensions.preload,
         ),
       context,
     );
@@ -512,6 +545,7 @@ export class Monchu {
         (await tx.doc(FrontPicks, conversation.id))["model" in pick ? "model" : "thinkingLevel"] =
           !saveDefault;
       await configure(tx, conversation.id, pick);
+      await preloadGroups(tx, conversation.id, this.extensions.preload);
     }, context);
   }
 
@@ -561,7 +595,7 @@ export class Monchu {
           );
       },
     );
-    if (role === "front") await applyFrontRole(this.front, saved);
+    if (role === "front") await applyFrontRole(this.front, saved, this.extensions.preload);
   }
 
   async changeDirectory(path: string, workerName?: string): Promise<string> {
@@ -587,9 +621,11 @@ export class Monchu {
     this.reloading ??= this.extensions
       .reload(async (config) => {
         // Durable captures model and stream options during request preparation; later phases resolve current policy.
-        await applyFrontRole(this.front, config.front);
+        await applyFrontRole(this.front, config.front, this.extensions.preload);
       })
-      .then((modules) => {
+      .then(async (modules) => {
+        // The new build's groups: a server whose preload was just turned on reaches existing conversations now.
+        await preloadAll(this.harness, this.front, this.extensions.preload);
         for (const listener of this.reloadListeners) {
           try {
             listener();

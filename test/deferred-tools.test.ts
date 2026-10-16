@@ -15,7 +15,7 @@ import { Browser } from "../src/browser.ts";
 import { loadMcpServers } from "../src/config.ts";
 import { createMcpTools } from "../src/mcp-tools.ts";
 import { McpClients } from "../src/mcp.ts";
-import { createToolSearch, type ToolGroup } from "../src/tool-search.ts";
+import { createToolSearch, preloadGroups, type ToolGroup } from "../src/tool-search.ts";
 import { startWorker, workerConversationId } from "../src/workers.ts";
 import {
   cleanup,
@@ -418,6 +418,49 @@ text(await tools[found.name]({ city: "Tampa" }));`,
       expect(mcp.groups).toEqual([]);
     } finally {
       await clients.close();
+    }
+  });
+
+  it("preloads groups marked preload only for conversations on the Claude Code bridge", async () => {
+    const value = await setup();
+    const tool = (name: string) =>
+      defineTool({
+        name,
+        description: name,
+        parameters: Type.Object({}),
+        execute: async () => ({ content: [{ type: "text", text: name }] }),
+      });
+    const search = createToolSearch([
+      { name: "small", summary: "small", tools: [tool("small_tool")], preload: true },
+      { name: "big", summary: "big", tools: [tool("big_tool")] },
+    ]);
+    expect(search.preload).toEqual(["monchu.group.small"]);
+    const settings = install(value, [
+      { name: "small", summary: "small", tools: [tool("small_tool")], preload: true },
+      { name: "big", summary: "big", tools: [tool("big_tool")] },
+    ]);
+    const { harness, root } = await open(value, settings);
+    try {
+      const claude = await harness.createConversation(
+        {
+          ownership: { kind: "ownerless" },
+          agent: { model: { provider: "claude-code", modelId: "claude-opus-5-5" } },
+        },
+        context,
+      );
+      for (const conversation of [root, claude])
+        await conversation.commit(
+          (tx) => preloadGroups(tx, conversation.id, search.preload),
+          context,
+        );
+      const names = async (conversation: typeof root) =>
+        (await conversation.agent(context)).tools.map((each) => each.name);
+      expect(await names(claude)).toContain("small_tool");
+      expect(await names(claude)).not.toContain("big_tool");
+      // Codex and other providers load in place without a cache miss, so they keep searching.
+      expect(await names(root)).not.toContain("small_tool");
+    } finally {
+      await harness.close(context);
     }
   });
 

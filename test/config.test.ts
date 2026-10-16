@@ -103,6 +103,7 @@ describe("config", () => {
       description: "web research",
       exposure: "deferred",
       toolExposure: { search: "direct" },
+      preload: true,
     };
     await writeFile(join(directory, "mcp.json"), JSON.stringify({ mcpServers: { ketch } }));
     expect(await loadMcpServers(directory)).toEqual({ ketch });
@@ -116,6 +117,7 @@ describe("config", () => {
     [{ mcpServers: { a: { url: "https://x", env: {} } } }, "a.env needs command"],
     [{ mcpServers: { a: { command: "x", exposure: "hidden" } } }, "direct or deferred"],
     [{ mcpServers: { a: { command: "x", typo: 1 } } }, "unknown fields: typo"],
+    [{ mcpServers: { a: { command: "x", preload: "yes" } } }, "a.preload must be a boolean"],
   ])("rejects mcp.json %j", async (mcp, message) => {
     const directory = await home();
     await writeFile(join(directory, "mcp.json"), JSON.stringify(mcp));
