@@ -7,11 +7,14 @@ import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
 import { describe as describeAssessment } from "../classifier.ts";
 import { formatOpenGoals } from "../goals.ts";
+import type { HerdrAgent } from "../herdr-agent.ts";
 import type { WhenBusy } from "../workers.ts";
 import { help, parseInput } from "./commands.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
+import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
+import type { Meter } from "./components/footer.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
-import { presentation } from "./state.ts";
+import { contextUsage, presentation } from "./state.ts";
 import { MonchuTui } from "./view.ts";
 
 /** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
@@ -19,10 +22,14 @@ type PickTarget =
   | { kind: "conversation"; name: string | undefined }
   | { kind: "default"; role: "front" | "worker" };
 
-/** Terminal adapter. Input admission and all side effects remain backend-owned. */
+/**
+ * Terminal adapter. Input admission and all side effects remain backend-owned. Inside Herdr, `herdr` reports what
+ * Monchu is doing in its pane: working while the root or any worker runs.
+ */
 export async function runTerminal(
   backend: Monchu,
   terminal: Terminal = new ProcessTerminal(),
+  herdr?: HerdrAgent,
 ): Promise<void> {
   if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
     throw new Error("Monchu's TUI needs an interactive terminal.");
@@ -62,16 +69,78 @@ export async function runTerminal(
   let refreshing: Promise<void> | undefined;
   let refreshAgain = false;
   let lastRootEntry: number | undefined;
+  // Conversations, `""` for the root, that finished a run while another was shown: `done` until shown, as in Herdr.
+  const done = new Set<string>();
+  const wasBusy = new Map<string, boolean>();
+
+  function status(key: string, busy: boolean): AgentStatus {
+    if (busy) done.delete(key);
+    else if (wasBusy.get(key) === true && key !== (selected ?? "")) done.add(key);
+    wasBusy.set(key, busy);
+    return busy ? "working" : done.has(key) ? "done" : "idle";
+  }
+
+  function meter(value: ConversationView): Meter {
+    const state = presentation(value);
+    const model =
+      state.provider === undefined
+        ? undefined
+        : backend.model({ provider: state.provider, modelId: state.model });
+    return { usage: contextUsage(value), window: model?.contextWindow };
+  }
+
+  function agentRows(): AgentRow[] {
+    const rootRow: AgentRow[] =
+      root === undefined
+        ? []
+        : [
+            {
+              value: "",
+              name: "root",
+              status: status("", presentation(root.value).busy),
+              meter: meter(root.value),
+              cwd: presentation(root.value).cwd,
+            },
+          ];
+    return [
+      ...rootRow,
+      ...[...workers.values()].map(({ summary, state }) => ({
+        value: summary.name,
+        name: summary.name,
+        status: status(summary.name, presentation(state.value).busy),
+        meter: meter(state.value),
+        cwd: presentation(state.value).cwd ?? summary.cwd,
+      })),
+    ];
+  }
 
   function show(force = false): void {
     if (closing) return;
     const state = selected === undefined ? root : workers.get(selected)?.state;
     if (state) view.apply(state.value, selected, force);
-    view.setWorkers(
-      [...workers.values()].map((worker) => ({
-        name: worker.summary.name,
-        busy: presentation(worker.state.value).busy,
-      })),
+    const rows = agentRows();
+    view.setWorkers(rows.filter((row) => row.value !== ""));
+    view.updateAgents(rows);
+    if (state) {
+      const shown = presentation(state.value);
+      const model =
+        shown.provider === undefined
+          ? undefined
+          : backend.model({ provider: shown.provider, modelId: shown.model });
+      view.setFooter({
+        shown: meter(state.value),
+        root: root === undefined ? undefined : meter(root.value),
+        thinking: model?.reasoning ? (shown.thinkingLevel ?? "off") : undefined,
+        autoCompact: backend.settings.compaction.enabled,
+      });
+    }
+    herdr?.report(
+      login !== undefined
+        ? "blocked"
+        : rows.some((row) => row.status === "working")
+          ? "working"
+          : "idle",
+      login !== undefined ? "login" : undefined,
     );
   }
 
@@ -177,6 +246,7 @@ export async function runTerminal(
     await refreshWorkers();
     if (name !== undefined && !workers.has(name)) throw new Error(`No worker named ${name}`);
     selected = name;
+    done.delete(name ?? "");
     show();
   }
 
@@ -252,6 +322,7 @@ export async function runTerminal(
       case "/login": {
         const controller = new AbortController();
         login = controller;
+        show();
         view.beginLogin(() => controller.abort());
         try {
           const provider = await view.promptLogin(
@@ -302,6 +373,7 @@ export async function runTerminal(
         } finally {
           login = undefined;
           view.endLogin();
+          show();
         }
         break;
       }
@@ -335,25 +407,9 @@ export async function runTerminal(
           break;
         }
         await refreshWorkers();
-        view.choose(
-          "View and talk to",
-          [
-            { value: "", label: "root", description: "Monchu front" },
-            // Grouped by status, working first, from the same live views as the dock's counts.
-            ...[...workers.values()]
-              .map(({ summary, state }) => ({ summary, busy: presentation(state.value).busy }))
-              .sort((a, b) => Number(b.busy) - Number(a.busy))
-              .map(({ summary, busy }) => ({
-                value: summary.name,
-                // Status in the label: narrow terminals hide descriptions.
-                label: `${summary.name} · ${busy ? "working" : "idle"}`,
-                description: summary.cwd ?? "",
-              })),
-          ],
-          (name) => {
-            inputs = inputs.then(() => switchTo(name || undefined)).catch(fail);
-          },
-        );
+        view.openAgents(agentRows(), selected ?? "", (name) => {
+          inputs = inputs.then(() => switchTo(name || undefined)).catch(fail);
+        });
         break;
       }
       case "/goals":
@@ -491,7 +547,7 @@ export async function runTerminal(
       applyTheme();
     }
     show(true);
-    view.notice(`Monchu · /help · home ${backend.home}`);
+    view.intro(backend.home);
     await exited;
   } finally {
     closing = true;
@@ -512,6 +568,7 @@ export async function runTerminal(
     }
     root?.dispose();
     view.stop();
+    await herdr?.release();
   }
   // Never wait for restart inside handle(): cleanup waits for that input promise to settle.
   if (restarting) await backend.restart();

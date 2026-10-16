@@ -1,4 +1,5 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
+import { Footer } from "../src/tui/components/footer.ts";
 import { UserMessageComponent } from "../src/tui/components/user-message.ts";
 import { WorkerMessageComponent } from "../src/tui/components/worker-message.ts";
 import { initTheme, theme } from "../src/tui/theme/theme.ts";
@@ -149,6 +150,46 @@ describe("terminal input boundary", () => {
   }, 30_000);
 });
 
+it("fits Pi's footer to any width, keeping the shown conversation, mode and context before totals", () => {
+  initTheme("dark");
+  const footer = new Footer();
+  const usage = {
+    input: 12000,
+    output: 3400,
+    cacheRead: 1200000,
+    cacheWrite: 40000,
+    context: 92000,
+  };
+  footer.state = {
+    ...footer.state,
+    cwd: join("/somewhere", "very", "deep", "directory", "for", "a", "worker"),
+    worker: "monchu-core",
+    shown: { usage, window: 100000 },
+    root: { usage: { ...usage, context: 30000 }, window: 400000 },
+    model: "claude-opus-5-5",
+    thinking: "medium",
+  };
+  for (let width = 4; width <= 140; width++) {
+    const lines = footer.render(width).map(stripTerminalSequences);
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    if (width < 60) continue;
+    expect(lines[0]).toMatch(/• monchu-core\s+follow-up \(Alt\+S\)$/);
+    // The worker's context, red past 90%, then the root's; totals only where both fit with the model.
+    expect(lines[1]).toContain("monchu-core 92.0%/100k · root 7.5%/400k");
+  }
+  expect(footer.render(140)[1]).toContain(theme.fg("error", "92.0%/100k"));
+  expect(stripTerminalSequences(footer.render(140)[1] ?? "")).toMatch(
+    /^ ↑12k ↓3.4k R1.2M W40k monchu-core .* \(auto\)\s+claude-opus-5-5 • medium$/,
+  );
+  footer.state = {
+    ...footer.state,
+    worker: undefined,
+    shown: { usage: { ...usage, context: undefined }, window: 100000 },
+  };
+  // On the root only its own context shows, unknown until a reply measures it.
+  expect(stripTerminalSequences(footer.render(80)[1] ?? "")).toMatch(/W40k \?\/100k \(auto\)/);
+});
+
 describe("committed Durable presentation", () => {
   it("shows committed streaming, thinking activity, and the inbox, then settles without duplication", async () => {
     const value = await setup({ tokensPerSecond: 150 });
@@ -284,15 +325,17 @@ describe("committed Durable presentation", () => {
       ).wait(context);
       await root.waitForIdle(context);
       ui.apply(state.value);
-      ui.setWorkers([{ name: "w", busy: true }]);
+      ui.setWorkers([{ name: "w", status: "working" }]);
       await waitFor(async () => {
         const lines = (await screen.flushAndGetViewport()).join("\n");
-        return lines.includes("settled answer") && lines.includes("Workers · 1 working · /agents");
+        return (
+          lines.includes("settled answer") && lines.includes("Workers · ● 1 working · /agents")
+        );
       });
       const written = screen.output.length;
       // Each worker revision re-shows the root view and the worker line unchanged.
       ui.apply(state.value);
-      ui.setWorkers([{ name: "w", busy: true }]);
+      ui.setWorkers([{ name: "w", status: "working" }]);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.output.length).toBe(written);
       ui.apply(state.value, undefined, true);
@@ -605,12 +648,12 @@ describe("committed Durable presentation", () => {
     try {
       ui.apply(state.value);
       ui.start();
-      expect((await viewport()).join("\n")).toContain("follow-up (Alt+S) · root");
+      expect((await viewport()).join("\n")).toMatch(/• root\s+follow-up \(Alt\+S\)/);
       expect(await border()).not.toBe(yellow);
       screen.sendInput("a");
       screen.sendInput("\r");
       screen.sendInput("\x1bs");
-      await waitFor(async () => (await viewport()).join("\n").includes("steer (Alt+S) · root"));
+      await waitFor(async () => (await viewport()).join("\n").includes("steer (Alt+S)"));
       expect(await border()).toBe(yellow);
       screen.sendInput("b");
       screen.sendInput("\r");
@@ -706,12 +749,12 @@ describe("committed Durable presentation", () => {
       // Enter opens the message in the editor; Esc cancels and the draft comes back.
       screen.sendInput("\x1b[A");
       screen.sendInput("\r");
-      await shows("editing a queued message · Enter saves · Esc cancels");
+      await shows("editing · Enter saves · Esc cancels");
       screen.sendInput("\x1b");
       await shows("Enter edit · Alt+S");
       expect(edits).toHaveLength(2);
       screen.sendInput("\r");
-      await shows("editing a queued message");
+      await shows("editing · Enter saves");
       screen.sendInput(" again");
       screen.sendInput("\r");
       await waitFor(() => edits.length === 3);
@@ -721,7 +764,7 @@ describe("committed Durable presentation", () => {
       await waitFor(async () => !(await viewport()).includes("Enter edit · Alt+S"));
       const closed = await viewport();
       expect(closed).toContain("draft");
-      expect(closed).not.toContain("editing a queued message");
+      expect(closed).not.toContain("editing · Enter saves");
     } finally {
       release.resolve();
       stop();

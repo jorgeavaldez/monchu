@@ -6,12 +6,13 @@ try {
   if (process.env.MONCHU_DEV_FAUX === "1") process.env.MONCHU_DEV_HOME = home;
   const { Monchu } = await import("./backend.ts");
   const { runTerminal } = await import("./tui/app.ts");
+  const { herdrAgent } = await import("./herdr-agent.ts");
   const backend =
     process.env.MONCHU_DEV_FAUX === "1"
       ? await (await import("./dev-faux.ts")).openDevMonchu(home)
       : await Monchu.open(home);
   try {
-    await runTerminal(backend);
+    await runTerminal(backend, undefined, herdrAgent(process.env));
   } finally {
     await backend.close();
   }

@@ -1,5 +1,6 @@
 import type { JsonValue } from "@earendil-works/chord";
-import type { ConversationView, JsonObject } from "@earendil-works/pi-durable";
+import type { Message, Usage } from "@earendil-works/pi-ai";
+import type { ConversationView, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 
 /** Narrow the JSON document boundary before reading presentation fields. */
 function object(value: JsonValue | undefined): JsonObject | undefined {
@@ -81,6 +82,7 @@ export function presentation(view: ConversationView) {
     return { id: item.id, mode: item.mode, text: text(item.content) };
   });
   const model = object(agent?.model);
+  const thinkingLevel = agent?.thinkingLevel;
   return {
     status,
     busy: live?.run !== undefined,
@@ -90,5 +92,73 @@ export function presentation(view: ConversationView) {
     queue,
     cwd: typeof agent?.cwd === "string" ? agent.cwd : undefined,
     model: typeof model?.modelId === "string" ? model.modelId : "no model",
+    provider: typeof model?.provider === "string" ? model.provider : undefined,
+    thinkingLevel: typeof thinkingLevel === "string" ? thinkingLevel : undefined,
   };
+}
+
+/** Token use of the active context, as Pi's footer shows it; `context` is undefined until a reply measures it. */
+export type ContextUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  context: number | undefined;
+};
+
+/** Pi's request-size measure of a reply's usage. */
+function requestTokens(usage: Usage): number {
+  return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
+/** Pi's chars/4 estimate of a message not yet measured by a reply. */
+function estimate(message: Message): number {
+  let chars = 0;
+  if (message.role === "assistant")
+    for (const part of message.content)
+      chars +=
+        part.type === "text"
+          ? part.text.length
+          : part.type === "thinking"
+            ? part.thinking.length
+            : part.name.length + JSON.stringify(part.arguments).length;
+  else if (message.role === "user" || message.role === "toolResult")
+    for (const part of typeof message.content === "string"
+      ? [{ type: "text" as const, text: message.content }]
+      : message.content)
+      chars += part.type === "text" ? part.text.length : 4800;
+  return Math.ceil(chars / 4);
+}
+
+const usages = new WeakMap<readonly EntryRecord[], ContextUsage>();
+
+/**
+ * Token totals of the replies in the active context, and its size as Durable's compaction measures it: the newest
+ * reply's usage plus estimates of the messages after it. Views share unchanged entry arrays, so each is read once.
+ */
+export function contextUsage(view: ConversationView): ContextUsage {
+  const cached = usages.get(view.entries);
+  if (cached !== undefined) return cached;
+  const usage: ContextUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    context: undefined,
+  };
+  let trailing = 0;
+  for (const entry of view.entries.toReversed())
+    for (const message of (entry.model ?? []).toReversed()) {
+      if (message.role === "assistant") {
+        usage.input += message.usage.input;
+        usage.output += message.usage.output;
+        usage.cacheRead += message.usage.cacheRead;
+        usage.cacheWrite += message.usage.cacheWrite;
+        if (usage.context === undefined && requestTokens(message.usage) > 0)
+          usage.context = requestTokens(message.usage) + trailing;
+      }
+      if (usage.context === undefined) trailing += estimate(message);
+    }
+  usages.set(view.entries, usage);
+  return usage;
 }

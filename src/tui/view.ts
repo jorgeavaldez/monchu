@@ -17,7 +17,15 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+import {
+  AgentsPanel,
+  statusText,
+  type AgentRow,
+  type AgentStatus,
+} from "./components/agents-panel.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { Footer, shortPath, type FooterState } from "./components/footer.ts";
+import { formatKeyText } from "./components/keybinding-hints.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { WorkerMessageComponent } from "./components/worker-message.ts";
@@ -63,14 +71,57 @@ import { presentation, type QueuedItem } from "./state.ts";
  * What a chat notice reports: Monchu's own status, or input delivered to a worker. A delivery says `start` or
  * `message`, never `steer`: whether it steers a run depends on the worker's state when it arrives, not when it is sent.
  */
-type NoticeKind = "system" | "start" | "message";
+type NoticeKind = "system" | "start" | "message" | "intro";
 
-/** A notice's styled line: a delivery has a yellow rule and label, as queued input does in the dock. */
+/**
+ * A notice's styled line: a delivery has a yellow rule and label, as queued input does in the dock. Monchu's own status
+ * is muted, with a warning in yellow and an error in red, as Pi shows them.
+ */
 function noticeLine(text: string, kind: NoticeKind): string {
   const muted = getSelectListTheme().description;
-  return kind === "system"
-    ? muted(`system · ${text}`)
-    : `${theme.fg("warning", `│ ${kind}`)}${muted(` · ${text}`)}`;
+  if (kind === "intro") return introLines(text);
+  if (kind !== "system") return `${theme.fg("warning", `│ ${kind}`)}${muted(` · ${text}`)}`;
+  const [, level, rest] = /^(warning|error) · ([\s\S]*)$/.exec(text) ?? [];
+  if (level === "warning" && rest !== undefined)
+    return `${theme.fg("warning", "warning")}${muted(` · ${rest}`)}`;
+  if (level === "error" && rest !== undefined)
+    return `${theme.fg("error", "error")}${theme.fg("error", ` · ${rest}`)}`;
+  return muted(`system · ${text}`);
+}
+
+/** Pi's startup header: the name, where home is, and the keys worth knowing. */
+function introLines(home: string): string {
+  const muted = getSelectListTheme().description;
+  const hint = (key: string, text: string) =>
+    `${theme.fg("dim", formatKeyText(key))}${muted(` ${text}`)}`;
+  return `${theme.bold(theme.fg("accent", "Monchu"))}${muted(` · /help · home ${shortPath(home)}`)}\n${[
+    hint("escape", "interrupt"),
+    hint("ctrl+c/ctrl+d", "clear/exit"),
+    hint("alt+s", "steer"),
+    hint("alt+q", "queue"),
+    hint("ctrl+o", "expand"),
+    `${theme.fg("dim", "/agents")}${muted(" workers")}`,
+  ].join(muted(" · "))}`;
+}
+
+/** The thinking level's border color, as Pi colors its editor; a model without reasoning uses `off`'s. */
+function thinkingColor(level: string | undefined) {
+  switch (level) {
+    case "minimal":
+      return "thinkingMinimal";
+    case "low":
+      return "thinkingLow";
+    case "medium":
+      return "thinkingMedium";
+    case "high":
+      return "thinkingHigh";
+    case "xhigh":
+      return "thinkingXhigh";
+    case "max":
+      return "thinkingMax";
+    default:
+      return "thinkingOff";
+  }
 }
 
 /** The first line of a text, marked when more follows: dock rows show one line each. */
@@ -82,7 +133,7 @@ function firstLine(text: string): string {
 /**
  * A queued inbox row, styled by who sent it: the user's own message has a yellow `you` rule and its text in the user's
  * color; a worker's keeps its transcript style, a purple rule and name for a reply or failure and gray for an update;
- * an effort assessment and a passive write stay muted. Every input row names its mode.
+ * routing advice and a passive write stay muted. Every input row names its mode.
  */
 function queuedLine(item: QueuedItem): string {
   const muted = getSelectListTheme().description;
@@ -99,7 +150,7 @@ function queuedLine(item: QueuedItem): string {
   }
   const assessment = escalationSummary(item.text);
   if (assessment !== undefined)
-    return muted(`│ effort assessment · ${mode} · ${firstLine(assessment)}`);
+    return muted(`│ routing advice · ${mode} · ${firstLine(assessment)}`);
   return `${theme.fg("warning", `│ you · ${mode}`)}${theme.fg("userMessageText", ` · ${firstLine(item.text)}`)}`;
 }
 
@@ -412,7 +463,7 @@ export class MonchuTui {
   private readonly queue = new Container();
   private readonly status = new Container();
   private readonly editorContainer = new Container();
-  private readonly footer = new Container();
+  private readonly footer = new Footer();
   private readonly editor: Editor;
   private readonly transcript: ScrollView;
   private readonly tools = new Map<string, ToolExecutionComponent>();
@@ -441,7 +492,6 @@ export class MonchuTui {
   private cwd: string;
   // What a message sent to a busy conversation does; Alt+S toggles it for the root and workers alike.
   private mode: WhenBusy = "followUp";
-  private location = "";
   private queueItems: readonly QueuedItem[] = [];
   // A queued message open in the editor, and the draft it set aside; Enter saves the edit, Esc cancels it.
   private editing: { id: number; draft: string } | undefined;
@@ -506,6 +556,7 @@ export class MonchuTui {
       ]),
     );
     this.ui.setFocus(this.editor);
+    this.showMode();
     this.ui.addInputListener((data) => {
       if (this.loginCancel !== undefined) {
         if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
@@ -662,6 +713,27 @@ export class MonchuTui {
     this.restoreEditor();
   }
 
+  /** Lists the root and every worker in the editor's place; `updateAgents` keeps it live while open. */
+  openAgents(rows: readonly AgentRow[], shown: string, select: (value: string) => void): void {
+    this.showSelector(
+      new AgentsPanel(
+        rows,
+        shown,
+        (value) => {
+          this.restoreEditor();
+          select(value);
+        },
+        () => this.restoreEditor(),
+      ),
+    );
+  }
+
+  updateAgents(rows: readonly AgentRow[]): void {
+    if (!(this.selector instanceof AgentsPanel)) return;
+    this.selector.update(rows);
+    this.ui.requestRender();
+  }
+
   /** Shows read-only text pinned above the footer until Esc, Enter, q or Ctrl-C closes it. */
   showPanel(title: string, text: string): void {
     this.selector = new TextPanel(
@@ -686,7 +758,7 @@ export class MonchuTui {
 
   /**
    * Lists the shown conversation's queue in the editor's place. Enter opens a message in the editor; a worker notice
-   * opens only its body, and an effort assessment is not editable. Alt+S and Delete apply at once.
+   * opens only its body, and routing advice is not editable. Alt+S and Delete apply at once.
    */
   openQueue(): void {
     this.selector = new QueuePanel(
@@ -746,26 +818,28 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  /** Steer mode is yellow on the editor's border and named in the footer; follow-up keeps the plain border. */
+  /**
+   * Steer mode is yellow on the editor's border and named in the footer; follow-up colors the border by the shown
+   * conversation's thinking level, as Pi does.
+   */
   private showMode(): void {
     const steer = this.mode === "steer";
-    this.editor.borderColor = steer
-      ? (text) => theme.fg("warning", text)
-      : (text) => getSelectListTheme().selectedText(text);
-    const muted = getSelectListTheme().description;
-    const editing =
-      this.editing === undefined
-        ? ""
-        : `${theme.fg("warning", "editing a queued message")}${muted(" · Enter saves · Esc cancels · ")}`;
-    this.footer.clear();
-    this.footer.addChild(
-      new TruncatedText(
-        `${editing}${steer ? theme.fg("warning", "steer") : muted("follow-up")}${muted(` (Alt+S) · ${this.location}`)}`,
-        1,
-        0,
-      ),
-    );
+    const color = steer ? "warning" : thinkingColor(this.footer.state.thinking);
+    this.editor.borderColor = (text) => theme.fg(color, text);
+    this.setFooter({ steer, editing: this.editing !== undefined });
+  }
+
+  /** Change footer fields; renders only when what it shows changed. */
+  setFooter(change: Partial<FooterState>): void {
+    const next = { ...this.footer.state, ...change };
+    if (JSON.stringify(next) === JSON.stringify(this.footer.state)) return;
+    this.footer.state = next;
     this.ui.requestRender();
+  }
+
+  /** Pi's startup header, placed as a notice so a view switch keeps it. */
+  intro(home: string): void {
+    this.notice(home, "intro");
   }
 
   notice(text: string, kind: NoticeKind = "system"): void {
@@ -775,16 +849,16 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  setWorkers(items: readonly { name: string; busy: boolean }[]): void {
+  setWorkers(items: readonly { name: string; status: AgentStatus }[]): void {
     // Every revision of any shown or worker view lands here; render only when the styled line changes.
     // Counts only: /agents lists every worker, and the footer names the one shown.
-    const working = items.filter((item) => item.busy).length;
-    const counts = [
-      ...(items.length > working ? [`${items.length - working} idle`] : []),
-      ...(working ? [`${working} working`] : []),
-    ];
+    const muted = getSelectListTheme().description;
+    const counts = (["working", "done", "idle"] as const).flatMap((status) => {
+      const count = items.filter((item) => item.status === status).length;
+      return count ? [statusText(status).replace(status, `${count} ${status}`)] : [];
+    });
     const line = items.length
-      ? getSelectListTheme().description(`Workers · ${counts.join(" · ")} · /agents`)
+      ? `${muted("Workers · ")}${counts.join(muted(" · "))}${muted(" · /agents")}`
       : "";
     if (line === this.workersLine) return;
     this.workersLine = line;
@@ -909,7 +983,7 @@ export class MonchuTui {
         : undefined;
       if (this.loader) this.status.addChild(this.loader);
     }
-    this.location = `${selected === undefined ? "root" : `worker: ${selected}`} · ${state.model} · ${this.cwd}`;
+    this.setFooter({ cwd: this.cwd, worker: selected, model: state.model });
     // The alt screen rewrites every changed row; a forced render would clear the screen first and flash.
     this.showMode();
   }
@@ -936,7 +1010,11 @@ export class MonchuTui {
       this.chat.addChild(
         assessment === undefined
           ? new UserMessageComponent(text)
-          : new Text(getSelectListTheme().description(`system · escalation · ${assessment}`), 1, 0),
+          : new Text(
+              getSelectListTheme().description(`system · routing advice · ${assessment}`),
+              1,
+              0,
+            ),
       );
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const container = this.streaming ?? new Container();

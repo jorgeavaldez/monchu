@@ -191,6 +191,11 @@ export class Monchu {
     return this.extensions.settings;
   }
 
+  /** The catalog model of a conversation's model reference, while its provider still offers it. */
+  model(ref: ModelRef): Model<Api> | undefined {
+    return this.models.getModel(ref.provider, ref.modelId);
+  }
+
   /** Private terminal interaction only: never submitted to Durable or exposed as a model tool. */
   async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
     if (this.closing !== undefined) throw new Error("Monchu is closing");

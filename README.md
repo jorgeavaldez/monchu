@@ -142,13 +142,15 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 
 `/help` lists the commands; `src/tui/commands.ts` defines them.
 
-`/agents` opens a filterable worker selector with current status and directory.
+`/agents` opens a live panel of the root and every worker: status (working; done, after a run that finished while another conversation was shown, until you view it; idle), context fill, and directory where it fits.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
 Esc interrupts a running front only and does nothing while it is idle; your own messages still queued for the front come back into the editor, oldest first, ahead of anything typed. Ctrl-C clears the editor and a second Ctrl-C within half a second exits; Ctrl-D exits with an empty editor, and Ctrl-O expands tool output.
 Shift-Enter or backslash-Enter adds a newline.
-Alt+S toggles what a message sent to a busy conversation, the root or a worker, does: follow-up (the default) waits for the current reply to finish; steer joins it after its current tool round. Steer mode turns the editor border yellow, and the footer names the mode.
+Alt+S toggles what a message sent to a busy conversation, the root or a worker, does: follow-up (the default) waits for the current reply to finish; steer joins it after its current tool round. Steer mode turns the editor border yellow, and the footer names the mode; otherwise the border takes the shown conversation's thinking-level color, as in Pi.
+The footer is Pi's: the directory and shown conversation with the input mode, then token totals of the active context, context fill against the model's window (yellow past 70%, red past 90%, `?` until a reply measures it, `(auto)` with auto-compaction), and the model with its thinking level. While a worker is shown, the root's context stays beside the worker's. Narrow terminals drop the totals first.
+Inside Herdr (`HERDR_ENV=1`), Monchu reports itself in its pane as agent `monchu`: working while the root or any worker runs, blocked during `/login`, idle otherwise; Herdr shows `done` until the pane is seen. It hands the pane back on exit.
 The dock lists queued input by sender: yours behind a yellow `you · <mode>` rule, a worker's reply behind a purple rule and an update behind a gray one, as in the transcript.
 `/model [search]` and `/thinking` first ask what to change: the conversation shown (listed first), the root or any worker, the `front` default, or the `worker` default. Then they open Pi's model and thinking-level selectors for it. The current model is listed first and the role default second, from providers with credentials. Picking a role default saves it to `config.json` on Enter, with no worker needed: new workers start with the worker default, and the root follows the front default in the fields not picked for it.
 Enter changes only that conversation, from its next model request; `config.json` is untouched, and the notice says `this conversation only`. A root pick is stored with the root, separately for the model and the thinking level, so startup, `/reload` and `/new` keep it instead of the `front` default; edits to `front` in `config.json` apply only to the field not picked. To make the root follow `front` again, pick the value you want and press Ctrl+S: that saves it as the default and clears the root's pick for that field. Workers never re-read their default after they start.
@@ -214,7 +216,7 @@ The home is printed at startup and kept for inspection; delete it after exiting.
 
 Smoke steps: send `hello`, then `read` (a real read tool call on a missing file), then `/work reader inspect`.
 Expect a streaming faux reply, a tool error, labelled worker progress/result lines, and the front's acknowledgement.
-Use `/agents`, filter `reader`, Enter, and send `more`; `/agents root` returns to the front.
+Use `/agents`, Down to `reader`, Enter, and send `more`; `/agents root` returns to the front.
 Run `/reload` and expect `reloaded · context, ...`.
 Run `/restart`: the app re-executes in the same terminal, restores the conversation and workers, and accepts another message.
 Finish with `/quit` and check the shell's exit code is 0.
@@ -249,6 +251,7 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
 - `src/jj.ts`: the `jj` and `jj_write` tools over the jj CLI.
 - `src/herdr.ts`: the `herdr` tool over the local Herdr CLI or SSH.
+- `src/herdr-agent.ts`: Monchu's own agent state in its Herdr pane, over Herdr's socket API.
 - `src/fff.ts`: Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases.
 - `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
 - `src/skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.

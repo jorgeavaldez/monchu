@@ -144,15 +144,15 @@ it("drops a closed worker from the roster at once and returns its selected view 
   await withTerminal(60, "dark", async (screen, backend) => {
     send(screen, "/work reader inspect");
     await visible(screen, "Faux front: result received.");
-    await visible(screen, "Workers · 1 idle · /agents");
+    await visible(screen, "Workers · ✓ 1 done · /agents");
     send(screen, "/agents reader");
-    await visible(screen, "worker: reader");
+    await visible(screen, "• reader");
     // The dock counts a worker idle once its run ends; closing also waits for its report's delivery to finish.
     await waitFor(async () => (await backend.workers())[0]?.busy === false);
     // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
     await backend.submit("close reader", "close-reader", "followUp");
     const back = await visible(screen, "worker reader closed · back to root");
-    expect(back.join("\n")).toContain("root · front");
+    expect(back.join("\n")).toContain("• root");
     await waitFor(
       async () => !(await screen.flushAndGetViewport()).join("\n").includes("Workers ·"),
     );
@@ -204,7 +204,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     const picked = await visible(screen, "root model · faux/worker · this conversation only");
-    expect(picked.findLast((line) => line.includes("root · "))).toContain("root · worker");
+    expect(picked.slice(-2).join("\n")).toMatch(/• root[\s\S]*worker\s*$/);
     expect(await readFile(path, "utf8")).toBe(written);
     // The picked model now leads, ahead of the default; the dev front model answers as the root again.
     send(screen, "/model");
@@ -221,7 +221,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     send(screen, "/work reader inspect");
     await visible(screen, "Faux front: result received.");
     send(screen, "/agents reader");
-    await visible(screen, "worker: reader · worker");
+    expect((await visible(screen, "• reader")).at(-1)).toMatch(/worker\s*$/);
     // The shown worker leads the menu.
     send(screen, "/model");
     await visible(screen, "Pick the model of");
@@ -231,9 +231,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     await visible(screen, "→   front [faux]");
     screen.sendInput("\x13");
     const saved = await visible(screen, "reader model · faux/front · saved as worker");
-    expect(saved.findLast((line) => line.includes("worker: reader"))).toContain(
-      "worker: reader · front",
-    );
+    expect(saved.slice(-2).join("\n")).toMatch(/• reader[\s\S]*front\s*$/);
     expect((await loadConfig(home)).worker.modelId).toBe("front");
     expect((await loadConfig(home)).front.modelId).toBe("front");
     expect((await backend.modelChoice()).model?.id).toBe("front");
@@ -283,7 +281,7 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
       else {
         await backend.startWorker("w", "hold", "start:w");
         send(screen, "/agents w");
-        await visible(screen, "worker: w");
+        await visible(screen, "• w ");
       }
       await waitFor(() => requests.length === 1);
       screen.sendInput("\x1bs");
@@ -569,7 +567,7 @@ describe.each([
         panel.findIndex((line) => line.includes("Faux tool finished.")),
       );
       expect(panel[hint + 1]?.trim()).toMatch(/^─+$/);
-      expect(panel[hint + 2]).toContain("root · ");
+      expect(panel[hint + 2]).toContain("• root");
       // The update_goal card above shows the goal; nothing is appended after the front's answer.
       const answered = panel.findIndex((line) => line.includes("Faux tool finished."));
       expect(panel.slice(answered + 1, title).join("\n")).not.toMatch(/smoke|system ·/i);
@@ -592,7 +590,7 @@ describe.each([
       screen.resize(columns, 14);
       const short = await visible(screen, "1-4 of");
       expect(short).toHaveLength(14);
-      expect(short.at(-1)).toContain("root · ");
+      expect(short.at(-2)).toContain("• root");
       expect(short.findIndex((line) => line.trim() === "Goals")).toBeGreaterThanOrEqual(14 - 9);
       screen.sendInput("\x1b[B");
       await visible(screen, "2-5 of");
@@ -631,7 +629,7 @@ describe.each([
       await visible(screen, "Faux front: result received.");
       const shown = (await screen.flushAndGetViewport()).join("\n");
       expect(shown).not.toMatch(/worker · reader|not a new user instruction/);
-      await visible(screen, "Workers · 1 idle · /agents");
+      await visible(screen, "Workers · ✓ 1 done · /agents");
       // Overflow the transcript so the row above the bar is the last message's timestamp, not filler.
       screen.resize(columns, 14);
       let docked: string[] = [];
@@ -639,26 +637,31 @@ describe.each([
         docked = await screen.flushAndGetViewport();
         return (
           docked.some((line) => line.includes("result received.")) &&
-          docked.some((line) => line.includes("Workers · 1 idle"))
+          docked.some((line) => line.includes("Workers · ✓ 1 done")) &&
+          // The whole dock, down to the footer, has settled at the new height.
+          docked.some((line) => line.includes("• root"))
         );
       });
-      const bar = docked.findIndex((line) => line.includes("Workers · 1 idle"));
+      const bar = docked.findIndex((line) => line.includes("Workers · ✓ 1 done"));
       // A blank row separates the bar from the last message's timestamp.
       expect(docked[bar - 1]?.trim()).toBe("");
       expect(docked[bar - 2]).toMatch(/\d{4}, \d+:\d{2}/);
       // The footer keeps the view and model but drops the command hints.
-      const footer = docked.findLast((line) => line.includes("root · "));
+      const footer = docked.findLast((line) => line.includes("• root"));
       expect(footer).toBeDefined();
       expect(footer).not.toContain("/agents");
       expect(footer).not.toContain("/help");
       screen.resize(columns, 40);
       send(screen, "/agents");
-      const panel = await visible(screen, "View and talk to");
-      // The menu lists each worker with its status, behind the dock's compact counts.
-      expect(panel.join("\n")).toContain("reader · idle");
-      screen.sendInput("reader"); // filter, then select with the actual keyboard path
+      const panel = await visible(screen, "Enter view");
+      // The panel lists the root and each worker with status and context, behind the dock's compact counts.
+      expect(panel.join("\n")).toMatch(/root\s+○ idle/);
+      expect(panel.join("\n")).toMatch(/reader\s+✓ done/);
+      screen.sendInput("\x1b[B"); // down to the worker, then select with the actual keyboard path
       screen.sendInput("\r");
-      await visible(screen, "worker: reader");
+      // The worker's context leads the footer, and the root's stays beside it.
+      const meters = (await visible(screen, "• reader")).at(-1);
+      expect(meters).toMatch(/reader \d+\.\d%\/128k · root \d+\.\d%\/128k/);
       send(screen, "more");
       await visible(screen, "│ message · reader · received");
       await waitFor(async () => {
@@ -671,7 +674,7 @@ describe.each([
         );
       });
       send(screen, "/agents root");
-      await visible(screen, "root · front");
+      await visible(screen, "• root");
       send(screen, "/reload");
       await visible(screen, "reloaded · context");
       expect(screen.stopped).toBe(false);
