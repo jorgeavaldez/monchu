@@ -77,7 +77,12 @@ mise run build
 mise run smoke   # offline TUI with scripted models in a throwaway home
 ```
 
-Contributor rules are in [AGENTS.md](AGENTS.md); architecture and runtime behavior are in [docs/internals.md](docs/internals.md).
+Code rules are in [AGENTS.md](AGENTS.md); architecture and runtime behavior are in [docs/internals.md](docs/internals.md).
+
+## Contributing
+
+This is my personal project. Fork it and make it yours.
+Pull requests are welcome to try, but they probably won't be read or merged. There is no issue tracker.
 
 ## License
 
