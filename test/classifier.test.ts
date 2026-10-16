@@ -275,7 +275,7 @@ describe("routing helper", () => {
       return fauxAssistantMessage([fauxText("looking into it")]);
     });
 
-    await test.send("migrate the whole homelab to nix");
+    await test.send("migrate every server to a new config system");
     pending.resolve(routed("worker", 0.92, { split: ["several", 0.8] }));
     await test.settle(0);
     await test.root.waitForIdle(context);

@@ -321,7 +321,7 @@ describe("deferred tools", () => {
               code: `const [found] = await searchTools("weather forecast city");
 text(found.name);
 text(found.description.includes("city: string") ? "typed" : found.description);
-text(await tools[found.name]({ city: "Tampa" }));`,
+text(await tools[found.name]({ city: "Testville" }));`,
             }),
           ],
           { stopReason: "toolUse" },
@@ -333,7 +333,7 @@ text(await tools[found.name]({ city: "Tampa" }));`,
       await (await root.submit({ type: "input", content: "script" }, context)).wait(context);
       const [result] = await toolResults(root);
       expect(result?.isError).toBe(false);
-      expect(textOf(result)).toBe("weather_forecast\ntyped\nsunny in Tampa");
+      expect(textOf(result)).toBe("weather_forecast\ntyped\nsunny in Testville");
       for (const names of requests) expect(names).not.toContain("weather_forecast");
     } finally {
       await harness.close(context);
