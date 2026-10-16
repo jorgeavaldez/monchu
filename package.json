@@ -8,7 +8,7 @@
     "pi-durable"
   ],
   "homepage": "https://github.com/jorgeavaldez/monchu",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "author": "Jorge Valdez",
   "repository": {
     "type": "git",

@@ -78,3 +78,7 @@ mise run smoke   # offline TUI with scripted models in a throwaway home
 ```
 
 Contributor rules are in [AGENTS.md](AGENTS.md); architecture and runtime behavior are in [docs/internals.md](docs/internals.md).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Parts are ported from other MIT projects (Pi, pi-fff, pi-claude-bridge, strip-ansi); [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) credits them.
