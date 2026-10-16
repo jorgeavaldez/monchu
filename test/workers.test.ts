@@ -697,6 +697,7 @@ describe("worker lifecycle", () => {
           args: { name: "e", task: "work", profile: "deep", thinking: "medium" },
         },
         "message quick": { tool: "message_worker", args: { name: "q", message: "more" } },
+        status: { tool: "worker_status", args: {} },
       }),
     );
     const { harness, root } = await open(value);
@@ -706,6 +707,7 @@ describe("worker lifecycle", () => {
       "start unsupported",
       "start explicit",
       "message quick",
+      "status",
     ]) {
       await (await root.submit({ type: "input", content }, context)).wait(context);
       await settle(harness, root);
@@ -716,6 +718,13 @@ describe("worker lifecycle", () => {
     expect(results[2]).toContain("faux/faux-1 does not support thinking high");
     expect(results[3]).toMatch(/on faux\/faux-think, thinking medium\.$/);
     expect(results[4]).toBe("Message committed for q.");
+    // The front sees how long each worker has been idle and how big its context is.
+    const status: unknown = JSON.parse(results[5] ?? "[]");
+    expect(status).toMatchObject([
+      { name: "q", idleMinutes: 0 },
+      { name: "e", idleMinutes: 0 },
+    ]);
+    expect(results[5]).toMatch(/"contextTokens":\d+/);
     const workers = await listWorkers(harness, root.id, context);
     expect(workers.map(({ name, model, thinking }) => ({ name, model, thinking }))).toEqual([
       { name: "q", model: "faux/faux-think", thinking: "low" },

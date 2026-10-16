@@ -518,6 +518,32 @@ export async function messageWorker(
   return worker.conversationId;
 }
 
+/**
+ * When a worker last did something (its newest message; a reply counts from when it ended) and the context size its
+ * newest reply reported. Scans only the newest entries.
+ */
+async function lastActivity(
+  tx: Tx,
+  conversationId: ConversationId,
+): Promise<{ at?: number; contextTokens?: number }> {
+  const found: { at?: number; contextTokens?: number } = {};
+  const { items } = await tx.scanEntries({ conversationId }, 50);
+  for (const entry of items)
+    for (const message of (entry.model ?? []).toReversed()) {
+      if (message.role === "system") continue;
+      if (found.at === undefined)
+        found.at =
+          message.timestamp + (message.role === "assistant" ? (message.durationMs ?? 0) : 0);
+      if (message.role === "assistant" && found.contextTokens === undefined) {
+        const { input, cacheRead, cacheWrite, output } = message.usage;
+        const tokens = input + cacheRead + cacheWrite + output;
+        if (tokens > 0) found.contextTokens = tokens;
+      }
+      if (found.at !== undefined && found.contextTokens !== undefined) return found;
+    }
+  return found;
+}
+
 /** Open workers, or every worker with `includeClosed`. */
 export async function listWorkers(
   reader: Pick<Harness, "snapshot" | "getTask">,
@@ -710,24 +736,47 @@ export function createWorkerTools(
       defineTool({
         name: "worker_status",
         description:
-          "List this conversation's persistent background workers, their directories, and whether they have pending work. Closed workers are listed only with include_closed.",
+          "List this conversation's persistent background workers: directory, model, whether they have pending work, minutes since each last did something (idleMinutes), and its context size in tokens. Closed workers are listed only with include_closed.",
         parameters: Type.Object({ include_closed: Type.Optional(Type.Boolean()) }),
         replay: "safe",
-        execute: async (args, api, context) => ({
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                await listWorkers(api, api.conversationId, context, args.include_closed === true),
-              ),
-            },
-          ],
-        }),
+        execute: async (args, api, context) => {
+          const workers = await listWorkers(
+            api,
+            api.conversationId,
+            context,
+            args.include_closed === true,
+          );
+          const now = Date.now();
+          const activity = await api.commit(
+            (tx) => Promise.all(workers.map((worker) => lastActivity(tx, worker.conversationId))),
+            context,
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  workers.map((worker, index) => {
+                    const { at, contextTokens } = activity[index] ?? {};
+                    return {
+                      ...worker,
+                      idleMinutes:
+                        worker.busy || at === undefined
+                          ? undefined
+                          : Math.max(0, Math.floor((now - at) / 60_000)),
+                      contextTokens,
+                    };
+                  }),
+                ),
+              },
+            ],
+          };
+        },
       }),
       defineTool({
         name: "close_worker",
         description:
-          "Retire a worker whose domain is finished, or that the user asks to retire, and tell the user why. Never close a worker just because it reported: standing workers take the next ask in their domain. A closed worker leaves the active roster and rejects new messages. Only an idle worker with no pending deliveries or busy sub-workers closes; its conversation and history are kept, and reopen_worker resumes it. Idle alone does not mean finished: keep workers that may be reused.",
+          "Retire an idle worker: its line of work is done, the user asks, or it has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A reused worker past the cache window pays to rewrite its whole context either way. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. Only an idle worker with no pending deliveries or busy sub-workers closes. Tell the user in one line which workers you closed.",
         parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
         // Closing a closed worker changes nothing, and releasing provider resources again is harmless.
         replay: "safe",
