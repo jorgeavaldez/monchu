@@ -17,7 +17,7 @@ import {
   type ToolExecutionResult,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { isGroupExtension, rankDocuments, toolDocument } from "./tool-search.ts";
+import { isScriptExtension, rankDocuments, toolDocument } from "./tool-search.ts";
 
 const NAME = "codemode";
 
@@ -129,7 +129,7 @@ export const Codemode = defineExtension({
         const selected = new Set(agent.extensions.map((extension) => extension.name));
         const deferred = api.registry
           .installed()
-          .filter((extension) => isGroupExtension(extension.name) && !selected.has(extension.name))
+          .filter((extension) => isScriptExtension(extension.name) && !selected.has(extension.name))
           .flatMap((extension) => extension.tools ?? [])
           .filter((tool) => !offered.has(tool.name));
         const callable = [...agent.tools.filter((tool) => tool.name !== NAME), ...deferred];

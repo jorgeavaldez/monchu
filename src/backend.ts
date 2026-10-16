@@ -41,6 +41,8 @@ import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
+import type { McpSignInPrompt } from "./mcp-auth.ts";
+import type { McpServerReport } from "./mcp-manage.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   DELETED_FROM_QUEUE,
@@ -291,20 +293,32 @@ export class Monchu {
     };
   }
 
-  /** MCP servers `/login` can sign in to. */
-  oauthServers(): Promise<string[]> {
-    return this.extensions.oauthServers();
+  /** Every configured MCP server's state and tools, connecting now. Private terminal interaction for `/mcp`. */
+  mcpServers() {
+    return this.extensions.mcpServers();
   }
 
-  /** Private terminal interaction only: sign in to an MCP server in the browser, then reload to offer its tools. */
-  async mcpLogin(
-    name: string,
-    open: (authorizationUrl: string) => void,
-    signal: AbortSignal,
-  ): Promise<void> {
+  /**
+   * Sign in to an MCP server through the browser, then reload so its tools are offered. Private terminal interaction:
+   * `prompt` shows the authorization URL and may take a pasted redirect URL.
+   */
+  async mcpLogin(name: string, prompt: McpSignInPrompt, signal: AbortSignal): Promise<string> {
     if (this.closing !== undefined) throw new Error("Monchu is closing");
-    await this.extensions.mcpLogin(name, open, signal);
+    const message = await this.extensions.mcpLogin(name, prompt, signal);
     await this.reload();
+    return message;
+  }
+
+  /** Forget an MCP server's sign-in; its tools stay until the next reload or restart. */
+  mcpLogout(name: string): Promise<string> {
+    return this.extensions.mcpLogout(name);
+  }
+
+  /** List every MCP server again, bypassing the cached listings, then reload so changed tools are offered. */
+  async mcpReconnect(): Promise<{ servers: McpServerReport[]; errors: string[] }> {
+    const report = await this.extensions.mcpServers();
+    await this.reload();
+    return report;
   }
 
   /** Successful reload notifications; callers re-read the single settings owner. */

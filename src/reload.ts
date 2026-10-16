@@ -13,11 +13,13 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
-import { McpClients, usesOAuth } from "./mcp.ts";
+import type { McpSignInPrompt } from "./mcp-auth.ts";
+import { loadMcpConfig } from "./mcp-config.ts";
+import { mcpLogin, mcpLogout, mcpReports, type McpServerReport } from "./mcp-manage.ts";
+import { McpClients } from "./mcp.ts";
 import type { EffortAssessment } from "./classifier.ts";
 import {
   loadConfig,
-  loadMcpServers,
   saveRole,
   type ModelRole,
   type MonchuConfig,
@@ -91,7 +93,8 @@ async function build(
   const memory = (await load("memory")).createMemory(home);
   const identity = (await load("identity")).createIdentity(home, reportSkipped);
   const { Jj } = await load("jj");
-  const mcp = await (await load("mcp-tools")).createMcpTools(await loadMcpServers(home), clients);
+  const mcpConfig = await loadMcpConfig(home);
+  const mcp = await (await load("mcp-tools")).createMcpTools(mcpConfig.servers, clients);
   const { Browser } = await load("browser");
   const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
   const workers = workersModule.createWorkerTools(workerRole, config.profiles, search.preload);
@@ -128,7 +131,7 @@ async function build(
     settings: context.settings,
     config,
     assessment,
-    warnings: [...context.warnings, ...tools.warnings, ...mcp.warnings],
+    warnings: [...context.warnings, ...tools.warnings, ...mcpConfig.errors, ...mcp.warnings],
   };
 }
 
@@ -197,7 +200,13 @@ export class Extensions {
       report(warning);
     };
     const finders = new FffFinders(home, report);
-    const clients = new McpClients(home, process.env, report);
+    // A server with `auth.provider` sends that /login provider's token, read at every connect.
+    const clients = new McpClients(
+      home,
+      process.env,
+      report,
+      async (provider) => (await models.getAuth(provider))?.auth.apiKey,
+    );
     // Worker tools run only after construction; until then nothing can call the role getter.
     let extensions: Extensions | undefined;
     const current = await build(
@@ -315,22 +324,18 @@ export class Extensions {
     return this.reloading;
   }
 
-  /** Enabled MCP servers that sign in with OAuth, for `/login`. */
-  async oauthServers(): Promise<string[]> {
-    return Object.entries(await loadMcpServers(this.home))
-      .filter(([, config]) => config.enabled !== false && usesOAuth(config))
-      .map(([name]) => name);
+  /** Every configured MCP server's state and tools, connecting now; for `/mcp`. */
+  mcpServers(): Promise<{ servers: McpServerReport[]; errors: string[] }> {
+    return mcpReports(this.home, this.clients);
   }
 
   /** Sign in to an OAuth MCP server and cache its tools; a reload then installs them. */
-  async mcpLogin(
-    name: string,
-    open: (authorizationUrl: string) => void,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const config = (await loadMcpServers(this.home))[name];
-    if (config === undefined) throw new Error(`No MCP server ${name} in mcp.json`);
-    await this.clients.login(name, config, open, signal);
+  mcpLogin(name: string, prompt: McpSignInPrompt, signal: AbortSignal): Promise<string> {
+    return mcpLogin(this.home, this.clients, name, prompt, signal);
+  }
+
+  mcpLogout(name: string): Promise<string> {
+    return mcpLogout(this.home, this.clients, name);
   }
 
   /** Release host-owned search indexes and MCP servers after Durable stops its calls. */

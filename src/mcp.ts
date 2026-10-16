@@ -3,19 +3,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { McpServerConfig } from "./config.ts";
-import { McpOAuth, McpSignInRequired } from "./mcp-auth.ts";
-
-/** HTTP servers sign in with OAuth unless their configured headers already authorize them. */
-export function usesOAuth(config: McpServerConfig): boolean {
-  return (
-    config.url !== undefined &&
-    !Object.keys(config.headers ?? {}).some((key) => key.toLowerCase() === "authorization")
-  );
-}
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { McpOAuth, McpSignInRequired, type McpSignInPrompt } from "./mcp-auth.ts";
+import { usesOAuth, type McpServerConfig } from "./mcp-config.ts";
 
 /** A tool as a server lists it, kept in the cache file. */
 export type McpTool = {
@@ -35,9 +29,65 @@ export type McpContent =
 
 /** Close a server that has had no call for this long; Android kills Termux when it runs too many processes. */
 const IDLE_MS = 5 * 60_000;
-/** Long enough for a crawl; progress notifications restart it. */
-const CALL_TIMEOUT_MS = 10 * 60_000;
+/** Pi's default per-request timeout; a server's `timeout` overrides it, and progress notifications restart it. */
+const DEFAULT_TIMEOUT_SECONDS = 60;
 const CONNECT_TIMEOUT_MS = 20_000;
+
+/** Why a server offers no tools on this device, as `mcp list` and `/mcp` report it. */
+export type McpState = "connected" | "needs-auth" | "missing" | "failed";
+
+/** A listing failure with the server's state. */
+export class McpUnavailable extends Error {
+  readonly state: Exclude<McpState, "connected">;
+  constructor(state: Exclude<McpState, "connected">, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.state = state;
+  }
+}
+
+/** `~` and `~/…` name the home directory, like in a shell and in Pi. */
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\")))
+    return join(homedir(), value.slice(2));
+  return value;
+}
+
+const commandResults = new Map<string, string>();
+
+/**
+ * A configuration value as Pi resolves it: `!command` runs the command in a shell and uses its trimmed output (once
+ * per process); otherwise `${NAME}` and `$NAME` expand from the environment, and `$$` and `$!` are a literal `$`/`!`.
+ */
+export function resolveValue(
+  value: string,
+  env: Readonly<Record<string, string | undefined>>,
+  label: string,
+): string {
+  if (value.startsWith("!")) {
+    const command = value.slice(1);
+    const cached = commandResults.get(command);
+    if (cached !== undefined) return cached;
+    const result = spawnSync(command, { shell: true, encoding: "utf8", timeout: 30_000 });
+    if (result.status !== 0 || result.error !== undefined)
+      throw new Error(`${label}: command failed${result.error ? `: ${result.error.message}` : ""}`);
+    const output = result.stdout.trim();
+    commandResults.set(command, output);
+    return output;
+  }
+  return value.replace(
+    /\$(?:\$|!|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g,
+    (match, braced: string | undefined, bare: string | undefined) => {
+      if (match === "$$") return "$";
+      if (match === "$!") return "!";
+      const name = braced ?? bare ?? "";
+      const resolved = env[name];
+      if (resolved === undefined || resolved === "")
+        throw new Error(`${label} uses unset variable ${name}`);
+      return resolved;
+    },
+  );
+}
 
 type Connection = {
   fingerprint: string;
@@ -54,11 +104,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 /** Identifies a configuration without storing its values, which may name secrets. */
 function fingerprint(config: McpServerConfig): string {
-  const { command, args, env, cwd, url, headers } = config;
-  return createHash("sha256")
-    .update(JSON.stringify({ command, args, env, cwd, url, headers }))
-    .digest("hex")
-    .slice(0, 16);
+  const launch =
+    "url" in config
+      ? { url: config.url, headers: config.headers, auth: config.auth }
+      : { command: config.command, args: config.args, env: config.env, cwd: config.cwd };
+  return createHash("sha256").update(JSON.stringify(launch)).digest("hex").slice(0, 16);
 }
 
 /** Server output worth showing with an error: the last few lines. */
@@ -138,6 +188,7 @@ export class McpClients {
   private readonly cachePath: string;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly report: (warning: string) => void;
+  private readonly providerToken: (provider: string) => Promise<string | undefined>;
   private readonly oauth: McpOAuth;
   private readonly connections = new Map<string, Connection>();
   /** Servers whose live listing was compared with the cache in this process. */
@@ -149,11 +200,30 @@ export class McpClients {
     home: string,
     env: Readonly<Record<string, string | undefined>>,
     report: (warning: string) => void,
+    providerToken: (provider: string) => Promise<string | undefined> = async () => undefined,
   ) {
     this.cachePath = join(home, "mcp-tools.json");
     this.oauth = new McpOAuth(home);
     this.env = env;
     this.report = report;
+    this.providerToken = providerToken;
+  }
+
+  /** Connect now and list the server's tools, bypassing the cache, for `mcp list` and `/mcp`. */
+  async status(
+    name: string,
+    config: McpServerConfig,
+  ): Promise<{ state: McpState; tools: string[]; error?: string }> {
+    try {
+      const listed = await this.refresh(name, config);
+      return { state: "connected", tools: listed.tools.map((tool) => tool.name) };
+    } catch (error) {
+      return {
+        state: error instanceof McpUnavailable ? error.state : "failed",
+        tools: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /** The cached listing of a server, or a live one, which is then cached. */
@@ -179,7 +249,7 @@ export class McpClients {
       if (!this.checked.has(name)) void this.check(name, config, client);
       const result = await client.callTool({ name: tool, arguments: args }, undefined, {
         ...(signal === undefined ? {} : { signal }),
-        timeout: CALL_TIMEOUT_MS,
+        timeout: (config.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
         resetTimeoutOnProgress: true,
       });
       const blocks = content(result.content);
@@ -199,19 +269,48 @@ export class McpClients {
     }
   }
 
-  /** Sign in to an OAuth server through the browser, then list its tools again. */
+  /**
+   * Sign in to an OAuth server through the browser, then list its tools again. A server that already connects needs
+   * no sign-in and is only listed, as in Pi.
+   */
   async login(
     name: string,
     config: McpServerConfig,
-    open: (authorizationUrl: string) => void,
+    prompt: McpSignInPrompt,
     signal: AbortSignal,
-  ): Promise<McpListing> {
-    if (config.url === undefined || !usesOAuth(config))
-      throw new Error(`MCP server ${name} does not sign in with OAuth`);
-    await this.oauth.login(name, config.url, open, signal);
+  ): Promise<{ signedIn: boolean; listing: McpListing }> {
+    if (!usesOAuth(config))
+      throw new Error(
+        `MCP server ${name} does not use OAuth. Only HTTP servers without an Authorization header or auth.provider do.`,
+      );
+    try {
+      return { signedIn: false, listing: await this.refresh(name, config) };
+    } catch (error) {
+      if (!(error instanceof McpUnavailable) || error.state !== "needs-auth") throw error;
+    }
+    await this.oauth.login(name, config.url, this.oauthSettings(name, config), prompt, signal);
     const existing = this.connections.get(name);
     if (existing !== undefined) await this.disconnect(name, existing);
-    return this.refresh(name, config);
+    return { signedIn: true, listing: await this.refresh(name, config) };
+  }
+
+  /** Forget an OAuth server's stored credentials. Resolves whether there were any. */
+  async logout(name: string, config: McpServerConfig): Promise<boolean> {
+    if (!usesOAuth(config)) throw new Error(`MCP server ${name} does not use OAuth`);
+    const existing = this.connections.get(name);
+    if (existing !== undefined) await this.disconnect(name, existing);
+    return this.oauth.logout(name, config.url);
+  }
+
+  private oauthSettings(name: string, config: McpServerConfig) {
+    if (!("url" in config) || config.oauth === undefined) return {};
+    const { clientSecret, ...rest } = config.oauth;
+    return {
+      ...rest,
+      ...(clientSecret === undefined
+        ? {}
+        : { clientSecret: resolveValue(clientSecret, this.env, `${name} oauth.clientSecret`) }),
+    };
   }
 
   async close(): Promise<void> {
@@ -235,23 +334,29 @@ export class McpClients {
     } catch (error) {
       await this.disconnect(name, connection);
       const detail = tail(connection.stderr);
-      const missing =
-        error instanceof Error && "code" in error && error.code === "ENOENT" && config.command
-          ? `${config.command} is not installed or not on PATH here, so ${name}'s tools are off on this device`
-          : undefined;
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT" &&
+        "command" in config
+      )
+        throw new McpUnavailable(
+          "missing",
+          `${config.command} is not installed or not on PATH here, so ${name}'s tools are off on this device`,
+          { cause: error },
+        );
       if (
         error instanceof McpSignInRequired ||
         (error instanceof Error && error.cause instanceof McpSignInRequired)
       )
-        throw new McpSignInRequired(
-          `MCP server ${name} needs sign-in: run /login and pick ${name}`,
-          {
-            cause: error,
-          },
+        throw new McpUnavailable(
+          "needs-auth",
+          `MCP server ${name} needs sign-in: run /mcp login ${name} or monchu mcp login ${name}`,
+          { cause: error },
         );
-      throw new Error(
-        missing ??
-          `MCP server ${name} did not list its tools: ${error instanceof Error ? error.message : String(error)}${detail ? `\n${detail}` : ""}`,
+      throw new McpUnavailable(
+        "failed",
+        `MCP server ${name} did not list its tools: ${error instanceof Error ? error.message : String(error)}${detail ? `\n${detail}` : ""}`,
         { cause: error },
       );
     } finally {
@@ -310,7 +415,7 @@ export class McpClients {
       fingerprint: key,
       client: (async () => {
         const client = new Client({ name: "monchu", version: "1.0.0" });
-        const transport = this.transport(name, config, stderr);
+        const transport = await this.transport(name, config, stderr);
         // A server that exits drops its connection; the next call starts it again.
         transport.onclose = () => {
           if (this.connections.get(name) === connection) this.connections.delete(name);
@@ -330,33 +435,49 @@ export class McpClients {
     return connection;
   }
 
-  private transport(name: string, config: McpServerConfig, stderr: { text: string }): Transport {
-    const expand = (values: Record<string, string> | undefined) =>
+  private async transport(
+    name: string,
+    config: McpServerConfig,
+    stderr: { text: string },
+  ): Promise<Transport> {
+    const resolveAll = (values: Record<string, string> | undefined, field: string) =>
       Object.fromEntries(
         Object.entries(values ?? {}).map(([key, value]) => [
           key,
-          value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, variable: string) => {
-            const resolved = this.env[variable];
-            if (resolved === undefined) throw new Error(`${key} uses unset variable ${variable}`);
-            return resolved;
-          }),
+          resolveValue(value, this.env, `${name} ${field} ${key}`),
         ]),
       );
-    if (config.url !== undefined)
+    if ("url" in config) {
+      const headers = resolveAll(config.headers, "header");
+      if (config.auth !== undefined) {
+        // Read at every connect, so the provider's own refreshes apply; nothing is stored here.
+        const token = await this.providerToken(config.auth.provider);
+        if (token === undefined)
+          throw new Error(`${name}: log in to ${config.auth.provider} with /login first`);
+        headers.Authorization = `Bearer ${token}`;
+      }
       return httpTransport(
         new StreamableHTTPClientTransport(new URL(config.url), {
-          requestInit: { headers: expand(config.headers) },
-          ...(usesOAuth(config) ? { authProvider: this.oauth.provider(name, config.url) } : {}),
+          requestInit: { headers },
+          ...(usesOAuth(config)
+            ? {
+                authProvider: this.oauth.provider(
+                  name,
+                  config.url,
+                  this.oauthSettings(name, config),
+                ),
+              }
+            : {}),
         }),
       );
-    if (config.command === undefined) throw new Error("MCP server needs command or url");
+    }
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(this.env)) if (value !== undefined) env[key] = value;
     const transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args ?? [],
-      env: { ...env, ...expand(config.env) },
-      ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
+      command: expandHome(config.command),
+      args: (config.args ?? []).map(expandHome),
+      env: { ...env, ...resolveAll(config.env, "env") },
+      ...(config.cwd === undefined ? {} : { cwd: resolve(expandHome(config.cwd)) }),
       // Inherited stderr would write over the terminal UI; keep its tail for error messages.
       stderr: "pipe",
     });

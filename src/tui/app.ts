@@ -5,10 +5,11 @@ import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendi
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
+import { formatReports } from "../mcp-manage.ts";
 import { describe as describeAssessment } from "../classifier.ts";
 import type { HerdrAgent } from "../herdr-agent.ts";
 import type { WhenBusy } from "../workers.ts";
-import { help, parseInput } from "./commands.ts";
+import { commands, help, parseInput } from "./commands.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
 import type { Meter } from "./components/footer.ts";
@@ -342,6 +343,101 @@ export async function runTerminal(
       case "/help":
         view.notice(help);
         break;
+      case "/mcp": {
+        const [action, name, ...extra] = input.text.split(/\s+/).filter(Boolean);
+        if (
+          extra.length ||
+          (action !== undefined && !["login", "logout", "reconnect"].includes(action))
+        ) {
+          view.notice(`Usage: /mcp ${commands["/mcp"].usage}`);
+          break;
+        }
+        try {
+          if (action === undefined || action === "reconnect") {
+            view.notice("mcp · connecting to every server…");
+            const report =
+              action === "reconnect" ? await backend.mcpReconnect() : await backend.mcpServers();
+            view.notice(formatReports(report, (server) => `/mcp login ${server}`).join("\n"));
+            break;
+          }
+          let server = name;
+          if (server === undefined) {
+            const { servers } = await backend.mcpServers();
+            const candidates = servers.filter((each) =>
+              action === "login" ? each.state === "needs-auth" : each.auth === "oauth",
+            );
+            if (candidates.length === 0) {
+              view.notice(
+                action === "login" ? "mcp · no server needs sign-in" : "mcp · no OAuth servers",
+              );
+              break;
+            }
+            if (candidates.length === 1) server = candidates[0]?.name;
+          }
+          if (action === "logout") {
+            if (server === undefined) {
+              view.notice(`Usage: /mcp ${commands["/mcp"].usage}`);
+              break;
+            }
+            view.notice(`mcp · ${await backend.mcpLogout(server)}`);
+            break;
+          }
+          const controller = new AbortController();
+          login = controller;
+          show();
+          view.beginLogin(() => controller.abort());
+          try {
+            if (server === undefined) {
+              const { servers } = await backend.mcpServers();
+              server = await view.promptLogin(
+                {
+                  type: "select",
+                  message: "Sign in to:",
+                  options: servers
+                    .filter((each) => each.state === "needs-auth")
+                    .map((each) => ({ id: each.name, label: `${each.name} (${each.transport})` })),
+                },
+                controller.signal,
+              );
+            }
+            const message = await backend.mcpLogin(
+              server,
+              {
+                showAuthorizationUrl: (url) =>
+                  view.loginMessage("Waiting for the browser · Esc to cancel", url),
+                promptForRedirectUrl: (signal) =>
+                  view
+                    .promptLogin(
+                      {
+                        type: "text",
+                        message:
+                          "If the browser cannot reach this machine, paste the URL it was redirected to:",
+                        signal,
+                      },
+                      controller.signal,
+                    )
+                    .catch(() => undefined),
+              },
+              controller.signal,
+            );
+            view.notice(`mcp · ${message}`);
+          } catch (error) {
+            // MCP sign-in takes nothing secret typed, so its errors carry no credentials.
+            view.notice(
+              controller.signal.aborted
+                ? "mcp · sign-in cancelled"
+                : `mcp · ${error instanceof Error ? error.message : String(error)}`,
+            );
+          } finally {
+            login = undefined;
+            view.endLogin();
+            show();
+          }
+        } catch (error) {
+          view.notice(`mcp · ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
+      }
       case "/login": {
         const controller = new AbortController();
         let loggedIn = false;
@@ -349,40 +445,10 @@ export async function runTerminal(
         show();
         view.beginLogin(() => controller.abort());
         try {
-          const mcp = await backend.oauthServers();
           const provider = await view.promptLogin(
-            {
-              type: "select",
-              message: "Choose provider:",
-              options: [
-                ...LOGIN_PROVIDERS,
-                ...mcp.map((name) => ({
-                  id: `mcp:${name}`,
-                  label: `${name} MCP server (browser)`,
-                })),
-              ],
-            },
+            { type: "select", message: "Choose provider:", options: LOGIN_PROVIDERS },
             controller.signal,
           );
-          const server = mcp.find((name) => provider === `mcp:${name}`);
-          if (server !== undefined) {
-            try {
-              await backend.mcpLogin(
-                server,
-                (url) => view.loginMessage("Waiting for the browser · Esc to cancel", url),
-                controller.signal,
-              );
-              view.notice(`logged in · ${server} MCP server; its tools are loaded`);
-            } catch (error) {
-              // MCP sign-in takes nothing typed, so its errors carry no credentials.
-              view.notice(
-                controller.signal.aborted
-                  ? "login cancelled"
-                  : `${server} sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
-            break;
-          }
           await backend.login(
             provider,
             provider === "cloudflare-workers-ai" ? "api_key" : "oauth",

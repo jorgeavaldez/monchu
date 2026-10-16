@@ -2,13 +2,8 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  defaultConfig,
-  loadConfig,
-  loadMcpServers,
-  resolveSettings,
-  saveRole,
-} from "../src/config.ts";
+import { defaultConfig, loadConfig, resolveSettings, saveRole } from "../src/config.ts";
+import { loadMcpConfig, validateMcpServer } from "../src/mcp-config.ts";
 
 const codex = defaultConfig();
 import { harnessSettings } from "../src/context.ts";
@@ -103,34 +98,61 @@ describe("config", () => {
     });
   });
 
-  it("reads MCP servers from mcp.json in Pi's shape", async () => {
+  it("reads Pi's mcp.json unchanged, leaving out only invalid entries", async () => {
     const directory = await home();
+    // Pi's own entries: stdio ketch through fnox, and Notion over HTTP, which signs in with OAuth.
     const ketch = {
       command: "fnox",
-      args: ["exec", "--", "ketch", "mcp", "serve"],
-      env: { KETCH_MCP_TOOLS: "search,scrape" },
+      args: ["--no-daemon", "--non-interactive", "exec", "--", "ketch", "mcp", "serve"],
+      env: { KETCH_MCP_TOOLS: "search,code,scrape,crawl,tag" },
       description: "web research",
       exposure: "deferred",
-      toolExposure: { search: "direct" },
+      toolExposure: { search: "direct", scrape: "direct" },
       preload: true,
     };
-    await writeFile(join(directory, "mcp.json"), JSON.stringify({ mcpServers: { ketch } }));
-    expect(await loadMcpServers(directory)).toEqual({ ketch });
+    const notion = { url: "https://mcp.notion.com/mcp", exposure: "deferred" };
+    const linear = {
+      type: "http",
+      url: "https://mcp.example.com/mcp",
+      headers: { "X-Team": "${TEAM}" },
+      oauth: {
+        clientId: "abc",
+        clientSecret: "!pass show linear",
+        callbackPort: 8765,
+        scope: "read",
+      },
+      timeout: 30,
+      toolExposure: { "list_*": "direct", delete_issue: "codemode-deferred" },
+    };
+    await writeFile(
+      join(directory, "mcp.json"),
+      JSON.stringify({
+        mcpServers: { ketch, notion, linear, broken: { command: 1 }, "bad name": {} },
+      }),
+    );
+    const { servers, errors } = await loadMcpConfig(directory);
+    expect(servers).toEqual({
+      ketch,
+      notion,
+      linear: { ...linear, toolExposure: { "list_*": "direct", delete_issue: "codemode" } },
+    });
+    expect(errors).toEqual([
+      `${join(directory, "mcp.json")}: server "broken" needs either "command" (stdio) or "url" (streamable HTTP)`,
+      `${join(directory, "mcp.json")}: invalid server name "bad name" (use letters, digits, "_" and "-")`,
+    ]);
   });
 
   it.each([
-    [{ mcpServers: { Bad_Name: { command: "x" } } }, "lowercase letters"],
-    [{ mcpServers: { a: {} } }, "exactly one of command or url"],
-    [{ mcpServers: { a: { command: "x", url: "https://x" } } }, "exactly one of command or url"],
-    [{ mcpServers: { a: { url: "ftp://x" } } }, "http or https"],
-    [{ mcpServers: { a: { url: "https://x", env: {} } } }, "a.env needs command"],
-    [{ mcpServers: { a: { command: "x", exposure: "hidden" } } }, "direct or deferred"],
-    [{ mcpServers: { a: { command: "x", typo: 1 } } }, "unknown fields: typo"],
-    [{ mcpServers: { a: { command: "x", preload: "yes" } } }, "a.preload must be a boolean"],
-  ])("rejects mcp.json %j", async (mcp, message) => {
-    const directory = await home();
-    await writeFile(join(directory, "mcp.json"), JSON.stringify(mcp));
-    await expect(loadMcpServers(directory)).rejects.toThrow(message);
+    [{ url: "ftp://x" }, "url must be an http or https URL"],
+    [{ type: "sse", url: "https://x" }, "legacy SSE transport is not supported"],
+    [{ command: "x", exposure: "loud" }, "exposure must be one of"],
+    [{ command: "x", timeout: 0 }, "timeout must be a positive number of seconds"],
+    [{ command: "x", preload: "yes" }, "preload must be a boolean"],
+    [{ url: "http://example.com", auth: { provider: "p" } }, "auth requires an https URL"],
+    [{ url: "https://x", oauth: { callbackUrl: "https://example.com/cb" } }, "oauth.callbackUrl"],
+  ])("rejects the MCP server %j", (raw, message) => {
+    const result = validateMcpServer("s", raw);
+    expect(typeof result === "string" ? result : "valid").toContain(message);
   });
 
   it("reads roles and turns the classifier off with null", async () => {

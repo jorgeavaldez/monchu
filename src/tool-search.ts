@@ -39,6 +39,8 @@ import {
 
 /** Extensions named with this prefix are tool groups: installed, but offered only once `tool_search` loads them. */
 const GROUP_PREFIX = "monchu.group.";
+/** Groups whose tools only codemode scripts reach (Pi's `codemode` exposure); `tool_search` never loads them. */
+const CODEMODE_PREFIX = "monchu.codemode.";
 
 /**
  * Tools kept out of the prompt until a conversation needs them. A group loads as a whole and never unloads: providers
@@ -55,12 +57,19 @@ export type ToolGroup = {
    * Codex loads tools in place without a cache miss, so its conversations still search for every group.
    */
   readonly preload?: boolean;
+  /** Reached only from codemode scripts through `searchTools()`, never declared to the model. */
+  readonly codemode?: boolean;
   /** Guide or instructions returned once when the group loads, instead of sitting in every prompt. */
   details?(api: ToolExecutionApi, context: Context): Promise<string | undefined>;
 };
 
 export function isGroupExtension(name: string): boolean {
   return name.startsWith(GROUP_PREFIX);
+}
+
+/** Whether codemode scripts may call the tools of this installed but unselected extension. */
+export function isScriptExtension(name: string): boolean {
+  return name.startsWith(GROUP_PREFIX) || name.startsWith(CODEMODE_PREFIX);
 }
 
 /**
@@ -254,22 +263,35 @@ const DEFAULT_LIMIT = 8;
  * prompt stays the same while groups load.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createToolSearch(groups: readonly ToolGroup[]) {
+export function createToolSearch(all: readonly ToolGroup[]) {
+  const groups = all.filter((group) => group.codemode !== true);
+  const scripted = all.filter((group) => group.codemode === true);
+  const scriptExtensions = scripted.map((group) =>
+    defineExtension({ name: `${CODEMODE_PREFIX}${group.name}`, tools: group.tools }),
+  );
   const extensions = new Map(
     groups.map((group) => [
       group.name,
       defineExtension({ name: `${GROUP_PREFIX}${group.name}`, tools: group.tools }),
     ]),
   );
-  const prompt = groups.length
-    ? [
-        "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching groups, with any guide they carry, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
-        ...groups.map(
-          (group) =>
-            `- ${group.name}: ${group.summary} (${group.tools.map((tool) => tool.name).join(", ")})`,
-        ),
-      ].join("\n")
-    : undefined;
+  const prompt = [
+    ...(groups.length
+      ? [
+          "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching groups, with any guide they carry, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
+          ...groups.map(
+            (group) =>
+              `- ${group.name}: ${group.summary} (${group.tools.map((tool) => tool.name).join(", ")})`,
+          ),
+        ]
+      : []),
+    ...(scripted.length
+      ? [
+          "Codemode tools: only codemode scripts call these; find them with searchTools(query) and describeTool(name).",
+          ...scripted.map((group) => `- ${group.name}: ${group.summary}`),
+        ]
+      : []),
+  ].join("\n");
   const toolSearch = defineTool({
     name: "tool_search",
     description:
@@ -359,9 +381,9 @@ export function createToolSearch(groups: readonly ToolGroup[]) {
     extension: defineExtension({
       name: "monchu.tool-search",
       tools: groups.length ? [toolSearch] : [],
-      sections: [section("deferred_tools", () => prompt, { tag: false })],
+      sections: [section("deferred_tools", () => prompt || undefined, { tag: false })],
     }),
-    groups: [...extensions.values()] satisfies Extension[],
+    groups: [...extensions.values(), ...scriptExtensions] satisfies Extension[],
     /** Extension names of the groups conversations on the Claude Code bridge load from the start. */
     preload: groups.flatMap((group) =>
       group.preload === true ? (extensions.get(group.name)?.name ?? []) : [],

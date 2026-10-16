@@ -12,8 +12,10 @@ import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Browser } from "../src/browser.ts";
-import { loadMcpServers } from "../src/config.ts";
+import { loadMcpConfig } from "../src/mcp-config.ts";
 import { createMcpTools } from "../src/mcp-tools.ts";
+import { runMcpCommand } from "../src/mcp-cli.ts";
+import { mcpReports } from "../src/mcp-manage.ts";
 import { McpClients } from "../src/mcp.ts";
 import { createToolSearch, preloadGroups, type ToolGroup } from "../src/tool-search.ts";
 import { startWorker, workerConversationId } from "../src/workers.ts";
@@ -144,12 +146,13 @@ describe("deferred tools", () => {
             command: process.execPath,
             args: [script, marker],
             description: "fixture web tools",
+            exposure: "deferred",
             toolExposure: { echo: "direct" },
           },
         },
       }),
     );
-    const servers = await loadMcpServers(value.directory);
+    const { servers } = await loadMcpConfig(value.directory);
     const warnings: string[] = [];
     const clients = new McpClients(value.directory, process.env, (warning) =>
       warnings.push(warning),
@@ -157,9 +160,9 @@ describe("deferred tools", () => {
     try {
       const mcp = await createMcpTools(servers, clients);
       expect(mcp.warnings).toEqual([]);
-      expect(mcp.extension.tools?.map((tool) => tool.name)).toEqual(["fix_echo"]);
+      expect(mcp.extension.tools?.map((tool) => tool.name)).toEqual(["mcp__fix__echo"]);
       expect(mcp.groups.map((group) => [group.name, group.tools.map((tool) => tool.name)])).toEqual(
-        [["mcp-fix", ["fix_crawl_site"]]],
+        [["mcp-fix", ["mcp__fix__crawl_site"]]],
       );
       expect(await starts(marker)).toBe(1);
 
@@ -170,7 +173,7 @@ describe("deferred tools", () => {
         const last = lastMessage(request.messages);
         const text = last?.role === "user" ? textOf(last) : "";
         if (text === "echo")
-          return fauxAssistantMessage([fauxToolCall("fix_echo", { text: "hi" })], {
+          return fauxAssistantMessage([fauxToolCall("mcp__fix__echo", { text: "hi" })], {
             stopReason: "toolUse",
           });
         if (text === "load")
@@ -179,7 +182,7 @@ describe("deferred tools", () => {
           });
         if (text === "crawl")
           return fauxAssistantMessage(
-            [fauxToolCall("fix_crawl_site", { url: "https://example.com" })],
+            [fauxToolCall("mcp__fix__crawl_site", { url: "https://example.com" })],
             { stopReason: "toolUse" },
           );
         return fauxAssistantMessage("ok");
@@ -188,19 +191,19 @@ describe("deferred tools", () => {
       const { harness, root } = await open(value, settings);
       try {
         await (await root.submit({ type: "input", content: "echo" }, context)).wait(context);
-        expect(requests[0]).toContain("fix_echo");
+        expect(requests[0]).toContain("mcp__fix__echo");
         expect(requests[0]).toContain("tool_search");
-        expect(requests[0]).not.toContain("fix_crawl_site");
+        expect(requests[0]).not.toContain("mcp__fix__crawl_site");
 
         await (await root.submit({ type: "input", content: "load" }, context)).wait(context);
         await (await root.submit({ type: "input", content: "crawl" }, context)).wait(context);
-        expect(requests.at(-1)).toContain("fix_crawl_site");
+        expect(requests.at(-1)).toContain("mcp__fix__crawl_site");
 
         const results = await toolResults(root);
         expect(results.map((result) => [result.toolName, result.isError])).toEqual([
-          ["fix_echo", false],
+          ["mcp__fix__echo", false],
           ["tool_search", false],
-          ["fix_crawl_site", false],
+          ["mcp__fix__crawl_site", false],
         ]);
         expect(textOf(results[0])).toBe('echo:{"text":"hi"}');
         expect(textOf(results[1])).toContain("Loaded mcp-fix");
@@ -219,7 +222,7 @@ describe("deferred tools", () => {
     const again = new McpClients(value.directory, process.env, () => {});
     try {
       const mcp = await createMcpTools(servers, again);
-      expect(mcp.groups[0]?.tools.map((tool) => tool.name)).toEqual(["fix_crawl_site"]);
+      expect(mcp.groups[0]?.tools.map((tool) => tool.name)).toEqual(["mcp__fix__crawl_site"]);
       expect(await starts(marker)).toBe(1);
     } finally {
       await again.close();
@@ -337,68 +340,174 @@ text(await tools[found.name]({ city: "Tampa" }));`,
     }
   });
 
-  it("signs in to an OAuth HTTP server, keeps its token per device, and defers its tools", async () => {
+  it("adds, signs in to, lists and signs out of an OAuth HTTP server through monchu mcp, like pi mcp", async () => {
+    const value = await setup();
+    const server = await oauthServer(value.directory);
+    const out: string[] = [];
+    const errors: string[] = [];
+    const run = (...args: string[]) =>
+      runMcpCommand(args, {
+        home: value.directory,
+        env: process.env,
+        log: (line) => out.push(line),
+        error: (line) => errors.push(line),
+        // The demo server approves at once and redirects to the loopback callback, as a browser would.
+        openUrl: (url) => void fetch(url),
+        interactive: false,
+      });
+    try {
+      expect(await run("add", "notes", "--url", server.url, "--exposure", "deferred")).toBe(0);
+      expect(out.at(-1)).toBe(
+        "Check it with: monchu mcp list. If it requires sign-in: monchu mcp login notes",
+      );
+      expect(JSON.parse(await readFile(join(value.directory, "mcp.json"), "utf8"))).toEqual({
+        mcpServers: { notes: { url: server.url, exposure: "deferred" } },
+      });
+      // No Authorization header, so a 401 means OAuth: the server is detected as needing sign-in.
+      expect(await run("list")).toBe(1);
+      expect(out).toContain("notes: needs sign-in (deferred, sign-in: oauth)");
+      expect(out).toContain("  sign in with: monchu mcp login notes");
+      const before = await createMcpTools(
+        (await loadMcpConfig(value.directory)).servers,
+        new McpClients(value.directory, process.env, () => {}),
+      );
+      expect(before.warnings).toEqual([
+        "MCP server notes needs sign-in: run /mcp login notes or monchu mcp login notes",
+      ]);
+      expect(await run("login", "notes", "--timeout", "20")).toBe(0);
+      expect(out.at(-1)).toBe('Signed in to MCP server "notes" (1 tools).');
+      // Windows has no POSIX modes to check.
+      if (process.platform !== "win32")
+        expect((await stat(join(value.directory, "mcp-auth.json"))).mode & 0o777).toBe(0o600);
+      expect(await run("login", "notes")).toBe(0);
+      expect(out.at(-1)).toBe('Already signed in to MCP server "notes" (1 tools).');
+      // A new process uses the stored token without signing in again.
+      const clients = new McpClients(value.directory, process.env, () => {});
+      try {
+        const after = await createMcpTools((await loadMcpConfig(value.directory)).servers, clients);
+        expect(after.warnings).toEqual([]);
+        expect(
+          after.groups.map((group) => [group.name, group.tools.map((tool) => tool.name)]),
+        ).toEqual([["mcp-notes", ["mcp__notes__find_page"]]]);
+        const config = (await loadMcpConfig(value.directory)).servers.notes;
+        if (config === undefined) throw new Error("notes missing");
+        expect(
+          await clients.call("notes", config, "find_page", { title: "Roadmap" }, undefined),
+        ).toEqual({
+          content: [{ type: "text", text: "page: Roadmap" }],
+          isError: false,
+        });
+      } finally {
+        await clients.close();
+      }
+      expect(await run("logout", "notes")).toBe(0);
+      expect(out.at(-1)).toBe('Signed out of MCP server "notes".');
+      expect(await run("remove", "notes")).toBe(0);
+      expect(await run("list")).toBe(0);
+      expect(out.at(-1)).toBe("No MCP servers configured. Add one with monchu mcp add.");
+      expect(errors).toEqual([]);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("sends a /login provider's token to an auth.provider server instead of OAuth", async () => {
     const value = await setup();
     const server = await oauthServer(value.directory);
     try {
       await writeFile(
         join(value.directory, "mcp.json"),
-        JSON.stringify({ mcpServers: { notes: { url: server.url, description: "team notes" } } }),
+        JSON.stringify({
+          mcpServers: { notes: { url: server.url, auth: { provider: "notes-login" } } },
+        }),
       );
-      const servers = await loadMcpServers(value.directory);
-      const clients = new McpClients(value.directory, process.env, () => {});
+      const asked: string[] = [];
+      const clients = new McpClients(
+        value.directory,
+        process.env,
+        () => {},
+        async (provider) => {
+          asked.push(provider);
+          return "not-a-demo-token";
+        },
+      );
       try {
-        const before = await createMcpTools(servers, clients);
-        expect(before.warnings).toEqual([
-          "MCP server notes needs sign-in: run /login and pick notes",
+        const { servers } = await loadMcpConfig(value.directory);
+        const report = await mcpReports(value.directory, clients);
+        expect(report.servers.map((each) => [each.name, each.auth, each.state])).toEqual([
+          ["notes", "provider", "failed"],
         ]);
-        expect(before.groups).toEqual([]);
-        const notes = servers.notes;
-        if (notes === undefined) throw new Error("notes missing");
-        // The demo server approves at once and redirects to the loopback callback, as a browser would.
-        const opened: string[] = [];
-        await clients.login(
-          "notes",
-          notes,
-          (url) => {
-            opened.push(url);
-            void fetch(url);
-          },
-          AbortSignal.timeout(20_000),
-        );
-        expect(opened).toHaveLength(1);
-        // Windows has no POSIX modes to check.
-        if (process.platform !== "win32")
-          expect((await stat(join(value.directory, "mcp-auth.json"))).mode & 0o777).toBe(0o600);
+        expect(asked).toEqual(["notes-login"]);
+        expect(servers.notes).toEqual({ url: server.url, auth: { provider: "notes-login" } });
       } finally {
         await clients.close();
       }
-      // A new process uses the stored token without signing in again.
-      const again = new McpClients(value.directory, process.env, () => {});
-      try {
-        const after = await createMcpTools(servers, again);
-        expect(after.warnings).toEqual([]);
-        const group = after.groups[0];
-        expect(group?.name).toBe("mcp-notes");
-        expect(group?.tools.map((tool) => tool.name)).toEqual(["notes_find_page"]);
-        const notes = servers.notes;
-        if (notes === undefined) throw new Error("notes missing");
-        const result = await again.call(
-          "notes",
-          notes,
-          "find_page",
-          { title: "Roadmap" },
-          undefined,
-        );
-        expect(result).toEqual({
-          content: [{ type: "text", text: "page: Roadmap" }],
-          isError: false,
-        });
-      } finally {
-        await again.close();
-      }
     } finally {
       server.stop();
+    }
+  });
+
+  it("offers codemode-exposed tools only to codemode scripts, and hides hidden ones", async () => {
+    const value = await setup();
+    const { script, marker } = await fixtureServer(value.directory);
+    await writeFile(
+      join(value.directory, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          fix: {
+            command: process.execPath,
+            args: [script, marker],
+            toolExposure: { "crawl*": "hidden" },
+          },
+        },
+      }),
+    );
+    const clients = new McpClients(value.directory, process.env, () => {});
+    try {
+      const mcp = await createMcpTools((await loadMcpConfig(value.directory)).servers, clients);
+      expect(mcp.extension.tools).toEqual([]);
+      expect(
+        mcp.groups.map((group) => [
+          group.name,
+          group.codemode,
+          group.tools.map((tool) => tool.name),
+        ]),
+      ).toEqual([["mcp-fix", true, ["mcp__fix__echo"]]]);
+      const settings = install(value, mcp.groups);
+      route(value.faux, (request) => {
+        const last = lastMessage(request.messages);
+        const text = last?.role === "user" ? textOf(last) : "";
+        if (text === "search")
+          return fauxAssistantMessage([fauxToolCall("tool_search", { query: "echo" })], {
+            stopReason: "toolUse",
+          });
+        if (text === "script")
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("codemode", {
+                code: `const [found] = await searchTools("echo text"); text(await tools[found.name]({ text: "hey" }));`,
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        return fauxAssistantMessage("ok");
+      });
+      const { harness, root } = await open(value, settings);
+      try {
+        for (const content of ["search", "script"])
+          await (await root.submit({ type: "input", content }, context)).wait(context);
+        const [search, scripted] = await toolResults(root);
+        // With no deferred group there is nothing for tool_search to load, so it is not offered.
+        expect(textOf(search)).toContain("Tool tool_search is not available");
+        expect(textOf(scripted)).toBe('echo:{"text":"hey"}');
+        expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain(
+          "mcp__fix__echo",
+        );
+      } finally {
+        await harness.close(context);
+      }
+    } finally {
+      await clients.close();
     }
   });
 
@@ -410,7 +519,7 @@ text(await tools[found.name]({ city: "Tampa" }));`,
     );
     const clients = new McpClients(value.directory, process.env, () => {});
     try {
-      const mcp = await createMcpTools(await loadMcpServers(value.directory), clients);
+      const mcp = await createMcpTools((await loadMcpConfig(value.directory)).servers, clients);
       expect(mcp.warnings).toEqual([
         "monchu-no-such-command is not installed or not on PATH here, so gone's tools are off on this device",
       ]);

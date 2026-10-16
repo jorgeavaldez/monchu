@@ -13,7 +13,10 @@ type Input =
         | "/login"
         | "/thinking";
     }
-  | { command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model"; text: string }
+  | {
+      command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model" | "/mcp";
+      text: string;
+    }
   | { command: "/work" | "/tell" | "/cd-worker"; name: string; text: string };
 
 /** Every command once, in help order; parsing, help, and autocomplete all read this table. */
@@ -44,6 +47,10 @@ export const commands: Record<
   "/login": {
     usage: "",
     help: "log in to a provider: Codex, Claude Code, or Cloudflare for routing advice",
+  },
+  "/mcp": {
+    usage: "[login|logout|reconnect] [server]",
+    help: "MCP servers: state and tools, browser sign-in, sign-out, reconnect",
   },
   "/reload": { usage: "", help: "reload config, extensions and home/bundled skills" },
   "/restart": {
@@ -90,6 +97,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/compact":
     case "/agents":
     case "/model":
+    case "/mcp":
       return { command, text: rest };
     case "/cd":
     case "/stop":
