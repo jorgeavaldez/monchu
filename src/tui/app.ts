@@ -321,7 +321,9 @@ export async function runTerminal(
     const label = (id: string) => LOGIN_PROVIDERS.find((entry) => entry.id === id)?.label ?? id;
     if (needs.chat.length > 0)
       view.notice(
-        `login needed · ${needs.chat.map(label).join(", ")}. Run /login and pick it. To use another provider instead, log in to it, then pick its models with /model and press Ctrl+S to save them as the defaults.`,
+        needs.anyOf
+          ? `login needed · ${needs.chat.map(label).join(" or ")}. Run /login and pick one; Monchu uses that provider's models. /model changes them, and Ctrl+S there saves the pick.`
+          : `login needed · ${needs.chat.map(label).join(", ")}. Run /login and pick it. To use another provider instead, log in to it, then pick its models with /model and press Ctrl+S to save them as the defaults.`,
       );
     if (needs.classifier !== undefined && (startup || needs.chat.length === 0))
       view.notice(

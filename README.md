@@ -32,7 +32,7 @@ Monchu needs an interactive terminal.
 
    Credentials go in `<home>/auth.json`, and MCP sign-ins in `<home>/mcp-auth.json` (both mode 0600). They stay on that device and are never synced or logged. Monchu never reads other tools' credentials.
 
-3. **Models.** The defaults are Codex `gpt-6-luna` for the front and `gpt-6.1-sol` for workers. To change them, use `/model` (Ctrl+S saves the pick as the default) or edit `<home>/config.json`. A bad model name doesn't stop startup: Monchu warns, lists the valid names, and uses the default until you fix it.
+3. **Models.** Until you choose models, they follow the provider you logged in to. With Codex, the front uses `gpt-6-luna` and workers use `gpt-6.1-sol`. With Claude Code, the front uses `claude-sonnet-5-5` and workers use `claude-opus-5-5`. To choose your own, use `/model` (Ctrl+S saves the pick to `config.json`) or edit `<home>/config.json`. A bad model name never stops Monchu: startup and `/reload` warn, list the valid names, and keep a working model until you fix it.
 4. **Get acquainted.** Ask Monchu to use the `onboard` skill. It reads what is already on the machine (Claude Code, Codex, and Pi sessions and instructions, dotfiles, notes), asks before reading, and seeds your memories, device notes, and a proposed soul. The `soul-absorb` skill digests another assistant's persona or memories.
 
 ### Configuration

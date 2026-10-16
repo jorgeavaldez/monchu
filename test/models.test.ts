@@ -4,7 +4,7 @@ import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig, loadConfig } from "../src/config.ts";
-import { openModels, resolveRoles, startupRoles } from "../src/models/index.ts";
+import { configuredRoles, openModels } from "../src/models/index.ts";
 import { cleanup, fauxRole, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -20,22 +20,20 @@ describe("Monchu models", () => {
       "faux",
     ]);
     const config = await loadConfig(value.directory);
-    expect(() => resolveRoles(models, config)).not.toThrow();
-    expect(() =>
-      resolveRoles(models, { ...config, worker: { ...fauxRole, modelId: "absent" } }),
-    ).toThrow("no configured model faux/absent");
-    expect(() =>
-      resolveRoles(models, {
-        ...config,
-        classifier: { provider: "faux", modelId: "faux-1" },
-      }),
-    ).toThrow("no configured classifier model faux/faux-1");
-    expect(() =>
-      resolveRoles(models, {
-        ...config,
+    const warnings = async (change: Partial<typeof config>) =>
+      (await configuredRoles(models, { ...config, ...change })).warnings;
+    expect(await warnings({})).toEqual([]);
+    expect(await warnings({ worker: { ...fauxRole, modelId: "absent" } })).toEqual([
+      expect.stringContaining("no configured model faux/absent"),
+    ]);
+    expect(await warnings({ classifier: { provider: "faux", modelId: "faux-1" } })).toEqual([
+      expect.stringContaining("no configured classifier model faux/faux-1"),
+    ]);
+    expect(
+      await warnings({
         classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
       }),
-    ).not.toThrow();
+    ).toEqual([]);
     expect(models.getModel("cloudflare-workers-ai", "@cf/cloudflare/clef")).toBeUndefined();
     expect(await readFile(join(value.directory, "auth.json"), "utf8")).toBe("{}\n");
   });
@@ -44,7 +42,7 @@ describe("Monchu models", () => {
     const value = await setup();
     const models = await openModels(value.directory, value.faux.provider);
     const config = await loadConfig(value.directory);
-    const fixed = startupRoles(models, {
+    const fixed = await configuredRoles(models, {
       ...config,
       front: { ...fauxRole, modelId: "opus" },
       worker: { ...fauxRole, provider: "codex" },
@@ -59,9 +57,20 @@ describe("Monchu models", () => {
       "providers: openai-codex, cloudflare-workers-ai, claude-code",
     );
     expect(fixed.warnings[2]).toContain("Routing advice is off");
-    expect(startupRoles(models, config)).toEqual({ config, warnings: [] });
+    expect(await configuredRoles(models, config)).toEqual({ config, warnings: [] });
+    // On reload a bad role keeps the running one instead.
+    const running = { ...config, front: { ...fauxRole, thinkingLevel: "low" as const } };
+    const kept = await configuredRoles(
+      models,
+      { ...config, front: { ...fauxRole, modelId: "opus" } },
+      running,
+    );
+    expect(kept.config.front).toEqual(running.front);
+    expect(kept.warnings).toEqual([
+      expect.stringContaining("Using faux/faux-1 until config.json is fixed"),
+    ]);
     // A profile on an unknown model is dropped with a warning; the others stay.
-    const profiles = startupRoles(models, {
+    const profiles = await configuredRoles(models, {
       ...config,
       profiles: {
         good: { ...fauxRole, use: "u" },
@@ -71,6 +80,39 @@ describe("Monchu models", () => {
     expect(Object.keys(profiles.config.profiles)).toEqual(["good"]);
     expect(profiles.warnings).toEqual([expect.stringContaining("faux/absent (profiles.gone)")]);
     expect(profiles.warnings[0]).toContain("Profile gone is off");
+  });
+
+  it("points roles config.json leaves out at the first chat provider with credentials", async () => {
+    const value = await setup();
+    const models = await openModels(value.directory);
+    const config = {
+      ...(await loadConfig(value.directory)),
+      chosen: { front: false, worker: false },
+    };
+    expect((await configuredRoles(models, config)).config.front).toEqual(defaultConfig().front);
+    await models.login("claude-code", "oauth", {
+      prompt: async () => "sk-ant-oat01-scripted",
+      notify: () => {},
+    });
+    const claude = await configuredRoles(models, config);
+    expect(claude.config.front).toMatchObject({
+      provider: "claude-code",
+      modelId: "claude-sonnet-5-5",
+    });
+    expect(claude.config.worker).toMatchObject({
+      provider: "claude-code",
+      modelId: "claude-opus-5-5",
+    });
+    expect(claude.warnings).toEqual([]);
+    // A role config.json sets stays as written.
+    const codex = defaultConfig().front;
+    const front = await configuredRoles(models, {
+      ...config,
+      front: codex,
+      chosen: { front: true, worker: false },
+    });
+    expect(front.config.front).toEqual(codex);
+    expect(front.config.worker.provider).toBe("claude-code");
   });
 
   it("logs in to Cloudflare locally and reopens its key/account without exposing them to the catalog", async () => {

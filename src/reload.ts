@@ -23,7 +23,7 @@ import {
   type MonchuConfig,
   type Settings,
 } from "./config.ts";
-import { resolveRoles } from "./models/index.ts";
+import { configuredRoles } from "./models/index.ts";
 
 /** Reloadable modules. Static imports inside them stay cached. */
 type Reloadable = {
@@ -77,7 +77,6 @@ async function build(
   clients: McpClients,
   workerRole: () => ModelRole,
 ): Promise<Build> {
-  resolveRoles(models, config);
   const version = randomUUID();
   const modules: (keyof Reloadable)[] = [];
   const load = <Name extends keyof Reloadable>(name: Name) => {
@@ -231,11 +230,15 @@ export class Extensions {
   ): Promise<ModelRole> {
     while (this.reloading !== undefined || this.saving !== undefined)
       await Promise.allSettled([this.reloading, this.saving]);
-    const saving = saveRole(this.home, role, change, check);
+    const saving = saveRole(this.home, role, change, check, this.current.config[role]);
     this.saving = saving;
     try {
       const saved = await saving;
-      this.current = { ...this.current, config: { ...this.current.config, [role]: saved } };
+      const config = this.current.config;
+      this.current = {
+        ...this.current,
+        config: { ...config, [role]: saved, chosen: { ...config.chosen, [role]: true } },
+      };
       return saved;
     } finally {
       this.saving = undefined;
@@ -282,7 +285,9 @@ export class Extensions {
     this.reloading ??= (async () => {
       await this.saving?.catch(() => {});
       await buildForReload();
-      const config = await loadConfig(this.home);
+      // A bad role keeps the one running, with a warning, as startup falls back to the defaults.
+      const roles = await configuredRoles(this.models, await loadConfig(this.home), this.config);
+      const config = roles.config;
       if (
         config.claude.executable !== this.current.config.claude.executable ||
         config.claude.plan !== this.current.config.claude.plan ||
@@ -302,7 +307,7 @@ export class Extensions {
       await applyConfig?.(config);
       for (const extension of next.extensions) this.registry.install(extension);
       this.current = next;
-      for (const warning of next.warnings) this.report(warning);
+      for (const warning of [...roles.warnings, ...next.warnings]) this.report(warning);
       return next.modules;
     })().finally(() => {
       this.reloading = undefined;

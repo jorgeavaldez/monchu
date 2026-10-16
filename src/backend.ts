@@ -40,7 +40,7 @@ import {
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
-import { openModels, startupRoles } from "./models/index.ts";
+import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   DELETED_FROM_QUEUE,
@@ -197,7 +197,7 @@ export class Monchu {
         );
       }
       const models = await openModels(home, devProvider, written.claude);
-      const { config, warnings } = startupRoles(models, written);
+      const { config, warnings } = await configuredRoles(models, written);
       for (const warning of warnings) reports.report(warning);
       const loaded = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
@@ -258,21 +258,32 @@ export class Monchu {
   async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
     if (this.closing !== undefined) throw new Error("Monchu is closing");
     await this.models.login(providerId, type, interaction, { agentName: "Monchu" });
+    // Roles config.json leaves out follow the logged-in provider; a reload applies them from the next request.
+    const { chosen } = this.extensions.config;
+    if (chosen.front && chosen.worker) return;
+    await this.reload().catch((error: unknown) =>
+      this.reports.report(
+        `Logged in, but the reload that applies its models failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
   }
 
   /**
-   * What still needs a login: the front and worker providers without credentials, and Clef when it is configured but
-   * off for lack of them. Empty when nothing does. Never reads or returns credential values.
+   * What still needs a login: the front and worker providers without credentials (`anyOf` when logging in to any one
+   * of them is enough, since unchosen roles follow it), and Clef when it is configured but off for lack of them. Empty when nothing does. Never reads or returns credential values.
    */
-  async loginNeeds(): Promise<{ chat: string[]; classifier: string | undefined }> {
-    const { front, worker, classifier } = this.extensions.config;
+  async loginNeeds(): Promise<{ chat: string[]; anyOf: boolean; classifier: string | undefined }> {
+    const { front, worker, classifier, chosen } = this.extensions.config;
     const missing = async (provider: string) =>
       (await this.models.checkAuth(provider).catch(() => undefined)) === undefined;
     const chat: string[] = [];
     for (const provider of new Set([front.provider, worker.provider]))
       if (await missing(provider)) chat.push(provider);
+    // Without chosen roles any default provider will do, and its login picks the models.
+    const anyOf = chat.length > 0 && !chosen.front && !chosen.worker;
     return {
-      chat,
+      chat: anyOf ? defaultProviders() : chat,
+      anyOf,
       classifier:
         classifier !== null && (await missing(classifier.provider))
           ? classifier.provider

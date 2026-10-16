@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/backend.ts";
 import { loadConfig, type ClaudeConfig } from "../src/config.ts";
 import { createClaudeCodeProvider } from "../src/models/claude-code.ts";
-import { openModels, resolveRoles } from "../src/models/index.ts";
+import { configuredRoles, openModels } from "../src/models/index.ts";
 import { Extensions } from "../src/reload.ts";
 import {
   allEntries,
@@ -48,9 +48,11 @@ describe("Claude Code subscription provider", () => {
     const current = await loadConfig(value.directory);
     for (const id of ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
       const selected = { ...role, modelId: id };
-      expect(() =>
-        resolveRoles(models, { ...current, front: selected, worker: selected }),
-      ).not.toThrow();
+      const chosen = { front: true, worker: true };
+      expect(
+        (await configuredRoles(models, { ...current, front: selected, worker: selected, chosen }))
+          .warnings,
+      ).toEqual([]);
       expect(models.getModel("claude-code", id)?.contextWindow).toBe(200000);
     }
     for (const [plan, extra, opus, sonnet] of [
@@ -1076,7 +1078,7 @@ PROJECT RULES
     const extensions = await Extensions.load(value.models, before, value.directory, () => {});
     await writeFile(
       join(value.directory, "config.json"),
-      JSON.stringify({ ...before, claude: { ...before.claude, plan: "max" } }),
+      JSON.stringify({ ...before, claude: { ...before.claude, plan: "max" }, chosen: undefined }),
     );
     await expect(extensions.reload()).rejects.toThrow("use /restart");
     expect(extensions.config).toEqual(before);

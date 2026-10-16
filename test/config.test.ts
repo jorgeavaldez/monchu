@@ -2,7 +2,15 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, loadMcpServers, resolveSettings, saveRole } from "../src/config.ts";
+import {
+  defaultConfig,
+  loadConfig,
+  loadMcpServers,
+  resolveSettings,
+  saveRole,
+} from "../src/config.ts";
+
+const codex = defaultConfig();
 import { harnessSettings } from "../src/context.ts";
 import { setup, cleanup } from "./support.ts";
 
@@ -91,6 +99,7 @@ describe("config", () => {
       classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
       settings: {},
       claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
+      chosen: { front: false, worker: false },
     });
   });
 
@@ -211,7 +220,9 @@ describe("config", () => {
       settings: { theme: "light" },
     });
     const accept = () => {};
-    expect(await saveRole(directory, "worker", { thinkingLevel: "low" }, accept)).toEqual({
+    expect(
+      await saveRole(directory, "worker", { thinkingLevel: "low" }, accept, codex.worker),
+    ).toEqual({
       provider: "openai",
       modelId: "gpt-6-sol",
       thinkingLevel: "low",
@@ -222,6 +233,7 @@ describe("config", () => {
         "front",
         { provider: "claude-code", modelId: "claude-opus-5-5" },
         accept,
+        codex.front,
       ),
     ).toEqual({ provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "low" });
     expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8"))).toEqual({
@@ -232,9 +244,20 @@ describe("config", () => {
     expect(await readdir(directory)).toEqual(["config.json"]);
     // A missing file starts from the defaults and writes only the saved role.
     const fresh = await home();
-    await saveRole(fresh, "front", { thinkingLevel: "medium" }, accept);
+    await saveRole(fresh, "front", { thinkingLevel: "medium" }, accept, codex.front);
     expect(JSON.parse(await readFile(join(fresh, "config.json"), "utf8"))).toEqual({
       front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "medium" },
+    });
+    // A role the file leaves out starts from the one in use, such as the logged-in provider's default.
+    const claude = await home();
+    const opus = {
+      provider: "claude-code",
+      modelId: "claude-opus-5-5",
+      thinkingLevel: "medium",
+    } as const;
+    await saveRole(claude, "worker", { thinkingLevel: "high" }, accept, opus);
+    expect(JSON.parse(await readFile(join(claude, "config.json"), "utf8"))).toEqual({
+      worker: { ...opus, thinkingLevel: "high" },
     });
   });
 
@@ -242,20 +265,20 @@ describe("config", () => {
     const accept = () => {};
     const invalid = await home({ bogus: 1 });
     const before = await readFile(join(invalid, "config.json"), "utf8");
-    await expect(saveRole(invalid, "front", { thinkingLevel: "low" }, accept)).rejects.toThrow(
-      "unknown fields: bogus",
-    );
+    await expect(
+      saveRole(invalid, "front", { thinkingLevel: "low" }, accept, codex.front),
+    ).rejects.toThrow("unknown fields: bogus");
     expect(await readFile(join(invalid, "config.json"), "utf8")).toBe(before);
     const valid = await home({});
-    await expect(saveRole(valid, "worker", { modelId: " " }, accept)).rejects.toThrow(
+    await expect(saveRole(valid, "worker", { modelId: " " }, accept, codex.worker)).rejects.toThrow(
       "worker.modelId must be a string",
     );
     const reject = (saved: { thinkingLevel: string }) => {
       throw new Error(`no ${saved.thinkingLevel}`);
     };
-    await expect(saveRole(valid, "worker", { thinkingLevel: "max" }, reject)).rejects.toThrow(
-      "no max",
-    );
+    await expect(
+      saveRole(valid, "worker", { thinkingLevel: "max" }, reject, codex.worker),
+    ).rejects.toThrow("no max");
     expect(await readFile(join(valid, "config.json"), "utf8")).toBe("{}");
     expect(await readdir(valid)).toEqual(["config.json"]);
   });

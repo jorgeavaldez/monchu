@@ -403,8 +403,10 @@ describe("backend", () => {
     const unsubscribe = backend.onReport((message) => warnings.push(message));
     try {
       expect(warnings.join("\n")).toContain("unknown fields: bogus. Using the built-in defaults");
+      // No role is chosen, so logging in to either default provider is enough.
       expect(await backend.loginNeeds()).toEqual({
-        chat: ["openai-codex"],
+        chat: ["openai-codex", "claude-code"],
+        anyOf: true,
         classifier: "cloudflare-workers-ai",
       });
     } finally {
@@ -427,20 +429,28 @@ describe("backend", () => {
     try {
       await writeFile(
         join(home, "config.json"),
+        JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null, bogus: 1 }),
+      );
+      await expect(backend.reload()).rejects.toThrow("unknown fields: bogus");
+      // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
+      expect(await readFile(join(home, "monchu.log"), "utf8")).toContain("Reload failed: Invalid");
+      expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);
+      // A bad model reloads everything else and keeps the running front, with a warning.
+      await writeFile(
+        join(home, "config.json"),
         JSON.stringify({
           front: { ...fauxRole, provider: "openai-codex", modelId: "no-such-model" },
           worker: fauxRole,
           classifier: null,
         }),
       );
-      await expect(backend.reload()).rejects.toThrow(
-        "Monchu has no configured model openai-codex/no-such-model",
+      await backend.reload();
+      expect(warnings).toContainEqual(
+        expect.stringContaining(
+          "no configured model openai-codex/no-such-model (front); openai-codex has",
+        ),
       );
-      // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
-      expect(await readFile(join(home, "monchu.log"), "utf8")).toContain(
-        "Reload failed: Monchu has no configured model openai-codex/no-such-model",
-      );
-      expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);
+      expect(warnings.join("\n")).toContain("Using faux/faux-1 until config.json is fixed");
       await backend.submit("after failure", "after-failure", "followUp");
       await waitFor(() => requests.length === 1);
       expect(requests).toEqual(["faux-1"]);
@@ -628,7 +638,7 @@ describe("backend", () => {
         thinkingLevel: "high",
       });
       const config = await loadConfig(home);
-      await writeFile(path, JSON.stringify({ ...config, front: fauxRole }));
+      await writeFile(path, JSON.stringify({ ...config, front: fauxRole, chosen: undefined }));
       await backend.reload();
       expect(await backend.modelChoice()).toMatchObject({
         model: { id: "faux-1" },

@@ -159,6 +159,8 @@ export type MonchuConfig = {
   claude: ClaudeConfig;
   /** `null` turns classification off; otherwise it runs only while its provider has credentials. */
   classifier: ClassifierRole | null;
+  /** Roles `config.json` sets. The others follow the provider the user has logged in to. */
+  chosen: { front: boolean; worker: boolean };
 };
 
 const defaults: MonchuConfig = {
@@ -168,6 +170,7 @@ const defaults: MonchuConfig = {
   classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
+  chosen: { front: false, worker: false },
 };
 
 /** The built-in defaults, used for any field `config.json` leaves out. */
@@ -498,7 +501,7 @@ export async function loadMcpServers(home: string): Promise<Record<string, McpSe
 }
 
 /**
- * Save one role's default into `<home>/config.json`, keeping every other field as written. The whole result passes the
+ * Save one role's default into `<home>/config.json`, keeping every other field as written. A role missing from the file starts from `effective`, the one in use. The whole result passes the
  * startup validator and `check` before a temporary file atomically replaces it; an invalid file is never rewritten.
  */
 export async function saveRole(
@@ -506,13 +509,16 @@ export async function saveRole(
   role: "front" | "worker",
   change: Partial<ModelRole>,
   check: (saved: ModelRole) => void,
+  effective: ModelRole,
 ): Promise<ModelRole> {
   const path = join(home, "config.json");
   const raw = await readRaw(path);
   const value = raw === undefined ? {} : parseJson(raw, path);
   const current = parseConfig(value, path);
   if (!isObject(value)) throw new Error(`Invalid ${path}: expected a JSON object`);
-  const next = { ...value, [role]: { ...current[role], ...change } };
+  // A role the file leaves out starts from the one in use, which may follow the logged-in provider.
+  const base = current.chosen[role] ? current[role] : effective;
+  const next = { ...value, [role]: { ...base, ...change } };
   const saved = parseConfig(next, path)[role];
   check(saved);
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -562,6 +568,7 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
       profiles: profiles(value.profiles, worker),
       classifier: classifierRole(value.classifier),
       settings: runSettings(value.settings),
+      chosen: { front: value.front !== undefined, worker: value.worker !== undefined },
     };
   } catch (error) {
     throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);

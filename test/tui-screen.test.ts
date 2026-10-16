@@ -45,7 +45,10 @@ async function withTerminal(
       await writeFile(join(home, file), "Smoke home context");
     backend = await openDevMonchu(await monchuHome(true));
     const config = await loadConfig(home);
-    await writeFile(join(home, "config.json"), JSON.stringify({ ...config, settings: { theme } }));
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ ...config, settings: { theme }, chosen: undefined }),
+    );
     await backend.reload();
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
@@ -110,11 +113,11 @@ it("shows reload errors, retains settings on failure, and recovers on the next r
       path,
       JSON.stringify({
         settings: { theme: "light" },
-        front: { provider: "missing", modelId: "missing" },
+        bogus: 1,
       }),
     );
     send(screen, "/reload");
-    await visible(screen, "no configured model");
+    await visible(screen, "unknown fields: bogus");
     expect(backend.settings).toBe(settings);
     expect(backend.settings.theme).toBe("dark");
     await writeFile(path, original);
@@ -497,6 +500,8 @@ it("logs in to Claude Code with a setup-token from /login", async () => {
     await visible(screen, "claude setup-token");
     send(screen, "sk-ant-oat01-private-token");
     await visible(screen, "logged in · claude-code");
+    // No role is chosen in config.json, so the front follows the provider just logged in to.
+    await visible(screen, "claude-sonnet-5-5");
     expect(screen.output).not.toContain("sk-ant-oat01-private-token");
     const auth: unknown = JSON.parse(await readFile(join(backend.home, "auth.json"), "utf8"));
     expect(auth).toMatchObject({ "claude-code": { access: "sk-ant-oat01-private-token" } });

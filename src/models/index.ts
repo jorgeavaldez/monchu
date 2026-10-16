@@ -1,6 +1,6 @@
 import { createModels, type Models, type Provider } from "@earendil-works/pi-ai";
 import { join } from "node:path";
-import { defaultConfig, type ClaudeConfig, type MonchuConfig } from "../config.ts";
+import { defaultConfig, type ClaudeConfig, type ModelRole, type MonchuConfig } from "../config.ts";
 import { createClaudeCodeProvider } from "./claude-code.ts";
 import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
@@ -73,40 +73,65 @@ function problems(models: Models, config: MonchuConfig) {
   };
 }
 
-/** Resolve configured roles by their operation type, without requiring credentials or falling back. */
-export function resolveRoles(models: Models, config: MonchuConfig): void {
-  const found = problems(models, config);
-  const first = found.front ?? found.worker ?? found.classifier ?? found.profiles[0]?.problem;
-  if (first !== undefined) throw new Error(first);
+/** Each chat provider's front and worker defaults, in the order a home without chosen roles tries them. */
+const PROVIDER_ROLES: readonly { provider: string; front: ModelRole; worker: ModelRole }[] = [
+  { provider: "openai-codex", front: defaultConfig().front, worker: defaultConfig().worker },
+  {
+    provider: "claude-code",
+    front: { provider: "claude-code", modelId: "claude-sonnet-5-5", thinkingLevel: "low" },
+    worker: { provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "medium" },
+  },
+];
+
+/** The chat providers whose defaults a home without chosen roles follows, in the order it tries them. */
+export function defaultProviders(): string[] {
+  return PROVIDER_ROLES.map((entry) => entry.provider);
+}
+
+async function hasAuth(models: Models, provider: string): Promise<boolean> {
+  return (await models.checkAuth(provider).catch(() => undefined)) !== undefined;
 }
 
 /**
- * At startup a bad role must not keep Monchu from opening: it takes the built-in default (the classifier turns off)
- * and each replacement is returned as a warning, so the user can fix it from inside Monchu.
+ * The roles Monchu runs with. Roles `config.json` leaves out follow the first chat provider with credentials (Codex
+ * when there is none), so logging in to one provider is enough. A role naming an unknown provider or model must not
+ * stop Monchu: it keeps `running`'s role (on reload) or that default (at startup; the classifier turns off), and each
+ * replacement comes back as a warning, so the user can fix it from inside Monchu.
  */
-export function startupRoles(
+export async function configuredRoles(
   models: Models,
   config: MonchuConfig,
-): { config: MonchuConfig; warnings: string[] } {
-  const found = problems(models, config);
-  const defaults = defaultConfig();
-  const warnings: string[] = [];
+  running?: MonchuConfig,
+): Promise<{ config: MonchuConfig; warnings: string[] }> {
+  let roles = PROVIDER_ROLES[0];
+  for (const entry of PROVIDER_ROLES)
+    if (await hasAuth(models, entry.provider)) {
+      roles = entry;
+      break;
+    }
   const next = { ...config };
-  if (found.front !== undefined) {
-    next.front = defaults.front;
-    warnings.push(
-      `${found.front}. Using ${defaults.front.provider}/${defaults.front.modelId} until config.json is fixed`,
-    );
+  if (roles !== undefined) {
+    if (!config.chosen.front) next.front = roles.front;
+    if (!config.chosen.worker) next.worker = roles.worker;
   }
-  if (found.worker !== undefined) {
-    next.worker = defaults.worker;
-    warnings.push(
-      `${found.worker}. Using ${defaults.worker.provider}/${defaults.worker.modelId} until config.json is fixed`,
-    );
+  const found = problems(models, next);
+  const warnings: string[] = [];
+  const using = (problem: string, role: { provider: string; modelId: string }) =>
+    `${problem}. Using ${role.provider}/${role.modelId} until config.json is fixed`;
+  for (const field of ["front", "worker"] as const) {
+    const problem = found[field];
+    const fallback = running?.[field] ?? roles?.[field];
+    if (problem === undefined || fallback === undefined) continue;
+    next[field] = fallback;
+    warnings.push(using(problem, fallback));
   }
   if (found.classifier !== undefined) {
-    next.classifier = null;
-    warnings.push(`${found.classifier}. Routing advice is off until config.json is fixed`);
+    next.classifier = running?.classifier ?? null;
+    warnings.push(
+      next.classifier === null
+        ? `${found.classifier}. Routing advice is off until config.json is fixed`
+        : using(found.classifier, next.classifier),
+    );
   }
   if (found.profiles.length) {
     next.profiles = { ...config.profiles };

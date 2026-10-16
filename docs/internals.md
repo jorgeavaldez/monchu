@@ -4,7 +4,7 @@ How Monchu works under the hood. The [README](../README.md) covers setup and fir
 
 ## Configuration details
 
-At startup, an invalid `config.json` or a role naming an unknown provider/model does not stop Monchu: it opens on the built-in default for that part and warns, naming the valid providers or models. `/reload` instead rejects the same problems and keeps what is running. `"classifier": null` turns classification off; otherwise Clef runs only while its provider has credentials (`/login` → Cloudflare, or `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`), checked on each message.
+`front` and `worker` left out of `config.json` follow the first chat provider with credentials (Codex, then Claude Code; Codex when neither has), and a `/login` reloads to apply them. A role naming an unknown provider/model never stops Monchu: startup uses that default and `/reload` keeps the running role, both with a warning naming the valid providers or models. An invalid `config.json` opens on the built-in defaults at startup; `/reload` rejects it and keeps what is running. `"classifier": null` turns classification off; otherwise Clef runs only while its provider has credentials (`/login` → Cloudflare, or `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`), checked on each message.
 The front role is applied at startup and on `/reload`, from its next model request, except for a model or thinking level picked for the root with `/model` or `/thinking`; new workers use the current worker role. Existing workers keep their stored role.
 
 `settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults (see the README).

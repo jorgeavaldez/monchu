@@ -40,6 +40,7 @@ const config = {
   classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
   settings: {},
   claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },
+  chosen: { front: true, worker: true },
 };
 
 type VersionedModule = {
@@ -247,7 +248,10 @@ describe("in-process reload", () => {
       join(value.directory, "skills", "sample", "SKILL.md"),
       "---\nname: sample\ndescription: fresh skill\n---\ncontent\n",
     );
-    await writeFile(join(value.directory, "config.json"), JSON.stringify(config));
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ ...config, chosen: undefined }),
+    );
     // Concurrent requests share one reload.
     const reloading = extensions.reload();
     expect(extensions.reload()).toBe(reloading);
@@ -281,7 +285,7 @@ describe("in-process reload", () => {
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
       await writeFile(
         join(value.directory, "config.json"),
-        JSON.stringify({ ...config, classifier: null }),
+        JSON.stringify({ ...config, classifier: null, chosen: undefined }),
       );
       await extensions.reload();
       expect(extensions.assessment).toBeUndefined();
@@ -302,7 +306,10 @@ describe("in-process reload", () => {
   it("leaves installed extensions, config and settings unchanged when replacement preparation fails", async () => {
     const value = await setup();
     const initial = { ...config, settings: { theme: "dark", defaultTools: ["read", "bash"] } };
-    await writeFile(join(value.directory, "config.json"), JSON.stringify(initial));
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ ...initial, chosen: undefined }),
+    );
     scriptedClassifier(value.models);
     const extensions = await Extensions.load(value.models, initial, value.directory, () => {});
     const registry = extensions.registry.snapshot();
@@ -312,11 +319,12 @@ describe("in-process reload", () => {
       join(value.directory, "config.json"),
       JSON.stringify({
         ...initial,
+        chosen: undefined,
         settings: { theme: "light", defaultTools: ["fffind"] },
-        classifier: { provider: "missing", modelId: "missing" },
+        bogus: 1,
       }),
     );
-    await expect(extensions.reload()).rejects.toThrow("no configured classifier model");
+    await expect(extensions.reload()).rejects.toThrow("unknown fields: bogus");
     expect(extensions.registry.snapshot()).toBe(registry);
     expect(extensions.settings).toBe(settings);
     expect(extensions.config).toBe(initial);
@@ -328,7 +336,10 @@ describe("in-process reload", () => {
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
       expect((await root.agent(context)).tools.map((tool) => tool.name)).not.toContain("fffind");
       await (await root.submit({ type: "input", content: "still works" }, context)).wait(context);
-      await writeFile(join(value.directory, "config.json"), JSON.stringify(initial));
+      await writeFile(
+        join(value.directory, "config.json"),
+        JSON.stringify({ ...initial, chosen: undefined }),
+      );
       await extensions.reload();
       expect(extensions.settings).not.toBe(settings);
     } finally {
