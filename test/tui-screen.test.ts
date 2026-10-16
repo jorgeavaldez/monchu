@@ -662,8 +662,9 @@ describe.each([
       send(screen, "/agents");
       const panel = await visible(screen, "Enter view");
       // The panel lists the root and each worker with status and context, behind the dock's compact counts.
-      expect(panel.join("\n")).toMatch(/root\s+○ idle/);
-      expect(panel.join("\n")).toMatch(/reader\s+○ idle/);
+      // An idle agent shows how long ago it last did something, beside its status.
+      expect(panel.join("\n")).toMatch(/root\s+○ idle \d+s\s+\d+\.\d%/);
+      expect(panel.join("\n")).toMatch(/reader\s+○ idle \d+s\s+\d+\.\d%/);
       screen.sendInput("\x1b[B"); // down to the worker, then select with the actual keyboard path
       screen.sendInput("\r");
       // The worker's context leads the footer, and the root's stays beside it.

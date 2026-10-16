@@ -142,7 +142,7 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 
 `/help` lists the commands; `src/tui/commands.ts` defines them.
 
-`/agents` opens a live panel of the root and every worker: status (working or idle), context fill, and directory where it fits.
+`/agents` opens a live panel of the root and every worker: status (working, or idle with how long ago it last did something), context fill, and directory where it fits.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.

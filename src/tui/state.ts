@@ -130,6 +130,16 @@ function estimate(message: Message): number {
   return Math.ceil(chars / 4);
 }
 
+/** When the conversation last did something: its newest message, a reply counted from when it ended. */
+export function lastActive(view: ConversationView): number | undefined {
+  for (const entry of view.entries.toReversed())
+    for (const message of (entry.model ?? []).toReversed()) {
+      if (message.role === "system") continue;
+      return message.timestamp + (message.role === "assistant" ? (message.durationMs ?? 0) : 0);
+    }
+  return undefined;
+}
+
 const usages = new WeakMap<readonly EntryRecord[], ContextUsage>();
 
 /**

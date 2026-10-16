@@ -13,7 +13,7 @@ import { ModelSelectorComponent } from "./components/model-selector.ts";
 import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
 import type { Meter } from "./components/footer.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
-import { contextUsage, presentation } from "./state.ts";
+import { contextUsage, lastActive, presentation } from "./state.ts";
 import { MonchuTui } from "./view.ts";
 
 /** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
@@ -96,6 +96,7 @@ export async function runTerminal(
               status: status(presentation(root.value).busy),
               meter: meter(root.value),
               cwd: presentation(root.value).cwd,
+              active: lastActive(root.value),
             },
           ];
     return [
@@ -106,6 +107,7 @@ export async function runTerminal(
         status: status(presentation(state.value).busy),
         meter: meter(state.value),
         cwd: presentation(state.value).cwd ?? summary.cwd,
+        active: lastActive(state.value),
       })),
     ];
   }

@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Goal } from "../../goals.ts";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
-import { statusText, type AgentStatus } from "./agents-panel.ts";
+import { age, statusText, type AgentStatus } from "./agents-panel.ts";
 import { shortPath } from "./footer.ts";
 
 const isOpen = (goal: Goal) => goal.status === "active" || goal.status === "waiting";
@@ -33,15 +33,6 @@ function word(status: Goal["status"]): string {
       : status === "done"
         ? theme.fg("success", "done")
         : theme.fg("dim", "dropped");
-}
-
-/** Time since a change, compactly: 40s, 12m, 3h, 5d. */
-function age(since: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
 }
 
 /** `text` wrapped under an indent, each stored line break kept. */

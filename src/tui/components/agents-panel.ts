@@ -12,6 +12,15 @@ import { meterText, shortPath, type Meter } from "./footer.ts";
 /** Running now, or not. */
 export type AgentStatus = "working" | "idle";
 
+/** Time since a change, compactly: 40s, 12m, 3h, 5d. */
+export function age(since: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 /** One conversation in the agents panel: the root, value `""`, or a worker by name. */
 export type AgentRow = {
   value: string;
@@ -19,6 +28,8 @@ export type AgentRow = {
   status: AgentStatus;
   meter: Meter | undefined;
   cwd: string | undefined;
+  /** When it last did something; shown as an age only while idle. */
+  active: number | undefined;
 };
 
 /** A status as a colored mark and word: the same words the dock counts and Herdr shows. */
@@ -62,9 +73,15 @@ export class AgentsPanel implements Component, Focusable {
     const lines = this.rows.map((row) => {
       const selected = row.value === this.selected;
       const name = row.name.padEnd(nameWidth);
+      // An idle agent says how long ago it last did something: `○ idle 12m`, in the status column.
+      const status = `${statusText(row.status)}${
+        row.status === "idle" && row.active !== undefined
+          ? theme.fg("dim", ` ${age(row.active)}`)
+          : ""
+      }`;
       const head = `${selected ? list.selectedText("›") : " "} ${
         selected ? list.selectedText(name) : name
-      }  ${statusText(row.status)}${" ".repeat(9 - visibleWidth(statusText(row.status)))}${
+      }  ${status}${" ".repeat(Math.max(0, 10 - visibleWidth(status)))}${
         row.meter === undefined ? "" : `  ${meterText(row.meter)}`
       }`;
       const cwd = row.cwd === undefined ? "" : theme.fg("dim", `  ${shortPath(row.cwd)}`);
