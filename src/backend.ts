@@ -28,8 +28,10 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AssessmentsDoc, escalationSummary, type Assessment } from "./classifier.ts";
 import {
+  defaultConfig,
   isThinkingLevel,
   loadConfig,
+  type MonchuConfig,
   thinkingLevels,
   type ModelRole,
   type Settings,
@@ -37,7 +39,7 @@ import {
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
-import { openModels } from "./models/index.ts";
+import { openModels, startupRoles } from "./models/index.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   DELETED_FROM_QUEUE,
@@ -152,9 +154,20 @@ export class Monchu {
           { cause: error },
         );
       }
-      const config = await loadConfig(home);
-      const models = await openModels(home, devProvider, config.claude);
       const reports = new Reports(join(home, "monchu.log"));
+      // A broken config.json must not keep Monchu from opening: the defaults apply and the warning says why.
+      let written: MonchuConfig;
+      try {
+        written = await loadConfig(home);
+      } catch (error) {
+        written = defaultConfig();
+        reports.report(
+          `${error instanceof Error ? error.message : String(error)}. Using the built-in defaults until it is fixed`,
+        );
+      }
+      const models = await openModels(home, devProvider, written.claude);
+      const { config, warnings } = startupRoles(models, written);
+      for (const warning of warnings) reports.report(warning);
       const loaded = await Extensions.load(models, config, home, (warning) =>
         reports.report(warning),
       );
@@ -213,6 +226,26 @@ export class Monchu {
   async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
     if (this.closing !== undefined) throw new Error("Monchu is closing");
     await this.models.login(providerId, type, interaction, { agentName: "Monchu" });
+  }
+
+  /**
+   * What still needs a login: the front and worker providers without credentials, and Clef when it is configured but
+   * off for lack of them. Empty when nothing does. Never reads or returns credential values.
+   */
+  async loginNeeds(): Promise<{ chat: string[]; classifier: string | undefined }> {
+    const { front, worker, classifier } = this.extensions.config;
+    const missing = async (provider: string) =>
+      (await this.models.checkAuth(provider).catch(() => undefined)) === undefined;
+    const chat: string[] = [];
+    for (const provider of new Set([front.provider, worker.provider]))
+      if (await missing(provider)) chat.push(provider);
+    return {
+      chat,
+      classifier:
+        classifier !== null && (await missing(classifier.provider))
+          ? classifier.provider
+          : undefined,
+    };
   }
 
   /** Successful reload notifications; callers re-read the single settings owner. */

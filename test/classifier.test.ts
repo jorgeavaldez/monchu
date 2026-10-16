@@ -1,5 +1,6 @@
 import {
   type ClassifierResult,
+  createProvider,
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
@@ -62,7 +63,6 @@ async function withAssessment(extensions: readonly Extension[] = [], waitMs = 20
   const assessment = createEffortAssessment(
     value.models,
     { provider: classifierModel.provider, modelId: classifierModel.id },
-    undefined,
     { waitMs },
   );
   value.registry.install(assessment.extension);
@@ -401,5 +401,42 @@ describe("routing helper", () => {
       message: "401 from provider",
     });
     await test.harness.close(context);
+  });
+
+  it("stays off without its provider's credentials and sends input to the front unassessed", async () => {
+    const value = await setup();
+    const requests: unknown[] = [];
+    value.models.setProvider(
+      createProvider({
+        id: "clef-off",
+        auth: { apiKey: { name: "Off", resolve: async () => undefined } },
+        models: [{ ...classifierModel, provider: "clef-off" }],
+        classifiers: {
+          "test-classifier": {
+            classify: async (_model, request) => {
+              requests.push(request);
+              return routed("front", 0.9);
+            },
+          },
+        },
+      }),
+    );
+    const assessment = createEffortAssessment(value.models, {
+      provider: "clef-off",
+      modelId: classifierModel.id,
+    });
+    value.registry.install(assessment.extension);
+    const opened = await open(value);
+    route(value.faux, () => fauxAssistantMessage([fauxText("hi")]));
+    expect(await assessment.available()).toBe(false);
+    await (
+      await assessment.submit(opened.root, "hello", "test:off", "followUp", context)
+    ).wait(context);
+    expect(await userTexts(opened.root)).toEqual(["hello"]);
+    expect(
+      (await opened.harness.snapshot(AssessmentsDoc, opened.root.id, context))?.items ?? [],
+    ).toEqual([]);
+    expect(requests).toEqual([]);
+    await opened.harness.close(context);
   });
 });

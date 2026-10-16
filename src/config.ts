@@ -150,20 +150,22 @@ export type MonchuConfig = {
   worker: ModelRole;
   settings: RunSettings;
   claude: ClaudeConfig;
-  /** `null` turns classification off explicitly. */
+  /** `null` turns classification off; otherwise it runs only while its provider has credentials. */
   classifier: ClassifierRole | null;
-  /** Overrides the account ID from Pi's Cloudflare credentials. Not a secret. */
-  cloudflareAccountId: string | undefined;
 };
 
 const defaults: MonchuConfig = {
   front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
   worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
   classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
-  cloudflareAccountId: undefined,
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
 };
+
+/** The built-in defaults, used for any field `config.json` leaves out. */
+export function defaultConfig(): MonchuConfig {
+  return defaults;
+}
 
 export const thinkingLevels = [
   "off",
@@ -507,15 +509,9 @@ export async function saveRole(
 function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
     if (!isObject(value)) throw new Error("expected a JSON object");
-    const known = ["front", "worker", "classifier", "cloudflareAccountId", "settings", "claude"];
+    const known = ["front", "worker", "classifier", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
-    const accountId = value.cloudflareAccountId;
-    if (
-      accountId !== undefined &&
-      (typeof accountId !== "string" || !/^[a-f0-9]{32}$/i.test(accountId))
-    )
-      throw new Error("cloudflareAccountId must be a 32-character hex ID");
     let claude = defaults.claude;
     if (value.claude !== undefined) {
       object(value.claude, "claude", ["executable", "plan", "longContextExtraUsage"]);
@@ -538,7 +534,6 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
       front: modelRole(value.front, "front", defaults.front),
       worker: modelRole(value.worker, "worker", defaults.worker),
       classifier: classifierRole(value.classifier),
-      cloudflareAccountId: accountId,
       settings: runSettings(value.settings),
     };
   } catch (error) {

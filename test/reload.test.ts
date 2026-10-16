@@ -37,7 +37,6 @@ const config = {
   front: fauxRole,
   worker: fauxRole,
   classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
-  cloudflareAccountId: undefined,
   settings: {},
   claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },
 };

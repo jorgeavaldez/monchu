@@ -16,6 +16,13 @@ import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { contextUsage, lastActive, presentation } from "./state.ts";
 import { MonchuTui } from "./view.ts";
 
+/** Providers /login offers, in menu order. */
+const LOGIN_PROVIDERS = [
+  { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)" },
+  { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)" },
+  { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (optional routing advice)" },
+];
+
 /** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
 type PickTarget =
   | { kind: "conversation"; name: string | undefined }
@@ -303,6 +310,24 @@ export async function runTerminal(
     );
   }
 
+  /** First-run guidance: which providers still need /login, and whether Clef is off for lack of one. */
+  async function loginHint(startup: boolean): Promise<void> {
+    const needs = await backend.loginNeeds();
+    const label = (id: string) => LOGIN_PROVIDERS.find((entry) => entry.id === id)?.label ?? id;
+    if (needs.chat.length > 0)
+      view.notice(
+        [
+          `login needed · ${needs.chat.map(label).join(", ")}`,
+          "Run /login and pick it. To use another provider, log in to that one,",
+          "then pick its models with /model; Ctrl+S saves them as the defaults.",
+        ].join("\n"),
+      );
+    if (needs.classifier !== undefined && (startup || needs.chat.length === 0))
+      view.notice(
+        `routing advice off · /login → ${label(needs.classifier)} turns it on; "classifier": null in config.json hides this`,
+      );
+  }
+
   async function handle(raw: string, whenBusy: WhenBusy): Promise<void> {
     if (closing) return;
     const input = parseInput(raw);
@@ -324,11 +349,7 @@ export async function runTerminal(
             {
               type: "select",
               message: "Choose provider:",
-              options: [
-                { id: "openai-codex", label: "OpenAI Codex (device code)" },
-                { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (API key)" },
-                { id: "claude-code", label: "Claude Code (setup-token)" },
-              ],
+              options: LOGIN_PROVIDERS,
             },
             controller.signal,
           );
@@ -358,6 +379,7 @@ export async function runTerminal(
             },
           );
           view.notice(`logged in · ${provider}`);
+          await loginHint(false);
         } catch {
           // Provider failures can include entered credentials. Never echo raw login errors.
           view.notice(
@@ -545,6 +567,7 @@ export async function runTerminal(
     }
     show(true);
     view.intro(backend.home);
+    await loginHint(true);
     await exited;
   } finally {
     closing = true;

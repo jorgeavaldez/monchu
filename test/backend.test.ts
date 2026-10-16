@@ -392,6 +392,27 @@ describe("backend", () => {
       .toBe(true);
   });
 
+  it("opens on the defaults when config.json is broken and says what still needs a login", async () => {
+    const value = await setup();
+    const home = join(value.directory, "broken");
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, "config.json"), JSON.stringify({ front: fauxRole, bogus: 1 }));
+    prepareHome(home);
+    const backend = await Monchu.open(home, value.faux.provider);
+    const warnings: string[] = [];
+    const unsubscribe = backend.onReport((message) => warnings.push(message));
+    try {
+      expect(warnings.join("\n")).toContain("unknown fields: bogus. Using the built-in defaults");
+      expect(await backend.loginNeeds()).toEqual({
+        chat: ["openai-codex"],
+        classifier: "cloudflare-workers-ai",
+      });
+    } finally {
+      unsubscribe();
+      await backend.close();
+    }
+  });
+
   it("logs reload failures and reports reload warnings, keeping the previous front on failure", async () => {
     const value = await setup();
     const requests: string[] = [];

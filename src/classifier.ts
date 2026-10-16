@@ -208,7 +208,6 @@ type AssessState = { phase: "classify" } | { phase: "escalate"; result: Assessme
 export function createEffortAssessment(
   models: Models,
   role: ClassifierRole,
-  accountId: string | undefined,
   options: { waitMs?: number } = {},
 ) {
   const waitMs = options.waitMs ?? WAIT_MS;
@@ -233,6 +232,14 @@ export function createEffortAssessment(
   const model = models.getModelOfType("classifier", role.provider, role.modelId);
   if (model === undefined)
     throw new Error(`Pi has no configured classifier model ${role.provider}/${role.modelId}`);
+  /** Whether Clef's provider has credentials now; a later /login turns it on without a reload. */
+  async function available(): Promise<boolean> {
+    try {
+      return (await models.checkAuth(role.provider)) !== undefined;
+    } catch {
+      return false;
+    }
+  }
 
   /** The task's record; `undefined` once a revision replaced or dropped it, and the task's answer no longer counts. */
   async function record(tx: Tx, task: { id: TaskId; conversationId: ConversationId }) {
@@ -246,7 +253,6 @@ export function createEffortAssessment(
     initial: () => ({ phase: "classify" }),
     phases: {
       classify: async (task, runtime, context) => {
-        const apiKey = process.env.MONCHU_CF_WORKERS_AI_TOKEN;
         const answer = await models.classify(
           model,
           {
@@ -258,12 +264,7 @@ export function createEffortAssessment(
             },
             questions: questions(task.input.roster ?? []),
           },
-          {
-            signal: runtime.signal,
-            // Pi's stored or environment Cloudflare credentials apply unless these overrides are set.
-            ...(apiKey === undefined ? {} : { apiKey }),
-            ...(accountId === undefined ? {} : { env: { CLOUDFLARE_ACCOUNT_ID: accountId } }),
-          },
+          { signal: runtime.signal },
         );
         runtime.signal.throwIfAborted();
         const route = answer.answers.route;
@@ -409,6 +410,7 @@ export function createEffortAssessment(
   }
 
   return {
+    available,
     /**
      * Admit the user's message to the front, then start its assessment. Resolves on admission; neither the front's reply
      * nor this call waits for the classifier. A retry with the same request ID reuses the submission and assessment.
@@ -420,11 +422,11 @@ export function createEffortAssessment(
       whenBusy: WhenBusy,
       context: Context,
     ) {
+      const input = { type: "input" as const, content: message, requestId, whenBusy };
+      // Clef is optional: without its provider's credentials, input goes to the front unassessed.
+      if (!(await available())) return front.submit(input, context);
       const recent = await recentOf(front, context);
-      const submission = await front.submit(
-        { type: "input", content: message, requestId, whenBusy },
-        context,
-      );
+      const submission = await front.submit(input, context);
       await front.commit(async (tx) => {
         const state = await tx.doc(AssessmentsDoc, front.id);
         if (state.items.some((item) => item.submissionId === submission.id)) return;

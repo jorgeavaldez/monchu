@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.ts";
-import { openModels, resolveRoles } from "../src/models/index.ts";
+import { defaultConfig, loadConfig } from "../src/config.ts";
+import { openModels, resolveRoles, startupRoles } from "../src/models/index.ts";
 import { cleanup, fauxRole, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -38,6 +38,28 @@ describe("Monchu models", () => {
     ).not.toThrow();
     expect(models.getModel("cloudflare-workers-ai", "@cf/cloudflare/clef")).toBeUndefined();
     expect(await readFile(join(value.directory, "auth.json"), "utf8")).toBe("{}\n");
+  });
+
+  it("opens with the built-in defaults for a bad role and names the valid choices", async () => {
+    const value = await setup();
+    const models = await openModels(value.directory, value.faux.provider);
+    const config = await loadConfig(value.directory);
+    const fixed = startupRoles(models, {
+      ...config,
+      front: { ...fauxRole, modelId: "opus" },
+      worker: { ...fauxRole, provider: "codex" },
+      classifier: { provider: "faux", modelId: "faux-1" },
+    });
+    expect(fixed.config.front).toEqual(defaultConfig().front);
+    expect(fixed.config.worker).toEqual(defaultConfig().worker);
+    expect(fixed.config.classifier).toBeNull();
+    expect(fixed.warnings).toHaveLength(3);
+    expect(fixed.warnings[0]).toContain("no configured model faux/opus (front); faux has");
+    expect(fixed.warnings[1]).toContain(
+      "providers: openai-codex, cloudflare-workers-ai, claude-code",
+    );
+    expect(fixed.warnings[2]).toContain("Routing advice is off");
+    expect(startupRoles(models, config)).toEqual({ config, warnings: [] });
   });
 
   it("logs in to Cloudflare locally and reopens its key/account without exposing them to the catalog", async () => {

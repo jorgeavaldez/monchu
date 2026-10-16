@@ -88,7 +88,6 @@ describe("config", () => {
       front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
       worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
       classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
-      cloudflareAccountId: undefined,
       settings: {},
       claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
     });
@@ -122,12 +121,11 @@ describe("config", () => {
     await expect(loadMcpServers(directory)).rejects.toThrow(message);
   });
 
-  it("reads roles, turns the classifier off with null, and keeps the account override", async () => {
+  it("reads roles and turns the classifier off with null", async () => {
     const config = await loadConfig(
       await home({
         worker: { provider: "openai", modelId: "gpt-6-sol" },
         classifier: null,
-        cloudflareAccountId: "0123456789abcdef0123456789abcdef",
       }),
     );
     expect(config.worker).toEqual({
@@ -136,7 +134,6 @@ describe("config", () => {
       thinkingLevel: "high",
     });
     expect(config.classifier).toBeNull();
-    expect(config.cloudflareAccountId).toBe("0123456789abcdef0123456789abcdef");
   });
 
   it("validates the run-settings subset without loading a Pi settings file", async () => {
@@ -164,7 +161,10 @@ describe("config", () => {
   it.each([
     [{ bogus: 1 }, "unknown fields: bogus"],
     [{ front: { provider: "p", modelId: "m", thinkingLevel: "huge" } }, "front.thinkingLevel"],
-    [{ cloudflareAccountId: "nope" }, "cloudflareAccountId"],
+    [
+      { cloudflareAccountId: "0123456789abcdef0123456789abcdef" },
+      "unknown fields: cloudflareAccountId",
+    ],
     [{ classifier: "clef" }, "classifier must be an object"],
     [{ settings: { retry: { enabled: "yes" } } }, "settings.retry.enabled"],
     [{ settings: { retry: { provider: { timeoutMs: 0 } } } }, "settings.retry.provider.timeoutMs"],
@@ -184,7 +184,6 @@ describe("config", () => {
 
   it("saves one role default atomically, keeping every other field and filling the role from its effective value", async () => {
     const directory = await home({
-      cloudflareAccountId: "0123456789abcdef0123456789abcdef",
       worker: { provider: "openai", modelId: "gpt-6-sol" },
       settings: { theme: "light" },
     });
@@ -203,7 +202,6 @@ describe("config", () => {
       ),
     ).toEqual({ provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "low" });
     expect(JSON.parse(await readFile(join(directory, "config.json"), "utf8"))).toEqual({
-      cloudflareAccountId: "0123456789abcdef0123456789abcdef",
       worker: { provider: "openai", modelId: "gpt-6-sol", thinkingLevel: "low" },
       settings: { theme: "light" },
       front: { provider: "claude-code", modelId: "claude-opus-5-5", thinkingLevel: "low" },

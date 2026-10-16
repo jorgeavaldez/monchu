@@ -415,6 +415,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     send(screen, "/login");
     await visible(screen, "Choose provider:");
     screen.sendInput("\x1b[B");
+    screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
     screen.sendInput("private-key-123");
@@ -436,6 +437,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     // Raw provider errors must not echo the submitted key, even after another login fails.
     send(screen, "/login");
     await visible(screen, "Choose provider:");
+    screen.sendInput("\x1b[B");
     screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
@@ -491,9 +493,8 @@ it("logs in to Claude Code with a setup-token from /login", async () => {
     send(screen, "/login");
     await visible(screen, "Choose provider:");
     screen.sendInput("\x1b[B");
-    screen.sendInput("\x1b[B");
     screen.sendInput("\r");
-    await visible(screen, "Paste a Claude Code setup-token");
+    await visible(screen, "claude setup-token");
     send(screen, "sk-ant-oat01-private-token");
     await visible(screen, "logged in · claude-code");
     expect(screen.output).not.toContain("sk-ant-oat01-private-token");

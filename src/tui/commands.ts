@@ -43,7 +43,7 @@ export const commands: Record<
   "/cd-worker": { usage: "<name> <path>", help: "change an idle worker's directory" },
   "/login": {
     usage: "",
-    help: "private provider login (Codex device code, Cloudflare API key, or Claude Code setup-token)",
+    help: "log in to a provider: Codex, Claude Code, or Cloudflare for routing advice",
   },
   "/reload": { usage: "", help: "reload config, extensions and home/bundled skills" },
   "/restart": {

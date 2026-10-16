@@ -850,7 +850,8 @@ export function createClaudeCodeProvider(
           const token = (
             await interaction.prompt({
               type: "secret",
-              message: "Paste a Claude Code setup-token (not an API key)",
+              message:
+                "Run `claude setup-token` in another terminal (Anthropic's own sign-in), then paste the token it prints here",
             })
           ).trim();
           interaction.signal.throwIfAborted();

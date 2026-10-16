@@ -100,11 +100,7 @@ async function build(
   const assessment =
     config.classifier === null
       ? undefined
-      : (await load("classifier")).createEffortAssessment(
-          models,
-          config.classifier,
-          config.cloudflareAccountId,
-        );
+      : (await load("classifier")).createEffortAssessment(models, config.classifier);
   return {
     modules,
     extensions: [
