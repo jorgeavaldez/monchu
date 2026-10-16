@@ -39,18 +39,14 @@ const ROUTING_TOOLS = new Set([
 
 /** Marks the follow-up input an escalation submits, so a client can label it as system context. */
 export const ESCALATION_PREFIX = "[Routing advice";
-/** The label of escalations from before routing advice, still in older transcripts. */
-const LEGACY_PREFIX = "[Effort assessment";
 const ESCALATION_SUFFIX = ". Not a new user instruction.]";
 
 /** The assessment an escalation input's text reports, for clients that label it; `undefined` for any other text. */
 export function escalationSummary(content: string): string | undefined {
   const [label = ""] = content.split("\n", 1);
-  if (!label.endsWith(ESCALATION_SUFFIX)) return undefined;
-  for (const prefix of [ESCALATION_PREFIX, LEGACY_PREFIX])
-    if (label.startsWith(`${prefix}: `))
-      return label.slice(prefix.length + 2, -ESCALATION_SUFFIX.length);
-  return undefined;
+  const start = `${ESCALATION_PREFIX}: `;
+  if (!label.startsWith(start) || !label.endsWith(ESCALATION_SUFFIX)) return undefined;
+  return label.slice(start.length, -ESCALATION_SUFFIX.length);
 }
 
 /** A worker as the routing helper sees it. */
@@ -111,15 +107,6 @@ export type AssessmentResult =
       split: Answer<"one" | "several">;
       usage: { input: number; output: number; costUsd: number } | null;
     }
-  | {
-      /** Effort and scope, from before routing advice; kept so stored assessments still read. */
-      status: "assessed";
-      effort: "single_turn" | "sustained";
-      effortConfidence: number;
-      scope: "contained" | "expanding";
-      scopeConfidence: number;
-      usage: { input: number; output: number; costUsd: number } | null;
-    }
   | { status: "failed"; message: string };
 
 export type Assessment = {
@@ -155,8 +142,6 @@ const percent = (value: number) => `${Math.round(value * 100)}%`;
 /** A short label of the answers, for escalations and clients. */
 export function describe(result: AssessmentResult): string {
   if (result.status === "failed") return `unavailable (${result.message})`;
-  if (result.status === "assessed")
-    return `effort ${result.effort} (${percent(result.effortConfidence)}), scope ${result.scope} (${percent(result.scopeConfidence)})`;
   const parts = [
     `${result.route.choice === "worker" ? "needs a worker" : "front can answer"} (${percent(result.route.probability)})`,
   ];
@@ -175,8 +160,6 @@ export function describe(result: AssessmentResult): string {
 function advice(result: AssessmentResult): string {
   if (result.status === "failed")
     return `Routing helper unavailable (${result.message}). Route by your own judgment.`;
-  if (result.status !== "routed")
-    return `Effort assessment of the user's latest request: ${describe(result)}.`;
   const lines: string[] = [];
   if (result.route.probability < SURE) lines.push("unsure whether it needs a worker");
   else if (result.route.choice === "worker")

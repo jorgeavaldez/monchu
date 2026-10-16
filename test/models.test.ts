@@ -33,10 +33,10 @@ describe("Monchu models", () => {
     expect(() =>
       resolveRoles(models, {
         ...config,
-        classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef-flash" },
+        classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
       }),
     ).not.toThrow();
-    expect(models.getModel("cloudflare-workers-ai", "@cf/cloudflare/clef-flash")).toBeUndefined();
+    expect(models.getModel("cloudflare-workers-ai", "@cf/cloudflare/clef")).toBeUndefined();
     expect(await readFile(join(value.directory, "auth.json"), "utf8")).toBe("{}\n");
   });
 

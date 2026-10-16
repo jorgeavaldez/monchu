@@ -227,7 +227,7 @@ export class Monchu {
     else await assessment.submit(this.front, message, requestId, whenBusy, context);
   }
 
-  /** Effort assessments of front inputs as they settle, newest last. Returns a stop function. */
+  /** Routing assessments of front inputs as they settle, newest last. Returns a stop function. */
   async watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void> {
     // Observation needs a stored document; reading it in a commit creates it on a fresh home.
     await this.front.commit(async (tx) => {

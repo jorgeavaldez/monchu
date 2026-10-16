@@ -135,7 +135,7 @@ export type MonchuConfig = {
 const defaults: MonchuConfig = {
   front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
   worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
-  classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef-flash" },
+  classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
   cloudflareAccountId: undefined,
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },

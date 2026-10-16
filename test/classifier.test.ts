@@ -238,13 +238,10 @@ describe("routing helper", () => {
     expect(texts[1]).toMatch(
       /^\[Routing advice: needs a worker \(92%\), several lines of work \(80%\)/,
     );
-    // Clients show only the assessment, without the label's prose, also for older escalations.
+    // Clients show only the assessment, without the label's prose.
     expect(escalationSummary(texts[1] ?? "")).toBe(
       "needs a worker (92%), several lines of work (80%)",
     );
-    expect(
-      escalationSummary("[Effort assessment: effort sustained (92%). Not a new user instruction.]"),
-    ).toBe("effort sustained (92%)");
     expect(escalationSummary("[Routing advice is a user's own words")).toBeUndefined();
     expect((await test.items())[0]?.escalated).toBe(true);
     await test.harness.close(context);

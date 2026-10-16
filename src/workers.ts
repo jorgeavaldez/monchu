@@ -262,7 +262,7 @@ const NOTICE_GUIDANCE =
   "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs. If the worker is blocked or needs something (an answer, access, another worker's help), unblock it now: answer it, relay to the worker that can help, or ask the user; then tell the worker how it gets unblocked.";
 
 /** Front inputs that are not the user's own words: worker notices and routing-helper follow-ups. */
-const NOT_THE_USER = /^\[(Worker |Background worker |Effort assessment|Routing advice)/;
+const NOT_THE_USER = /^\[(Worker |Background worker |Routing advice)/;
 
 /** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
 export const DELETED_FROM_QUEUE = "deleted";
