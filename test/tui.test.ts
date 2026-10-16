@@ -82,7 +82,7 @@ describe("terminal input boundary", () => {
     expect(help).toContain("User-only");
   });
 
-  it("restores the terminal and stops input before /restart re-executes, reopens storage, and propagates the child code", async () => {
+  it("restores the terminal and stops input before /restart re-executes in place, reopens storage, and propagates the code", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home);
@@ -106,10 +106,10 @@ describe("terminal input boundary", () => {
         if (state.value.entries.length !== 0) throw new Error("Queued input was admitted after restart approval");
         state.dispose();
         await backend.close();
-        appendFileSync(events, "reopened\\n");
+        appendFileSync(events, "reopened " + process.pid + "\\n");
         process.exit(23);
       }
-      appendFileSync(events, "started\\n");
+      appendFileSync(events, "started " + process.pid + "\\n");
       const screen = {
         columns: 100, rows: 40, kittyProtocolActive: false,
         start(input) { queueMicrotask(() => { input("/restart"); input("\\r"); input("/missing"); input("\\r"); }); },
@@ -144,9 +144,16 @@ describe("terminal input boundary", () => {
     expect(result, result.output).toMatchObject({ code: 23 });
     const events = (await readFile(eventsPath, "utf8")).trim().split("\n");
     expect(events).toHaveLength(4);
-    expect(events.at(-1)).toBe("reopened");
-    expect(events.indexOf("stopped")).toBeLessThan(events.indexOf("reopened"));
-    expect(events.indexOf("restored")).toBeLessThan(events.indexOf("reopened"));
+    const [started, pid] = events[0]?.split(" ") ?? [];
+    expect(started).toBe("started");
+    // Where execve exists the restarted Monchu is the same process, so restarts never chain processes.
+    expect(events.at(-1)).toBe(
+      typeof process.execve === "function"
+        ? `reopened ${pid}`
+        : expect.stringMatching(/^reopened /),
+    );
+    expect(events.indexOf("stopped")).toBeLessThan(events.length - 1);
+    expect(events.indexOf("restored")).toBeLessThan(events.length - 1);
   }, 30_000);
 });
 
