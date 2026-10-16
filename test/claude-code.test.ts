@@ -644,6 +644,9 @@ describe("Claude Code subscription provider", () => {
       expect(worker).toContain("SHARED MANUAL");
       expect(worker).not.toContain("FRONT ONLY");
       expect(front).not.toContain("PROJECT RULES");
+      // Declared tools are prefixed; scripts and instructions name them without it.
+      for (const prompt of [front, worker])
+        expect(prompt).toContain("`mcp__monchu__close_worker` is `tools.close_worker`");
       expect(worker).toContain(
         `<project_instructions path="${join(project, "AGENTS.md")}">
 PROJECT RULES

@@ -77,6 +77,13 @@ const oneMillion = new Set([
   "claude-sonnet-5-5",
   "claude-sonnet-5",
 ]);
+/**
+ * Claude Code declares Monchu's tools under its MCP prefix, while scripts, tool results and instructions name them
+ * without it.
+ */
+const TOOL_NAMES_NOTE =
+  "Your tools are declared as `mcp__monchu__<name>`, but that prefix belongs to the declaration only. Everywhere else, including a codemode script's `tools.<name>(...)`, `searchTools()`, `describeTool()`, `tool_search` and these instructions, a tool goes by `<name>` without the prefix: `mcp__monchu__close_worker` is `tools.close_worker`.";
+
 const efforts: Partial<Record<ModelThinkingLevel, EffortLevel>> = {
   minimal: "low",
   low: "low",
@@ -494,7 +501,11 @@ export function createClaudeCodeProvider(
               env,
               abortController: abort,
               model: model.contextWindow > 200000 ? `${model.id}[1m]` : model.id,
-              systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt },
+              systemPrompt: {
+                type: "preset",
+                preset: "claude_code",
+                append: tools.length ? `${systemPrompt}\n\n${TOOL_NAMES_NOTE}` : systemPrompt,
+              },
               tools: [],
               skills: [],
               plugins: [],
