@@ -742,6 +742,48 @@ describe("worker lifecycle", () => {
     await harness.close(context);
   });
 
+  it("reports a failed run once with its error, however many messages were queued into it", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    route(value.faux, async (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "hold worker") {
+        await held;
+        return fauxAssistantMessage([], {
+          stopReason: "error",
+          errorMessage: "Claude Code returned inconsistent tool-use stop reason",
+        });
+      }
+      return fauxAssistantMessage([fauxText(`answered ${text.split("\n", 1)[0]}`)]);
+    });
+    const { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "hold worker", value.directory, "start:0", fauxRole),
+      context,
+    );
+    await waitFor(
+      async () => (await harness.snapshot(LiveDoc, workerId, context))?.run !== undefined,
+    );
+    for (const [index, message] of ["first steer", "second steer"].entries())
+      await root.commit(
+        (tx) => messageWorker(tx, root.id, "w", message, `steer:${index}`, "steer"),
+        context,
+      );
+    release();
+    await settle(harness, root);
+    const failures = (await allEntries(root))
+      .flatMap((entry) => workerNotice(entry) ?? [])
+      .filter((notice) => notice.status === "failed");
+    expect(failures.map(({ name, status }) => ({ name, status }))).toEqual([
+      { name: "w", status: "failed" },
+    ]);
+    expect(failures[0]?.text).toContain("inconsistent tool-use stop reason");
+    await harness.close(context);
+  });
+
   it("closes only an idle worker, hides it, rejects messages until reopened, and keeps it across restart", async () => {
     const value = await setup();
     let release!: () => void;

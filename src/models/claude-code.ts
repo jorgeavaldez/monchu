@@ -781,7 +781,9 @@ export function createClaudeCodeProvider(
                   ? "length"
                   : "stop";
           } else if (event.type === "message_stop") {
-            if (blocks.size) throw new Error("Claude Code stopped with incomplete content blocks");
+            // Worded as a premature stream end, which Durable's retry policy retries.
+            if (blocks.size)
+              throw new Error("Claude Code stream ended without completing its content blocks");
             if (
               output.content.some((block) => block.type === "toolCall") !==
               (output.stopReason === "toolUse")

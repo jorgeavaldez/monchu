@@ -158,6 +158,23 @@ export async function reopenWorker(tx: Tx, parentId: ConversationId, name: strin
   delete named((await tx.doc(WorkersDoc, parentId)).workers, name).closed;
 }
 
+/** The worker's newest failed reply among its latest entries, if its last run ended in one. */
+async function latestError(
+  tx: Tx,
+  conversationId: ConversationId,
+): Promise<{ id: EntryId; message: string } | undefined> {
+  const { items } = await tx.scanEntries({ conversationId }, 20);
+  for (const entry of items) {
+    if (!AssistantEntry.is(entry)) continue;
+    const message = entry.model?.[0];
+    if (message?.role !== "assistant") continue;
+    return message.stopReason === "error"
+      ? { id: entry.id, message: message.errorMessage ?? "no error message" }
+      : undefined;
+  }
+  return undefined;
+}
+
 /** Keep every active delivery and its settled answer, plus a recent completed retry window. */
 async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId): Promise<void> {
   const state = await tx.doc(WorkersDoc, parentId);
@@ -362,7 +379,18 @@ const Delivery = defineTask<
           submissionId: submission.id,
         };
         if (settled.status === "unanswered") {
-          result = { ...base, status: "failed", text: settled.reason };
+          // Messages queued into one run all go unanswered when it fails: report that failure once, with its error.
+          const state = await tx.doc(WorkersDoc, task.input.parentId);
+          const record = state.workers.find(
+            (item) => item.conversationId === runtime.conversationId,
+          );
+          if (record === undefined) throw new Error("Worker record is missing");
+          const error = await latestError(tx, runtime.conversationId);
+          if (error === undefined) result = { ...base, status: "failed", text: settled.reason };
+          else if (!record.reported.includes(error.id)) {
+            record.reported.push(error.id);
+            result = { ...base, status: "failed", text: `${settled.reason}: ${error.message}` };
+          }
         } else if (settled.type === "input") {
           const entry = await tx.entry(AssistantEntry, settled.answer);
           const text = (entry?.model ?? [])
