@@ -183,10 +183,12 @@ it("collapses a tool without its own renderer to a header and a one-row summary,
     isError: false,
   });
   const collapsed = card.render(40).map(stripTerminalSequences);
-  // A spacer, then two rows that never wrap: no padding rows, no output beyond the summary.
-  expect(collapsed).toHaveLength(3);
-  expect(collapsed[1]).toMatch(/^ ▸ update_goal id="monchu" .*…\s*$/);
-  expect(collapsed[2]).toMatch(/^ {3}Changed: workstream, next · 3 lines\s*$/);
+  // A spacer, then two rows that never wrap, padded like a worker reply card: no output beyond the summary.
+  expect(collapsed).toHaveLength(5);
+  expect(collapsed[1]?.trim()).toBe("");
+  expect(collapsed[2]).toMatch(/^ ▸ update_goal id="monchu" .*…\s*$/);
+  expect(collapsed[3]).toMatch(/^ {3}Changed: workstream, next · 3 lines\s*$/);
+  expect(collapsed[4]?.trim()).toBe("");
   for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
   card.setExpanded(true);
   const expanded = card.render(40).map(stripTerminalSequences).join("\n");
@@ -197,7 +199,38 @@ it("collapses a tool without its own renderer to a header and a one-row summary,
   // JSON output summarizes by its first meaningful line, never a bare brace.
   const jj = new ToolExecutionComponent("jj", { cwd: "/x" }, ui.ui, "/", () => {});
   jj.updateResult({ content: [{ type: "text", text: '{\n "ok": true\n}' }], isError: false });
-  expect(stripTerminalSequences(jj.render(40)[2] ?? "")).toMatch(/^ {3}"ok": true · 3 lines/);
+  expect(stripTerminalSequences(jj.render(40)[3] ?? "")).toMatch(/^ {3}"ok": true · 3 lines/);
+});
+
+it("shows a sign-in URL unpadded on rows of its own, whole when the rows are joined, with how to open or copy it", async () => {
+  initTheme("dark");
+  const screen = new VirtualTerminal(40, 20);
+  const ui = new MonchuTui(screen, "/", {
+    submit: () => {},
+    editQueued: () => {},
+    abort: () => {},
+    exit: () => {},
+  });
+  const url = `https://example.com/device?code=${"x".repeat(70)}&state=abc`;
+  try {
+    ui.start();
+    ui.beginLogin(() => {});
+    ui.loginMessage("Code: ABCD-1234", url);
+    let rows: string[] = [];
+    await waitFor(async () => {
+      rows = await screen.flushAndGetViewport();
+      return rows.some((row) => row.includes("Alt+O"));
+    });
+    const first = rows.findIndex((row) => row.startsWith("https://"));
+    const hint = rows.findIndex((row) => row.includes("Alt+O"));
+    // No padding column: the rows join back into exactly the URL.
+    expect(rows.slice(first, hint).join("")).toBe(url);
+    expect(rows[hint]).toMatch(/tap or Alt\+O to open · Ctrl\+X to copy/);
+    expect(rows[hint + 1]).toContain("Code: ABCD-1234");
+    ui.endLogin();
+  } finally {
+    ui.stop();
+  }
 });
 
 it("fits Pi's footer to any width, keeping the shown conversation, mode and context before totals", () => {

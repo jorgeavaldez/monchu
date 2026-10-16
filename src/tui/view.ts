@@ -26,6 +26,8 @@ import {
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { Footer, shortPath, type FooterState } from "./components/footer.ts";
 import { GoalsPanel, type GoalRow } from "./components/goals-panel.ts";
+import { LinkRows } from "./components/link.ts";
+import { copyText, openUrl } from "./system.ts";
 import { formatKeyText } from "./components/keybinding-hints.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -47,6 +49,7 @@ import {
   Loader,
   Markdown,
   matchesKey,
+  MouseRegion,
   ScrollView,
   SelectList,
   Spacer,
@@ -421,6 +424,8 @@ export class MonchuTui {
   private lastCtrlC = 0;
   private selector: (Component & Focusable) | undefined;
   private loginCancel: (() => void) | undefined;
+  // The sign-in URL shown, which Alt+O opens and Ctrl+X copies; its hint row reports what happened.
+  private loginUrl: { url: string; hint: Text } | undefined;
   private readonly loginStatus = new Container();
   private readonly loginPrompt = new Container();
   private conversationId: number | undefined;
@@ -436,7 +441,8 @@ export class MonchuTui {
     this.handlers = handlers;
     this.cwd = home;
     // As in Pi, the editor draws its own cursor; a shown hardware cursor is moved and re-shown every frame.
-    this.ui = new TuiAltScreen(terminal, false, home);
+    // A tap on any OSC 8 link, such as a markdown link in a reply, opens it in the browser.
+    this.ui = new TuiAltScreen(terminal, false, home, { openUrl: (url) => void openUrl(url) });
     this.editor = new Editor(
       this.ui,
       {
@@ -496,6 +502,19 @@ export class MonchuTui {
       if (this.loginCancel !== undefined) {
         if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
           this.loginCancel();
+          return { consume: true };
+        }
+        // Pi's copy key; Alt+O opens, since Ctrl+O expands tool output.
+        if (this.loginUrl !== undefined && matchesKey(data, "alt+o")) {
+          this.openLoginUrl();
+          return { consume: true };
+        }
+        if (this.loginUrl !== undefined && matchesKey(data, "ctrl+x")) {
+          const { url, hint } = this.loginUrl;
+          void copyText(url, (sequence) => this.ui.terminal.write(sequence)).then((how) => {
+            hint.setText(theme.fg("success", `URL ${how}`));
+            this.ui.requestRender();
+          });
           return { consume: true };
         }
         return;
@@ -558,10 +577,48 @@ export class MonchuTui {
     this.loginMessage("Login · Esc / Ctrl-C to cancel");
   }
 
-  loginMessage(message: string): void {
+  /**
+   * Login status text; with `url`, the URL first on rows of its own with no padding, so a selection copies only the
+   * URL, then a hint row: a tap or Alt+O opens it in the browser and Ctrl+X copies it.
+   */
+  loginMessage(message: string, url?: string): void {
     this.loginStatus.clear();
-    this.loginStatus.addChild(new Text(message, 1, 0));
+    this.loginUrl = undefined;
+    if (url !== undefined) {
+      const hint = new Text("", 1, 0);
+      this.loginUrl = { url, hint };
+      this.setLoginHint();
+      this.loginStatus.addChild(new Text(theme.fg("muted", "Open in the browser:"), 1, 0));
+      this.loginStatus.addChild(
+        new MouseRegion(new LinkRows(url), (event) => {
+          if (event.type !== "click" || event.button !== "left") return undefined;
+          this.openLoginUrl();
+          return { handled: true };
+        }),
+      );
+      this.loginStatus.addChild(hint);
+    }
+    if (message) this.loginStatus.addChild(new Text(message, 1, 0));
     this.ui.requestRender();
+  }
+
+  private setLoginHint(status?: string): void {
+    const muted = getSelectListTheme().description;
+    this.loginUrl?.hint.setText(status ?? muted("tap or Alt+O to open · Ctrl+X to copy"));
+  }
+
+  private openLoginUrl(): void {
+    const shown = this.loginUrl;
+    if (shown === undefined) return;
+    void openUrl(shown.url).then((opened) => {
+      if (this.loginUrl !== shown) return;
+      this.setLoginHint(
+        opened
+          ? theme.fg("success", "opened in the browser")
+          : theme.fg("error", "no browser launcher; Ctrl+X to copy"),
+      );
+      this.ui.requestRender();
+    });
   }
 
   /** Dedicated, ephemeral controls; no notices, chat submissions, autocomplete or editor history. */
@@ -614,6 +671,7 @@ export class MonchuTui {
 
   endLogin(): void {
     this.loginCancel = undefined;
+    this.loginUrl = undefined;
     this.loginStatus.clear();
     this.loginPrompt.clear();
     this.restoreEditor();

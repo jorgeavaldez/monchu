@@ -112,10 +112,8 @@ export class ToolExecutionComponent extends Container {
     this.args = parseRenderArgs(args);
     this.renderer = toolRenderers.get(toolName);
     this.addChild(new Spacer(1));
-    // A tool without its own renderer (goals, memory, workers, jj, herdr...) gets a compact card, without padding rows.
-    this.box = new Box(1, this.renderer === undefined ? 0 : 1, (text) =>
-      theme.bg("toolPendingBg", text),
-    );
+    // Padded like a worker's reply card: one row above and below, one column each side.
+    this.box = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
     this.addChild(this.box);
     this.updateDisplay();
   }

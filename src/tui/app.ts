@@ -367,7 +367,7 @@ export async function runTerminal(
             try {
               await backend.mcpLogin(
                 server,
-                (url) => view.loginMessage(`Open ${url}\nWaiting for the browser · Esc to cancel`),
+                (url) => view.loginMessage("Waiting for the browser · Esc to cancel", url),
                 controller.signal,
               );
               view.notice(`logged in · ${server} MCP server; its tools are loaded`);
@@ -391,11 +391,12 @@ export async function runTerminal(
                 switch (event.type) {
                   case "device_code":
                     view.loginMessage(
-                      `Open ${event.verificationUri}\nCode: ${event.userCode}\nWaiting for approval · Esc to cancel`,
+                      `Code: ${event.userCode}\nWaiting for approval · Esc to cancel`,
+                      event.verificationUri,
                     );
                     break;
                   case "auth_url":
-                    view.loginMessage(`Open ${event.url}`);
+                    view.loginMessage("", event.url);
                     break;
                   case "info":
                   case "progress":
