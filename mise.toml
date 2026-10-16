@@ -1,6 +1,7 @@
 [tools]
-node = "26.10.0"
+# Listed first so its npm comes before the one bundled with node on PATH.
 "npm:npm" = "12.2.0"
+node = "26.10.0"
 
 [env]
 NODE_ENV = { default = "development" }
