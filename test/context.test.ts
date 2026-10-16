@@ -79,7 +79,7 @@ describe("Monchu home context", () => {
       expect(worker?.home).toContain("EDITED MEMORY");
       expect(worker?.home).not.toMatch(/SOUL\.md|FRONT\.md/);
       expect(worker?.instructions).toBe(
-        "<instructions>\nYou are Monchu's background worker reader: a delegated agent doing one bounded job on the user's behalf. Do the job in your brief and nothing broader. Your final answer is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.\n</instructions>",
+        "<instructions>\nYou are Monchu's background worker reader, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.\n</instructions>",
       );
       expect(value.reports).toEqual([]);
     } finally {

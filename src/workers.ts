@@ -459,7 +459,7 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}: a delegated agent doing one bounded job on the user's behalf. Do the job in your brief and nothing broader. Your final answer is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
+    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
   state.workers.push({ name, conversationId: worker.id, reported: [] });
   const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "followUp" };
@@ -553,7 +553,7 @@ export function createWorkerTools(role: () => ModelRole) {
       defineTool({
         name: "start_worker",
         description:
-          "Start a named worker in the background and return immediately. Supply a self-contained goal, context, and constraints. Results arrive automatically; chat remains available. cwd defaults to this conversation's current directory. Only start work the user authorized.",
+          "Start a standing background worker for a domain (a project, repo, machine, or area like the vault) that no open worker owns; check worker_status first, and route asks in an owned domain with message_worker instead. Name it for the domain, not the task. Pass the user's ask in their own words and the outcome they want: the worker reads the shared manual, vault, and skills itself and decides the approach and scope. Returns immediately; results arrive automatically. cwd defaults to this conversation's current directory. Only start work the user authorized.",
         parameters: Type.Object({
           name: Type.String({ minLength: 1 }),
           task: Type.String({ minLength: 1 }),
@@ -588,7 +588,7 @@ export function createWorkerTools(role: () => ModelRole) {
       defineTool({
         name: "message_worker",
         description:
-          "Send instructions to an existing background worker. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically.",
+          "Route an ask to an existing background worker, normally the one that owns its domain. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically.",
         parameters: Type.Object({
           name: Type.String({ minLength: 1 }),
           message: Type.String({ minLength: 1 }),
@@ -630,7 +630,7 @@ export function createWorkerTools(role: () => ModelRole) {
       defineTool({
         name: "close_worker",
         description:
-          "Close a finished worker you no longer need: it leaves the active roster and rejects new messages. Only an idle worker with no pending deliveries or busy sub-workers closes; its conversation and history are kept, and reopen_worker resumes it. Idle alone does not mean finished: keep workers that may be reused.",
+          "Retire a worker whose domain is finished, or that the user asks to retire, and tell the user why. Never close a worker just because it reported: standing workers take the next ask in their domain. A closed worker leaves the active roster and rejects new messages. Only an idle worker with no pending deliveries or busy sub-workers closes; its conversation and history are kept, and reopen_worker resumes it. Idle alone does not mean finished: keep workers that may be reused.",
         parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
         // Closing a closed worker changes nothing, and releasing provider resources again is harmless.
         replay: "safe",

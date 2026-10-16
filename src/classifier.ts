@@ -208,7 +208,7 @@ export function createEffortAssessment(
             await front.submit(
               {
                 type: "input",
-                content: `${ESCALATION_PREFIX}: ${describe(result)}${ESCALATION_SUFFIX}\nThe user's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, start a worker now with a self-contained goal, context, and constraints, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
+                content: `${ESCALATION_PREFIX}: ${describe(result)}${ESCALATION_SUFFIX}\nThe user's request outgrows a single fast reply and nothing was delegated yet. If it is authorized work, route it now: message the worker that owns its domain, or start one, passing the user's ask in their own words, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
                 whenBusy: "followUp",
                 requestId: `assessment:${task.id}`,
               },
