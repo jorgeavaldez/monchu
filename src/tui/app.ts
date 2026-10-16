@@ -411,7 +411,13 @@ export async function runTerminal(
         break;
       }
       case "/goals":
-        view.openGoals(await backend.goals(), () => statuses);
+        view.openGoals(
+          await backend.goals(),
+          () => statuses,
+          (goal) => {
+            inputs = inputs.then(() => backend.seeGoal(goal.id, goal.updatedAt)).catch(fail);
+          },
+        );
         break;
       case "/model":
       case "/thinking": {

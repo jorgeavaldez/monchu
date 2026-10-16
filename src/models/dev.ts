@@ -36,6 +36,11 @@ export function createDevProvider(): Provider {
         return fauxAssistantMessage([fauxToolCall("close_worker", { name: text.slice(6) })], {
           stopReason: "toolUse",
         });
+      if (text === "goal waiting")
+        return fauxAssistantMessage(
+          [fauxToolCall("update_goal", { id: "smoke", status: "waiting" })],
+          { stopReason: "toolUse" },
+        );
       if (text === "goal")
         return fauxAssistantMessage(
           [

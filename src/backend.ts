@@ -68,6 +68,19 @@ const FrontPicks = defineDoc<{ model: boolean; thinkingLevel: boolean }>({
   initial: () => ({ model: false, thinkingLevel: false }),
 });
 
+/**
+ * When the user last opened each goal in the TUI, as that goal's `updatedAt`, by goal ID. Goals that existed when it was
+ * first read count as seen, so only later changes are news.
+ */
+const GoalsSeen = defineDoc<{ seeded: boolean; seen: Record<string, number> }>({
+  kind: "monchu.goals-seen",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ seeded: false, seen: {} }),
+});
+
 /** Apply the configured front role from the next request, keeping the fields picked for the root only. */
 async function applyFrontRole(front: Conversation, role: ModelRole): Promise<void> {
   await front.commit(async (tx) => {
@@ -263,9 +276,29 @@ export class Monchu {
     );
   }
 
-  /** The root's goals in stored order, including recently closed ones. */
-  async goals(): Promise<readonly Goal[]> {
-    return (await this.harness.snapshot(GoalsDoc, this.front.id, context))?.goals ?? [];
+  /**
+   * The root's goals in stored order, including recently closed ones, each with whether it changed since the user last
+   * opened it with `seeGoal`.
+   */
+  async goals(): Promise<readonly (Goal & { changed: boolean })[]> {
+    const goals = (await this.harness.snapshot(GoalsDoc, this.front.id, context))?.goals ?? [];
+    const seen = await this.front.commit(async (tx) => {
+      const doc = await tx.doc(GoalsSeen, this.front.id);
+      if (!doc.seeded) {
+        doc.seeded = true;
+        for (const goal of goals) doc.seen[goal.id] = goal.updatedAt;
+      }
+      return { ...doc.seen };
+    }, context);
+    return goals.map((goal) => ({ ...goal, changed: goal.updatedAt > (seen[goal.id] ?? 0) }));
+  }
+
+  /** Records that the user opened a goal as of its `updatedAt`. */
+  async seeGoal(id: string, updatedAt: number): Promise<void> {
+    await this.front.commit(async (tx) => {
+      const doc = await tx.doc(GoalsSeen, this.front.id);
+      doc.seen[id] = Math.max(doc.seen[id] ?? 0, updatedAt);
+    }, context);
   }
 
   async startWorker(name: string, message: string, requestId: string): Promise<void> {

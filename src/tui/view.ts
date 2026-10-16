@@ -25,7 +25,7 @@ import {
 } from "./components/agents-panel.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { Footer, shortPath, type FooterState } from "./components/footer.ts";
-import { GoalsPanel } from "./components/goals-panel.ts";
+import { GoalsPanel, type GoalRow } from "./components/goals-panel.ts";
 import { formatKeyText } from "./components/keybinding-hints.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -670,11 +670,16 @@ export class MonchuTui {
   }
 
   /** Shows the goals list in the editor's place, with drilldown, until Esc, q or Ctrl-C closes it. */
-  openGoals(goals: readonly Goal[], statuses: () => ReadonlyMap<string, AgentStatus>): void {
+  openGoals(
+    goals: readonly GoalRow[],
+    statuses: () => ReadonlyMap<string, AgentStatus>,
+    seen: (goal: Goal) => void,
+  ): void {
     this.showSelector(
       new GoalsPanel(
         goals,
         statuses,
+        seen,
         () => this.ui.terminal.rows,
         () => this.restoreEditor(),
       ),

@@ -570,6 +570,7 @@ describe.each([
       const answered = panel.findIndex((line) => line.includes("Faux tool finished."));
       expect(panel.slice(answered + 1, title).join("\n")).not.toMatch(/smoke|system ·/i);
       // One row per goal; the next step shows only in the goal's detail view.
+      // A goal that existed when /goals was first opened is not news.
       expect(panel[title + 1]).toMatch(/^› ● Smoke goal\s+\d+s\s*$/);
       expect(panel.slice(title).join("\n")).not.toContain("first step");
       expect(panel[title + 3]?.trim()).toMatch(/^─+$/);
@@ -621,6 +622,30 @@ describe.each([
       await waitFor(
         async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc back"),
       );
+      // A goal changed since it was last opened gets a dot until opened; a waiting goal says so in yellow.
+      send(screen, "goal waiting");
+      await waitFor(async () => {
+        const lines = await screen.flushAndGetViewport();
+        return lines.filter((line) => line.includes("Faux tool finished.")).length === 2;
+      });
+      send(screen, "/goals");
+      const changed = await visible(screen, "1 waiting");
+      expect(changed.findLast((line) => line.includes("Smoke goal"))).toMatch(
+        /^› ◐ Smoke goal\s+• wait \d+s\s*$/,
+      );
+      screen.sendInput("\r");
+      await visible(screen, "Esc back");
+      screen.sendInput("\x1b");
+      const opened = await visible(screen, "1 waiting");
+      expect(opened.findLast((line) => line.includes("Smoke goal"))).toMatch(
+        /^› ◐ Smoke goal\s+wait \d+s\s*$/,
+      );
+      screen.sendInput("q");
+      // Opened stays opened: the next /goals has no dot.
+      send(screen, "/goals");
+      const again = await visible(screen, "1 waiting");
+      expect(again.findLast((line) => line.includes("Smoke goal"))).not.toContain("•");
+      screen.sendInput("q");
     });
   }, 30_000);
 

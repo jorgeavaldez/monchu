@@ -12,6 +12,9 @@ import { getSelectListTheme, theme } from "../theme/theme.ts";
 import { age, statusText, type AgentStatus } from "./agents-panel.ts";
 import { shortPath } from "./footer.ts";
 
+/** A goal as the panel lists it: `changed` since the user last opened it. */
+export type GoalRow = Goal & { changed: boolean };
+
 const isOpen = (goal: Goal) => goal.status === "active" || goal.status === "waiting";
 
 /** A goal's status as a colored mark, and as a colored word. */
@@ -19,7 +22,7 @@ function mark(status: Goal["status"]): string {
   return status === "active"
     ? theme.fg("accent", "●")
     : status === "waiting"
-      ? theme.fg("warning", "◐")
+      ? theme.bold(theme.fg("warning", "◐"))
       : status === "done"
         ? theme.fg("success", "✓")
         : theme.fg("dim", "✗");
@@ -45,14 +48,15 @@ function block(text: string, indent: number, width: number): string[] {
 }
 
 /**
- * Goals in the editor's place: a concise list, one row per goal; Enter drills into the goal, its next step first, and
- * Esc comes back. Open goals show first; Tab adds the recently closed ones. Linked workers show
+ * Goals in the editor's place: a concise list, one row per goal, marking goals that changed since last opened (`•`)
+ * and goals waiting on the user (`wait`); Enter drills into the goal, its next step first, and Esc comes back. Open goals show first; Tab adds the recently closed ones. Linked workers show
  * their live status. The panel takes at most 60% of the rows and scrolls within it, re-measured every frame.
  */
 export class GoalsPanel implements Component, Focusable {
   focused = false;
-  private readonly goals: readonly Goal[];
+  private readonly goals: GoalRow[];
   private readonly statuses: () => ReadonlyMap<string, AgentStatus>;
+  private readonly seen: (goal: Goal) => void;
   private readonly rows: () => number;
   private readonly close: () => void;
   private closed = false;
@@ -62,19 +66,21 @@ export class GoalsPanel implements Component, Focusable {
   private visible = 1;
 
   constructor(
-    goals: readonly Goal[],
+    goals: readonly GoalRow[],
     statuses: () => ReadonlyMap<string, AgentStatus>,
+    seen: (goal: Goal) => void,
     rows: () => number,
     close: () => void,
   ) {
-    this.goals = goals;
+    this.goals = goals.map((goal) => ({ ...goal }));
     this.statuses = statuses;
+    this.seen = seen;
     this.rows = rows;
     this.close = close;
     this.selected = this.shown()[0]?.id;
   }
 
-  private shown(): Goal[] {
+  private shown(): GoalRow[] {
     // Open goals in their stored order, then the newest closed ones first.
     const open = this.goals.filter(isOpen);
     return this.closed
@@ -119,10 +125,11 @@ export class GoalsPanel implements Component, Focusable {
   } {
     const list = getSelectListTheme();
     const open = this.goals.filter(isOpen).length;
+    const waiting = this.goals.filter((goal) => goal.status === "waiting").length;
     const closed = this.goals.length - open;
-    const title = ` ${list.selectedText("Goals")}${list.description(
-      ` · ${open} open${closed ? ` · ${closed} closed` : ""}`,
-    )}`;
+    const title = ` ${list.selectedText("Goals")}${list.description(` · ${open} open`)}${
+      waiting ? `${list.description(" · ")}${theme.fg("warning", `${waiting} waiting`)}` : ""
+    }${closed ? list.description(` · ${closed} closed`) : ""}`;
     const hint = ` Enter open · Tab ${this.closed ? "hide" : "show"} closed · Esc`;
     const goals = this.shown();
     if (goals.length === 0)
@@ -136,11 +143,16 @@ export class GoalsPanel implements Component, Focusable {
     let focus: { start: number; end: number } | undefined;
     for (const goal of goals) {
       const selected = goal.id === this.selected;
-      const when = list.description(` ${age(goal.updatedAt)}`);
+      // Right-aligned, shortest first: changed since last opened, waiting on the user, then age.
+      const waiting = goal.status === "waiting";
+      const when = ` ${goal.changed ? `${theme.fg("accent", "•")} ` : ""}${
+        waiting ? theme.fg("warning", "wait ") : ""
+      }${list.description(age(goal.updatedAt))}`;
       const head = `${selected ? list.selectedText("›") : " "} ${mark(goal.status)} `;
       const room = Math.max(1, width - visibleWidth(head) - visibleWidth(when) - 1);
       const name = truncateToWidth(goal.title.replace(/\s+/g, " "), room, "...");
-      const row = `${head}${selected ? theme.bold(name) : name}`;
+      const styled = waiting ? theme.fg("warning", name) : name;
+      const row = `${head}${selected ? theme.bold(styled) : styled}`;
       const start = lines.length;
       lines.push(
         `${row}${" ".repeat(Math.max(1, width - visibleWidth(row) - visibleWidth(when)))}${when}`,
@@ -234,6 +246,11 @@ export class GoalsPanel implements Component, Focusable {
     ) {
       this.detail = this.selected;
       this.offset = 0;
+      const goal = this.goals.find((item) => item.id === this.selected);
+      if (goal?.changed) {
+        goal.changed = false;
+        this.seen(goal);
+      }
     } else if (
       keys.matches(data, "tui.select.cancel") ||
       matchesKey(data, "ctrl+c") ||
