@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Footer } from "../src/tui/components/footer.ts";
+import { ToolExecutionComponent } from "../src/tui/components/tool-execution.ts";
 import { UserMessageComponent } from "../src/tui/components/user-message.ts";
 import { WorkerMessageComponent } from "../src/tui/components/worker-message.ts";
 import { initTheme, theme } from "../src/tui/theme/theme.ts";
@@ -155,6 +156,48 @@ describe("terminal input boundary", () => {
     expect(events.indexOf("stopped")).toBeLessThan(events.length - 1);
     expect(events.indexOf("restored")).toBeLessThan(events.length - 1);
   }, 30_000);
+});
+
+it("collapses a tool without its own renderer to a header and a one-row summary, and expands it whole", () => {
+  initTheme("dark");
+  const screen = new VirtualTerminal(40, 10);
+  const ui = new MonchuTui(screen, "/", {
+    submit: () => {},
+    editQueued: () => {},
+    abort: () => {},
+    exit: () => {},
+  });
+  let changes = 0;
+  const card = new ToolExecutionComponent(
+    "update_goal",
+    { id: "monchu", workstream: "a long workstream that cannot fit a phone row", next: "ship it" },
+    ui.ui,
+    "/",
+    () => changes++,
+  );
+  card.setArgsComplete();
+  card.updateResult({
+    content: [
+      { type: "text", text: "Changed: workstream, next\n- [monchu] Monchu\n  next: ship it" },
+    ],
+    isError: false,
+  });
+  const collapsed = card.render(40).map(stripTerminalSequences);
+  // A spacer, then two rows that never wrap: no padding rows, no output beyond the summary.
+  expect(collapsed).toHaveLength(3);
+  expect(collapsed[1]).toMatch(/^ ▸ update_goal id="monchu" .*…\s*$/);
+  expect(collapsed[2]).toMatch(/^ {3}Changed: workstream, next · 3 lines\s*$/);
+  for (const line of collapsed) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+  card.setExpanded(true);
+  const expanded = card.render(40).map(stripTerminalSequences).join("\n");
+  expect(expanded).toMatch(/▾ update_goal/);
+  expect(expanded).toContain("next: ship it");
+  expect(expanded).toContain("- [monchu] Monchu");
+  expect(changes).toBeGreaterThan(0);
+  // JSON output summarizes by its first meaningful line, never a bare brace.
+  const jj = new ToolExecutionComponent("jj", { cwd: "/x" }, ui.ui, "/", () => {});
+  jj.updateResult({ content: [{ type: "text", text: '{\n "ok": true\n}' }], isError: false });
+  expect(stripTerminalSequences(jj.render(40)[2] ?? "")).toMatch(/^ {3}"ok": true · 3 lines/);
 });
 
 it("fits Pi's footer to any width, keeping the shown conversation, mode and context before totals", () => {

@@ -33,6 +33,7 @@ import {
   MouseRegion,
   Spacer,
   Text,
+  truncateToWidth,
   type TUI,
 } from "@earendil-works/pi-tui";
 import { toolRenderers } from "../renderers/index.ts";
@@ -50,9 +51,30 @@ import { theme } from "../theme/theme.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
 
+/** The first meaningful line of a tool's text output, the newest while it runs; never bare JSON punctuation. */
+function summaryLine(output: string, newest: boolean): string | undefined {
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[[\]{}(),]+$/.test(line));
+  return newest ? lines.at(-1) : lines[0];
+}
+
+/** One row cut to the width, never wrapped: a compact card stays one row per line on a phone. */
+class Row implements Component {
+  private readonly text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+  render(width: number): string[] {
+    return [truncateToWidth(this.text, width, "…")];
+  }
+  invalidate(): void {}
+}
+
 /** Presentation only: a tool call plus Durable's partial or committed result. */
 export class ToolExecutionComponent extends Container {
-  private readonly contentBox: Box;
+  private readonly box: Box;
   private readonly toolName: string;
   private readonly ui: TUI;
   private readonly cwd: string;
@@ -90,8 +112,11 @@ export class ToolExecutionComponent extends Container {
     this.args = parseRenderArgs(args);
     this.renderer = toolRenderers.get(toolName);
     this.addChild(new Spacer(1));
-    this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
-    this.addChild(this.contentBox);
+    // A tool without its own renderer (goals, memory, workers, jj, herdr...) gets a compact card, without padding rows.
+    this.box = new Box(1, this.renderer === undefined ? 0 : 1, (text) =>
+      theme.bg("toolPendingBg", text),
+    );
+    this.addChild(this.box);
     this.updateDisplay();
   }
 
@@ -173,16 +198,46 @@ export class ToolExecutionComponent extends Container {
     return new Text(text, 0, 0);
   }
 
+  /**
+   * A tool without its own renderer, collapsed as worker updates are: a ▸ header row and one row summarizing the result
+   * (the newest line while it runs) with its line count. Expanded (Ctrl+O or a click): every argument and the output.
+   */
+  private compact(): void {
+    const marker = theme.fg("muted", this.expanded ? "▾ " : "▸ ");
+    const call = formatToolCallWithArgs(this.toolName, this.rawArgs, theme, this.expanded);
+    this.callComponent = this.expanded
+      ? new Text(`${marker}${call}`, 0, 0)
+      : new Row(`${marker}${call}`);
+    this.box.addChild(this.resultRegion(this.callComponent));
+    if (this.result === undefined) return;
+    if (this.expanded) {
+      this.resultComponent = this.fallbackResult();
+    } else {
+      const output = getTextOutput(this.result, this.showImages);
+      const lines = output ? output.split("\n").length : 0;
+      const summary = output ? summaryLine(output, this.isPartial) : undefined;
+      const more = lines > 1 ? theme.fg("muted", ` · ${lines} lines`) : "";
+      this.resultComponent =
+        summary === undefined && !more
+          ? undefined
+          : new Row(
+              `  ${theme.fg(this.result.isError ? "error" : "toolOutput", summary ?? "")}${more}`,
+            );
+    }
+    if (this.resultComponent) this.box.addChild(this.resultRegion(this.resultComponent));
+  }
+
   private updateDisplay(): void {
-    this.contentBox.setBgFn(
+    this.box.setBgFn(
       this.isPartial
         ? (text) => theme.bg("toolPendingBg", text)
         : this.result?.isError
           ? (text) => theme.bg("toolErrorBg", text)
           : (text) => theme.bg("toolSuccessBg", text),
     );
-    this.contentBox.clear();
-    if (this.renderer) {
+    this.box.clear();
+    if (this.renderer === undefined) this.compact();
+    else {
       try {
         this.callComponent = this.renderer.renderCall(
           this.args,
@@ -196,16 +251,8 @@ export class ToolExecutionComponent extends Container {
           0,
         );
       }
-    } else {
-      this.callComponent = new Text(
-        formatToolCallWithArgs(this.toolName, this.rawArgs, theme, this.expanded),
-        0,
-        0,
-      );
-    }
-    this.contentBox.addChild(this.resultRegion(this.callComponent));
-    if (this.result) {
-      if (this.renderer) {
+      this.box.addChild(this.resultRegion(this.callComponent));
+      if (this.result) {
         try {
           this.resultComponent = this.renderer.renderResult(
             this.result,
@@ -216,10 +263,8 @@ export class ToolExecutionComponent extends Container {
         } catch {
           this.resultComponent = this.fallbackResult();
         }
-      } else {
-        this.resultComponent = this.fallbackResult();
+        if (this.resultComponent) this.box.addChild(this.resultRegion(this.resultComponent));
       }
-      if (this.resultComponent) this.contentBox.addChild(this.resultRegion(this.resultComponent));
     }
     const previousImages = this.imageComponents;
     const previousSources = this.imageSources;
