@@ -9,11 +9,17 @@
 run/
 tmp/
 
-# Credentials stay on the device that logged in.
+# Credentials stay on the device that logged in: model logins and MCP OAuth tokens.
 auth.json
 auth.json*
+mcp-auth.json
+mcp-auth.json*
 .env
 *.env
+
+# Pi SDK state: credentials and catalog caches.
+agent/
+models-store.json*
 
 # Claude Code's isolated config, sessions and transcript mirrors.
 claude/
@@ -23,7 +29,12 @@ fff/
 
 # MCP tool listings, cached per device.
 mcp-tools.json
-mcp-tools.json.*.tmp
+mcp-tools.json*
+
+# Temporary files from atomic writes (config.json, mcp-auth.json, ...).
+*.tmp
 
 # Device-local skills: context that must stay on one machine (for example work).
 skills/local/
+
+# mcp.json is synced: put secrets in environment variables and reference them as ${NAME}, never inline.

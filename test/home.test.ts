@@ -1,6 +1,7 @@
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import ignore from "ignore";
 import { afterEach, describe, expect, it } from "vitest";
 import { monchuHome, seedHome } from "../src/home.ts";
 import { cleanup, setup } from "./support.ts";
@@ -44,5 +45,40 @@ describe("home", () => {
     expect(added[0]).not.toContain("SOUL.md");
     expect(added.join("\n")).not.toMatch(/jj/);
     expect(await readFile(join(existing, "SOUL.md"), "utf8")).toBe("mine\n");
+  });
+
+  it("keeps credentials and per-device state out of a synced home and syncs its editable files", async () => {
+    const value = await setup();
+    const home = join(value.directory, "fresh");
+    await seedHome(home);
+    const rules = ignore().add(await readFile(join(home, ".gitignore"), "utf8"));
+    for (const path of [
+      "auth.json",
+      "auth.json.lock",
+      "mcp-auth.json",
+      "mcp-auth.json.0f2c.tmp",
+      "mcp-tools.json",
+      "config.json.0f2c.tmp",
+      "agent/auth.json",
+      "models-store.json",
+      "claude/settings.json",
+      "fff/frecency",
+      "monchu.sqlite",
+      "monchu.sqlite-wal",
+      "owner.sqlite",
+      "monchu.log",
+      "skills/local/work/SKILL.md",
+      ".env",
+    ])
+      expect(rules.ignores(path), path).toBe(true);
+    for (const path of [
+      "AGENTS.md",
+      "SOUL.md",
+      "memories/USER.md",
+      "config.json",
+      "mcp.json",
+      "skills/notes/SKILL.md",
+    ])
+      expect(rules.ignores(path), path).toBe(false);
   });
 });

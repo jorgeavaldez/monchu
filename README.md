@@ -30,7 +30,7 @@ Monchu needs an interactive terminal.
    - **Claude Code:** run `claude setup-token` in another terminal (Anthropic's own sign-in) and paste the token it prints. Monchu runs the official Claude Code CLI with that token and never sees an API key. **Before first use, check your Claude account's [extra usage](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans) setting**: Monchu can't stop paid overflow if you have it enabled.
    - **Cloudflare Workers AI:** optional. See routing advice below.
 
-   Credentials go in `<home>/auth.json` (mode 0600). They stay on that device and are never synced or logged. Monchu never reads other tools' credentials.
+   Credentials go in `<home>/auth.json`, and MCP sign-ins in `<home>/mcp-auth.json` (both mode 0600). They stay on that device and are never synced or logged. Monchu never reads other tools' credentials.
 
 3. **Models.** The defaults are Codex `gpt-6-luna` for the front and `gpt-6.1-sol` for workers. To change them, use `/model` (Ctrl+S saves the pick as the default) or edit `<home>/config.json`. A bad model name doesn't stop startup: Monchu warns, lists the valid names, and uses the default until you fix it.
 4. **Get acquainted.** Ask Monchu to use the `onboard` skill. It reads what is already on the machine (Claude Code, Codex, and Pi sessions and instructions, dotfiles, notes), asks before reading, and seeds your memories, device notes, and a proposed soul. The `soul-absorb` skill digests another assistant's persona or memories.
