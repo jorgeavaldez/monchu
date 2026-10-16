@@ -54,8 +54,8 @@ function block(text: string, indent: number, width: number): string[] {
 }
 
 /**
- * Goals in the editor's place: a concise list, one row per goal and a preview of the selected goal's next step; Enter
- * drills into the goal, Esc comes back. Open goals show first; Tab adds the recently closed ones. Linked workers show
+ * Goals in the editor's place: a concise list, one row per goal; Enter drills into the goal, its next step first, and
+ * Esc comes back. Open goals show first; Tab adds the recently closed ones. Linked workers show
  * their live status. The panel takes at most 60% of the rows and scrolls within it, re-measured every frame.
  */
 export class GoalsPanel implements Component, Focusable {
@@ -154,24 +154,8 @@ export class GoalsPanel implements Component, Focusable {
       lines.push(
         `${row}${" ".repeat(Math.max(1, width - visibleWidth(row) - visibleWidth(when)))}${when}`,
       );
-      // Only the selected goal previews its next step, in up to two readable rows: the list stays one row per goal.
-      if (selected) {
-        const next = wrapTextWithAnsi(goal.next.replace(/\s+/g, " "), Math.max(1, width - 9));
-        lines.push(
-          ...next
-            .slice(0, 2)
-            .map((line, index) =>
-              truncateToWidth(
-                `    ${index === 0 ? theme.fg("accent", "next") : "    "} ${theme.fg("text", line)}`,
-                width,
-                "",
-              ),
-            ),
-        );
-        if (next.length > 2)
-          lines[lines.length - 1] = truncateToWidth(`${lines.at(-1) ?? ""}…`, width, "…");
-        focus = { start, end: lines.length };
-      }
+      // The list stays one row per goal; the selected row stays in view while scrolling.
+      if (selected) focus = { start, end: lines.length };
     }
     return { title, lines, hint, focus };
   }

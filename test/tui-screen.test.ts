@@ -569,12 +569,11 @@ describe.each([
       );
       const answered = panel.findIndex((line) => line.includes("Faux tool finished."));
       expect(panel.slice(answered + 1, title).join("\n")).not.toMatch(/smoke|system ·/i);
-      // One row per goal, the selected one previewing its next step in two rows at most.
+      // One row per goal; the next step shows only in the goal's detail view.
       expect(panel[title + 1]).toMatch(/^› ● Smoke goal\s+\d+s\s*$/);
-      expect(panel[title + 2]).toMatch(/^ {4}next first step second/);
-      expect(panel[title + 3]).toMatch(/^ {9}\S/);
-      expect(panel[title + 5]?.trim()).toMatch(/^─+$/);
-      expect(panel[title + 6]).toContain("• root");
+      expect(panel.slice(title).join("\n")).not.toContain("first step");
+      expect(panel[title + 3]?.trim()).toMatch(/^─+$/);
+      expect(panel[title + 4]).toContain("• root");
       // Typing goes to the panel, not the editor; Enter drills into the goal.
       screen.sendInput("z");
       screen.sendInput("\r");
