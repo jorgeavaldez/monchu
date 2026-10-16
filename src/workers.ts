@@ -1,5 +1,11 @@
 import type { Context } from "@earendil-works/chord";
-import { cleanupSessionResources, Type } from "@earendil-works/pi-ai";
+import {
+  cleanupSessionResources,
+  getSupportedThinkingLevels,
+  type Models,
+  StringEnum,
+  Type,
+} from "@earendil-works/pi-ai";
 import {
   AgentDoc,
   AssistantEntry,
@@ -21,7 +27,7 @@ import {
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
-import type { ModelRole } from "./config.ts";
+import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
 import { unloadGroups } from "./tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
@@ -531,6 +537,11 @@ export async function listWorkers(
           name: worker.name,
           conversationId: worker.conversationId,
           cwd: agent?.cwd,
+          model:
+            agent?.model === undefined
+              ? undefined
+              : `${agent.model.provider}/${agent.model.modelId}`,
+          thinking: agent?.thinkingLevel,
           closed: worker.closed === true,
           busy:
             live?.run !== undefined ||
@@ -554,30 +565,100 @@ async function busySubWorkers(
   return busy;
 }
 
+/** A worker's model choice as tools take it: a profile name, or a model and thinking level, each optional. */
+type ModelChoice = { profile?: string; model?: string; thinking?: ModelRole["thinkingLevel"] };
+
+const modelChoice = {
+  profile: Type.Optional(Type.String({ minLength: 1 })),
+  model: Type.Optional(
+    Type.String({ minLength: 1, description: "provider/modelId, e.g. openai-codex/gpt-6.1-sol" }),
+  ),
+  thinking: Type.Optional(StringEnum(thinkingLevels)),
+};
+
+export function describeRole(role: Pick<ModelRole, "provider" | "modelId" | "thinkingLevel">) {
+  return `${role.provider}/${role.modelId}, thinking ${role.thinkingLevel}`;
+}
+
+/**
+ * The role a choice selects on top of `base`: the profile first, then an explicit model and thinking level. Unknown
+ * names, unregistered models, and levels the model doesn't support are errors, never a silent fallback.
+ */
+function chooseRole(
+  models: Models,
+  profiles: Record<string, WorkerProfile>,
+  base: ModelRole,
+  choice: ModelChoice,
+): ModelRole {
+  let role = base;
+  if (choice.profile !== undefined) {
+    const profile = profiles[choice.profile];
+    if (profile === undefined)
+      throw new Error(
+        `No worker profile ${choice.profile}; profiles: ${Object.keys(profiles).join(", ") || "none configured"}`,
+      );
+    role = {
+      provider: profile.provider,
+      modelId: profile.modelId,
+      thinkingLevel: profile.thinkingLevel,
+    };
+  }
+  if (choice.model !== undefined) {
+    const slash = choice.model.indexOf("/");
+    if (slash <= 0) throw new Error(`Model ${choice.model} must be provider/modelId`);
+    role = {
+      ...role,
+      provider: choice.model.slice(0, slash),
+      modelId: choice.model.slice(slash + 1),
+    };
+  }
+  if (choice.thinking !== undefined) role = { ...role, thinkingLevel: choice.thinking };
+  const model = models.getModel(role.provider, role.modelId);
+  if (model === undefined)
+    throw new Error(`Monchu has no configured model ${role.provider}/${role.modelId}`);
+  const levels = getSupportedThinkingLevels(model);
+  if (!levels.includes(role.thinkingLevel))
+    throw new Error(
+      `${role.provider}/${role.modelId} does not support thinking ${role.thinkingLevel} (supported: ${levels.join(", ")})`,
+    );
+  return role;
+}
+
+/** The profiles as the front reads them in the worker tools' descriptions. */
+function profileList(profiles: Record<string, WorkerProfile>): string {
+  const entries = Object.entries(profiles);
+  if (entries.length === 0) return "";
+  return ` Profiles: ${entries.map(([name, profile]) => `${name} (${describeRole(profile)}): ${profile.use}`).join(" ")}`;
+}
+
 /**
  * Request IDs include the call ID so several calls inside one codemode script stay distinct.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createWorkerTools(role: () => ModelRole) {
+export function createWorkerTools(
+  role: () => ModelRole,
+  profiles: Record<string, WorkerProfile> = {},
+) {
+  const profilesText = profileList(profiles);
   return defineExtension({
     name: "monchu.workers",
     tasks: [Anchor, Delivery],
     tools: [
       defineTool({
         name: "start_worker",
-        description:
-          "Start a standing background worker for a domain (a project, repo, machine, or area like the vault) that no open worker owns; check worker_status first, and route asks in an owned domain with message_worker instead. Name it for the domain, not the task. Pass the user's ask in their own words and the outcome they want: the worker reads the shared manual, vault, and skills itself and decides the approach and scope. Returns immediately; results arrive automatically. cwd defaults to this conversation's current directory. Only start work the user authorized.",
+        description: `Start a standing background worker for a domain (a project, repo, machine, or area like the vault) that no open worker owns; check worker_status first, and route asks in an owned domain with message_worker instead. Name it for the domain, not the task. Pass the user's ask in their own words and the outcome they want: the worker reads the shared manual, vault, and skills itself and decides the approach and scope. Returns immediately; results arrive automatically. cwd defaults to this conversation's current directory. Only start work the user authorized. Pick the worker's model with a profile, or model and thinking; omitted, it runs on the worker default (${describeRole(role())}). A worker keeps its model for life, so its prompt cache holds; pick at the start.${profilesText}`,
         parameters: Type.Object({
           name: Type.String({ minLength: 1 }),
           task: Type.String({ minLength: 1 }),
           cwd: Type.Optional(Type.String()),
+          ...modelChoice,
         }),
         replay: "safe",
         execute: async (args, api, context) => {
           const agent = await api.agent(context);
           if (agent.cwd === undefined) throw new Error("Conversation has no execution directory");
           const cwd = await resolveDirectory(args.cwd ?? agent.cwd, agent.cwd);
-          const defaults = role();
+          const picked = chooseRole(api.models, profiles, role(), args);
           const id = await api.commit(
             (tx) =>
               startWorker(
@@ -587,13 +668,16 @@ export function createWorkerTools(role: () => ModelRole) {
                 args.task,
                 cwd,
                 `tool:${api.taskId}:${api.callId}`,
-                defaults,
+                picked,
               ),
             context,
           );
           return {
             content: [
-              { type: "text", text: `Started ${args.name} (conversation ${id}) in ${cwd}.` },
+              {
+                type: "text",
+                text: `Started ${args.name} (conversation ${id}) in ${cwd} on ${describeRole(picked)}.`,
+              },
             ],
           };
         },
@@ -601,7 +685,7 @@ export function createWorkerTools(role: () => ModelRole) {
       defineTool({
         name: "message_worker",
         description:
-          "Route an ask to an existing background worker, normally the one that owns its domain. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically.",
+          "Route an ask to an existing background worker, normally the one that owns its domain. Steers its current run, or starts another run if idle. Returns immediately; the result arrives automatically. The worker keeps its model and thinking level, so its prompt cache holds; only a new worker picks another.",
         parameters: Type.Object({
           name: Type.String({ minLength: 1 }),
           message: Type.String({ minLength: 1 }),

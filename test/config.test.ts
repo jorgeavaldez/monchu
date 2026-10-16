@@ -87,6 +87,7 @@ describe("config", () => {
     expect(await loadConfig(await home())).toEqual({
       front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
       worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
+      profiles: {},
       classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
       settings: {},
       claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
@@ -136,6 +137,22 @@ describe("config", () => {
     expect(config.classifier).toBeNull();
   });
 
+  it("reads worker profiles, filling an omitted thinking level from the worker default", async () => {
+    const config = await loadConfig(
+      await home({
+        worker: { provider: "p", modelId: "m", thinkingLevel: "medium" },
+        profiles: {
+          quick: { provider: "p", modelId: "m", thinkingLevel: "low", use: "small clear work" },
+          standard: { provider: "p", modelId: "m", use: "normal work" },
+        },
+      }),
+    );
+    expect(config.profiles).toEqual({
+      quick: { provider: "p", modelId: "m", thinkingLevel: "low", use: "small clear work" },
+      standard: { provider: "p", modelId: "m", thinkingLevel: "medium", use: "normal work" },
+    });
+  });
+
   it("validates the run-settings subset without loading a Pi settings file", async () => {
     const settings = {
       theme: "light/dark",
@@ -178,6 +195,10 @@ describe("config", () => {
     [{ settings: { retry: { typo: 1 } } }, "unknown fields: typo"],
     [{ settings: { terminal: { images: true } } }, "settings.terminal.images"],
     [{ front: { provider: "p", modelId: "m", key: "secret" } }, "unknown fields: key"],
+    [{ profiles: [] }, "profiles must be an object"],
+    [{ profiles: { Quick: { provider: "p", modelId: "m", use: "u" } } }, "profiles.Quick: names"],
+    [{ profiles: { quick: { provider: "p", modelId: "m" } } }, "profiles.quick.use"],
+    [{ profiles: { quick: { provider: "p", modelId: "m", use: "u", x: 1 } } }, "unknown fields: x"],
   ])("rejects %j", async (config, message) => {
     await expect(loadConfig(await home(config))).rejects.toThrow(message);
   });

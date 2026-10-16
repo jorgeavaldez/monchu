@@ -35,6 +35,9 @@ export type ModelRole = {
 
 export type ClassifierRole = { provider: string; modelId: string };
 
+/** A named worker model choice; `use` says what work it is for, which the front and the routing helper read. */
+export type WorkerProfile = ModelRole & { use: string };
+
 export type RunSettings = {
   theme?: string;
   retry?: {
@@ -148,6 +151,8 @@ type McpExposure = "direct" | "deferred";
 export type MonchuConfig = {
   front: ModelRole;
   worker: ModelRole;
+  /** Named worker model choices for `start_worker` and `message_worker`, by name. */
+  profiles: Record<string, WorkerProfile>;
   settings: RunSettings;
   claude: ClaudeConfig;
   /** `null` turns classification off; otherwise it runs only while its provider has credentials. */
@@ -157,6 +162,7 @@ export type MonchuConfig = {
 const defaults: MonchuConfig = {
   front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
   worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
+  profiles: {},
   classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
@@ -202,6 +208,21 @@ function modelRole(value: unknown, field: string, fallback: ModelRole): ModelRol
     modelId: text(value.modelId, `${field}.modelId`),
     thinkingLevel,
   };
+}
+
+function profiles(value: unknown, worker: ModelRole): Record<string, WorkerProfile> {
+  if (value === undefined) return {};
+  if (!isObject(value)) throw new Error("profiles must be an object");
+  return Object.fromEntries(
+    Object.entries(value).map(([name, item]) => {
+      if (!/^[a-z][a-z0-9-]{0,23}$/.test(name))
+        throw new Error(`profiles.${name}: names are lowercase letters, digits, and dashes`);
+      const field = `profiles.${name}`;
+      object(item, field, ["provider", "modelId", "thinkingLevel", "use"]);
+      const { use, ...role } = item;
+      return [name, { ...modelRole(role, field, worker), use: text(use, `${field}.use`) }];
+    }),
+  );
 }
 
 function classifierRole(value: unknown): ClassifierRole | null {
@@ -509,7 +530,7 @@ export async function saveRole(
 function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
     if (!isObject(value)) throw new Error("expected a JSON object");
-    const known = ["front", "worker", "classifier", "settings", "claude"];
+    const known = ["front", "worker", "profiles", "classifier", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
     let claude = defaults.claude;
@@ -529,10 +550,12 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
             : boolean(value.claude.longContextExtraUsage, "claude.longContextExtraUsage"),
       };
     }
+    const worker = modelRole(value.worker, "worker", defaults.worker);
     return {
       claude,
       front: modelRole(value.front, "front", defaults.front),
-      worker: modelRole(value.worker, "worker", defaults.worker),
+      worker,
+      profiles: profiles(value.profiles, worker),
       classifier: classifierRole(value.classifier),
       settings: runSettings(value.settings),
     };

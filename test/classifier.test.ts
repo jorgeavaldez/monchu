@@ -19,6 +19,7 @@ import {
   ESCALATION_PREFIX,
   escalationSummary,
 } from "../src/classifier.ts";
+import type { WorkerProfile } from "../src/config.ts";
 import { GoalsDoc } from "../src/goals.ts";
 import { startWorker, WorkersDoc } from "../src/workers.ts";
 import {
@@ -56,14 +57,18 @@ const Done = defineTask<null, { phase: "done" }, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-async function withAssessment(extensions: readonly Extension[] = [], waitMs = 2000) {
+async function withAssessment(
+  extensions: readonly Extension[] = [],
+  waitMs = 2000,
+  profiles: Record<string, WorkerProfile> = {},
+) {
   const value = await setup();
   for (const extension of extensions) value.registry.install(extension);
   const classifier = scriptedClassifier(value.models);
   const assessment = createEffortAssessment(
     value.models,
     { provider: classifierModel.provider, modelId: classifierModel.id },
-    { waitMs },
+    { waitMs, profiles },
   );
   value.registry.install(assessment.extension);
   const opened = await open(value);
@@ -151,6 +156,48 @@ describe("routing helper", () => {
     expect(seen[0]).toContain("it needs a worker (90%)");
     expect(seen[0]).toContain("it continues w's line of context (85%)");
     await test.harness.close(context);
+  });
+
+  it("suggests a profile only for a new worker, and asks only when the profiles differ", async () => {
+    const quick = { ...fauxRole, use: "small clear work" };
+    const deep = { ...fauxRole, thinkingLevel: "high" as const, use: "hard work" };
+    const test = await withAssessment([], 2000, { quick, deep });
+    const advice: string[] = [];
+    route(test.faux, (request) => {
+      const last = request.messages.findLast(
+        (message) => message.role === "system" && typeof message.content === "string",
+      );
+      if (typeof last?.content === "string") advice.push(last.content);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    test.classifier.answer = () =>
+      routed("worker", 0.9, { worker: ["new", 0.9], profile: ["deep", 0.85] });
+    await test.send("dig into why the sync broke");
+    const question = test.classifier.requests.at(-1)?.questions.profile;
+    expect(question?.type === "choice" ? question.criteria : undefined).toEqual({
+      quick: "small clear work",
+      deep: "hard work",
+    });
+    expect(advice.at(-1)).toContain(
+      "a new worker for it fits profile deep (faux/faux-1, thinking high; 85%)",
+    );
+    await test.root.commit(
+      (tx) => startWorker(tx, test.root.id, "w", "sync work", test.directory, "w:0", fauxRole),
+      context,
+    );
+    test.classifier.answer = () =>
+      routed("worker", 0.9, { worker: ["w", 0.9], profile: ["deep", 0.85] });
+    await test.send("look again at the sync");
+    // An existing worker keeps its model, so the profile is not offered.
+    expect(advice.at(-1)).toContain("it continues w's line of context");
+    expect(advice.at(-1)).not.toContain("profile");
+    await test.harness.close(context);
+
+    const same = await withAssessment([], 2000, { quick, other: { ...quick, use: "other" } });
+    route(same.faux, () => fauxAssistantMessage([fauxText("ok")]));
+    await same.send("anything");
+    expect(same.classifier.requests.at(-1)?.questions).not.toHaveProperty("profile");
+    await same.harness.close(context);
   });
 
   it("gives the classifier the front's workers and open goals", async () => {

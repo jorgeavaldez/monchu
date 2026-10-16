@@ -16,6 +16,7 @@ import {
 } from "../src/workers.ts";
 import {
   allEntries,
+  callTools,
   cleanup,
   context,
   conversationOf,
@@ -667,6 +668,71 @@ describe("background workers", () => {
 });
 
 describe("worker lifecycle", () => {
+  it("starts a worker on a profile or an explicit model, refuses unknown and unsupported choices, and never switches it on a message", async () => {
+    const think = { provider: "faux", modelId: "faux-think" };
+    const value = await setup(
+      { models: [{ id: "faux-1" }, { id: "faux-think", reasoning: true }] },
+      {
+        quick: { ...think, thinkingLevel: "low", use: "small clear work" },
+        deep: { ...think, thinkingLevel: "high", use: "hard work" },
+      },
+    );
+    route(
+      value.faux,
+      callTools({
+        "start quick": {
+          tool: "start_worker",
+          args: { name: "q", task: "work", profile: "quick" },
+        },
+        "start unknown": {
+          tool: "start_worker",
+          args: { name: "u", task: "work", profile: "nope" },
+        },
+        "start unsupported": {
+          tool: "start_worker",
+          args: { name: "x", task: "work", model: "faux/faux-1", thinking: "high" },
+        },
+        "start explicit": {
+          tool: "start_worker",
+          args: { name: "e", task: "work", profile: "deep", thinking: "medium" },
+        },
+        "message quick": { tool: "message_worker", args: { name: "q", message: "more" } },
+      }),
+    );
+    const { harness, root } = await open(value);
+    for (const content of [
+      "start quick",
+      "start unknown",
+      "start unsupported",
+      "start explicit",
+      "message quick",
+    ]) {
+      await (await root.submit({ type: "input", content }, context)).wait(context);
+      await settle(harness, root);
+    }
+    const results = (await toolResults(root)).map((result) => textOf(result));
+    expect(results[0]).toMatch(/^Started q .* on faux\/faux-think, thinking low\.$/);
+    expect(results[1]).toContain("No worker profile nope; profiles: quick, deep");
+    expect(results[2]).toContain("faux/faux-1 does not support thinking high");
+    expect(results[3]).toMatch(/on faux\/faux-think, thinking medium\.$/);
+    expect(results[4]).toBe("Message committed for q.");
+    const workers = await listWorkers(harness, root.id, context);
+    expect(workers.map(({ name, model, thinking }) => ({ name, model, thinking }))).toEqual([
+      { name: "q", model: "faux/faux-think", thinking: "low" },
+      { name: "e", model: "faux/faux-think", thinking: "medium" },
+    ]);
+    // The tools tell the front which profiles there are.
+    const tools = (await root.agent(context)).tools;
+    expect(tools.find((tool) => tool.name === "start_worker")?.description).toContain(
+      "quick (faux/faux-think, thinking low): small clear work",
+    );
+    expect(tools.find((tool) => tool.name === "message_worker")?.parameters).not.toHaveProperty(
+      "properties.profile",
+    );
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
   it("closes only an idle worker, hides it, rejects messages until reopened, and keeps it across restart", async () => {
     const value = await setup();
     let release!: () => void;

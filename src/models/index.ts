@@ -66,13 +66,17 @@ function problems(models: Models, config: MonchuConfig) {
       config.classifier === null
         ? undefined
         : roleProblem(models, "classifier", config.classifier, "classifier"),
+    profiles: Object.entries(config.profiles).flatMap(([name, profile]) => {
+      const problem = roleProblem(models, `profiles.${name}`, profile, "chat");
+      return problem === undefined ? [] : [{ name, problem }];
+    }),
   };
 }
 
 /** Resolve configured roles by their operation type, without requiring credentials or falling back. */
 export function resolveRoles(models: Models, config: MonchuConfig): void {
   const found = problems(models, config);
-  const first = found.front ?? found.worker ?? found.classifier;
+  const first = found.front ?? found.worker ?? found.classifier ?? found.profiles[0]?.problem;
   if (first !== undefined) throw new Error(first);
 }
 
@@ -103,6 +107,13 @@ export function startupRoles(
   if (found.classifier !== undefined) {
     next.classifier = null;
     warnings.push(`${found.classifier}. Routing advice is off until config.json is fixed`);
+  }
+  if (found.profiles.length) {
+    next.profiles = { ...config.profiles };
+    for (const { name, problem } of found.profiles) {
+      delete next.profiles[name];
+      warnings.push(`${problem}. Profile ${name} is off until config.json is fixed`);
+    }
   }
   return { config: next, warnings };
 }

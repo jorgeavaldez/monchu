@@ -36,6 +36,7 @@ afterEach(cleanup);
 const config = {
   front: fauxRole,
   worker: fauxRole,
+  profiles: {},
   classifier: { provider: classifierModel.provider, modelId: classifierModel.id },
   settings: {},
   claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },

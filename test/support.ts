@@ -53,7 +53,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Codemode } from "../src/codemode.ts";
-import { type ClaudeConfig, type ModelRole, resolveSettings } from "../src/config.ts";
+import {
+  type ClaudeConfig,
+  type ModelRole,
+  resolveSettings,
+  type WorkerProfile,
+} from "../src/config.ts";
 import { createClaudeCodeProvider, type ClaudeQuery } from "../src/models/claude-code.ts";
 import { openModels } from "../src/models/index.ts";
 import { FffFinders } from "../src/fff.ts";
@@ -167,7 +172,11 @@ export function scriptedClassifier(models: MutableModels): ScriptedClassifier {
 export function routed(
   route: "front" | "worker",
   routeProbability: number,
-  more: { worker?: [string, number]; split?: ["one" | "several", number] } = {},
+  more: {
+    worker?: [string, number];
+    split?: ["one" | "several", number];
+    profile?: [string, number];
+  } = {},
 ): ClassifierResult {
   const choice = (picked: string, other: string, probability: number) => ({
     type: "choice" as const,
@@ -186,6 +195,9 @@ export function routed(
         ? {}
         : { worker: choice(more.worker[0], "new", more.worker[1]) }),
       split: choice(split, split === "one" ? "several" : "one", splitProbability),
+      ...(more.profile === undefined
+        ? {}
+        : { profile: choice(more.profile[0], "other", more.profile[1]) }),
     },
     stopReason: "stop",
     timestamp: Date.now(),
@@ -241,12 +253,15 @@ export function prepareHome(home: string): void {
  * The front's tools as Monchu installs them in a fresh temp home.
  * Default user resources (`~/.agents`, `~/.pi/agent`) resolve inside it. Call `cleanup` after each test.
  */
-export async function setup(options: RegisterFauxProviderOptions = {}): Promise<Setup> {
+export async function setup(
+  options: RegisterFauxProviderOptions = {},
+  profiles: Record<string, WorkerProfile> = {},
+): Promise<Setup> {
   const faux = fauxProvider(options);
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(createWorkerTools(() => fauxRole));
+  registry.install(createWorkerTools(() => fauxRole, profiles));
   registry.install(Codemode);
   const directory = await mkdtemp(join(tmpdir(), "monchu-test-"));
   directories.add(directory);

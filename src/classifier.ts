@@ -15,9 +15,9 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
-import type { ClassifierRole } from "./config.ts";
+import type { ClassifierRole, WorkerProfile } from "./config.ts";
 import { GoalsDoc } from "./goals.ts";
-import { WorkersDoc, type WhenBusy } from "./workers.ts";
+import { describeRole, WorkersDoc, type WhenBusy } from "./workers.ts";
 
 /** Below this probability of its pick an answer informs the front but never nudges or escalates. */
 const SURE = 0.75;
@@ -53,7 +53,15 @@ export function escalationSummary(content: string): string | undefined {
 type RosterEntry = { name: string; open: boolean; about: string };
 type GoalBrief = { title: string; workstream: string; workers: string[] };
 
-function questions(roster: readonly RosterEntry[]): ClassifierContext["questions"] {
+/** How many different model and thinking choices the profiles make. */
+function distinctRoles(profiles: Record<string, WorkerProfile>): number {
+  return new Set(Object.values(profiles).map(describeRole)).size;
+}
+
+function questions(
+  roster: readonly RosterEntry[],
+  profiles: Record<string, WorkerProfile>,
+): ClassifierContext["questions"] {
   return {
     route: {
       type: "choice",
@@ -84,6 +92,19 @@ function questions(roster: readonly RosterEntry[]): ClassifierContext["questions
             },
           },
         }),
+    // Nothing to choose with fewer than two distinct model choices.
+    ...(distinctRoles(profiles) < 2
+      ? {}
+      : {
+          profile: {
+            type: "choice",
+            instructions:
+              "Which of these fits the work a worker would do for this message? Judge by the outcome the user wants.",
+            criteria: Object.fromEntries(
+              Object.entries(profiles).map(([name, profile]) => [name, profile.use]),
+            ),
+          },
+        }),
     split: {
       type: "choice",
       instructions: "How many separate lines of work does the message ask for?",
@@ -105,6 +126,8 @@ export type AssessmentResult =
       /** `new` when no listed worker fits; `null` when there were no workers to choose from. */
       worker: Answer<string> | null;
       split: Answer<"one" | "several">;
+      /** The worker profile the work fits; `null` without two distinct profiles to choose from. */
+      profile: Answer<string> | null;
       usage: { input: number; output: number; costUsd: number } | null;
     }
   | { status: "failed"; message: string };
@@ -153,11 +176,16 @@ export function describe(result: AssessmentResult): string {
     );
   if (result.split.choice === "several")
     parts.push(`several lines of work (${percent(result.split.probability)})`);
+  if (result.profile !== null)
+    parts.push(`fits ${result.profile.choice} (${percent(result.profile.probability)})`);
   return parts.join(", ");
 }
 
-/** What the front reads: only sure answers are stated as advice, the rest as uncertainty. */
-function advice(result: AssessmentResult): string {
+/**
+ * What the front reads: only sure answers are stated as advice, the rest as uncertainty. The profile counts only for a
+ * new worker: an existing one keeps its model, so its prompt cache holds.
+ */
+function advice(result: AssessmentResult, profiles: Record<string, WorkerProfile>): string {
   if (result.status === "failed")
     return `Routing helper unavailable (${result.message}). Route by your own judgment.`;
   const lines: string[] = [];
@@ -178,6 +206,18 @@ function advice(result: AssessmentResult): string {
   if (result.split.choice === "several" && result.split.probability >= SURE)
     lines.push(
       `it holds several separate lines of work (${percent(result.split.probability)}); consider splitting them across workers`,
+    );
+  const profile = result.profile === null ? undefined : profiles[result.profile.choice];
+  const fresh = result.worker === null || result.worker.choice === "new";
+  if (
+    result.profile !== null &&
+    profile !== undefined &&
+    fresh &&
+    result.profile.probability >= SURE &&
+    result.route.choice === "worker"
+  )
+    lines.push(
+      `a new worker for it fits profile ${result.profile.choice} (${describeRole(profile)}; ${percent(result.profile.probability)})`,
     );
   return `Routing helper (Clef) on the user's latest message: ${lines.join("; ")}. A small classifier's advice: weigh it with what you know; it grants no permission.`;
 }
@@ -208,9 +248,10 @@ type AssessState = { phase: "classify" } | { phase: "escalate"; result: Assessme
 export function createEffortAssessment(
   models: Models,
   role: ClassifierRole,
-  options: { waitMs?: number } = {},
+  options: { waitMs?: number; profiles?: Record<string, WorkerProfile> } = {},
 ) {
   const waitMs = options.waitMs ?? WAIT_MS;
+  const profiles = options.profiles ?? {};
   /** Answers this process has seen, by input, so the first request waits for its answer instead of polling. */
   const answered = new Map<SubmissionId, PromiseWithResolvers<void>>();
   const answerOf = (id: SubmissionId) => {
@@ -262,7 +303,7 @@ export function createEffortAssessment(
               workers: (task.input.roster ?? []).map((entry) => entry.name),
               goals: task.input.goals ?? [],
             },
-            questions: questions(task.input.roster ?? []),
+            questions: questions(task.input.roster ?? [], profiles),
           },
           { signal: runtime.signal },
         );
@@ -270,6 +311,7 @@ export function createEffortAssessment(
         const route = answer.answers.route;
         const worker = answer.answers.worker;
         const split = answer.answers.split;
+        const profile = answer.answers.profile;
         let result: AssessmentResult;
         if (answer.stopReason !== "stop")
           result = {
@@ -293,6 +335,13 @@ export function createEffortAssessment(
                 ? { choice: worker.choice, probability: worker.probabilities[worker.choice] ?? 0 }
                 : null,
             split: { choice: split.choice, probability: split.probabilities[split.choice] ?? 0 },
+            profile:
+              profile?.type === "choice" && profiles[profile.choice] !== undefined
+                ? {
+                    choice: profile.choice,
+                    probability: profile.probabilities[profile.choice] ?? 0,
+                  }
+                : null,
             usage: answer.usage
               ? {
                   input: answer.usage.input,
@@ -479,7 +528,11 @@ export function createEffortAssessment(
             return {
               messages: [
                 ...messages,
-                { role: "system", content: advice(result), timestamp: Date.now() },
+                {
+                  role: "system",
+                  content: advice(result, profiles),
+                  timestamp: Date.now(),
+                },
               ],
             };
           },
@@ -500,7 +553,7 @@ export function createEffortAssessment(
                 ...result.content,
                 {
                   type: "text",
-                  text: `\n[Routing helper: ${advice(item.result)} Nothing is routed for it yet. Unless this was a quick look to route it, hand the work to the worker whose line of context it continues.]`,
+                  text: `\n[Routing helper: ${advice(item.result, profiles)} Nothing is routed for it yet. Unless this was a quick look to route it, hand the work to the worker whose line of context it continues.]`,
                 },
               ],
             };

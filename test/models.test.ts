@@ -60,6 +60,17 @@ describe("Monchu models", () => {
     );
     expect(fixed.warnings[2]).toContain("Routing advice is off");
     expect(startupRoles(models, config)).toEqual({ config, warnings: [] });
+    // A profile on an unknown model is dropped with a warning; the others stay.
+    const profiles = startupRoles(models, {
+      ...config,
+      profiles: {
+        good: { ...fauxRole, use: "u" },
+        gone: { ...fauxRole, modelId: "absent", use: "u" },
+      },
+    });
+    expect(Object.keys(profiles.config.profiles)).toEqual(["good"]);
+    expect(profiles.warnings).toEqual([expect.stringContaining("faux/absent (profiles.gone)")]);
+    expect(profiles.warnings[0]).toContain("Profile gone is off");
   });
 
   it("logs in to Cloudflare locally and reopens its key/account without exposing them to the catalog", async () => {

@@ -84,7 +84,7 @@ async function build(
   };
   const context = (await load("context")).createContext(home, config.settings);
   const tools = (await load("pi-tools")).createPiTools(context.settings, finders);
-  const workers = (await load("workers")).createWorkerTools(workerRole);
+  const workers = (await load("workers")).createWorkerTools(workerRole, config.profiles);
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
@@ -100,7 +100,9 @@ async function build(
   const assessment =
     config.classifier === null
       ? undefined
-      : (await load("classifier")).createEffortAssessment(models, config.classifier);
+      : (await load("classifier")).createEffortAssessment(models, config.classifier, {
+          profiles: config.profiles,
+        });
   return {
     modules,
     extensions: [
