@@ -7,7 +7,7 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 
 - The front stays responsive. Background work never keeps it busy. A receipt is not an answer.
 - Monchu owns its home (`MONCHU_HOME`, default `~/.monchu`), config, and credentials. It reuses Pi's model and auth APIs, but never reads or writes another tool's config or credentials.
-- Credentials, Durable stores, and other runtime state stay on their device. Add every new runtime file to `home-template/.gitignore`.
+- Credentials, Durable stores, and other runtime state stay on their device. Add every new runtime file to `home-template/gitignore` (seeded as the home's `.gitignore`).
 - Routing advice and classification never authorize side effects. Failures stay visible, and nothing silently falls back.
 - Shipped code, skills, templates, and docs assume nothing about one person's setup (paths, dotfiles, accounts, devices). Discover it or ask.
 

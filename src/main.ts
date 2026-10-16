@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { monchuHome, seedHome } from "./home.ts";
 
 try {

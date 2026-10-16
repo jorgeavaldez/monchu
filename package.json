@@ -14,6 +14,16 @@
     "type": "git",
     "url": "git+https://github.com/jorgeavaldez/monchu.git"
   },
+  "bin": {
+    "monchu": "dist/main.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "home-template",
+    "docs",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.293",
@@ -52,6 +62,9 @@
       "version": ">=12.2.0",
       "onFail": "error"
     }
+  },
+  "engines": {
+    "node": ">=22.19"
   },
   "packageManager": "npm@12.2.0",
   "allowScripts": {

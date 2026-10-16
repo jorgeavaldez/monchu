@@ -9,13 +9,14 @@ It is shaped around one person's way of working: subscription models only (ChatG
 
 ## Quick start
 
-You need Node 22.19+, npm 12.2+, [mise](https://mise.jdx.dev), and a ChatGPT or Claude Pro/Max subscription.
+You need Node 22.19+ and a ChatGPT or Claude Pro/Max subscription. Install the newest build of `main` as a global `monchu` command, the same way on macOS, Linux, Windows, and Android (Termux):
 
 ```sh
-git clone <this repository> monchu && cd monchu
-mise run install
-mise run start
+npm install -g --allow-remote=root https://github.com/jorgeavaldez/monchu/releases/download/edge/monchu.tgz
+monchu
 ```
+
+Run the install again to update. Tagged versions are on the [releases](https://github.com/jorgeavaldez/monchu/releases) page, and `npm uninstall -g monchu` removes the command but keeps the home.
 
 1. Monchu creates its home at `~/.monchu`. Set `MONCHU_HOME` to use a different directory.
 2. Run `/login` and pick Codex or Claude Code. Monchu uses that provider's models.
@@ -25,10 +26,15 @@ mise run start
 
 ## Development
 
+You need npm 12.2+ and [mise](https://mise.jdx.dev).
+
 ```sh
+mise run install
 mise run check   # typecheck, lint, format, knip, tests
 mise run build
+npm link         # make `monchu` run this checkout's build
 mise run smoke   # offline TUI with scripted models
+mise run pack    # the installable tarball CI attaches to releases
 ```
 
 Code rules are in [AGENTS.md](AGENTS.md).

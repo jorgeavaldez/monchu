@@ -11,6 +11,7 @@ import {
   type Registry,
 } from "@earendil-works/pi-durable";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
@@ -360,9 +361,13 @@ export class Extensions {
   }
 }
 
-/** Compiled mode needs fresh JS; source mode uses Node's native type stripping. */
+/**
+ * A checkout's compiled mode needs fresh JS; source mode uses Node's native type stripping, and an installed package
+ * ships no sources, so reload re-reads its fixed build.
+ */
 async function buildForReload(): Promise<void> {
   if (import.meta.url.endsWith(".ts")) return;
+  if (!existsSync(fileURLToPath(new URL("../tsconfig.build.json", import.meta.url)))) return;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       process.execPath,

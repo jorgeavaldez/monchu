@@ -64,3 +64,8 @@ run = 'node src/main.ts'
 description = 'Run from source with isolated faux models'
 env = { MONCHU_DEV_FAUX = '1' }
 run = 'mise run dev'
+
+[tasks.pack]
+description = 'Pack the built app as a tarball that npm installs globally'
+depends = ['build']
+run = 'npm pack'

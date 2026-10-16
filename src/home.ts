@@ -27,8 +27,12 @@ export async function monchuHome(smoke: boolean): Promise<string> {
   return resolve(home);
 }
 
-/** The starter home shipped with Monchu: generic manuals, empty memories, and the runtime `.gitignore`. */
+/**
+ * The starter home shipped with Monchu: generic manuals, empty memories, and the runtime ignore file. That one is
+ * stored as `gitignore` because npm drops `.gitignore` files from packages; it is seeded as `.gitignore`.
+ */
 const TEMPLATE = fileURLToPath(new URL("../home-template/", import.meta.url));
+const SEEDED_NAMES: Record<string, string> = { gitignore: ".gitignore" };
 
 async function files(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true, recursive: true });
@@ -51,11 +55,12 @@ export async function seedHome(home: string): Promise<string[]> {
   await mkdir(join(home, "skills"), { recursive: true });
   const added: string[] = [];
   for (const file of await files(TEMPLATE)) {
-    const target = join(home, file);
+    const name = SEEDED_NAMES[file] ?? file;
+    const target = join(home, name);
     await mkdir(dirname(target), { recursive: true });
     try {
       await copyFile(join(TEMPLATE, file), target, constants.COPYFILE_EXCL);
-      added.push(file.split(sep).join("/"));
+      added.push(name.split(sep).join("/"));
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
     }
