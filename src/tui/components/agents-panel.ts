@@ -9,8 +9,8 @@ import {
 import { getSelectListTheme, theme } from "../theme/theme.ts";
 import { meterText, shortPath, type Meter } from "./footer.ts";
 
-/** Working now, finished since last shown, or idle. */
-export type AgentStatus = "working" | "done" | "idle";
+/** Running now, or not. */
+export type AgentStatus = "working" | "idle";
 
 /** One conversation in the agents panel: the root, value `""`, or a worker by name. */
 export type AgentRow = {
@@ -23,11 +23,7 @@ export type AgentRow = {
 
 /** A status as a colored mark and word: the same words the dock counts and Herdr shows. */
 export function statusText(status: AgentStatus): string {
-  return status === "working"
-    ? theme.fg("accent", "● working")
-    : status === "done"
-      ? theme.fg("success", "✓ done")
-      : theme.fg("dim", "○ idle");
+  return status === "working" ? theme.fg("accent", "● working") : theme.fg("dim", "○ idle");
 }
 
 /**
@@ -81,7 +77,7 @@ export class AgentsPanel implements Component, Focusable {
       rule,
       truncateToWidth(` ${list.selectedText("Agents")}`, width, "..."),
       ...lines,
-      truncateToWidth(list.description(" ↑↓ select · Enter view · Esc close"), width, "..."),
+      truncateToWidth(list.description(" Enter view · Esc close"), width, "..."),
       rule,
     ];
   }

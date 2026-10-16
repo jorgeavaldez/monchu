@@ -25,6 +25,7 @@ import {
 } from "./components/agents-panel.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { Footer, shortPath, type FooterState } from "./components/footer.ts";
+import { GoalsPanel } from "./components/goals-panel.ts";
 import { formatKeyText } from "./components/keybinding-hints.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -54,7 +55,6 @@ import {
   truncateToWidth,
   TuiAltScreen,
   VStack,
-  wrapTextWithAnsi,
   type Component,
   type Focusable,
   type SelectItem,
@@ -63,6 +63,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { QueueChange } from "../backend.ts";
 import { escalationSummary } from "../classifier.ts";
+import type { Goal } from "../goals.ts";
 import { parseWorkerNotice, workerNotice, type WhenBusy } from "../workers.ts";
 import { commands } from "./commands.ts";
 import { presentation, type QueuedItem } from "./state.ts";
@@ -217,70 +218,6 @@ class ListSelector extends Container implements Focusable {
 }
 
 /**
- * Read-only text pinned in the editor's place, as the agent menu is: never transcript. Each source line wraps under
- * its own indent; long text scrolls within a height capped by the terminal, re-measured every frame.
- */
-class TextPanel implements Component, Focusable {
-  focused = false;
-  private readonly title: string;
-  private readonly lines: string[];
-  private readonly rows: () => number;
-  private readonly close: () => void;
-  private offset = 0;
-  private visible = 1;
-
-  constructor(title: string, text: string, rows: () => number, close: () => void) {
-    this.title = title;
-    this.lines = text.split(/\r\n|\r|\n/);
-    this.rows = rows;
-    this.close = close;
-  }
-
-  render(width: number): string[] {
-    const theme = getSelectListTheme();
-    const body = this.lines.flatMap((line) => {
-      const indent = " ".repeat(line.length - line.trimStart().length);
-      const wrapped = wrapTextWithAnsi(line.trimStart(), Math.max(1, width - 2 - indent.length));
-      return wrapped.map((part) => truncateToWidth(` ${indent}${part}`, width, ""));
-    });
-    // The whole panel, with its rules, title and hint, takes at most 60% of the rows; the transcript keeps the rest.
-    this.visible = Math.max(3, Math.min(body.length, Math.floor(this.rows() * 0.6) - 4));
-    this.offset = Math.max(0, Math.min(this.offset, body.length - this.visible));
-    const scroll =
-      body.length > this.visible
-        ? ` · ${this.offset + 1}-${this.offset + this.visible} of ${body.length} · ↑↓ PgUp PgDn`
-        : "";
-    const rule = theme.description("─".repeat(width));
-    return [
-      rule,
-      truncateToWidth(` ${theme.selectedText(this.title)}`, width, "..."),
-      ...body.slice(this.offset, this.offset + this.visible),
-      truncateToWidth(theme.description(` Esc to close${scroll}`), width, "..."),
-      rule,
-    ];
-  }
-
-  handleInput(data: string): void {
-    const keys = getKeybindings();
-    if (keys.matches(data, "tui.select.up")) this.offset -= 1;
-    else if (keys.matches(data, "tui.select.down")) this.offset += 1;
-    else if (keys.matches(data, "tui.select.pageUp")) this.offset -= this.visible;
-    else if (keys.matches(data, "tui.select.pageDown")) this.offset += this.visible;
-    else if (
-      keys.matches(data, "tui.select.cancel") ||
-      keys.matches(data, "tui.select.confirm") ||
-      matchesKey(data, "ctrl+c") ||
-      data === "q"
-    )
-      this.close();
-    // render clamps the offset to the content it measures.
-    this.offset = Math.max(0, this.offset);
-  }
-
-  invalidate(): void {}
-}
-
-/**
  * The shown conversation's queue in the editor's place, one row per item as the dock shows it. The selection follows its
  * item while the queue changes underneath; a passive write is listed but takes no action.
  */
@@ -327,9 +264,7 @@ class QueuePanel implements Component, Focusable {
       truncateToWidth(` ${theme.selectedText("Queue")}`, width, "..."),
       ...rows,
       truncateToWidth(
-        theme.description(
-          " ↑↓ select · Enter edit · Alt+S steer/follow-up · Del delete · Esc close",
-        ),
+        theme.description(" Enter edit · Alt+S mode · Del delete · Esc"),
         width,
         "...",
       ),
@@ -734,18 +669,16 @@ export class MonchuTui {
     this.ui.requestRender();
   }
 
-  /** Shows read-only text pinned above the footer until Esc, Enter, q or Ctrl-C closes it. */
-  showPanel(title: string, text: string): void {
-    this.selector = new TextPanel(
-      title,
-      text,
-      () => this.ui.terminal.rows,
-      () => this.restoreEditor(),
+  /** Shows the goals list in the editor's place, with drilldown, until Esc, q or Ctrl-C closes it. */
+  openGoals(goals: readonly Goal[], statuses: () => ReadonlyMap<string, AgentStatus>): void {
+    this.showSelector(
+      new GoalsPanel(
+        goals,
+        statuses,
+        () => this.ui.terminal.rows,
+        () => this.restoreEditor(),
+      ),
     );
-    this.editorContainer.clear();
-    this.editorContainer.addChild(this.selector);
-    this.ui.setFocus(this.selector);
-    this.ui.requestRender();
   }
 
   private restoreEditor(): void {
@@ -853,7 +786,7 @@ export class MonchuTui {
     // Every revision of any shown or worker view lands here; render only when the styled line changes.
     // Counts only: /agents lists every worker, and the footer names the one shown.
     const muted = getSelectListTheme().description;
-    const counts = (["working", "done", "idle"] as const).flatMap((status) => {
+    const counts = (["working", "idle"] as const).flatMap((status) => {
       const count = items.filter((item) => item.status === status).length;
       return count ? [statusText(status).replace(status, `${count} ${status}`)] : [];
     });

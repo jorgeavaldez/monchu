@@ -142,7 +142,7 @@ The TUI follows terminal light/dark reports with its copied built-in themes.
 
 `/help` lists the commands; `src/tui/commands.ts` defines them.
 
-`/agents` opens a live panel of the root and every worker: status (working; done, after a run that finished while another conversation was shown, until you view it; idle), context fill, and directory where it fits.
+`/agents` opens a live panel of the root and every worker: status (working or idle), context fill, and directory where it fits.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
 The root is shown by default; `/agents root` returns to it.
 Root commands such as `/abort`, `/new`, `/compact`, and `/cd` still target the root while a worker is shown.
@@ -174,7 +174,7 @@ When a request touches a project, update its existing goal's workstream, next st
 The front keeps them current with `update_goal` (create, or patch one goal by id) and reads them with `list_goals`. Workers have both tools too: they inherit the root's extension selection when created. Each conversation's goal tools and section use that conversation's own document, so a worker's goals are not the root's.
 Active and waiting goals render as the `goals` prompt section in stored order; Durable resends a section only when its text changes.
 Open goals are always kept; done and dropped goals are kept for the 20 most recently changed.
-`/goals` lists the open goals.
+`/goals` lists open goals one row each, with a colored status and age, and previews the selected goal's next step; Enter opens the goal (now, next, linked workers with live status, project, vault), Esc goes back, Tab adds the recently closed goals.
 The document is not transcript, so `/new`, compaction, and restarts keep it, and the section returns in the next request.
 `/compact` always asks the summary to keep open goal ids, kinds, titles, project/vault links, workstreams, next steps, and workers, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.

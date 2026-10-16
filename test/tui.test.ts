@@ -730,7 +730,7 @@ describe("committed Durable presentation", () => {
 
       screen.sendInput("draft");
       screen.sendInput("\x1bq");
-      await shows("Enter edit · Alt+S steer/follow-up · Del delete");
+      await shows("Enter edit · Alt+S mode · Del delete");
       const panel = await viewport();
       expect(panel).toContain("›│ you · follow-up · first");
       // The panel lists the queue in the dock's place instead of twice.

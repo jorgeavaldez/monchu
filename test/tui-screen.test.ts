@@ -54,6 +54,8 @@ async function withTerminal(
   } finally {
     try {
       if (running !== undefined) {
+        // Ctrl-C closes a panel a failed test left open, or clears the editor, so /quit reaches the editor.
+        screen.sendInput("\x03");
         send(screen, "/quit");
         await running;
       }
@@ -144,7 +146,7 @@ it("drops a closed worker from the roster at once and returns its selected view 
   await withTerminal(60, "dark", async (screen, backend) => {
     send(screen, "/work reader inspect");
     await visible(screen, "Faux front: result received.");
-    await visible(screen, "Workers · ✓ 1 done · /agents");
+    await visible(screen, "Workers · ○ 1 idle · /agents");
     send(screen, "/agents reader");
     await visible(screen, "• reader");
     // The dock counts a worker idle once its run ends; closing also waits for its report's delivery to finish.
@@ -554,51 +556,55 @@ describe.each([
     });
   }, 30_000);
 
-  it("pins /goals above the footer with field line breaks, scrolls on resize, and closes back to the editor", async () => {
+  it("lists /goals concisely above the footer, drills into a goal, scrolls on resize, and closes back to the editor", async () => {
     await withTerminal(columns, theme, async (screen) => {
       send(screen, "goal");
       await visible(screen, "Faux tool finished.");
       send(screen, "/goals");
-      const panel = await visible(screen, "Esc to close");
-      const title = panel.findIndex((line) => line.trim() === "Goals");
-      const hint = panel.findIndex((line) => line.includes("Esc to close"));
+      const panel = await visible(screen, "Goals · 1 open");
+      const title = panel.findIndex((line) => line.includes("Goals · 1 open"));
       // Pinned in the editor's place: below the transcript, directly above the footer; never a chat notice.
       expect(title).toBeGreaterThan(
         panel.findIndex((line) => line.includes("Faux tool finished.")),
       );
-      expect(panel[hint + 1]?.trim()).toMatch(/^─+$/);
-      expect(panel[hint + 2]).toContain("• root");
-      // The update_goal card above shows the goal; nothing is appended after the front's answer.
       const answered = panel.findIndex((line) => line.includes("Faux tool finished."));
       expect(panel.slice(answered + 1, title).join("\n")).not.toMatch(/smoke|system ·/i);
-      expect(panel.join("")).not.toContain("\r");
-      // Each stored line break, CRLF or LF, becomes its own row indented under its field.
-      const next = panel.findIndex(
-        (line, index) => index > title && line.includes("next: first step"),
-      );
-      expect(next).toBeGreaterThan(title);
-      for (const [index, step] of ["second", "third", "fourth", "fifth"].entries())
-        expect(panel[next + 1 + index]).toMatch(new RegExp(`^ {5}${step} step\\s*$`));
-      // A wrapped field continues under its own indent.
-      const workstream = panel.findIndex(
-        (line, index) => index > title && line.includes("workstream: Checking"),
-      );
-      expect(panel[workstream + 1]).toMatch(/^ {3}\S/);
-      // Typing goes to the panel, not the editor.
+      // One row per goal, the selected one previewing only the first line of its next step.
+      expect(panel[title + 1]).toMatch(/^› ● Smoke goal\s+\d+s\s*$/);
+      expect(panel[title + 2]).toMatch(/^ {4}next first step\s*$/);
+      expect(panel.slice(title).join("\n")).not.toContain("second step");
+      expect(panel[title + 4]?.trim()).toMatch(/^─+$/);
+      expect(panel[title + 5]).toContain("• root");
+      // Typing goes to the panel, not the editor; Enter drills into the goal.
       screen.sendInput("z");
+      screen.sendInput("\r");
+      const detail = await visible(screen, "Esc back");
+      expect(detail.join("")).not.toContain("\r");
+      expect(detail.join("\n")).toMatch(/active · endeavor · smoke/);
+      // Each stored line break, CRLF or LF, becomes its own row under its heading; a wrapped field keeps its indent.
+      const next = detail.findIndex((line) => line.trim() === "Next");
+      for (const [index, step] of ["first", "second", "third", "fourth", "fifth"].entries())
+        expect(detail[next + 1 + index]).toMatch(new RegExp(`^ {3}${step} step\\s*$`));
+      const now = detail.findIndex((line) => line.trim() === "Now");
+      expect(detail[now + 1]).toMatch(/^ {3}Checking/);
+      expect(detail[now + 2]).toMatch(/^ {3}\S/);
+      // A linked worker shows its live status; this one was never started.
+      expect(detail.join("\n")).toMatch(/reader\s+closed/);
+      expect(detail.join("\n")).toContain("projects/smoke");
       // A short terminal caps the panel and scrolls it.
       screen.resize(columns, 14);
       const short = await visible(screen, "1-4 of");
       expect(short).toHaveLength(14);
       expect(short.at(-2)).toContain("• root");
-      expect(short.findIndex((line) => line.trim() === "Goals")).toBeGreaterThanOrEqual(14 - 9);
       screen.sendInput("\x1b[B");
       await visible(screen, "2-5 of");
       screen.resize(columns, 40);
-      await visible(screen, "next: first step");
+      // Esc goes back to the list, then closes it.
+      screen.sendInput("\x1b");
+      await visible(screen, "Goals · 1 open");
       screen.sendInput("\x1b");
       await waitFor(
-        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc to close"),
+        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Goals · 1 open"),
       );
       const closed = await screen.flushAndGetViewport();
       const done = closed.findIndex((line) => line.includes("Faux tool finished."));
@@ -607,12 +613,14 @@ describe.each([
       const editing = await visible(screen, "draft");
       expect(editing.join("\n")).not.toContain("zdraft");
       screen.sendInput("\x03");
-      // q closes it too.
+      // q closes it too, from the list or a goal.
       send(screen, "/goals");
-      await visible(screen, "Esc to close");
+      await visible(screen, "Goals · 1 open");
+      screen.sendInput("\r");
+      await visible(screen, "Esc back");
       screen.sendInput("q");
       await waitFor(
-        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc to close"),
+        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Esc back"),
       );
     });
   }, 30_000);
@@ -629,7 +637,7 @@ describe.each([
       await visible(screen, "Faux front: result received.");
       const shown = (await screen.flushAndGetViewport()).join("\n");
       expect(shown).not.toMatch(/worker · reader|not a new user instruction/);
-      await visible(screen, "Workers · ✓ 1 done · /agents");
+      await visible(screen, "Workers · ○ 1 idle · /agents");
       // Overflow the transcript so the row above the bar is the last message's timestamp, not filler.
       screen.resize(columns, 14);
       let docked: string[] = [];
@@ -637,12 +645,12 @@ describe.each([
         docked = await screen.flushAndGetViewport();
         return (
           docked.some((line) => line.includes("result received.")) &&
-          docked.some((line) => line.includes("Workers · ✓ 1 done")) &&
+          docked.some((line) => line.includes("Workers · ○ 1 idle")) &&
           // The whole dock, down to the footer, has settled at the new height.
           docked.some((line) => line.includes("• root"))
         );
       });
-      const bar = docked.findIndex((line) => line.includes("Workers · ✓ 1 done"));
+      const bar = docked.findIndex((line) => line.includes("Workers · ○ 1 idle"));
       // A blank row separates the bar from the last message's timestamp.
       expect(docked[bar - 1]?.trim()).toBe("");
       expect(docked[bar - 2]).toMatch(/\d{4}, \d+:\d{2}/);
@@ -656,7 +664,7 @@ describe.each([
       const panel = await visible(screen, "Enter view");
       // The panel lists the root and each worker with status and context, behind the dock's compact counts.
       expect(panel.join("\n")).toMatch(/root\s+○ idle/);
-      expect(panel.join("\n")).toMatch(/reader\s+✓ done/);
+      expect(panel.join("\n")).toMatch(/reader\s+○ idle/);
       screen.sendInput("\x1b[B"); // down to the worker, then select with the actual keyboard path
       screen.sendInput("\r");
       // The worker's context leads the footer, and the root's stays beside it.

@@ -45,6 +45,8 @@ export function createDevProvider(): Provider {
               kind: "endeavor",
               workstream: "Checking the goals panel wraps a long workstream under its field",
               next: "first step\r\nsecond step\nthird step\nfourth step\nfifth step",
+              workers: ["reader"],
+              vault: "projects/smoke",
             }),
           ],
           { stopReason: "toolUse" },

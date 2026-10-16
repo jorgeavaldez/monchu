@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
 import { describe as describeAssessment } from "../classifier.ts";
-import { formatOpenGoals } from "../goals.ts";
 import type { HerdrAgent } from "../herdr-agent.ts";
 import type { WhenBusy } from "../workers.ts";
 import { help, parseInput } from "./commands.ts";
@@ -69,15 +68,12 @@ export async function runTerminal(
   let refreshing: Promise<void> | undefined;
   let refreshAgain = false;
   let lastRootEntry: number | undefined;
-  // Conversations, `""` for the root, that finished a run while another was shown: `done` until shown, as in Herdr.
-  const done = new Set<string>();
-  const wasBusy = new Map<string, boolean>();
+  // Each worker's status as last shown, for linked workers in the goals panel.
+  let statuses: ReadonlyMap<string, AgentStatus> = new Map();
 
-  function status(key: string, busy: boolean): AgentStatus {
-    if (busy) done.delete(key);
-    else if (wasBusy.get(key) === true && key !== (selected ?? "")) done.add(key);
-    wasBusy.set(key, busy);
-    return busy ? "working" : done.has(key) ? "done" : "idle";
+  // Herdr alone shows `done`: it turns working then idle into done until its pane is seen.
+  function status(busy: boolean): AgentStatus {
+    return busy ? "working" : "idle";
   }
 
   function meter(value: ConversationView): Meter {
@@ -97,7 +93,7 @@ export async function runTerminal(
             {
               value: "",
               name: "root",
-              status: status("", presentation(root.value).busy),
+              status: status(presentation(root.value).busy),
               meter: meter(root.value),
               cwd: presentation(root.value).cwd,
             },
@@ -107,7 +103,7 @@ export async function runTerminal(
       ...[...workers.values()].map(({ summary, state }) => ({
         value: summary.name,
         name: summary.name,
-        status: status(summary.name, presentation(state.value).busy),
+        status: status(presentation(state.value).busy),
         meter: meter(state.value),
         cwd: presentation(state.value).cwd ?? summary.cwd,
       })),
@@ -119,6 +115,7 @@ export async function runTerminal(
     const state = selected === undefined ? root : workers.get(selected)?.state;
     if (state) view.apply(state.value, selected, force);
     const rows = agentRows();
+    statuses = new Map(rows.filter((row) => row.value !== "").map((row) => [row.name, row.status]));
     view.setWorkers(rows.filter((row) => row.value !== ""));
     view.updateAgents(rows);
     if (state) {
@@ -246,7 +243,6 @@ export async function runTerminal(
     await refreshWorkers();
     if (name !== undefined && !workers.has(name)) throw new Error(`No worker named ${name}`);
     selected = name;
-    done.delete(name ?? "");
     show();
   }
 
@@ -413,7 +409,7 @@ export async function runTerminal(
         break;
       }
       case "/goals":
-        view.showPanel("Goals", formatOpenGoals(await backend.goals()));
+        view.openGoals(await backend.goals(), () => statuses);
         break;
       case "/model":
       case "/thinking": {
