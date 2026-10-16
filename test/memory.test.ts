@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { defineExtension } from "@earendil-works/pi-durable";
 import { createMemory } from "../src/memory.ts";
 import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
@@ -56,6 +58,78 @@ describe("memory", () => {
         "Changed. user usage: 13/4000 characters",
         "Changed. memory usage: 19/4000 characters",
       ]);
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("reports a replayed write as done instead of failing to match it again", async () => {
+    const value = await setup();
+    // A replay runs the call again with the same memos, after its write already landed.
+    value.registry.install(
+      defineExtension({
+        name: "test.replayed-memory",
+        tools: (createMemory(value.directory).tools ?? []).map((tool) => ({
+          ...tool,
+          execute: async (args: never, api: never, context: never) => {
+            await tool.execute(args, api, context);
+            return tool.execute(args, api, context);
+          },
+        })),
+      }),
+    );
+    await mkdir(join(value.directory, "memories"));
+    const path = join(value.directory, "memories", "USER.md");
+    await writeFile(path, "Likes tea\n");
+    route(
+      value.faux,
+      callTools({
+        replace: {
+          tool: "memory",
+          args: { action: "replace", file: "user", match: "tea", entry: "Likes coffee" },
+        },
+      }),
+    );
+    const { harness, root } = await open(value);
+    try {
+      await (await root.submit({ type: "input", content: "replace" }, context)).wait(context);
+      expect((await toolResults(root)).map(textOf)).toEqual([
+        "Changed. user usage: 13/4000 characters",
+      ]);
+      expect(await readFile(path, "utf8")).toBe("Likes coffee\n");
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("commits only the memory file in a jj home and says when main can't be pushed", async () => {
+    const value = await setup();
+    value.registry.install(createMemory(value.directory));
+    const jj = (...argv: string[]) =>
+      execFileSync("jj", argv, { cwd: value.directory, encoding: "utf8" });
+    jj("git", "init", ".");
+    jj("config", "set", "--repo", "user.name", "Monchu Test");
+    jj("config", "set", "--repo", "user.email", "test@example.com");
+    await writeFile(join(value.directory, "other.txt"), "someone else's edit\n");
+    route(
+      value.faux,
+      callTools({
+        add: { tool: "memory", args: { action: "add", file: "user", entry: "Likes tea" } },
+      }),
+    );
+    const { harness, root } = await open(value);
+    try {
+      await (await root.submit({ type: "input", content: "add" }, context)).wait(context);
+      const [result] = await toolResults(root);
+      expect(textOf(result)).toMatch(
+        /^Changed\. user usage: 10\/4000 characters\. Committed locally as [0-9a-f]{8}; pushing main failed/,
+      );
+      // The commit holds only the memory file; the other edit stays in the working copy.
+      expect(jj("log", "--no-graph", "-r", "@-", "-T", "description").trim()).toBe(
+        "memory: add in memories/USER.md",
+      );
+      expect(jj("diff", "--name-only", "-r", "@-").trim()).toBe("memories/USER.md");
+      expect(jj("diff", "--name-only", "-r", "@").trim()).toBe("other.txt");
     } finally {
       await harness.close(context);
     }
