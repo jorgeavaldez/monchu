@@ -64,7 +64,7 @@ Ask when scope or a design decision materially changes the outcome.
 - Use jj for source-control operations and prefer jj workspaces for separate coding tasks.
   Publish source changes only when explicitly authorized; vault delivery follows its own standing authorization.
 - Use native `agent_browser` when browser automation is needed.
-  Existing homelab browser ownership/takeover rules remain authoritative; never blindly replay uncertain submissions.
+  Respect existing browser ownership and takeover rules; never blindly replay uncertain submissions.
 - Use `mise run ...` as the task runner; `mise.toml` owns task definitions, not npm scripts.
 - After code changes run `mise run check` and `mise run build`; both must pass.
   Report what actually ran and any pre-existing failures; do not claim an interactive, restart, or phone flow works from static checks alone.

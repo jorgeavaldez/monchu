@@ -1,8 +1,11 @@
 # Monchu
 
-A personal everything agent built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable).
-You chat with a fast front model; it hands real work to named background workers that keep their own context, while the chat stays free.
-Conversations, workers, and goals are durable: they survive restarts and crashes.
+My heavily opinionated personal agent, built to route and delegate endeavors: one input stream of consciousness in, separate workstreams out.
+
+You talk to a single fast front model about anything, in any order. It routes each thing to a standing background worker that owns that line of work (a repository, a machine, your notes), keeps it unblocked, and tracks the ongoing endeavors as goals, while the chat stays free.
+Conversations, workers, and goals are durable: built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable), they survive restarts and crashes.
+
+It is shaped around one person's way of working, not built as a general product: subscription models only (ChatGPT/Codex and Claude via Claude Code), a terminal UI, jj to version its home, and plain Markdown files as its manual, soul, and memory. It is shared as is; expect it to change without notice.
 
 ## Requirements
 
