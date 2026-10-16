@@ -10,5 +10,7 @@ process.once("exit", () => rmSync(home, { recursive: true, force: true }));
 export default defineConfig({
   test: {
     env: { HOME: home, USERPROFILE: home },
+    // Hosted Windows runners take several seconds to spawn processes and open stores.
+    testTimeout: 20_000,
   },
 });
