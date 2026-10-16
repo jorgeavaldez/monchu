@@ -483,6 +483,48 @@ describe("background workers", () => {
     await harness.close(context);
   });
 
+  it("lets a worker read the user's own messages to the front, without notices", async () => {
+    const value = await setup();
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (text === "read them")
+        return fauxAssistantMessage([fauxToolCall("user_messages", { limit: 2 })], {
+          stopReason: "toolUse",
+        });
+      if (text === "front reads")
+        return fauxAssistantMessage([fauxToolCall("user_messages", {})], {
+          stopReason: "toolUse",
+        });
+      if (last?.role === "toolResult") return fauxAssistantMessage([fauxText(`read: ${text}`)]);
+      if (workerText(text)) return fauxAssistantMessage([fauxText("noted")]);
+      return fauxAssistantMessage([fauxText(`reply ${text}`)]);
+    });
+    const { harness, root } = await open(value);
+    for (const content of ["first ask", "second ask", "third ask"])
+      await (await root.submit({ type: "input", content }, context)).wait(context);
+    await (await root.submit({ type: "input", content: "front reads" }, context)).wait(context);
+    const rejected = (await allEntries(root)).findLast(
+      (entry) => entry.model?.[0]?.role === "toolResult",
+    )?.model?.[0];
+    expect(textOf(rejected)).toContain("only available to workers");
+
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "read them", value.directory, "read:0", fauxRole),
+      context,
+    );
+    await settle(harness, root);
+    const report = (await allEntries(root))
+      .flatMap((entry) => workerNotice(entry) ?? [])
+      .find((notice) => notice.status === "completed");
+    // The last two of the user's messages, oldest first, and no worker notice among them.
+    expect(report?.text).toMatch(/^read: user · .*\nthird ask\n\nuser · .*\nfront reads$/s);
+    expect(report?.text).not.toContain("second ask");
+    expect(report?.text).not.toContain("reply");
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
   it("keeps one queued update per worker: a newer update withdraws the queued one", async () => {
     const value = await setup();
     let release!: () => void;

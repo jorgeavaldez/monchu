@@ -142,7 +142,7 @@ export const classifierModel: ClassifierModel<ClassifierApi> = {
 export function scriptedClassifier(models: MutableModels): ScriptedClassifier {
   const scripted: ScriptedClassifier = {
     requests: [],
-    answer: () => assessed("single_turn", 0.9, "contained", 0.9),
+    answer: () => routed("front", 0.9),
   };
   models.setProvider(
     createProvider({
@@ -162,29 +162,29 @@ export function scriptedClassifier(models: MutableModels): ScriptedClassifier {
   return scripted;
 }
 
-export function assessed(
-  effort: "single_turn" | "sustained",
-  effortConfidence: number,
-  scope: "contained" | "expanding",
-  scopeConfidence: number,
+/** A routing-helper answer: who handles the input, with an optional worker pick and the split. */
+export function routed(
+  route: "front" | "worker",
+  routeProbability: number,
+  more: { worker?: [string, number]; split?: ["one" | "several", number] } = {},
 ): ClassifierResult {
-  const choice = (picked: string, other: string, confidence: number) => ({
+  const choice = (picked: string, other: string, probability: number) => ({
     type: "choice" as const,
     choice: picked,
-    confidence,
-    probabilities: { [picked]: confidence, [other]: 1 - confidence },
+    confidence: 2 * probability - 1,
+    probabilities: { [picked]: probability, [other]: 1 - probability },
   });
+  const [split, splitProbability] = more.split ?? ["one", 0.9];
   return {
     api: "test-classifier",
     provider: "clef-test",
     model: "clef-test",
     answers: {
-      effort: choice(
-        effort,
-        effort === "sustained" ? "single_turn" : "sustained",
-        effortConfidence,
-      ),
-      scope: choice(scope, scope === "expanding" ? "contained" : "expanding", scopeConfidence),
+      route: choice(route, route === "worker" ? "front" : "worker", routeProbability),
+      ...(more.worker === undefined
+        ? {}
+        : { worker: choice(more.worker[0], "new", more.worker[1]) }),
+      split: choice(split, split === "one" ? "several" : "one", splitProbability),
     },
     stopReason: "stop",
     timestamp: Date.now(),

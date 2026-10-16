@@ -3,7 +3,6 @@ import {
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
-  type Message,
 } from "@earendil-works/pi-ai";
 import {
   defineExtension,
@@ -19,10 +18,10 @@ import {
   ESCALATION_PREFIX,
   escalationSummary,
 } from "../src/classifier.ts";
+import { GoalsDoc } from "../src/goals.ts";
 import { startWorker, WorkersDoc } from "../src/workers.ts";
 import {
   allEntries,
-  assessed,
   cleanup,
   classifierModel,
   context,
@@ -31,6 +30,7 @@ import {
   lastMessage,
   open,
   route,
+  routed,
   scriptedClassifier,
   setup,
   textOf,
@@ -55,7 +55,7 @@ const Done = defineTask<null, { phase: "done" }, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-async function withAssessment(extensions: readonly Extension[] = []) {
+async function withAssessment(extensions: readonly Extension[] = [], waitMs = 2000) {
   const value = await setup();
   for (const extension of extensions) value.registry.install(extension);
   const classifier = scriptedClassifier(value.models);
@@ -63,6 +63,7 @@ async function withAssessment(extensions: readonly Extension[] = []) {
     value.models,
     { provider: classifierModel.provider, modelId: classifierModel.id },
     undefined,
+    { waitMs },
   );
   value.registry.install(assessment.extension);
   const opened = await open(value);
@@ -87,17 +88,9 @@ async function userTexts(root: Parameters<typeof allEntries>[0]): Promise<string
   );
 }
 
-const hasAdvice = (messages: readonly Message[]) =>
-  messages.some(
-    (message) =>
-      message.role === "system" &&
-      typeof message.content === "string" &&
-      message.content.startsWith("Effort assessment"),
-  );
-
-describe("effort assessment", () => {
-  it("lets the front reply before the classifier answers", async () => {
-    const test = await withAssessment();
+describe("routing helper", () => {
+  it("lets the front reply after a bounded wait when the classifier is slow", async () => {
+    const test = await withAssessment([], 50);
     const pending = Promise.withResolvers<ClassifierResult>();
     test.classifier.answer = () => pending.promise;
     route(test.faux, () => fauxAssistantMessage([fauxText("looking into it")]));
@@ -106,11 +99,11 @@ describe("effort assessment", () => {
     const [item] = await test.items();
     expect(item?.result).toBeNull();
 
-    pending.resolve(assessed("single_turn", 0.9, "contained", 0.9));
+    pending.resolve(routed("front", 0.9));
     await test.settle(0);
     expect((await test.items())[0]?.result).toMatchObject({
-      status: "assessed",
-      effort: "single_turn",
+      status: "routed",
+      route: { choice: "front", probability: 0.9 },
     });
     expect(await userTexts(test.root)).toEqual(["refactor the worker module"]);
     await test.harness.close(context);
@@ -118,7 +111,7 @@ describe("effort assessment", () => {
 
   it("queues assessed input by its busy mode: steer the running reply or follow it", async () => {
     const test = await withAssessment();
-    test.classifier.answer = async () => assessed("single_turn", 0.9, "contained", 0.9);
+    test.classifier.answer = async () => routed("front", 0.9);
     const release = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     route(test.faux, async (request) => {
@@ -139,24 +132,86 @@ describe("effort assessment", () => {
     await test.harness.close(context);
   });
 
-  it("adds advice to the front's later requests once it settles", async () => {
+  it("waits for the classifier before the front's first request, and only once", async () => {
     const test = await withAssessment();
-    const pending = Promise.withResolvers<ClassifierResult>();
-    test.classifier.answer = () => pending.promise;
-    const seen: boolean[] = [];
+    test.classifier.answer = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return routed("worker", 0.9, { worker: ["w", 0.85] });
+    };
+    const seen: string[] = [];
     route(test.faux, (request) => {
-      seen.push(hasAdvice(request.messages));
-      // The classifier answers only once the first request is already out.
-      pending.resolve(assessed("single_turn", 0.9, "contained", 0.9));
-      return lastMessage(request.messages)?.role === "toolResult"
-        ? fauxAssistantMessage([fauxText("done")])
-        : fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 0.3" })], {
-            stopReason: "toolUse",
-          });
+      const advice = request.messages.findLast(
+        (message) => message.role === "system" && typeof message.content === "string",
+      );
+      seen.push(typeof advice?.content === "string" ? advice.content : "none");
+      return fauxAssistantMessage([fauxText("routing it")]);
     });
     await test.send("check the disk");
-    // The first request went out without waiting; the one after the tool round carries the advice.
-    expect(seen).toEqual([false, true]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("it needs a worker (90%)");
+    expect(seen[0]).toContain("it continues w's line of context (85%)");
+    await test.harness.close(context);
+  });
+
+  it("gives the classifier the front's workers and open goals", async () => {
+    const test = await withAssessment();
+    route(test.faux, () => fauxAssistantMessage([fauxText("ok")]));
+    await test.root.commit(async (tx) => {
+      await startWorker(
+        tx,
+        test.root.id,
+        "vault",
+        "you own the vault",
+        test.directory,
+        "v:0",
+        fauxRole,
+      );
+      const goals = await tx.doc(GoalsDoc, test.root.id);
+      goals.goals.push({
+        id: "notes",
+        title: "Keep the vault tidy",
+        kind: "endeavor",
+        status: "active",
+        workstream: "archiving done tasks",
+        workers: ["vault"],
+        next: "archive",
+        updatedAt: 0,
+      });
+    }, context);
+    await test.send("archive the old tasks");
+    await test.settle(0);
+    const request = test.classifier.requests.at(-1);
+    const worker = request?.questions.worker;
+    expect(worker?.type === "choice" ? Object.keys(worker.criteria) : []).toEqual(["vault", "new"]);
+    expect(JSON.stringify(worker)).toContain(
+      "Goal: Keep the vault tidy; now: archiving done tasks",
+    );
+    expect(JSON.stringify(worker)).toContain("First brief: you own the vault");
+    expect(request?.state).toMatchObject({ workers: ["vault"] });
+    await test.harness.close(context);
+  });
+
+  it("nudges once when the front works itself on input that needs a worker", async () => {
+    const test = await withAssessment();
+    test.classifier.answer = () => routed("worker", 0.9);
+    const results: string[] = [];
+    route(test.faux, (request) => {
+      const last = lastMessage(request.messages);
+      if (last?.role === "toolResult") results.push(textOf(last));
+      if (textOf(last).startsWith(ESCALATION_PREFIX))
+        return fauxAssistantMessage([fauxText("already handled")]);
+      return results.length < 2
+        ? fauxAssistantMessage([fauxToolCall("bash", { command: "true" })], {
+            stopReason: "toolUse",
+          })
+        : fauxAssistantMessage([fauxText("did it myself")]);
+    });
+    await test.send("fix the config");
+    await test.root.waitForIdle(context);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toContain("[Routing helper: Routing helper (Clef)");
+    expect(results[0]).toContain("Nothing is routed for it yet.");
+    expect(results[1]).not.toContain("Routing helper");
     await test.harness.close(context);
   });
 
@@ -174,18 +229,23 @@ describe("effort assessment", () => {
     });
 
     await test.send("migrate the whole homelab to nix");
-    pending.resolve(assessed("sustained", 0.92, "expanding", 0.8));
+    pending.resolve(routed("worker", 0.92, { split: ["several", 0.8] }));
     await test.settle(0);
     await test.root.waitForIdle(context);
 
     const texts = await userTexts(test.root);
     expect(texts).toHaveLength(2);
     expect(texts[1]).toMatch(
-      /^\[Effort assessment: effort sustained \(92%\), scope expanding \(80%\)/,
+      /^\[Routing advice: needs a worker \(92%\), several lines of work \(80%\)/,
     );
-    // Clients show only the assessment, without the label's prose.
-    expect(escalationSummary(texts[1] ?? "")).toBe("effort sustained (92%), scope expanding (80%)");
-    expect(escalationSummary("[Effort assessment is a user's own words")).toBeUndefined();
+    // Clients show only the assessment, without the label's prose, also for older escalations.
+    expect(escalationSummary(texts[1] ?? "")).toBe(
+      "needs a worker (92%), several lines of work (80%)",
+    );
+    expect(
+      escalationSummary("[Effort assessment: effort sustained (92%). Not a new user instruction.]"),
+    ).toBe("effort sustained (92%)");
+    expect(escalationSummary("[Routing advice is a user's own words")).toBeUndefined();
     expect((await test.items())[0]?.escalated).toBe(true);
     await test.harness.close(context);
   });
@@ -203,12 +263,12 @@ describe("effort assessment", () => {
       return fauxAssistantMessage([fauxText(`reply ${text}`)]);
     });
 
-    test.classifier.answer = () => assessed("sustained", 0.95, "expanding", 0.95);
+    test.classifier.answer = () => routed("worker", 0.95);
     await test.send("big and delegated");
     await waitFor(async () => (await test.items())[0]?.result != null);
     await test.settle(0);
 
-    test.classifier.answer = () => assessed("sustained", 0.55, "expanding", 0.6);
+    test.classifier.answer = () => routed("worker", 0.6);
     await test.send("maybe big");
     await test.settle(1);
     await test.root.waitForIdle(context);
@@ -258,7 +318,7 @@ describe("effort assessment", () => {
       (await test.harness.snapshot(WorkersDoc, test.root.id, context))?.deliveries,
     ).toHaveLength(200);
     expect((await test.harness.snapshot(WorkersDoc, test.root.id, context))?.started).toBe(201);
-    pending.resolve(assessed("sustained", 0.95, "expanding", 0.95));
+    pending.resolve(routed("worker", 0.95));
     await test.settle(0);
     expect((await test.items())[0]?.escalated).toBe(false);
     expect(
@@ -273,8 +333,8 @@ describe("effort assessment", () => {
     // Only the original text would escalate.
     test.classifier.answer = (request) =>
       JSON.stringify(request.state).includes("rewrite everything")
-        ? assessed("sustained", 0.95, "expanding", 0.9)
-        : assessed("single_turn", 0.9, "contained", 0.9);
+        ? routed("worker", 0.95)
+        : routed("front", 0.9);
     const release = Promise.withResolvers<void>();
     const advice: string[] = [];
     route(test.faux, async (request) => {
@@ -322,17 +382,17 @@ describe("effort assessment", () => {
     await test.harness.waitForTask(withdrawn.taskId, context);
     await test.root.waitForIdle(context);
     expect(await userTexts(test.root)).toEqual(["hold", "fix the typo"]);
-    expect((await test.items())[1]?.result).toMatchObject({ effort: "single_turn" });
+    expect((await test.items())[1]?.result).toMatchObject({ route: { choice: "front" } });
     const typo = advice.filter((line) => line.startsWith("fix the typo:"));
-    expect(typo).toContainEqual(expect.stringContaining("effort single_turn (90%)"));
-    expect(typo.join("\n")).not.toContain("sustained");
+    expect(typo).toContainEqual(expect.stringContaining("you can answer it yourself (90%)"));
+    expect(typo.join("\n")).not.toContain("needs a worker");
     await test.harness.close(context);
   });
 
   it("records a classifier failure without blocking or escalating", async () => {
     const test = await withAssessment();
     test.classifier.answer = () => ({
-      ...assessed("single_turn", 1, "contained", 1),
+      ...routed("front", 1),
       stopReason: "error",
       errorMessage: "401 from provider",
     });

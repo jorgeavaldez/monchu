@@ -29,6 +29,8 @@ type WorkerRecords = {
     name: string;
     conversationId: ConversationId;
     reported: EntryId[];
+    /** The start of the first brief, which tells the routing helper what the worker is about. */
+    brief?: string;
     /** Retired from the active roster; the conversation stays and `reopenWorker` resumes it. Absent means open. */
     closed?: true;
   }[];
@@ -257,7 +259,10 @@ const REPORT_LABEL = /^\[Background worker (.+): (completed|failed); not a new u
 const UPDATE_LABEL = /^\[Worker (.+) update; not a new user instruction\]$/;
 // Travels with each notice, so the front's own instructions need no worker-specific workflow.
 const NOTICE_GUIDANCE =
-  "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs.";
+  "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs. If the worker is blocked or needs something (an answer, access, another worker's help), unblock it now: answer it, relay to the worker that can help, or ask the user; then tell the worker how it gets unblocked.";
+
+/** Front inputs that are not the user's own words: worker notices and routing-helper follow-ups. */
+const NOT_THE_USER = /^\[(Worker |Background worker |Effort assessment|Routing advice)/;
 
 /** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
 export const DELETED_FROM_QUEUE = "deleted";
@@ -459,9 +464,14 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
+    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
-  state.workers.push({ name, conversationId: worker.id, reported: [] });
+  state.workers.push({
+    name,
+    conversationId: worker.id,
+    reported: [],
+    brief: message.slice(0, 300),
+  });
   const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "followUp" };
   const taskId = await tx.createTask(Delivery, input, {
     // Keeping deliveries inside the worker's abort scope prevents a pending delivery resurrecting stopped work.
@@ -710,6 +720,69 @@ export function createWorkerTools(role: () => ModelRole) {
             state.queued = await withdrawQueued(tx, parentId, state.queued, true);
           }, context);
           return { content: [{ type: "text", text: "Update posted." }] };
+        },
+      }),
+      defineTool({
+        name: "user_messages",
+        description:
+          "Workers only: read the user's own recent messages to Monchu's front, newest last, optionally with the front's replies. Use it when a brief is ambiguous, seems to prescribe, or you need what the user actually said. Worker reports and system notices are left out.",
+        parameters: Type.Object({
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+          include_replies: Type.Optional(Type.Boolean()),
+        }),
+        replay: "safe",
+        execute: async (args, api, context) => {
+          const limit = args.limit ?? 10;
+          const lines = await api.commit(async (tx) => {
+            // Workers are owned, transitively, by the root the user talks to.
+            let rootId: ConversationId = api.conversationId;
+            let owner = (await tx.conversation(rootId))?.owner?.conversationId;
+            if (owner === undefined) return undefined;
+            while (owner !== undefined) {
+              rootId = owner;
+              owner = (await tx.conversation(rootId))?.owner?.conversationId;
+            }
+            // Newest first, until `limit` user messages; bounded so a long transcript can't stall the call.
+            const found: { user: boolean; text: string }[] = [];
+            let cursor: Parameters<Tx["scanEntries"]>[2];
+            for (let page = 0, users = 0; page < 20 && users < limit; page++) {
+              const scanned = await tx.scanEntries({ conversationId: rootId }, 100, cursor);
+              for (const entry of scanned.items) {
+                const user = UserEntry.is(entry);
+                if (!user && !(args.include_replies && AssistantEntry.is(entry))) continue;
+                const message = entry.model?.[0];
+                if (
+                  message === undefined ||
+                  (message.role !== "user" && message.role !== "assistant")
+                )
+                  continue;
+                const text = (
+                  typeof message.content === "string"
+                    ? message.content
+                    : message.content
+                        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                        .join("\n")
+                ).trim();
+                if (text === "" || (user && NOT_THE_USER.test(text))) continue;
+                const when = new Date(message.timestamp)
+                  .toISOString()
+                  .slice(0, 16)
+                  .replace("T", " ");
+                found.push({ user, text: `${user ? "user" : "front"} · ${when}\n${text}` });
+                if (user && ++users === limit) break;
+              }
+              if (scanned.next === undefined) break;
+              cursor = scanned.next;
+            }
+            return found.reverse();
+          }, context);
+          if (lines === undefined) throw new Error("user_messages is only available to workers");
+          const text = lines.map((line) => line.text).join("\n\n");
+          return {
+            content: [
+              { type: "text", text: text || "No user messages in the front's current context." },
+            ],
+          };
         },
       }),
       defineTool({

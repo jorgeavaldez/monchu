@@ -5,6 +5,7 @@ import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendi
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
+import { describe as describeAssessment } from "../classifier.ts";
 import { formatOpenGoals } from "../goals.ts";
 import type { WhenBusy } from "../workers.ts";
 import { help, parseInput } from "./commands.ts";
@@ -471,11 +472,7 @@ export async function runTerminal(
         shown.add(item.taskId);
         if (!hydrated) continue;
         const result = item.result;
-        view.notice(
-          result.status === "failed"
-            ? `effort unavailable · ${result.message}`
-            : `effort · ${result.effort} ${Math.round(result.effortConfidence * 100)}% · scope ${result.scope} ${Math.round(result.scopeConfidence * 100)}%`,
-        );
+        view.notice(`clef · ${describeAssessment(result)}`);
       }
       hydrated = true;
     });
