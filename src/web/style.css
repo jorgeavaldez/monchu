@@ -142,6 +142,8 @@ pre {
 .dot.done {
   color: var(--green);
 }
+/* Every item lays out at its real size, so scrolling back never jumps; containment keeps the editor's typing from
+   laying the history out again. */
 .transcript {
   flex: 1;
   overflow-y: auto;
@@ -149,10 +151,7 @@ pre {
   display: flex;
   flex-direction: column;
   gap: var(--s1);
-}
-.transcript > * {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 3em;
+  contain: content;
 }
 .user {
   white-space: pre-wrap;
@@ -177,6 +176,12 @@ pre {
 .card pre,
 .card footer {
   padding: 0 var(--s1);
+}
+/* A folded card's first lines as they wrap; the card sets how many. */
+.card pre.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 /* A tool call reads like a message: one line at the text's rhythm, marked by a rule on its left like the user's. */
 .tool {
@@ -551,7 +556,6 @@ pre {
 }
 /* Shown while the reader is scrolled back and more arrived; a tap returns to the end. */
 .transcript > .unread {
-  content-visibility: visible;
   position: sticky;
   bottom: 0;
   align-self: center;

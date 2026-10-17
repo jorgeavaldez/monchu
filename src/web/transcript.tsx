@@ -44,7 +44,10 @@ function textOf(content: UserMessage["content"] | ToolResultMessage["content"]):
   return content.map((part) => (part.type === "text" ? part.text : "[image]")).join("");
 }
 
-/** A card that shows a header and a few lines, and everything when open. */
+/**
+ * A card that shows a header and its first few lines as the screen wraps them, and everything when open. It folds when
+ * there is more to show: more lines than the preview, or fewer that wrap past it, such as a one-paragraph report.
+ */
 function Card(props: {
   kind: string;
   header: ComponentChildren;
@@ -57,9 +60,16 @@ function Card(props: {
   const open = useSignal<boolean | undefined>(undefined);
   const preview = props.preview ?? PREVIEW_LINES;
   const lines = props.body.split("\n");
-  const long = lines.length > preview;
+  // Whether the clamped preview hides wrapped lines; measured once it is laid out.
+  const clipped = useSignal(false);
+  const text = useRef<HTMLPreElement>(null);
+  const long = lines.length > preview || clipped.value;
   const expanded = open.value ?? expandAll.value;
-  const shownText = !long || expanded ? props.body : lines.slice(0, preview).join("\n");
+  const folded = long && !expanded;
+  useLayoutEffect(() => {
+    const element = text.current;
+    if (!expanded && element !== null) clipped.value = element.scrollHeight > element.clientHeight;
+  });
   return (
     <section
       class={`card ${props.kind}${props.error === true ? " error" : ""}`}
@@ -71,7 +81,7 @@ function Card(props: {
       <header>
         {long ? (expanded ? "▾ " : "▸ ") : ""}
         {props.header}
-        {long && preview === 0 && !expanded ? (
+        {folded && preview === 0 ? (
           <span class="help">
             {" "}
             · {lines.length} line{lines.length === 1 ? "" : "s"}
@@ -79,15 +89,18 @@ function Card(props: {
         ) : null}
         {props.stamp === undefined ? null : <> · {props.stamp}</>}
       </header>
-      {shownText ? (
-        <pre>
-          <Text text={shownText} />
+      {props.body && !(folded && preview === 0) ? (
+        <pre
+          ref={text}
+          class={expanded ? undefined : "clamp"}
+          style={expanded ? undefined : { WebkitLineClamp: preview }}
+        >
+          {/* Folded, only the lines it can show: a long report never lays out unseen. */}
+          <Text text={expanded ? props.body : lines.slice(0, preview).join("\n")} />
         </pre>
       ) : null}
-      {long && !expanded && preview > 0 ? (
-        <footer>
-          {`… ${lines.length - preview} ${preview === 0 ? "" : "more "}line${lines.length - preview === 1 ? "" : "s"}`}
-        </footer>
+      {folded && preview > 0 && lines.length > preview ? (
+        <footer>{`… ${lines.length - preview} more line${lines.length - preview === 1 ? "" : "s"}`}</footer>
       ) : null}
     </section>
   );
