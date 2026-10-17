@@ -11,13 +11,8 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   configure,
-  defineDoc,
   Harness,
-  InboxDoc,
-  LiveDoc,
-  ProviderDoc,
   type CommitPublication,
-  type Conversation,
   type ConversationId,
   type ModelRef,
 } from "@earendil-works/pi-durable";
@@ -26,20 +21,22 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Client, ModelChoice, ModelPick, QueueChange } from "../api/client.ts";
+import type { Client, ModelChoice, ModelPick, RootSummary } from "../api/client.ts";
+import { shortId } from "../api/ids.ts";
 import { parseRelease, type Release } from "../api/release.ts";
-import {
-  escalationSummary,
-  noticeText,
-  parseWorkerNotice,
-  systemNoticeSummary,
-  systemNoticeText,
-  type WhenBusy,
-} from "../api/notices.ts";
+import { systemNoticeText } from "../api/notices.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { Log } from "../telemetry/log.ts";
-import { AssessmentsDoc, RoutingDoc, type Assessment } from "./agents/classifier.ts";
+import {
+  currentRoot,
+  findRoot,
+  rootRecord,
+  RootsDoc,
+  summarize,
+  SUMMARY_KINDS,
+  type RootRecord,
+} from "./agents/roots.ts";
 import {
   defaultConfig,
   isThinkingLevel,
@@ -51,101 +48,34 @@ import {
   type WebConfig,
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
-import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
+import { applyFrontRole, Front, preloadAll, prepareFront, type FrontHost } from "./front.ts";
 import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
-import { budgetNotice, FRONT_INSTRUCTIONS, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
+import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
-import {
-  DELETED_FROM_QUEUE,
-  hasPendingDelivery,
-  listWorkers,
-  messageWorker,
-  startWorker,
-  stopWorker,
-  workerConversationId,
-  WorkersDoc,
-} from "./agents/workers.ts";
-import { preloadGroups } from "./tools/tool-search.ts";
-import { resolveDirectory } from "./workdir.ts";
 import { skillMessage } from "./skills/index.ts";
 
 const context = BACKGROUND_CONTEXT;
-
-/**
- * Which of the root's model fields were picked for this conversation only. Startup and reload apply `config.front`
- * to the other fields; saving a field as the default clears its pick.
- */
-const FrontPicks = defineDoc<{ model: boolean; thinkingLevel: boolean }>({
-  kind: "monchu.front-picks",
-  version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
-  initial: () => ({ model: false, thinkingLevel: false }),
-});
-
-/**
- * When the user last opened each goal in the TUI, as that goal's `updatedAt`, by goal ID. Goals that existed when it was
- * first read count as seen, so only later changes are news.
- */
-const GoalsSeen = defineDoc<{ seeded: boolean; seen: Record<string, number> }>({
-  kind: "monchu.goals-seen",
-  version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
-  initial: () => ({ seeded: false, seen: {} }),
-});
-
-/** Apply the configured front role from the next request, keeping the fields picked for the root only. */
-async function applyFrontRole(
-  front: Conversation,
-  role: ModelRole,
-  preload: readonly string[],
-): Promise<void> {
-  await front.commit(async (tx) => {
-    const picks = await tx.doc(FrontPicks, front.id);
-    await configure(tx, front.id, {
-      ...(picks.model ? {} : { model: { provider: role.provider, modelId: role.modelId } }),
-      ...(picks.thinkingLevel ? {} : { thinkingLevel: role.thinkingLevel }),
-    });
-    await preloadGroups(tx, front.id, preload);
-  }, context);
-}
-
-/**
- * Load the preloaded tool groups into the root and every worker under it that runs on the Claude Code bridge, so a
- * group added to the configuration reaches existing conversations once, at a reload or start, instead of mid-run.
- */
-async function preloadAll(
-  harness: Harness,
-  front: Conversation,
-  preload: readonly string[],
-): Promise<void> {
-  if (preload.length === 0) return;
-  const ids: ConversationId[] = [];
-  for (const pending = [front.id]; pending.length;) {
-    const id = pending.pop();
-    if (id === undefined) break;
-    ids.push(id);
-    for (const worker of (await harness.snapshot(WorkersDoc, id, context))?.workers ?? [])
-      pending.push(worker.conversationId);
-  }
-  await front.commit(async (tx) => {
-    for (const id of ids) await preloadGroups(tx, id, preload);
-  }, context);
-}
 
 /** One runtime/store owner, and the in-process implementation of the client contract. No terminal, transport, or rendering dependencies. */
 export class Monchu implements Client {
   readonly home: string;
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
-  private readonly front: Conversation;
   private readonly models: Models;
+  /** Each root's in-process client, by full id. */
+  private readonly fronts = new Map<string, Front>();
+  /** How many client views each root has attached: a shown root is seen, never `done`. */
+  private readonly shown = new Map<ConversationId, number>();
+  private readonly rootListeners = new Set<(roots: readonly RootSummary[]) => void>();
+  private rootSummaries: readonly RootSummary[] | undefined;
+  private rootsTimer: ReturnType<typeof setTimeout> | undefined;
+  private rootsRun: Promise<void> | undefined;
+  private rootsDirty = false;
+  /** What every root's front needs from this core. */
+  private readonly frontHost: FrontHost;
   private readonly reloadListeners = new Set<() => void>();
   private readonly restartListeners = new Set<() => void>();
   private readonly releaseListeners = new Set<(release: Release) => void>();
@@ -176,7 +106,6 @@ export class Monchu implements Client {
     home: string,
     owner: DatabaseSync,
     harness: Harness,
-    front: Conversation,
     models: Models,
     reports: Reports,
     extensions: Extensions,
@@ -186,15 +115,26 @@ export class Monchu implements Client {
     this.home = home;
     this.owner = owner;
     this.harness = harness;
-    this.front = front;
     this.models = models;
     this.reports = reports;
     this.extensions = extensions;
     this.envs = envs;
     this.log = log;
-    this.stopTelemetry = harness.subscribeCommits((publication) =>
-      modelTelemetry(log, publication),
-    );
+    this.frontHost = {
+      home,
+      harness,
+      models,
+      extensions,
+      checkPick: (pick) => this.checkPick(pick),
+      saveDefault: (role, pick) => this.saveDefault(role, pick),
+      classifierNeedsLogin: async () => (await this.loginNeeds()).classifier !== undefined,
+      show: (id) => this.show(id),
+      findRoot: async (prefix) => findRoot(await this.records(), prefix),
+    };
+    this.stopTelemetry = harness.subscribeCommits((publication) => {
+      modelTelemetry(log, publication);
+      if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
+    });
   }
 
   static async open(home: string, devProvider?: Provider): Promise<Monchu> {
@@ -262,30 +202,18 @@ export class Monchu implements Client {
         context,
       );
       phase("store");
-      const front = await harness.root(context, { agent: { cwd: home } });
-      await front.configure(
-        {
-          // Goals and memory are not in the host default. Workers get them too: a new worker copies this agent.
-          extensions: { add: extensions.root },
-          instructions: FRONT_INSTRUCTIONS,
-        },
-        context,
-      );
-      // The configured front role applies from the next request; a running request keeps its model.
-      await applyFrontRole(front, config.front, extensions.preload);
-      await preloadAll(harness, front, extensions.preload);
+      // Durable's reserved root is the first root; every root's agent and front role apply from its next request.
+      const first = await harness.root(context, { agent: { cwd: home } });
+      const roots = await harness.commit(async (tx) => {
+        const state = await tx.doc(RootsDoc);
+        if (rootRecord(state, first.id) === undefined)
+          state.roots.unshift({ id: first.id, label: "", named: false, createdAt: Date.now() });
+        for (const root of state.roots) await prepareFront(tx, root.id, loaded);
+        return state.roots.map((root) => root.id);
+      }, context);
+      for (const id of roots) await preloadAll(harness, id, loaded.preload);
       phase("root");
-      const backend = new Monchu(
-        home,
-        owner,
-        harness,
-        front,
-        models,
-        reports,
-        extensions,
-        envs,
-        log,
-      );
+      const backend = new Monchu(home, owner, harness, models, reports, extensions, envs, log);
       log.write("info", "core.open", "opened", phases);
       observeBudget = (levels) => backend.observeBudget(levels);
       // A failed storage call closes the Session for good, and every later call rejects: say why, once.
@@ -296,7 +224,7 @@ export class Monchu implements Client {
           `Monchu's store failed and closed (${cause}). Nothing more is saved until Monchu restarts: use /restart`,
         );
       });
-      extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
+      extensions.registry.install(createReloadControls(() => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
       backend.watchEdge();
@@ -416,61 +344,183 @@ export class Monchu implements Client {
     return this.reports.subscribe(listener);
   }
 
-  /** Read-only committed conversation state. The caller owns and disposes its attachment. */
-  async viewState(workerName?: string) {
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    return conversation.viewState(context);
+  /** A root by its full id, in process; calls on an unknown root reject. */
+  root(id: string): Front {
+    let front = this.fronts.get(id);
+    if (front === undefined) {
+      front = new Front(this.frontHost, id);
+      this.fronts.set(id, front);
+    }
+    return front;
   }
 
-  /** The same view as an exact-frame watch with its delta ops. The caller stops it. */
-  async viewWatch(workerName?: string) {
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    return conversation.watch(context);
+  private async records(): Promise<readonly RootRecord[]> {
+    return (await this.harness.snapshot(RootsDoc, context))?.roots ?? [];
   }
 
-  /**
-   * Resolves on durable admission, never on the model answer. Retry with the same request ID. `whenBusy` decides
-   * whether a message reaching a busy front steers its run or waits for it to finish.
-   */
-  async submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void> {
-    if (!message.trim() || !requestId.trim())
-      throw new Error("Message and request ID are required");
-    const assessment = this.extensions.assessment;
-    if (assessment === undefined)
-      await this.front.submit({ type: "input", content: message, requestId, whenBusy }, context);
-    else await assessment.submit(this.front, message, requestId, whenBusy, context);
+  private async rootIds(): Promise<ConversationId[]> {
+    return (await this.records()).map((root) => root.id);
   }
 
-  /**
-   * The routing helper's state, pausing or resuming it first when `paused` is given. A pause is stored on the front, so
-   * it outlasts restarts; `configured` is false when config.json turns Clef off or its provider has no login.
-   */
-  async routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }> {
-    const stored = await this.front.commit(async (tx) => {
-      const state = await tx.doc(RoutingDoc, this.front.id);
-      if (paused !== undefined) state.paused = paused;
-      return state.paused;
+  /** Applies a front role to every root from its next request, keeping each root's own picks. */
+  private async applyFrontRoles(role: ModelRole): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      for (const root of (await tx.doc(RootsDoc)).roots)
+        await applyFrontRole(tx, root.id, role, this.extensions.preload);
     }, context);
-    const needs = await this.loginNeeds();
-    return {
-      configured: this.extensions.assessment !== undefined && needs.classifier === undefined,
-      paused: stored,
-    };
   }
 
-  /** Routing assessments of front inputs as they settle, newest last. Returns a stop function. */
-  async watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void> {
-    // Observation needs a stored document; reading it in a commit creates it on a fresh home.
-    await this.front.commit(async (tx) => {
-      await tx.doc(AssessmentsDoc, this.front.id);
-    }, context);
-    const state = await this.harness.documentState(AssessmentsDoc, this.front.id, context);
-    if (state === undefined) throw new Error("Assessments document is missing");
-    const unsubscribe = state.subscribe((value) => listener(value?.items ?? []));
+  /** A client view of a root is attached until the returned function runs; the last one to go marks it seen. */
+  private show(id: ConversationId): () => void {
+    this.shown.set(id, (this.shown.get(id) ?? 0) + 1);
+    this.refreshRoots();
     return () => {
-      unsubscribe();
-      state.dispose();
+      const count = (this.shown.get(id) ?? 1) - 1;
+      if (count > 0) {
+        this.shown.set(id, count);
+        return;
+      }
+      this.shown.delete(id);
+      if (this.closing !== undefined) return;
+      void this.harness
+        .commit(async (tx) => {
+          const root = rootRecord(await tx.doc(RootsDoc), id);
+          if (root !== undefined) root.seenAt = Date.now();
+        }, context)
+        .catch((error: unknown) =>
+          this.reports.report(
+            `Could not mark root ${shortId(id)} seen: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
     };
+  }
+
+  /** Every root with its indicator state, archived ones included, in creation order. */
+  private async summaries(): Promise<RootSummary[]> {
+    const jobs = await this.harness.snapshot(JobsDoc, context);
+    return Promise.all(
+      (await this.records()).map((root) =>
+        summarize(this.harness, root, jobs, this.shown.has(root.id), context),
+      ),
+    );
+  }
+
+  /**
+   * Recompute the roots' summaries soon, at most every quarter second, and tell listeners when they changed. Commits
+   * stream in while models reply, so a burst costs one recompute.
+   */
+  private refreshRoots(): void {
+    if (this.rootListeners.size === 0 || this.closing !== undefined) return;
+    this.rootsDirty = true;
+    if (this.rootsTimer !== undefined || this.rootsRun !== undefined) return;
+    this.rootsTimer = setTimeout(() => {
+      this.rootsTimer = undefined;
+      this.rootsDirty = false;
+      this.rootsRun = this.summaries()
+        .then((summaries) => {
+          if (JSON.stringify(summaries) === JSON.stringify(this.rootSummaries)) return;
+          this.rootSummaries = summaries;
+          for (const listener of this.rootListeners) listener(summaries);
+        })
+        .catch((error: unknown) =>
+          this.reports.log(
+            `Root summaries failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        )
+        .finally(() => {
+          this.rootsRun = undefined;
+          if (this.rootsDirty) this.refreshRoots();
+        });
+    }, 250);
+  }
+
+  /** Every root, archived ones included, now and as they change. Returns a stop function. */
+  async watchRoots(listener: (roots: readonly RootSummary[]) => void): Promise<() => void> {
+    const summaries = await this.summaries();
+    this.rootSummaries ??= summaries;
+    this.rootListeners.add(listener);
+    listener(summaries);
+    return () => {
+      this.rootListeners.delete(listener);
+      if (this.rootListeners.size === 0) this.rootSummaries = undefined;
+    };
+  }
+
+  /** The full id of the root a unique prefix names; unknown and ambiguous prefixes throw with the candidates. */
+  async findRoot(prefix: string): Promise<string> {
+    return shortId(findRoot(await this.records(), prefix).id);
+  }
+
+  /** The open root with the newest input from the user. */
+  async currentRoot(): Promise<string> {
+    const root = currentRoot(await this.records());
+    if (root === undefined) throw new Error("This home has no root");
+    return shortId(root.id);
+  }
+
+  /** Starts a root in the home directory with the front's agent; a retry with the same request ID returns it. */
+  async createRoot(requestId: string): Promise<string> {
+    if (!requestId.trim()) throw new Error("A request ID is required");
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    const id = await this.harness.commit(async (tx) => {
+      const state = await tx.doc(RootsDoc);
+      const previous = state.roots.find((root) => root.requestId === requestId);
+      if (previous !== undefined) return previous.id;
+      const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
+      await configure(tx, created.id, { cwd: this.home });
+      await prepareFront(tx, created.id, this.extensions);
+      state.roots.push({
+        id: created.id,
+        label: "",
+        named: false,
+        createdAt: Date.now(),
+        requestId,
+      });
+      return created.id;
+    }, context);
+    this.log.write("info", "core.roots", "root created", { root: shortId(id) });
+    return shortId(id);
+  }
+
+  /** Names a root; an empty label names it again from its next message. */
+  async renameRoot(id: string, label: string): Promise<void> {
+    const text = label.replace(/\s+/g, " ").trim();
+    if (text.length > 80) throw new Error("A root label is at most 80 characters");
+    await this.harness.commit(async (tx) => {
+      const root = findRoot((await tx.doc(RootsDoc)).roots, id);
+      root.label = text;
+      root.named = text !== "";
+    }, context);
+  }
+
+  /**
+   * Archives a root, hiding it from the list, the indicator and plain `monchu`, or shows it again. Its history, crew,
+   * goals and jobs stay, and its id still opens it. Refused while its front or crew is working, so nothing active hides.
+   */
+  async archiveRoot(id: string, archived: boolean): Promise<void> {
+    const records = await this.records();
+    const record = findRoot(records, id);
+    if (archived) {
+      if (records.filter((root) => !root.archived && root.id !== record.id).length === 0)
+        throw new Error("The last open root can't be archived; start another first");
+      const summary = await summarize(
+        this.harness,
+        record,
+        await this.harness.snapshot(JobsDoc, context),
+        false,
+        context,
+      );
+      if (summary.status === "working")
+        throw new Error(
+          `Root ${shortId(record.id)} is working; let its front, workers and commands finish, or stop them, first`,
+        );
+    }
+    await this.harness.commit(async (tx) => {
+      const root = rootRecord(await tx.doc(RootsDoc), record.id);
+      if (root === undefined) return;
+      if (archived) root.archived = true;
+      else delete root.archived;
+    }, context);
   }
 
   /** Every background job and the recent job events, store-wide, with the jobs as the job tool lists them. */
@@ -493,7 +543,7 @@ export class Monchu implements Client {
     listener: (events: readonly JobEvent[]) => void,
   ): Promise<() => void> {
     // Observation needs a stored document; reading it in a commit creates it on a fresh home.
-    await this.front.commit(async (tx) => {
+    await this.harness.commit(async (tx) => {
       await tx.doc(JobsDoc);
     }, context);
     const state = await this.harness.documentState(JobsDoc, context);
@@ -510,209 +560,6 @@ export class Monchu implements Client {
       unsubscribe();
       state.dispose();
     };
-  }
-
-  /** Start a fresh model context, optionally carrying a handoff note. Storage keeps every entry. */
-  async reset(handoff: string | undefined): Promise<void> {
-    await this.front.reset(handoff?.trim() || undefined, context);
-    const provider = await this.harness.snapshot(ProviderDoc, this.front.id, context);
-    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
-  }
-
-  /** Summarize older context now, keeping goal ids and open commitments; the conversation keeps working meanwhile. */
-  async compact(instructions: string | undefined): Promise<void> {
-    const focus = instructions?.trim();
-    await this.front.compact(
-      focus ? `${GOALS_COMPACTION_FOCUS} ${focus}` : GOALS_COMPACTION_FOCUS,
-      context,
-    );
-  }
-
-  /**
-   * The root's goals in stored order, including recently closed ones, each with whether it changed since the user last
-   * opened it with `seeGoal`.
-   */
-  async goals(): Promise<readonly (Goal & { changed: boolean })[]> {
-    const goals = (await this.harness.snapshot(GoalsDoc, this.front.id, context))?.goals ?? [];
-    const seen = await this.front.commit(async (tx) => {
-      const doc = await tx.doc(GoalsSeen, this.front.id);
-      if (!doc.seeded) {
-        doc.seeded = true;
-        for (const goal of goals) doc.seen[goal.id] = goal.updatedAt;
-      }
-      return { ...doc.seen };
-    }, context);
-    return goals.map((goal) => ({ ...goal, changed: goal.updatedAt > (seen[goal.id] ?? 0) }));
-  }
-
-  /** Records that the user opened a goal as of its `updatedAt`. */
-  async seeGoal(id: string, updatedAt: number): Promise<void> {
-    await this.front.commit(async (tx) => {
-      const doc = await tx.doc(GoalsSeen, this.front.id);
-      doc.seen[id] = Math.max(doc.seen[id] ?? 0, updatedAt);
-    }, context);
-  }
-
-  async startWorker(name: string, message: string, requestId: string): Promise<void> {
-    if (!name.trim() || !message.trim() || !requestId.trim())
-      throw new Error("Worker name, message, and request ID are required");
-    const agent = await this.front.agent(context);
-    const cwd = agent.cwd ?? this.home;
-    await this.front.commit(
-      (tx) =>
-        startWorker(
-          tx,
-          this.front.id,
-          name,
-          message,
-          cwd,
-          requestId,
-          this.extensions.config.worker,
-          this.extensions.preload,
-        ),
-      context,
-    );
-    this.harness.resume();
-  }
-
-  /** Steers a busy worker's run, or with `followUp` waits for it to finish. */
-  async messageWorker(
-    name: string,
-    message: string,
-    requestId: string,
-    whenBusy: WhenBusy,
-  ): Promise<void> {
-    if (!message.trim() || !requestId.trim())
-      throw new Error("Message and request ID are required");
-    await this.front.commit(
-      (tx) => messageWorker(tx, this.front.id, name, message, requestId, whenBusy),
-      context,
-    );
-    this.harness.resume();
-  }
-
-  async workers() {
-    return listWorkers(this.harness, this.front.id, context);
-  }
-
-  private async worker(name: string): Promise<Conversation> {
-    const conversation = await this.harness.conversation(
-      await workerConversationId(this.harness, this.front.id, name, context),
-      context,
-    );
-    if (conversation === undefined) throw new Error("Worker conversation is missing");
-    return conversation;
-  }
-
-  /**
-   * Change a still-queued input of the root, or of the named worker, in place, keeping its place in the queue. A worker
-   * notice keeps its label: new text replaces only its body. A deleted input settles unanswered, so a worker report is
-   * dropped and a message to a worker reports a failure to its parent. Returns false once the input left the queue.
-   */
-  async editQueued(
-    workerName: string | undefined,
-    id: number,
-    change: QueueChange,
-  ): Promise<boolean> {
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    // Only the front's inputs are assessed. A re-assessment reads the front's context first; the commit can't.
-    const assessment = workerName === undefined ? this.extensions.assessment : undefined;
-    const recent =
-      assessment !== undefined && change.kind === "text"
-        ? await assessment.recent(this.front, context)
-        : [];
-    return conversation.commit(async (tx) => {
-      const inbox = await tx.doc(InboxDoc, conversation.id);
-      const index = inbox.items.findIndex((item) => item.id === id);
-      const item = inbox.items[index];
-      if (item === undefined || item.mode === "write") return false;
-      if (change.kind === "mode") item.mode = change.mode;
-      else if (change.kind === "delete") {
-        tx.settleSubmission(item.id, { status: "unanswered", reason: DELETED_FROM_QUEUE });
-        inbox.items.splice(index, 1);
-        await assessment?.revise(tx, conversation.id, item.id, undefined);
-      } else {
-        if (!change.text.trim()) throw new Error("A queued message needs text");
-        if (typeof item.content !== "string") throw new Error("Only text messages can be edited");
-        const notice = parseWorkerNotice(item.content);
-        item.content =
-          notice === undefined ? change.text : noticeText({ ...notice, text: change.text });
-        await assessment?.revise(tx, conversation.id, item.id, { message: change.text, recent });
-      }
-      return true;
-    }, context);
-  }
-
-  async stopWorker(name: string): Promise<void> {
-    await stopWorker(this.harness, this.front.id, name, context);
-  }
-
-  /**
-   * Stop the front only. Returns the user's own queued messages, oldest first, withdrawn so the caller can put them
-   * back in the editor. The abort withdraws the rest as before: a worker report is posted again, an update is dropped.
-   */
-  async abort(): Promise<string[]> {
-    const restored = await this.front.commit(async (tx) => {
-      const inbox = await tx.doc(InboxDoc, this.front.id);
-      const mine = inbox.items.flatMap((item) =>
-        item.mode !== "write" &&
-        typeof item.content === "string" &&
-        parseWorkerNotice(item.content) === undefined &&
-        escalationSummary(item.content) === undefined &&
-        systemNoticeSummary(item.content) === undefined
-          ? [{ id: item.id, text: item.content }]
-          : [],
-      );
-      for (const { id } of mine) {
-        tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
-        inbox.items.splice(
-          inbox.items.findIndex((item) => item.id === id),
-          1,
-        );
-        // The front never gets it, so its assessment neither advises nor escalates.
-        await this.extensions.assessment?.revise(tx, this.front.id, id, undefined);
-      }
-      return mine.map((item) => item.text);
-    }, context);
-    await this.front.abort(context);
-    const provider = await this.harness.snapshot(ProviderDoc, this.front.id, context);
-    if (provider !== undefined) cleanupSessionResources(provider.sessionId);
-    return restored;
-  }
-
-  /** The model and thinking level of the root or a worker, its role's default, and the chat models with credentials. */
-  async modelChoice(workerName?: string): Promise<ModelChoice> {
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    const agent = await conversation.agent(context);
-    const model =
-      agent.model === undefined
-        ? undefined
-        : this.models.getModel(agent.model.provider, agent.model.modelId);
-    return {
-      model,
-      thinkingLevel: agent.thinkingLevel,
-      thinkingLevels: model === undefined ? thinkingLevels : getSupportedThinkingLevels(model),
-      defaults:
-        workerName === undefined ? this.extensions.config.front : this.extensions.config.worker,
-      models: await this.models.getAvailable(),
-    };
-  }
-
-  /**
-   * Change the root's or a worker's model or thinking level from its next request. `saveDefault` also writes it to
-   * that role's default in `config.json`: `front` for the root, `worker` for workers. Existing workers keep theirs.
-   */
-  async pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void> {
-    this.checkPick(pick);
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    if (saveDefault) await this.saveDefault(workerName === undefined ? "front" : "worker", pick);
-    await conversation.commit(async (tx) => {
-      if (workerName === undefined)
-        (await tx.doc(FrontPicks, conversation.id))["model" in pick ? "model" : "thinkingLevel"] =
-          !saveDefault;
-      await configure(tx, conversation.id, pick);
-      await preloadGroups(tx, conversation.id, this.extensions.preload);
-    }, context);
   }
 
   /** Picks come from the terminal: refuse unknown models and levels before anything is written. */
@@ -761,24 +608,7 @@ export class Monchu implements Client {
           );
       },
     );
-    if (role === "front") await applyFrontRole(this.front, saved, this.extensions.preload);
-  }
-
-  async changeDirectory(path: string, workerName?: string): Promise<string> {
-    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
-    const agent = await conversation.agent(context);
-    const cwd = await resolveDirectory(path, agent.cwd ?? this.home);
-    await conversation.commit(async (tx) => {
-      const live = await tx.doc(LiveDoc, conversation.id);
-      if (live.run !== undefined)
-        throw new Error(
-          "Directory changes require an idle conversation; stop or finish the current run first",
-        );
-      if (workerName !== undefined && (await hasPendingDelivery(tx, this.front.id, workerName)))
-        throw new Error("Directory changes require an idle worker with no pending deliveries");
-      await configure(tx, conversation.id, { cwd });
-    }, context);
-    return cwd;
+    if (role === "front") await this.applyFrontRoles(saved);
   }
 
   /** Concurrent requests share one reload. No registry or settings changes survive a failed preparation. */
@@ -788,11 +618,12 @@ export class Monchu implements Client {
     this.reloading ??= this.extensions
       .reload(async (config) => {
         // Durable captures model and stream options during request preparation; later phases resolve current policy.
-        await applyFrontRole(this.front, config.front, this.extensions.preload);
+        await this.applyFrontRoles(config.front);
       })
       .then(async (modules) => {
         // The new build's groups: a server whose preload was just turned on reaches existing conversations now.
-        await preloadAll(this.harness, this.front, this.extensions.preload);
+        for (const id of await this.rootIds())
+          await preloadAll(this.harness, id, this.extensions.preload);
         for (const listener of this.reloadListeners) {
           try {
             listener();
@@ -848,9 +679,15 @@ export class Monchu implements Client {
   }
 
   private async noticeBudget(levels: BudgetLevel[]): Promise<void> {
+    // The home is shared: its budget state stays on the first root, and the notice goes to the current one.
+    const records = await this.records();
+    const first = records[0];
+    const current = currentRoot(records);
+    if (first === undefined || current === undefined) return;
+    const front = await this.root(shortId(current.id)).conversation();
     // The notice is recorded with the levels and cleared once admitted, so a crash in between posts it again.
-    const { pending, summary } = await this.front.commit(async (tx) => {
-      const state = await tx.doc(HomeBudgetDoc, this.front.id);
+    const { pending, summary } = await this.harness.commit(async (tx) => {
+      const state = await tx.doc(HomeBudgetDoc, first.id);
       const notice = budgetNotice(state, levels);
       if (notice !== undefined) {
         state.sent++;
@@ -864,12 +701,12 @@ export class Monchu implements Client {
     }, context);
     if (summary !== undefined) this.reports.report(`Home budget: ${summary}`);
     if (pending === undefined) return;
-    await this.front.submit(
+    await front.submit(
       { type: "input", content: pending.text, requestId: pending.requestId, whenBusy: "followUp" },
       context,
     );
-    await this.front.commit(async (tx) => {
-      const state = await tx.doc(HomeBudgetDoc, this.front.id);
+    await this.harness.commit(async (tx) => {
+      const state = await tx.doc(HomeBudgetDoc, first.id);
       if (state.pending?.requestId === pending.requestId) delete state.pending;
     }, context);
   }
@@ -917,8 +754,8 @@ export class Monchu implements Client {
    * exposed as a model tool.
    */
   async restart(): Promise<void> {
-    await this.front.commit(async (tx) => {
-      (await tx.doc(RestartRequest, this.front.id)).request = null;
+    await this.harness.commit(async (tx) => {
+      (await tx.doc(RestartRequest)).request = null;
     }, context);
     await this.close();
   }
@@ -992,6 +829,8 @@ export class Monchu implements Client {
     const started = performance.now();
     this.stopTelemetry();
     clearInterval(this.edgeCheck);
+    clearTimeout(this.rootsTimer);
+    this.rootListeners.clear();
     try {
       // A failed reload must not prevent storage from closing.
       await this.reloading?.catch(() => {});
@@ -1031,6 +870,15 @@ function modelTelemetry(log: Log, publication: CommitPublication): void {
       stop: message.stopReason,
     });
   }
+}
+
+/** Whether a commit can change a root's summary: its run, crew, jobs, registry, or a reply. */
+function touchesRoots(publication: CommitPublication): boolean {
+  return publication.changes.some(
+    (change) =>
+      (change.type === "document" && SUMMARY_KINDS.has(change.record.kind)) ||
+      (change.type === "entry" && change.value.kind === "pi.assistant"),
+  );
 }
 
 /**

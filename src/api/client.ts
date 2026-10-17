@@ -50,23 +50,36 @@ export type ModelChoice = {
 type McpReport = { servers: McpServerReport[]; errors: string[] };
 
 /**
- * One client's view of the core. Methods without a worker name act on the root; with one, on that worker. Request IDs
- * are the client's, so a retry never admits twice. Login and MCP sign-in are private interactions with the client that
- * started them: their prompts and values never reach the transcript or the log.
+ * One root as clients list it: an independent front with its own crew. `status` drives the root indicator: `working`
+ * while its front, a worker or a background command runs; `done` when its front finished after the root was last shown
+ * in any client; `idle` otherwise.
  */
-export interface Client {
-  readonly home: string;
-  /** The run settings of the last successful load or reload. */
-  readonly settings: Settings;
-  /** The core's startup notes, such as a freshly seeded home, which every client shows under its header. */
-  readonly notes: readonly string[];
-  skills(): readonly { name: string; description: string }[];
-  /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
-  skillInput(name: string, text: string): Promise<string>;
-  /** The catalog model of a model reference, while its provider still offers it. */
-  model(ref: ModelRef): Model<Api> | undefined;
+export type RootSummary = {
+  /** The short id of the root's conversation; any unique prefix names it too. */
+  id: string;
+  /** From its first message, or the user's own (`named`). */
+  label: string;
+  named: boolean;
+  createdAt: number;
+  lastInputAt: number | null;
+  archived: boolean;
+  status: RootStatus;
+  /** Open workers, and how many of them are busy. */
+  workers: { open: number; busy: number };
+  /** Background (`bg`) commands running for this root. */
+  jobs: number;
+};
 
-  /** Read-only committed conversation state of the root or a worker. The caller disposes it. */
+export type RootStatus = "working" | "done" | "idle";
+
+/**
+ * One root's front and crew. Methods without a worker name act on the root's front; with one, on that worker of this
+ * root. Request IDs are the client's, so a retry never admits twice.
+ */
+export interface RootClient {
+  /** The root's full short id. */
+  readonly id: string;
+  /** Read-only committed conversation state of the front or a worker. The caller disposes it. */
   viewState(workerName?: string): Promise<AttachedReplicatedState<ConversationView>>;
   /** Resolves on durable admission, never on the answer. */
   submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void>;
@@ -81,13 +94,57 @@ export interface Client {
   /** Stops the front only, returning the user's own queued messages, oldest first. */
   abort(): Promise<string[]>;
   stopWorker(name: string): Promise<void>;
+  /** `/new`: a fresh model context for this root's front; its crew, goals and picks stay. */
   reset(handoff: string | undefined): Promise<void>;
   compact(instructions: string | undefined): Promise<void>;
   changeDirectory(path: string, workerName?: string): Promise<string>;
   workers(): Promise<readonly WorkerSummary[]>;
+  /** Moves an idle worker, with its jobs, to another root, named by any unique prefix of its id. */
+  handOff(workerName: string, toRoot: string): Promise<void>;
 
   goals(): Promise<readonly (Goal & { changed: boolean })[]>;
   seeGoal(id: string, updatedAt: number): Promise<void>;
+  /** Routing assessments of this front's inputs as they settle; returns a stop function. */
+  watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void>;
+  /** The routing helper's state for this root, pausing or resuming it first when `paused` is given. */
+  routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }>;
+
+  modelChoice(workerName?: string): Promise<ModelChoice>;
+  pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void>;
+}
+
+/**
+ * One client's view of the core: what is home-wide here, and each root through `root(id)`. Login and MCP sign-in are
+ * private interactions with the client that started them: their prompts and values never reach the transcript or the
+ * log.
+ */
+export interface Client {
+  readonly home: string;
+  /** The run settings of the last successful load or reload. */
+  readonly settings: Settings;
+  /** The core's startup notes, such as a freshly seeded home, which every client shows under its header. */
+  readonly notes: readonly string[];
+  skills(): readonly { name: string; description: string }[];
+  /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
+  skillInput(name: string, text: string): Promise<string>;
+  /** The catalog model of a model reference, while its provider still offers it. */
+  model(ref: ModelRef): Model<Api> | undefined;
+
+  /** A root by its full id; calls on an unknown root reject. */
+  root(id: string): RootClient;
+  /** Every root, archived ones included, as they change; returns a stop function. */
+  watchRoots(listener: (roots: readonly RootSummary[]) => void): Promise<() => void>;
+  /** The full id of the root a unique prefix names; throws for an unknown or ambiguous prefix, listing candidates. */
+  findRoot(prefix: string): Promise<string>;
+  /** The open root with the newest input from the user: what a plain `monchu` opens. */
+  currentRoot(): Promise<string>;
+  /** Starts a root and returns its id; a retry with the same request ID returns the same root. */
+  createRoot(requestId: string): Promise<string>;
+  /** Names a root; an empty label goes back to naming it from its next message. */
+  renameRoot(id: string, label: string): Promise<void>;
+  /** Hides a root from the list and plain `monchu`, or shows it again; refused while its front or crew is working. */
+  archiveRoot(id: string, archived: boolean): Promise<void>;
+
   /** Every job, the recent events, and the jobs as the job tool lists them. */
   jobs(): Promise<Readonly<JobsState> & { listing: string }>;
   /** Job events with ids above `after`, in order, then each new batch; returns a stop function. */
@@ -95,12 +152,8 @@ export interface Client {
     after: number,
     listener: (events: readonly JobEvent[]) => void,
   ): Promise<() => void>;
-  /** Routing assessments of front inputs as they settle; returns a stop function. */
-  watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void>;
 
-  modelChoice(workerName?: string): Promise<ModelChoice>;
   roleChoice(role: "front" | "worker"): Promise<ModelChoice>;
-  pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void>;
   saveDefault(role: "front" | "worker", pick: ModelPick): Promise<void>;
 
   login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void>;
@@ -113,8 +166,6 @@ export interface Client {
 
   /** Applies config, skill and extension edits in process; resolves with the reloaded modules. */
   reload(): Promise<readonly string[]>;
-  /** The routing helper's state, pausing or resuming it first when `paused` is given. */
-  routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }>;
   /**
    * The user's restart approval. In process it clears the restart request and closes the core so its process can be
    * re-executed; remotely it asks the core to restart. Only a user's command calls it, never model output.

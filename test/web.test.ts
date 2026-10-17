@@ -10,7 +10,7 @@ import { WireTransport } from "../src/api/wire.ts";
 import { Monchu } from "../src/core/backend.ts";
 import type { WebConfig } from "../src/core/config.ts";
 import { serveWeb } from "../src/server/web.ts";
-import { cleanup, fauxRole, prepareHome, setup } from "./support.ts";
+import { cleanup, fauxRole, front, prepareHome, setup } from "./support.ts";
 
 afterEach(cleanup);
 
@@ -255,7 +255,7 @@ describe("web server", () => {
         throw error;
       });
       expect(client.home).toBe(backend.home);
-      expect(await client.workers()).toEqual([]);
+      expect(await (await front(client)).workers()).toEqual([]);
       // A person may ask for an update (this checkout refuses it later, for its own reason).
       await expect(client.update("edge")).rejects.toThrow("Nothing here can restart this Monchu");
       await client.close();

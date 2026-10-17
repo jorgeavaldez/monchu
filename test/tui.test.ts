@@ -99,7 +99,7 @@ describe("terminal input boundary", () => {
         const restored = readFileSync(events, "utf8");
         if (!restored.includes("restored\\n") || !restored.includes("stopped\\n")) throw new Error("Restart ran before terminal cleanup");
         const backend = await Monchu.open(home);
-        const state = await backend.viewState();
+        const state = await backend.root(await backend.currentRoot()).viewState();
         if (state.value.entries.length !== 0) throw new Error("Queued input was admitted after restart approval");
         state.dispose();
         await backend.close();
@@ -121,7 +121,7 @@ describe("terminal input boundary", () => {
       // As the entry point does: the terminal resolves after the core closed for the restart, then the process re-executes.
       const backend = await Monchu.open(home);
       let outcome;
-      try { outcome = await runTerminal(backend, screen); }
+      try { outcome = await runTerminal(backend, await backend.currentRoot(), screen); }
       finally { await backend.close(); }
       if (outcome !== "restart") throw new Error("Restart returned " + outcome);
       await reexecute();

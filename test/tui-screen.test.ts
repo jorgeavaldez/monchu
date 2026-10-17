@@ -17,6 +17,7 @@ import {
   setup,
   textOf,
   waitFor,
+  front,
 } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -50,7 +51,7 @@ async function withTerminal(
       JSON.stringify({ ...config, settings: { theme }, chosen: undefined }),
     );
     await backend.reload();
-    running = runTerminal(backend, screen);
+    running = runTerminal(backend, await backend.currentRoot(), screen);
     await Promise.race([waitFor(() => screen.started), running]);
     await visible(screen, "/help · home");
     await test(screen, backend, home);
@@ -147,21 +148,21 @@ it("clears the editor on Ctrl-C without aborting the front, and exits on a quick
 
 it("drops a closed worker from the roster at once and returns its selected view to the root", async () => {
   await withTerminal(60, "dark", async (screen, backend) => {
-    await backend.startWorker("reader", "inspect", "start:reader");
+    await (await front(backend)).startWorker("reader", "inspect", "start:reader");
     await visible(screen, "Faux front: result received.");
     await visible(screen, "Workers · ○ 1 idle · /agents");
     send(screen, "/agents reader");
     await visible(screen, "• reader");
     // The dock counts a worker idle once its run ends; closing also waits for its report's delivery to finish.
-    await waitFor(async () => (await backend.workers())[0]?.busy === false);
+    await waitFor(async () => (await (await front(backend)).workers())[0]?.busy === false);
     // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
-    await backend.submit("close reader", "close-reader", "followUp");
+    await (await front(backend)).submit("close reader", "close-reader", "followUp");
     const back = await visible(screen, "worker reader closed · back to root");
     expect(back.join("\n")).toContain("• root");
     await waitFor(
       async () => !(await screen.flushAndGetViewport()).join("\n").includes("Workers ·"),
     );
-    expect(await backend.workers()).toEqual([]);
+    expect(await (await front(backend)).workers()).toEqual([]);
     send(screen, "/agents reader");
     await visible(screen, "No worker named reader");
     // The editor stays usable and talks to the root.
@@ -219,7 +220,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     screen.sendInput("\r");
     await visible(screen, "worker default model · faux/front · saved");
     expect((await loadConfig(home)).worker.modelId).toBe("front");
-    expect((await backend.modelChoice()).model?.id).toBe("front");
+    expect((await (await front(backend)).modelChoice()).model?.id).toBe("front");
     send(screen, "/thinking");
     await visible(screen, "Pick the thinking level of");
     screen.sendInput("worker default");
@@ -256,7 +257,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     screen.sendInput("\r");
     await visible(screen, "root model · faux/front");
     // A worker's pick goes to that worker; Ctrl+S also saves the worker default.
-    await backend.startWorker("reader", "inspect", "start:reader");
+    await (await front(backend)).startWorker("reader", "inspect", "start:reader");
     await visible(screen, "Faux front: result received.");
     send(screen, "/agents reader");
     expect((await visible(screen, "• reader")).at(-1)).toMatch(/worker\s*$/);
@@ -272,7 +273,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     expect(saved.slice(-2).join("\n")).toMatch(/• reader[\s\S]*front\s*$/);
     expect((await loadConfig(home)).worker.modelId).toBe("front");
     expect((await loadConfig(home)).front.modelId).toBe("front");
-    expect((await backend.modelChoice()).model?.id).toBe("front");
+    expect((await (await front(backend)).modelChoice()).model?.id).toBe("front");
     send(screen, "/thinking");
     await visible(screen, "Pick the thinking level of");
     screen.sendInput("\r");
@@ -312,12 +313,12 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
     prepareHome(home);
     const backend = await Monchu.open(home, value.faux.provider);
     const screen = new VirtualTerminal(60, 40);
-    const running = runTerminal(backend, screen);
+    const running = runTerminal(backend, await backend.currentRoot(), screen);
     try {
       await visible(screen, "/help · home");
       if (target === "root") send(screen, "hold");
       else {
-        await backend.startWorker("w", "hold", "start:w");
+        await (await front(backend)).startWorker("w", "hold", "start:w");
         send(screen, "/agents w");
         await visible(screen, "• w ");
       }
@@ -383,7 +384,7 @@ it("keeps notices beside their entries through compaction and says the context w
   );
   const backend = await Monchu.open(value.directory, value.faux.provider);
   const screen = new VirtualTerminal(60, 40);
-  const running = runTerminal(backend, screen);
+  const running = runTerminal(backend, await backend.currentRoot(), screen);
   try {
     await visible(screen, "/help · home");
     for (const [index, text] of ["first", "second"].entries()) {
@@ -444,8 +445,8 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
   prepareHome(home);
   const backend = await Monchu.open(home, provider);
   const screen = new VirtualTerminal(60, 40);
-  const running = runTerminal(backend, screen);
-  const state = await backend.viewState();
+  const running = runTerminal(backend, await backend.currentRoot(), screen);
+  const state = await (await front(backend)).viewState();
   try {
     await visible(screen, "/help · home");
     send(screen, "/login");
@@ -500,7 +501,7 @@ it("offers /login on a fresh home without credentials and cancels without callin
   prepareHome(home);
   const backend = await Monchu.open(home);
   const screen = new VirtualTerminal(40, 32);
-  const running = runTerminal(backend, screen);
+  const running = runTerminal(backend, await backend.currentRoot(), screen);
   try {
     await visible(screen, "/help · home");
     send(screen, "/login");
@@ -523,7 +524,7 @@ it("logs in to Claude Code with a setup-token from /login", async () => {
   prepareHome(home);
   const backend = await Monchu.open(home);
   const screen = new VirtualTerminal(60, 32);
-  const running = runTerminal(backend, screen);
+  const running = runTerminal(backend, await backend.currentRoot(), screen);
   try {
     await visible(screen, "/help · home");
     send(screen, "/login");
@@ -692,7 +693,7 @@ describe.each([
 
   it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen, backend) => {
-      await backend.startWorker("reader", "inspect", "start:reader");
+      await (await front(backend)).startWorker("reader", "inspect", "start:reader");
       // The worker's name, when it was sent and its short id are the only label: the rule's style tells an update from a
       // report.
       const update = await visible(screen, "│ Faux worker progress: checking.");

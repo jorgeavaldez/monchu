@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
 import { Log } from "../src/telemetry/log.ts";
 import { formatRecord, logQuery } from "../src/ui/logs.ts";
-import { cleanup, fauxRole, prepareHome, route, setup, waitFor } from "./support.ts";
+import { cleanup, fauxRole, prepareHome, route, setup, waitFor, front } from "./support.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 
 afterEach(cleanup);
@@ -63,7 +63,7 @@ describe("structured log", () => {
     route(value.faux, () => fauxAssistantMessage("a secret answer"));
     const backend = await Monchu.open(home, value.faux.provider);
     try {
-      await backend.submit("a private question", "log:1", "followUp");
+      await (await front(backend)).submit("a private question", "log:1", "followUp");
       await waitFor(
         async () => (await backend.logs({ limit: 10, scope: "core.model" })).length > 0,
       );

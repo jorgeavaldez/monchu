@@ -1,22 +1,11 @@
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, type ConversationId, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { rootOf } from "../agents/workers.ts";
 import type { ToolGroup } from "./tool-search.ts";
 
 /** Durable's default tool output limits, which its shell tools also spill at. */
 const SPILL = { afterBytes: 50 * 1024, afterLines: 2000 };
-
-/** The root conversation that owns this one: a worker's browser is its root's. */
-async function rootOf(api: ToolExecutionApi, context: Context): Promise<ConversationId> {
-  return api.commit(async (tx) => {
-    let id = api.conversationId;
-    for (;;) {
-      const owner = (await tx.conversation(id))?.owner?.conversationId;
-      if (owner === undefined) return id;
-      id = owner;
-    }
-  }, context);
-}
 
 /** Run `agent-browser` directly, without a shell, streaming its output into the call. */
 async function run(
@@ -107,7 +96,13 @@ export const Browser: ToolGroup = {
         const guide = args[0] === "skills";
         await run(
           api,
-          guide ? args : ["--session", `monchu-${await rootOf(api, context)}`, ...args],
+          guide
+            ? args
+            : [
+                "--session",
+                `monchu-${await api.commit((tx) => rootOf(tx, api.conversationId), context)}`,
+                ...args,
+              ],
           context,
           timeout,
         );

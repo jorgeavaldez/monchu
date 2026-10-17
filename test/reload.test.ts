@@ -180,7 +180,7 @@ describe("in-process reload", () => {
     const { harness, root } = await open(value);
     let reloads = 0;
     value.registry.install(
-      createReloadControls(root.id, async () => {
+      createReloadControls(async () => {
         reloads++;
         installExtensions(value.registry, [(await module.load("v2")).extension]);
         return [module.path];
@@ -200,7 +200,7 @@ describe("in-process reload", () => {
     );
     try {
       await (await root.submit({ type: "input", content: "request" }, context)).wait(context);
-      const request = (await harness.snapshot(RestartRequest, root.id, context))?.request;
+      const request = (await harness.snapshot(RestartRequest, context))?.request;
       expect(request?.reason).toBe("host changed");
       expect(typeof request?.requestedAt).toBe("number");
       const worker = await harness.createConversation(
@@ -210,8 +210,11 @@ describe("in-process reload", () => {
         },
         context,
       );
+      // One request per home: any conversation's request is the one every front sees.
       await (await worker.submit({ type: "input", content: "request" }, context)).wait(context);
-      expect(await harness.snapshot(RestartRequest, worker.id, context)).toBeUndefined();
+      expect((await harness.snapshot(RestartRequest, context))?.request?.reason).toBe(
+        "host changed",
+      );
       expect(reloads).toBe(0);
       await (await worker.submit({ type: "input", content: "reload" }, context)).wait(context);
       expect(reloads).toBe(1);
@@ -225,10 +228,9 @@ describe("in-process reload", () => {
     }
     const reopened = await open(value);
     try {
-      expect(
-        (await reopened.harness.snapshot(RestartRequest, reopened.root.id, context))?.request
-          ?.reason,
-      ).toBe("host changed");
+      expect((await reopened.harness.snapshot(RestartRequest, context))?.request?.reason).toBe(
+        "host changed",
+      );
     } finally {
       await reopened.harness.close(context);
     }
@@ -269,6 +271,7 @@ describe("in-process reload", () => {
       "browser",
       "tool-search",
       "jobs",
+      "roots",
       "herdr",
       "classifier",
     ]);
@@ -350,16 +353,18 @@ describe("in-process reload", () => {
   });
 
   // Workers still get them by inheriting the root's selection; see the backend's worker tool test.
-  it("adds goals and memory to the root, not the host default, in the real manifest", async () => {
+  it("adds goals, memory and roots to the root, not the host default, in the real manifest", async () => {
     const value = await setup();
     scriptedClassifier(value.models);
     const extensions = await Extensions.load(value.models, config, value.directory, () => {});
     expect(extensions.root.map((extension) => extension.name)).toEqual([
       "monchu.goals",
       "monchu.memory",
+      "monchu.roots",
     ]);
     const defaults = extensions.defaults().map((extension) => extension.name);
     expect(defaults).not.toContain("monchu.goals");
     expect(defaults).not.toContain("monchu.memory");
+    expect(defaults).not.toContain("monchu.roots");
   });
 });

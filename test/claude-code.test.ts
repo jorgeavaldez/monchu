@@ -25,6 +25,7 @@ import {
   textOf,
   toolResults,
   waitFor,
+  front,
 } from "./support.ts";
 
 afterEach(cleanup);
@@ -564,10 +565,10 @@ describe("Claude Code subscription provider", () => {
     });
     await openClaudeModels(value.directory, script.provider, token);
     const backend = await Monchu.open(value.directory, script.provider);
-    const view = await backend.viewState();
+    const view = await (await front(backend)).viewState();
     try {
       for (const n of [1, 2]) {
-        await backend.submit("turn" + n, "turn" + n, "followUp");
+        await (await front(backend)).submit("turn" + n, "turn" + n, "followUp");
         await waitFor(() =>
           view.value.entries.some((entry) =>
             entry.model?.some(
@@ -579,10 +580,10 @@ describe("Claude Code subscription provider", () => {
       const original = script.requests[0]?.path;
       assert(original);
       expect(script.requests[1]?.path).toBe(original);
-      await backend.compact(undefined);
+      await (await front(backend)).compact(undefined);
       await waitFor(() => view.value.entries.some((entry) => CompactionEntry.is(entry)));
       expect(script.requests[2]?.input.options?.persistSession).toBe(false);
-      await backend.submit("after compaction", "after-compaction", "followUp");
+      await (await front(backend)).submit("after compaction", "after-compaction", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           entry.model?.some(
@@ -592,8 +593,8 @@ describe("Claude Code subscription provider", () => {
       );
       expect(script.requests[3]?.path).toBe(original);
       expect(JSON.stringify(script.requests[3]?.history)).toContain("answer3");
-      await backend.reset(undefined);
-      await backend.submit("after reset", "after-reset", "followUp");
+      await (await front(backend)).reset(undefined);
+      await (await front(backend)).submit("after reset", "after-reset", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           entry.model?.some(
@@ -633,19 +634,19 @@ describe("Claude Code subscription provider", () => {
         return prompt.append ?? "";
       });
     try {
-      await backend.submit("front", "front-request", "followUp");
+      await (await front(backend)).submit("front", "front-request", "followUp");
       await waitFor(() => script.requests.length === 1);
-      await backend.changeDirectory(project);
-      await backend.startWorker("reader", "inspect", "worker-request");
+      await (await front(backend)).changeDirectory(project);
+      await (await front(backend)).startWorker("reader", "inspect", "worker-request");
       await waitFor(() => script.requests.length === 2);
-      const [front, worker] = prompts();
-      expect(front).toContain("SHARED MANUAL");
-      expect(front).toContain("FRONT ONLY");
+      const [frontPrompt, worker] = prompts();
+      expect(frontPrompt).toContain("SHARED MANUAL");
+      expect(frontPrompt).toContain("FRONT ONLY");
       expect(worker).toContain("SHARED MANUAL");
       expect(worker).not.toContain("FRONT ONLY");
-      expect(front).not.toContain("PROJECT RULES");
+      expect(frontPrompt).not.toContain("PROJECT RULES");
       // Declared tools are prefixed; scripts and instructions name them without it.
-      for (const prompt of [front, worker])
+      for (const prompt of [frontPrompt, worker])
         expect(prompt).toContain("`mcp__monchu__close_worker` is `tools.close_worker`");
       expect(worker).toContain(
         `<project_instructions path="${join(project, "AGENTS.md")}">
@@ -669,11 +670,11 @@ PROJECT RULES
     });
     await openClaudeModels(value.directory, script.provider, token);
     const backend = await Monchu.open(value.directory, script.provider);
-    const view = await backend.viewState();
+    const view = await (await front(backend)).viewState();
     try {
       for (const n of [1, 2]) {
         if (n === 2) await writeFile(join(value.directory, "FRONT.md"), "FRONT AFTER");
-        await backend.submit("turn" + n, "turn" + n, "followUp");
+        await (await front(backend)).submit("turn" + n, "turn" + n, "followUp");
         await waitFor(() =>
           view.value.entries.some((entry) =>
             entry.model?.some(
@@ -744,8 +745,9 @@ PROJECT RULES
       await openClaudeModels(value.directory, script.provider, token);
       const backend = await Monchu.open(value.directory, script.provider);
       try {
-        if (target === "front") await backend.submit("block", "block-front", "followUp");
-        else await backend.startWorker("blocked", "block", "block-worker");
+        if (target === "front")
+          await (await front(backend)).submit("block", "block-front", "followUp");
+        else await (await front(backend)).startWorker("blocked", "block", "block-worker");
         await waitFor(async () => {
           try {
             return (await readFile(marker, "utf8")) === "ready";
@@ -755,8 +757,8 @@ PROJECT RULES
           }
         });
         expect(script.closed()).toBe(0);
-        if (target === "front") await backend.abort();
-        else await backend.stopWorker("blocked");
+        if (target === "front") await (await front(backend)).abort();
+        else await (await front(backend)).stopWorker("blocked");
         expect(script.closed()).toBe(1);
         expect(script.interrupted()).toBe(1);
       } finally {

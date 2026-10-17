@@ -57,6 +57,73 @@ export const WorkersDoc = defineDoc<WorkerRecords & { started: number }>({
   checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 31,
 });
 
+/**
+ * The parents of workers handed from one root to another, by worker conversation ID. Durable's owner edge is immutable,
+ * so it stays the parent of every worker never handed off.
+ */
+const HandoffsDoc = defineDoc<{ parents: Record<string, ConversationId> }>({
+  kind: "monchu.handoffs",
+  version: 1,
+  scope: "session",
+  initial: () => ({ parents: {} }),
+});
+
+/** The conversation a worker reports to: its owner, or the root it was handed to. `undefined` for a root. */
+export async function parentOf(tx: Tx, id: ConversationId): Promise<ConversationId | undefined> {
+  return (
+    (await tx.doc(HandoffsDoc)).parents[String(id)] ??
+    (await tx.conversation(id))?.owner?.conversationId
+  );
+}
+
+/** The root a conversation belongs to, through its parents: itself for a root. */
+export async function rootOf(tx: Tx, id: ConversationId): Promise<ConversationId> {
+  let root = id;
+  for (let parent = await parentOf(tx, root); parent !== undefined;) {
+    root = parent;
+    parent = await parentOf(tx, root);
+  }
+  return root;
+}
+
+/**
+ * Moves an idle worker's record from one parent to another, so its later reports, updates and user messages go there.
+ * Refused while it runs, has queued or pending work or busy sub-workers, or when the name is taken there.
+ */
+export async function moveWorker(
+  tx: Tx,
+  fromId: ConversationId,
+  name: string,
+  toId: ConversationId,
+): Promise<{ conversationId: ConversationId; brief: string | undefined }> {
+  const from = await tx.doc(WorkersDoc, fromId);
+  const worker = named(from.workers, name);
+  const to = await tx.doc(WorkersDoc, toId);
+  if (to.workers.some((item) => item.name === name))
+    throw new Error(`The other root already has a worker named ${name}`);
+  if (await busyTree(tx, from, worker))
+    throw new Error(`${name} is busy; let it finish or stop it before handing it off`);
+  from.workers.splice(from.workers.indexOf(worker), 1);
+  to.workers.push({ ...worker, reported: [...worker.reported] });
+  (await tx.doc(HandoffsDoc)).parents[String(worker.conversationId)] = toId;
+  return { conversationId: worker.conversationId, brief: worker.brief };
+}
+
+/** Whether a worker or any sub-worker below it runs, has queued input, or has a pending delivery. */
+async function busyTree(
+  tx: Tx,
+  state: WorkerRecords,
+  worker: WorkerRecords["workers"][number],
+): Promise<boolean> {
+  const live = await tx.doc(LiveDoc, worker.conversationId);
+  const inbox = await tx.doc(InboxDoc, worker.conversationId);
+  if (live.run !== undefined || inbox.items.length > 0) return true;
+  if (await pendingDelivery(state, worker.name, (id) => tx.task(id))) return true;
+  const children = await tx.doc(WorkersDoc, worker.conversationId);
+  for (const child of children.workers) if (await busyTree(tx, children, child)) return true;
+  return false;
+}
+
 function named(workers: WorkerRecords["workers"], name: string) {
   const worker = workers.find((item) => item.name === name);
   if (worker === undefined) throw new Error(`No worker named ${name}`);
@@ -272,8 +339,8 @@ type WorkerResult = {
   text: string;
 } & ({ status: "completed"; answerId: EntryId } | { status: "failed" });
 
-/** Front inputs that are not the user's own words: worker notices, routing-helper follow-ups and system notices. */
-const NOT_THE_USER = /^\[(Worker |Background worker |Routing advice|System notice)/;
+/** Front inputs that are not the user's own words: worker and root notices, routing-helper follow-ups and system notices. */
+const NOT_THE_USER = /^\[(Worker |Background worker |Root [k-z]+ |Routing advice|System notice)/;
 
 /** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
 export const DELETED_FROM_QUEUE = "deleted";
@@ -839,11 +906,7 @@ export function createWorkerTools(
         replay: "safe",
         execute: async (args, api, context) => {
           const requestId = `worker-update:${api.taskId}:${api.callId}`;
-          // A worker conversation is owned by an anchor task of the conversation that started it.
-          const parentId = await api.commit(
-            async (tx) => (await tx.conversation(api.conversationId))?.owner?.conversationId,
-            context,
-          );
+          const parentId = await api.commit((tx) => parentOf(tx, api.conversationId), context);
           const record =
             parentId === undefined
               ? undefined
@@ -888,14 +951,9 @@ export function createWorkerTools(
         execute: async (args, api, context) => {
           const limit = args.limit ?? 10;
           const lines = await api.commit(async (tx) => {
-            // Workers are owned, transitively, by the root the user talks to.
-            let rootId: ConversationId = api.conversationId;
-            let owner = (await tx.conversation(rootId))?.owner?.conversationId;
-            if (owner === undefined) return undefined;
-            while (owner !== undefined) {
-              rootId = owner;
-              owner = (await tx.conversation(rootId))?.owner?.conversationId;
-            }
+            // Workers belong, through their parents, to the root the user talks to.
+            const rootId = await rootOf(tx, api.conversationId);
+            if (rootId === api.conversationId) return undefined;
             // Newest first, until `limit` user messages; bounded so a long transcript can't stall the call.
             const found: { user: boolean; text: string }[] = [];
             let cursor: Parameters<Tx["scanEntries"]>[2];

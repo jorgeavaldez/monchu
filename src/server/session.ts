@@ -18,6 +18,7 @@ import {
   type LoginState,
   type Reports,
 } from "../api/services.ts";
+import type { RootSummary } from "../api/client.ts";
 import type { Release } from "../api/release.ts";
 import type { Assessment } from "../core/agents/classifier.ts";
 import type { Monchu } from "../core/backend.ts";
@@ -116,12 +117,16 @@ export async function connectionServices(
   );
   const release = replicatedState<Release>(own(backend.release));
   cleanups.push(backend.onRelease((value) => release.replace(context, own(value))));
-  const assessments = replicatedState<{ items: Assessment[] }>({ items: [] });
+  const roots = replicatedState<{ roots: RootSummary[] }>({ roots: [] });
   cleanups.push(
-    await backend.watchAssessments((items) =>
-      assessments.replace(context, own({ items: [...items] })),
-    ),
+    await backend.watchRoots((value) => roots.replace(context, own({ roots: [...value] }))),
   );
+  const assessments = replicatedState<{ byRoot: Record<string, Assessment[]> }>({ byRoot: {} });
+  const followed = new Map<string, { count: number; stop: Promise<() => void> }>();
+  cleanups.push(() => {
+    for (const entry of followed.values()) void entry.stop.then((stop) => stop()).catch(() => {});
+    followed.clear();
+  });
   const initialJobs = await backend.jobs();
   const jobs = replicatedState<JobsState>(
     own({ jobs: initialJobs.jobs, events: initialJobs.events, nextEvent: initialJobs.nextEvent }),
@@ -211,23 +216,28 @@ export async function connectionServices(
 
   provider.provide(Session, {
     hello: helloState,
+    roots,
     assessments,
     jobs,
     reports,
     release,
-    open: async (name: string, _context: Context) => {
-      const existing = opened.get(name);
+    open: async (root: string, name: string, _context: Context) => {
+      const key = `${root}:${name}`;
+      const existing = opened.get(key);
       if (existing !== undefined) {
         existing.count += 1;
         return;
       }
-      const view = publishedView(await backend.viewWatch(name === "" ? undefined : name));
-      // Instance keys must not be empty, and a worker can't be mistaken for the root.
-      const close = provider.spawn(Conversations, name === "" ? "root" : `worker:${name}`, {
-        about: replicatedState({ name }),
-        view,
-      });
-      opened.set(name, {
+      const view = publishedView(
+        await backend.root(root).viewWatch(name === "" ? undefined : name),
+      );
+      // Instance keys must not be empty, and a worker can't be mistaken for the front.
+      const close = provider.spawn(
+        Conversations,
+        name === "" ? `${root}:front` : `${root}:worker:${name}`,
+        { about: replicatedState({ root, name }), view },
+      );
+      opened.set(key, {
         count: 1,
         close: () => {
           close();
@@ -235,32 +245,73 @@ export async function connectionServices(
         },
       });
     },
-    close: async (name: string, _context: Context) => {
-      const existing = opened.get(name);
+    close: async (root: string, name: string, _context: Context) => {
+      const key = `${root}:${name}`;
+      const existing = opened.get(key);
       if (existing === undefined) return;
       existing.count -= 1;
       if (existing.count > 0) return;
-      opened.delete(name);
+      opened.delete(key);
       existing.close();
     },
+    followAssessments: async (root: string) => {
+      const existing = followed.get(root);
+      if (existing !== undefined) {
+        existing.count += 1;
+        return;
+      }
+      const stop = backend.root(root).watchAssessments((items) =>
+        assessments.change(context, (draft) => {
+          draft.byRoot[root] = own([...items]);
+        }),
+      );
+      followed.set(root, { count: 1, stop });
+      try {
+        await stop;
+      } catch (error) {
+        followed.delete(root);
+        throw error;
+      }
+    },
+    unfollowAssessments: async (root: string) => {
+      const existing = followed.get(root);
+      if (existing === undefined) return;
+      existing.count -= 1;
+      if (existing.count > 0) return;
+      followed.delete(root);
+      (await existing.stop)();
+      assessments.change(context, (draft) => {
+        delete draft.byRoot[root];
+      });
+    },
+    findRoot: (prefix) => backend.findRoot(prefix),
+    currentRoot: () => backend.currentRoot(),
+    createRoot: (requestId) => backend.createRoot(requestId),
+    renameRoot: (id, label) => backend.renameRoot(id, label),
+    archiveRoot: (id, archived) => backend.archiveRoot(id, archived),
     skillInput: async (name: string, text: string) => backend.skillInput(name, text),
-    submit: (message, requestId, whenBusy) => backend.submit(message, requestId, whenBusy),
-    messageWorker: (name, message, requestId, whenBusy) =>
-      backend.messageWorker(name, message, requestId, whenBusy),
-    editQueued: (workerName, id, change) => backend.editQueued(workerName ?? undefined, id, change),
-    abort: () => backend.abort(),
-    stopWorker: (name) => backend.stopWorker(name),
-    reset: (handoff) => backend.reset(handoff ?? undefined),
-    compact: (instructions) => backend.compact(instructions ?? undefined),
-    changeDirectory: (path, workerName) => backend.changeDirectory(path, workerName ?? undefined),
-    workers: async () => own([...(await backend.workers())]),
-    goals: async () => own([...(await backend.goals())]),
-    seeGoal: (id, updatedAt) => backend.seeGoal(id, updatedAt),
+    submit: (root, message, requestId, whenBusy) =>
+      backend.root(root).submit(message, requestId, whenBusy),
+    messageWorker: (root, name, message, requestId, whenBusy) =>
+      backend.root(root).messageWorker(name, message, requestId, whenBusy),
+    editQueued: (root, workerName, id, change) =>
+      backend.root(root).editQueued(workerName ?? undefined, id, change),
+    abort: (root) => backend.root(root).abort(),
+    stopWorker: (root, name) => backend.root(root).stopWorker(name),
+    reset: (root, handoff) => backend.root(root).reset(handoff ?? undefined),
+    compact: (root, instructions) => backend.root(root).compact(instructions ?? undefined),
+    changeDirectory: (root, path, workerName) =>
+      backend.root(root).changeDirectory(path, workerName ?? undefined),
+    workers: async (root) => own([...(await backend.root(root).workers())]),
+    handOff: (root, workerName, toRoot) => backend.root(root).handOff(workerName, toRoot),
+    goals: async (root) => own([...(await backend.root(root).goals())]),
+    seeGoal: (root, id, updatedAt) => backend.root(root).seeGoal(id, updatedAt),
     jobsListing: async () => (await backend.jobs()).listing,
-    modelChoice: async (workerName) => own(await backend.modelChoice(workerName ?? undefined)),
+    modelChoice: async (root, workerName) =>
+      own(await backend.root(root).modelChoice(workerName ?? undefined)),
     roleChoice: async (role) => own(await backend.roleChoice(role)),
-    pickModel: (pick, saveDefault, workerName) =>
-      backend.pickModel(pick, saveDefault, workerName ?? undefined),
+    pickModel: (root, pick, saveDefault, workerName) =>
+      backend.root(root).pickModel(pick, saveDefault, workerName ?? undefined),
     saveDefault: (role, pick) => backend.saveDefault(role, pick),
     loginNeeds: async () => {
       const needs = await backend.loginNeeds();
@@ -270,7 +321,7 @@ export async function connectionServices(
     mcpLogout: (name) => backend.mcpLogout(name),
     mcpReconnect: async () => own(await backend.mcpReconnect()),
     reload: async () => [...(await backend.reload())],
-    routing: (paused) => backend.routing(paused ?? undefined),
+    routing: (root, paused) => backend.root(root).routing(paused ?? undefined),
     logs: (query) => backend.logs(query),
     record: async (scope, body, attributes) => backend.record(scope, body, attributes ?? undefined),
     restart: async () => backend.requestRestart(),

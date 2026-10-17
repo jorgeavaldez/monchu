@@ -10,7 +10,7 @@ import type { Assessment } from "../core/agents/classifier.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
-import type { ModelChoice, ModelPick, QueueChange, WorkerSummary } from "./client.ts";
+import type { ModelChoice, ModelPick, QueueChange, RootSummary, WorkerSummary } from "./client.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
@@ -49,20 +49,43 @@ export type LoginState = {
   done: { ok: true; message: string } | { ok: false; message: string } | null;
 };
 
+/**
+ * The core's session for one connection. Calls that act on one root take its full id first; `root` instances are not
+ * needed, since every root shares this connection.
+ */
 export interface SessionService {
   hello: ReplicatedState<Hello>;
-  assessments: ReplicatedState<{ items: Assessment[] }>;
+  /** Every root with its indicator state. */
+  roots: ReplicatedState<{ roots: RootSummary[] }>;
+  /** Routing assessments of the roots this connection follows, by root id. */
+  assessments: ReplicatedState<{ byRoot: Record<string, Assessment[]> }>;
   jobs: ReplicatedState<JobsState>;
   reports: ReplicatedState<Reports>;
   release: ReplicatedState<Release>;
 
-  /** Attach this connection to the root (`""`) or a worker's conversation, as a `conversation` instance. */
-  open(name: string, context: Context): Promise<void>;
-  close(name: string, context: Context): Promise<void>;
+  /** Attach this connection to a root's front (`""`) or one of its workers, as a `conversation` instance. */
+  open(root: string, name: string, context: Context): Promise<void>;
+  close(root: string, name: string, context: Context): Promise<void>;
+  /** Start or stop following a root's assessments in `assessments`; counted, like `open`. */
+  followAssessments(root: string, context: Context): Promise<void>;
+  unfollowAssessments(root: string, context: Context): Promise<void>;
+
+  findRoot(prefix: string, context: Context): Promise<string>;
+  currentRoot(context: Context): Promise<string>;
+  createRoot(requestId: string, context: Context): Promise<string>;
+  renameRoot(id: string, label: string, context: Context): Promise<void>;
+  archiveRoot(id: string, archived: boolean, context: Context): Promise<void>;
 
   skillInput(name: string, text: string, context: Context): Promise<string>;
-  submit(message: string, requestId: string, whenBusy: WhenBusy, context: Context): Promise<void>;
+  submit(
+    root: string,
+    message: string,
+    requestId: string,
+    whenBusy: WhenBusy,
+    context: Context,
+  ): Promise<void>;
   messageWorker(
+    root: string,
     name: string,
     message: string,
     requestId: string,
@@ -70,23 +93,31 @@ export interface SessionService {
     context: Context,
   ): Promise<void>;
   editQueued(
+    root: string,
     workerName: string | null,
     id: number,
     change: QueueChange,
     context: Context,
   ): Promise<boolean>;
-  abort(context: Context): Promise<string[]>;
-  stopWorker(name: string, context: Context): Promise<void>;
-  reset(handoff: string | null, context: Context): Promise<void>;
-  compact(instructions: string | null, context: Context): Promise<void>;
-  changeDirectory(path: string, workerName: string | null, context: Context): Promise<string>;
-  workers(context: Context): Promise<WorkerSummary[]>;
-  goals(context: Context): Promise<(Goal & { changed: boolean })[]>;
-  seeGoal(id: string, updatedAt: number, context: Context): Promise<void>;
+  abort(root: string, context: Context): Promise<string[]>;
+  stopWorker(root: string, name: string, context: Context): Promise<void>;
+  reset(root: string, handoff: string | null, context: Context): Promise<void>;
+  compact(root: string, instructions: string | null, context: Context): Promise<void>;
+  changeDirectory(
+    root: string,
+    path: string,
+    workerName: string | null,
+    context: Context,
+  ): Promise<string>;
+  workers(root: string, context: Context): Promise<WorkerSummary[]>;
+  handOff(root: string, workerName: string, toRoot: string, context: Context): Promise<void>;
+  goals(root: string, context: Context): Promise<(Goal & { changed: boolean })[]>;
+  seeGoal(root: string, id: string, updatedAt: number, context: Context): Promise<void>;
   jobsListing(context: Context): Promise<string>;
-  modelChoice(workerName: string | null, context: Context): Promise<ModelChoice>;
+  modelChoice(root: string, workerName: string | null, context: Context): Promise<ModelChoice>;
   roleChoice(role: "front" | "worker", context: Context): Promise<ModelChoice>;
   pickModel(
+    root: string,
     pick: ModelPick,
     saveDefault: boolean,
     workerName: string | null,
@@ -101,6 +132,7 @@ export interface SessionService {
   mcpReconnect(context: Context): Promise<{ servers: McpServerReport[]; errors: string[] }>;
   reload(context: Context): Promise<string[]>;
   routing(
+    root: string,
     paused: boolean | null,
     context: Context,
   ): Promise<{ configured: boolean; paused: boolean }>;
@@ -122,8 +154,8 @@ export interface SessionService {
 }
 
 export interface ConversationService {
-  /** Which conversation this is: `""` for the root, else the worker's name. */
-  about: ReplicatedState<{ name: string }>;
+  /** Which conversation this is: a root's id, and `""` for its front or else the worker's name. */
+  about: ReplicatedState<{ root: string; name: string }>;
   view: ReplicatedState<ConversationView>;
 }
 

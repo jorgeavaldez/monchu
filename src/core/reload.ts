@@ -6,7 +6,6 @@ import {
   defineExtension,
   defineTool,
   section,
-  type ConversationId,
   type Extension,
   type Registry,
 } from "@earendil-works/pi-durable";
@@ -49,6 +48,7 @@ type Reloadable = {
   "mcp-tools": typeof import("./mcp/tools.ts");
   browser: typeof import("./tools/browser.ts");
   jobs: typeof import("./jobs.ts");
+  roots: typeof import("./agents/roots.ts");
 };
 
 /** Each reloadable module's path from this one, without its extension. */
@@ -67,6 +67,7 @@ const reloadablePaths: Record<keyof Reloadable, string> = {
   "mcp-tools": "./mcp/tools",
   browser: "./tools/browser",
   jobs: "./jobs",
+  roots: "./agents/roots",
 };
 
 async function freshImport<Name extends keyof Reloadable>(
@@ -127,6 +128,7 @@ async function build(
   const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
   const workers = workersModule.createWorkerTools(workerRole, config.profiles, search.preload);
   const jobs = (await load("jobs")).createJobs(workerRole, home, config.profiles, search.preload);
+  const { Roots } = await load("roots");
   const herdr = (await load("herdr")).createHerdr({
     command: { executable: "herdr", args: [] },
     env: process.env,
@@ -144,6 +146,7 @@ async function build(
       tools.extension,
       workers,
       jobs,
+      Roots,
       Codemode,
       Goals,
       memory,
@@ -155,7 +158,7 @@ async function build(
       ...search.groups,
       ...(assessment === undefined ? [] : [assessment.extension]),
     ],
-    root: [Goals, memory],
+    root: [Goals, memory, Roots],
     groups: search.groups,
     preload: search.preload,
     settings: context.settings,
@@ -449,27 +452,22 @@ async function buildForReload(): Promise<void> {
   });
 }
 
-/** Stored on the root; requesting a restart never executes one. */
+/** One per home, so every root's front sees it; requesting a restart never executes one. */
 export const RestartRequest = defineDoc<{
   request: { reason: string; requestedAt: number } | null;
 }>({
-  kind: "monchu.restart-request",
+  kind: "monchu.restart",
   version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
+  scope: "session",
   initial: () => ({ request: null }),
 });
 
-export function createReloadControls(
-  rootId: ConversationId,
-  reload: () => Promise<readonly string[]>,
-) {
+export function createReloadControls(reload: () => Promise<readonly string[]>) {
   return defineExtension({
     name: "monchu.reload",
     sections: [
       section("restart_request", async (input, context) => {
-        const request = (await input.read.snapshot(RestartRequest, rootId, context))?.request;
+        const request = (await input.read.snapshot(RestartRequest, context))?.request;
         return request === undefined || request === null
           ? undefined
           : `Restart requested: ${request.reason}. Only the user can approve it with /restart.`;
@@ -497,7 +495,7 @@ export function createReloadControls(
         replay: "safe",
         execute: async ({ reason }, api, context) => {
           await api.commit(async (tx) => {
-            (await tx.doc(RestartRequest, rootId)).request = {
+            (await tx.doc(RestartRequest)).request = {
               reason: reason.trim(),
               requestedAt: Date.now(),
             };

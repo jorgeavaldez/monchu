@@ -13,7 +13,7 @@ import {
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, AuthInteraction, AuthType, Model } from "@earendil-works/pi-ai";
 import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
-import type { Client } from "./client.ts";
+import type { Client, RootClient, RootSummary } from "./client.ts";
 import type { Release } from "./release.ts";
 import {
   Conversations,
@@ -96,13 +96,99 @@ function first<T>(
   });
 }
 
+/** One key per root and conversation; root ids are letters, so the separator can't be mistaken. */
+function viewKey(root: string, name: string): string {
+  return `${root}:${name}`;
+}
+
+function splitKey(key: string): { root: string; name: string } {
+  const at = key.indexOf(":");
+  return { root: key.slice(0, at), name: key.slice(at + 1) };
+}
+
+/** One root of a remote core: every call names it. */
+class RemoteRoot implements RootClient {
+  readonly id: string;
+  private readonly client: RemoteClient;
+  private readonly session: SessionService;
+
+  constructor(client: RemoteClient, session: SessionService, id: string) {
+    this.client = client;
+    this.session = session;
+    this.id = id;
+  }
+
+  viewState(workerName?: string) {
+    return this.client.view(this.id, workerName);
+  }
+  submit(message: string, requestId: string, whenBusy: "steer" | "followUp") {
+    return this.session.submit(this.id, message, requestId, whenBusy, context);
+  }
+  messageWorker(name: string, message: string, requestId: string, whenBusy: "steer" | "followUp") {
+    return this.session.messageWorker(this.id, name, message, requestId, whenBusy, context);
+  }
+  editQueued(
+    workerName: string | undefined,
+    id: number,
+    change: Parameters<RootClient["editQueued"]>[2],
+  ) {
+    return this.session.editQueued(this.id, workerName ?? null, id, change, context);
+  }
+  abort() {
+    return this.session.abort(this.id, context);
+  }
+  stopWorker(name: string) {
+    return this.session.stopWorker(this.id, name, context);
+  }
+  reset(handoff: string | undefined) {
+    return this.session.reset(this.id, handoff ?? null, context);
+  }
+  compact(instructions: string | undefined) {
+    return this.session.compact(this.id, instructions ?? null, context);
+  }
+  changeDirectory(path: string, workerName?: string) {
+    return this.session.changeDirectory(this.id, path, workerName ?? null, context);
+  }
+  workers() {
+    return this.session.workers(this.id, context);
+  }
+  handOff(workerName: string, toRoot: string) {
+    return this.session.handOff(this.id, workerName, toRoot, context);
+  }
+  goals() {
+    return this.session.goals(this.id, context);
+  }
+  seeGoal(id: string, updatedAt: number) {
+    return this.session.seeGoal(this.id, id, updatedAt, context);
+  }
+  watchAssessments(listener: Parameters<RootClient["watchAssessments"]>[0]) {
+    return this.client.followAssessments(this.id, listener);
+  }
+  routing(paused?: boolean) {
+    return this.session.routing(this.id, paused ?? null, context);
+  }
+  modelChoice(workerName?: string) {
+    return this.session.modelChoice(this.id, workerName ?? null, context);
+  }
+  pickModel(
+    pick: Parameters<RootClient["pickModel"]>[0],
+    saveDefault: boolean,
+    workerName?: string,
+  ) {
+    return this.session.pickModel(this.id, pick, saveDefault, workerName ?? null, context);
+  }
+}
+
 export class RemoteClient implements Client {
   readonly restartsProcess = false;
   private info: Hello;
   private releaseInfo: Release;
   private readonly instances = new Map<string, ConversationService>();
   private readonly instanceWaiters = new Set<() => void>();
+  /** Views by root and conversation (`viewKey`). */
   private readonly views = new Map<string, Set<RemoteView>>();
+  /** How many assessment follows each root has here, to follow again after a reconnect. */
+  private readonly followed = new Map<string, number>();
   private readonly logins = new Map<number, LoginService>();
   private readonly loginWaiters = new Set<() => void>();
   private readonly localReports = new Set<(message: string) => void>();
@@ -121,10 +207,11 @@ export class RemoteClient implements Client {
     this.info = info;
     this.releaseInfo = release;
     binding.observe(Conversations, (instance) => {
-      const name = instance.about.value?.name;
-      if (name === undefined) return;
-      this.instances.set(name, instance);
-      for (const view of this.views.get(name) ?? []) view.bind(instance);
+      const about = instance.about.value;
+      if (about === undefined) return;
+      const key = viewKey(about.root, about.name);
+      this.instances.set(key, instance);
+      for (const view of this.views.get(key) ?? []) view.bind(instance);
       for (const waiter of this.instanceWaiters) waiter();
     });
     binding.observe(Logins, (instance) => {
@@ -175,7 +262,13 @@ export class RemoteClient implements Client {
   async reconnected(): Promise<void> {
     await this.binding.rebind(true, context);
     await this.binding.ready(context);
-    for (const name of this.views.keys()) await this.session.open(name, context);
+    for (const key of this.views.keys()) {
+      const { root, name } = splitKey(key);
+      await this.session.open(root, name, context);
+    }
+    for (const [root, count] of this.followed)
+      for (let follow = 0; follow < count; follow++)
+        await this.session.followAssessments(root, context);
     this.notice("reconnected to Monchu");
   }
 
@@ -211,10 +304,10 @@ export class RemoteClient implements Client {
   }
 
   /** Chord facades are proxies that treat any member as remote, `then` included: never resolve a promise with one. */
-  private instance(name: string): Promise<{ instance: ConversationService }> {
+  private instance(key: string): Promise<{ instance: ConversationService }> {
     return new Promise((resolve) => {
       const check = () => {
-        const instance = this.instances.get(name);
+        const instance = this.instances.get(key);
         if (instance === undefined) return;
         this.instanceWaiters.delete(check);
         resolve({ instance });
@@ -224,66 +317,73 @@ export class RemoteClient implements Client {
     });
   }
 
-  async viewState(workerName?: string): Promise<AttachedReplicatedState<ConversationView>> {
+  /** A view of a root's front or worker that follows reconnects; disposing the last closes it on the core. */
+  async view(
+    root: string,
+    workerName?: string,
+  ): Promise<AttachedReplicatedState<ConversationView>> {
     const name = workerName ?? "";
-    await this.session.open(name, context);
-    const { instance } = await this.instance(name);
+    const key = viewKey(root, name);
+    await this.session.open(root, name, context);
+    const { instance } = await this.instance(key);
     const initial = await first<ConversationView>(
       (listener) => instance.view.subscribe(listener),
       () => true,
     );
     const view = new RemoteView(initial, () => {
-      const views = this.views.get(name);
+      const views = this.views.get(key);
       views?.delete(view);
-      if (views?.size === 0) this.views.delete(name);
-      void this.session.close(name, context).catch(() => {});
+      if (views?.size === 0) this.views.delete(key);
+      void this.session.close(root, name, context).catch(() => {});
     });
-    const views = this.views.get(name) ?? new Set();
+    const views = this.views.get(key) ?? new Set();
     views.add(view);
-    this.views.set(name, views);
+    this.views.set(key, views);
     view.bind(instance);
     return view;
   }
 
+  /** Follows a root's assessments until the returned function runs; reconnects follow again. */
+  async followAssessments(
+    root: string,
+    listener: Parameters<RootClient["watchAssessments"]>[0],
+  ): Promise<() => void> {
+    await this.session.followAssessments(root, context);
+    this.followed.set(root, (this.followed.get(root) ?? 0) + 1);
+    const stop = this.session.assessments.subscribe((value) => listener(value.byRoot[root] ?? []));
+    return () => {
+      stop();
+      const count = (this.followed.get(root) ?? 1) - 1;
+      if (count > 0) this.followed.set(root, count);
+      else this.followed.delete(root);
+      void this.session.unfollowAssessments(root, context).catch(() => {});
+    };
+  }
+
+  root(id: string): RootClient {
+    return new RemoteRoot(this, this.session, id);
+  }
+  async watchRoots(listener: (roots: readonly RootSummary[]) => void) {
+    return this.session.roots.subscribe((value) => listener(value.roots));
+  }
+  findRoot(prefix: string) {
+    return this.session.findRoot(prefix, context);
+  }
+  currentRoot() {
+    return this.session.currentRoot(context);
+  }
+  createRoot(requestId: string) {
+    return this.session.createRoot(requestId, context);
+  }
+  renameRoot(id: string, label: string) {
+    return this.session.renameRoot(id, label, context);
+  }
+  archiveRoot(id: string, archived: boolean) {
+    return this.session.archiveRoot(id, archived, context);
+  }
+
   skillInput(name: string, text: string) {
     return this.session.skillInput(name, text, context);
-  }
-  submit(message: string, requestId: string, whenBusy: "steer" | "followUp") {
-    return this.session.submit(message, requestId, whenBusy, context);
-  }
-  messageWorker(name: string, message: string, requestId: string, whenBusy: "steer" | "followUp") {
-    return this.session.messageWorker(name, message, requestId, whenBusy, context);
-  }
-  editQueued(
-    workerName: string | undefined,
-    id: number,
-    change: Parameters<Client["editQueued"]>[2],
-  ) {
-    return this.session.editQueued(workerName ?? null, id, change, context);
-  }
-  abort() {
-    return this.session.abort(context);
-  }
-  stopWorker(name: string) {
-    return this.session.stopWorker(name, context);
-  }
-  reset(handoff: string | undefined) {
-    return this.session.reset(handoff ?? null, context);
-  }
-  compact(instructions: string | undefined) {
-    return this.session.compact(instructions ?? null, context);
-  }
-  changeDirectory(path: string, workerName?: string) {
-    return this.session.changeDirectory(path, workerName ?? null, context);
-  }
-  workers() {
-    return this.session.workers(context);
-  }
-  goals() {
-    return this.session.goals(context);
-  }
-  seeGoal(id: string, updatedAt: number) {
-    return this.session.seeGoal(id, updatedAt, context);
   }
   async jobs() {
     const state = this.session.jobs.value ?? { jobs: [], events: [], nextEvent: 1 };
@@ -299,17 +399,8 @@ export class RemoteClient implements Client {
       listener(fresh);
     });
   }
-  async watchAssessments(listener: Parameters<Client["watchAssessments"]>[0]) {
-    return this.session.assessments.subscribe((value) => listener(value.items));
-  }
-  modelChoice(workerName?: string) {
-    return this.session.modelChoice(workerName ?? null, context);
-  }
   roleChoice(role: "front" | "worker") {
     return this.session.roleChoice(role, context);
-  }
-  pickModel(pick: Parameters<Client["pickModel"]>[0], saveDefault: boolean, workerName?: string) {
-    return this.session.pickModel(pick, saveDefault, workerName ?? null, context);
   }
   saveDefault(role: "front" | "worker", pick: Parameters<Client["saveDefault"]>[1]) {
     return this.session.saveDefault(role, pick, context);
@@ -329,9 +420,6 @@ export class RemoteClient implements Client {
   }
   reload() {
     return this.session.reload(context);
-  }
-  routing(paused?: boolean) {
-    return this.session.routing(paused ?? null, context);
   }
   logs(query: Parameters<Client["logs"]>[0]) {
     return this.session.logs(query, context);

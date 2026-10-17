@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { enableCompileCache } from "node:module";
+import { chooseRoot, type RootChoice } from "./api/roots.ts";
 import { monchuHome, seedHome } from "./core/home.ts";
 
 // Before the dynamic imports below, so startup and /restart reuse compiled code. Node keys the cache by version and
@@ -31,13 +32,33 @@ try {
       error: (line) => console.error(line),
     });
   } else {
-    const args = process.argv.slice(2);
-    const serve = args[0] === "serve";
     // The web client only when asked for: `monchu --web` or `monchu serve --web`.
-    const web = args.includes("--web");
-    const unknown = args.filter((arg, index) => !(index === 0 && serve) && arg !== "--web");
-    if (unknown.length > 0)
-      throw new Error(`Unknown arguments: ${unknown.join(" ")}. Usage: monchu [serve] [--web]`);
+    const web = process.argv.includes("--web");
+    const args = process.argv.slice(2).filter((arg) => arg !== "--web");
+    const serve = args[0] === "serve";
+    const { randomUUID } = await import("node:crypto");
+    // Which root this terminal opens: the current one, one by id, or a new one.
+    // A /restart re-executes these arguments: it reopens the root its terminal showed, never a new one.
+    const reopened = process.env.MONCHU_RESTART_ROOT;
+    delete process.env.MONCHU_RESTART_ROOT;
+    const choice: RootChoice =
+      reopened !== undefined
+        ? { kind: "resume", prefix: reopened }
+        : args[0] === "new" && args.length === 1
+          ? { kind: "new", requestId: randomUUID() }
+          : args[0] === "resume" && args.length === 2 && args[1] !== undefined
+            ? { kind: "resume", prefix: args[1] }
+            : { kind: "current" };
+    const usage =
+      args[0] === "new"
+        ? args.length === 1
+        : args[0] === "resume"
+          ? args.length === 2
+          : args.length === 0 || (serve && args.length === 1);
+    if (!usage)
+      throw new Error(
+        `Unknown arguments: ${args.join(" ")}. Usage: monchu [new | resume <id> | serve] [--web]`,
+      );
     const seeded = await seedHome(home);
     const { attachSocket, serveSocket, socketPath } = await import("./server/socket.ts");
     const path = socketPath(home);
@@ -57,7 +78,8 @@ try {
       const { runTerminal } = await import("./tui/app.ts");
       const { herdrAgent } = await import("./tui/herdr-agent.ts");
       try {
-        await runTerminal(attached.client, undefined, herdrAgent(process.env), seeded);
+        const rootId = await chooseRoot(attached.client, choice);
+        await runTerminal(attached.client, rootId, undefined, herdrAgent(process.env), seeded);
       } finally {
         await attached.close();
       }
@@ -109,7 +131,9 @@ try {
         } else {
           const { runTerminal } = await import("./tui/app.ts");
           const { herdrAgent } = await import("./tui/herdr-agent.ts");
-          outcome = await runTerminal(backend, undefined, herdrAgent(process.env));
+          const rootId = await chooseRoot(backend, choice);
+          outcome = await runTerminal(backend, rootId, undefined, herdrAgent(process.env));
+          if (outcome === "restart") process.env.MONCHU_RESTART_ROOT = rootId;
         }
       } finally {
         await site?.close();

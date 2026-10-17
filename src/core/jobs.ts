@@ -17,7 +17,9 @@ import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts"
 import {
   chooseRole,
   messageWorker,
+  parentOf,
   reopenWorker,
+  rootOf,
   startWorker,
   WorkersDoc,
 } from "./agents/workers.ts";
@@ -114,6 +116,25 @@ export const JobsDoc = defineDoc<JobsState>({
   initial: () => ({ jobs: [], events: [], nextEvent: 1 }),
   checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 31,
 });
+
+/**
+ * After a worker was handed from `fromId` to `toId`, its jobs follow it: they wake it under its new parent, and every
+ * job of the old root that now belongs to another root (its sub-workers' too) moves its events there. Runners stay on
+ * the conversation that started them and find their job by name.
+ */
+export async function moveJobs(
+  tx: Tx,
+  fromId: ConversationId,
+  name: string,
+  toId: ConversationId,
+): Promise<void> {
+  const state = await tx.doc(JobsDoc);
+  const fromRoot = await rootOf(tx, fromId);
+  for (const job of state.jobs) {
+    if (job.worker.parentId === fromId && job.worker.name === name) job.worker.parentId = toId;
+    if (job.rootId === fromRoot) job.rootId = await rootOf(tx, job.worker.parentId);
+  }
+}
 
 function addEvent(state: JobsState, event: Omit<JobEvent, "id">): void {
   state.events.push({ id: state.nextEvent++, ...event });
@@ -662,19 +683,13 @@ export function createJobs(
 
   /** The calling conversation's root and, for a worker, its parent and name. */
   async function caller(tx: Tx, id: ConversationId) {
-    const record = await tx.conversation(id);
-    if (record?.owner === undefined) return { rootId: id, self: undefined };
-    const parentId = record.owner.conversationId;
+    const parentId = await parentOf(tx, id);
+    if (parentId === undefined) return { rootId: id, self: undefined };
     const worker = (await tx.doc(WorkersDoc, parentId)).workers.find(
       (item) => item.conversationId === id,
     );
     if (worker === undefined) throw new Error("Only the front and workers can create jobs");
-    let rootId = parentId;
-    for (let up = await tx.conversation(rootId); up?.owner !== undefined;) {
-      rootId = up.owner.conversationId;
-      up = await tx.conversation(rootId);
-    }
-    return { rootId, self: { parentId, name: worker.name } };
+    return { rootId: await rootOf(tx, parentId), self: { parentId, name: worker.name } };
   }
 
   function startRunner(tx: Tx, job: Pick<Job, "name" | "rootId" | "type">): Promise<TaskId> {

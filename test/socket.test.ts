@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
 import { attachSocket, serveSocket, socketPath } from "../src/server/socket.ts";
 import { presentation } from "../src/ui/state.ts";
-import { cleanup, fauxRole, prepareHome, route, setup, textOf, waitFor } from "./support.ts";
+import { cleanup, fauxRole, prepareHome, route, setup, textOf, waitFor, front } from "./support.ts";
 
 afterEach(cleanup);
 
@@ -54,14 +54,14 @@ describe("local socket", () => {
       expect(client.model({ provider: "faux", modelId: "faux-1" })?.id).toBe("faux-1");
 
       // The root's view streams over the wire as delta ops and matches the core's own.
-      const view = await client.viewState();
-      await client.submit("hello over the socket", "remote:1", "followUp");
+      const view = await (await front(client)).viewState();
+      await (await front(client)).submit("hello over the socket", "remote:1", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           (entry.model ?? []).some((message) => textOf(message) === "echo: hello over the socket"),
         ),
       );
-      const local = await backend.viewState();
+      const local = await (await front(backend)).viewState();
       await waitFor(() => !presentation(local.value).busy && !presentation(view.value).busy);
       expect(view.value.entries.map((entry) => entry.id)).toEqual(
         local.value.entries.map((entry) => entry.id),
@@ -69,11 +69,11 @@ describe("local socket", () => {
       local.dispose();
 
       // Workers start from the core and show up for the client, with their own view.
-      await backend.startWorker("reader", "inspect", "start:reader");
+      await (await front(backend)).startWorker("reader", "inspect", "start:reader");
       await waitFor(async () =>
-        (await client.workers()).some((worker) => worker.name === "reader"),
+        (await (await front(client)).workers()).some((worker) => worker.name === "reader"),
       );
-      const worker = await client.viewState("reader");
+      const worker = await (await front(client)).viewState("reader");
       await waitFor(() => worker.value.entries.length > 0);
       worker.dispose();
 
@@ -127,7 +127,7 @@ describe("local socket", () => {
       await waitFor(() => notices.includes("connection to Monchu lost · reconnecting"));
       server = await serveSocket(backend, path, (message) => reports.push(message));
       await waitFor(() => notices.includes("reconnected to Monchu"));
-      await client.submit("after reconnect", "remote:2", "followUp");
+      await (await front(client)).submit("after reconnect", "remote:2", "followUp");
       await waitFor(() =>
         view.value.entries.some((entry) =>
           (entry.model ?? []).some((message) => textOf(message) === "echo: after reconnect"),

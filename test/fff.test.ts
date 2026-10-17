@@ -16,6 +16,7 @@ import {
   textOf,
   toolResults,
   waitFor,
+  front,
 } from "./support.ts";
 
 afterEach(cleanup);
@@ -34,12 +35,12 @@ describe("fff tools on real native indexes", () => {
       }),
     );
     const backend = await Monchu.open(value.directory, value.faux.provider);
-    const state = await backend.viewState();
+    const state = await (await front(backend)).viewState();
     try {
-      await backend.changeDirectory(cwd);
+      await (await front(backend)).changeDirectory(cwd);
       for (const [index, content] of ["find", "grep"].entries()) {
         if (index === 1) await backend.reload();
-        await backend.submit(content, `fff-reload-${index}`, "followUp");
+        await (await front(backend)).submit(content, `fff-reload-${index}`, "followUp");
         await waitFor(
           () =>
             state.value.entries

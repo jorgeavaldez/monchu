@@ -5,7 +5,7 @@
 import { batch, signal, type Signal } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import type { Client, ModelPick, WorkerSummary } from "../api/client.ts";
+import type { Client, ModelPick, RootClient, WorkerSummary } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
@@ -52,6 +52,7 @@ export const loginStatus = signal<{ message: string; url?: string; code?: string
 export const draft = signal("");
 
 let core: Client | undefined;
+let current: RootClient | undefined;
 /** Attached views by conversation; a signal itself, so a view attached later re-renders whoever asked for it. */
 const views = signal<ReadonlyMap<string, { state: Signal<ConversationView>; dispose(): void }>>(
   new Map(),
@@ -62,6 +63,12 @@ let login: AbortController | undefined;
 export function client(): Client {
   if (core === undefined) throw new Error("Not connected");
   return core;
+}
+
+/** The root this page shows. */
+function root(): RootClient {
+  if (current === undefined) throw new Error("Not connected");
+  return current;
 }
 
 export function notice(text: string, kind: Notice["kind"] = "system"): void {
@@ -76,7 +83,7 @@ export function view(name: string | undefined): Signal<ConversationView> | undef
 async function attach(name: string | undefined): Promise<void> {
   const key = name ?? "";
   if (views.value.has(key)) return;
-  const attached = await client().viewState(name);
+  const attached = await root().viewState(name);
   const state = signal(attached.value);
   const stop = attached.subscribe((value) => {
     state.value = value;
@@ -91,12 +98,13 @@ async function attach(name: string | undefined): Promise<void> {
 }
 
 async function refreshWorkers(): Promise<void> {
-  workers.value = await client().workers();
+  workers.value = await root().workers();
 }
 
 /** Bind to a connected client: attach the root, follow reports, assessments and job events. */
 export async function start(connected: Client): Promise<void> {
   core = connected;
+  current = connected.root(await connected.currentRoot());
   // The terminal's first screen: the header, the core's startup notes, then what still needs a login.
   notice(`Monchu ${connected.release.version} · /help · home ${connected.home}`);
   for (const line of connected.notes) notice(line);
@@ -110,8 +118,8 @@ export async function start(connected: Client): Promise<void> {
   await attach(undefined);
   await refreshWorkers();
   let lastEntry = view(undefined)?.value.entries.at(-1)?.id;
-  const root = views.value.get("");
-  root?.state.subscribe((value) => {
+  const shownFront = views.value.get("");
+  shownFront?.state.subscribe((value) => {
     const newest = value.entries.at(-1)?.id;
     if (newest === lastEntry) return;
     lastEntry = newest;
@@ -121,7 +129,7 @@ export async function start(connected: Client): Promise<void> {
   const shownAssessments = new Set<number>();
   const seen: { failure?: string } = {};
   let hydrated = false;
-  await connected.watchAssessments((items) => {
+  await root().watchAssessments((items) => {
     for (const item of items) {
       if (item.result === null || shownAssessments.has(item.taskId)) continue;
       shownAssessments.add(item.taskId);
@@ -130,7 +138,7 @@ export async function start(connected: Client): Promise<void> {
     }
     hydrated = true;
   });
-  const routing = await connected.routing();
+  const routing = await root().routing();
   if (routing.paused) notice(routingText(routing), "event");
   await connected.watchJobEvents((await connected.jobs()).nextEvent - 1, (events) => {
     for (const event of events) notice(formatJobEvent(event), "event");
@@ -345,7 +353,7 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   const current =
     target.kind === "default"
       ? await client().roleChoice(target.role)
-      : await client().modelChoice(target.name);
+      : await root().modelChoice(target.name);
   // A role default saves on Enter, so it has no separate save.
   const role = target.kind === "conversation" && target.name !== undefined ? "worker" : "front";
   const alternate = target.kind === "conversation" ? `save as ${role} default` : undefined;
@@ -354,7 +362,7 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
       await client().saveDefault(target.role, change);
       return notice(`${name} ${value} · saved`);
     }
-    await client().pickModel(change, save, target.name);
+    await root().pickModel(change, save, target.name);
     notice(`${name} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`);
   };
   if (thinking) {
@@ -411,7 +419,7 @@ export async function interrupt(): Promise<void> {
   if (shown.value !== undefined) return;
   const state = view(undefined)?.value;
   if (state === undefined || !presentation(state).busy) return;
-  const restored = await client().abort();
+  const restored = await root().abort();
   if (restored.length > 0) draft.value = [...restored, draft.value].filter(Boolean).join("\n");
   notice("stopped · root");
 }
@@ -434,8 +442,8 @@ export async function submit(raw: string): Promise<void> {
           input.command === "skill"
             ? await client().skillInput(input.name, input.text)
             : input.text;
-        if (name === undefined) await client().submit(text, crypto.randomUUID(), mode.value);
-        else await client().messageWorker(name, text, crypto.randomUUID(), mode.value);
+        if (name === undefined) await root().submit(text, crypto.randomUUID(), mode.value);
+        else await root().messageWorker(name, text, crypto.randomUUID(), mode.value);
         return notice(`received · ${name ?? "root"}`);
       }
       case "/help":
@@ -460,23 +468,23 @@ export async function submit(raw: string): Promise<void> {
       case "/stop":
         if (input.text || name !== undefined) {
           const worker = input.text || name || "";
-          await client().stopWorker(worker);
+          await root().stopWorker(worker);
           return notice(`stopped · ${worker}`);
         }
         return await interrupt();
       case "/new":
-        await client().reset(input.text || undefined);
+        await root().reset(input.text || undefined);
         return notice("new context · root");
       case "/compact":
-        await client().compact(input.text || undefined);
+        await root().compact(input.text || undefined);
         return notice("compacting · root");
       case "/cd":
-        return notice(`cwd · ${await client().changeDirectory(input.text, name)}`);
+        return notice(`cwd · ${await root().changeDirectory(input.text, name)}`);
       case "/reload":
         return notice(`reloaded · ${(await client().reload()).join(", ")}`);
       case "/clef":
         return notice(
-          routingText(await client().routing(input.text === "" ? undefined : input.text === "off")),
+          routingText(await root().routing(input.text === "" ? undefined : input.text === "off")),
         );
       case "/restart":
         await client().restart();
@@ -497,7 +505,7 @@ export async function submit(raw: string): Promise<void> {
         );
       }
       case "/goals": {
-        const goals = await client().goals();
+        const goals = await root().goals();
         const open = goals.filter((goal) => goal.status === "active" || goal.status === "waiting");
         return notice(
           open.length === 0

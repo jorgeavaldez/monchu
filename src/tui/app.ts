@@ -4,7 +4,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
-import type { Client, ModelPick } from "../api/client.ts";
+import type { Client, ModelPick, RootClient } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
@@ -30,6 +30,8 @@ import { MonchuTui } from "./view.ts";
  */
 export async function runTerminal(
   backend: Client,
+  /** The root this terminal shows, by full id. */
+  rootId: string,
   terminal: Terminal = new ProcessTerminal(),
   herdr?: HerdrAgent,
   /** Notes of this terminal only, shown below the header after the core's own. */
@@ -50,6 +52,7 @@ export async function runTerminal(
     initTheme(name && name !== "system" ? name : scheme);
   }
   applyTheme();
+  const front = backend.root(rootId);
   let exit = () => {};
   const exited = new Promise<void>((resolve) => {
     exit = resolve;
@@ -67,7 +70,7 @@ export async function runTerminal(
   let stopRestarts: (() => void) | undefined;
   let stopRelease: (() => void) | undefined;
   let login: AbortController | undefined;
-  type Worker = Awaited<ReturnType<Client["workers"]>>[number];
+  type Worker = Awaited<ReturnType<RootClient["workers"]>>[number];
   const workers = new Map<
     string,
     { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
@@ -153,7 +156,7 @@ export async function runTerminal(
 
   let inputs = Promise.resolve();
   async function abort(): Promise<void> {
-    view.restoreQueued(await backend.abort());
+    view.restoreQueued(await front.abort());
     view.notice("front stopped; workers continue");
   }
   const interrupt = () => {
@@ -172,7 +175,7 @@ export async function runTerminal(
       const name = selected;
       inputs = inputs
         .then(async () => {
-          if (await backend.editQueued(name, id, change)) return;
+          if (await front.editQueued(name, id, change)) return;
           view.notice("that message already left the queue");
           // An edit that came too late stays in the editor, to send as a new message.
           if (change.kind === "text") view.restoreQueued([change.text]);
@@ -194,7 +197,7 @@ export async function runTerminal(
     refreshing = (async () => {
       while (refreshAgain && !closing) {
         refreshAgain = false;
-        const summaries = await backend.workers();
+        const summaries = await front.workers();
         if (closing) return;
         // A closed worker leaves the active list: drop its view, and return a selected view to the root.
         const active = new Set(summaries.map((summary) => summary.name));
@@ -215,7 +218,7 @@ export async function runTerminal(
             existing.summary = summary;
             continue;
           }
-          const state = await backend.viewState(summary.name);
+          const state = await front.viewState(summary.name);
           if (closing) {
             state.dispose();
             return;
@@ -262,7 +265,7 @@ export async function runTerminal(
     const choice =
       target.kind === "default"
         ? await backend.roleChoice(target.role)
-        : await backend.modelChoice(target.name);
+        : await front.modelChoice(target.name);
     const pick = (change: ModelPick, save: boolean) => {
       view.closeSelector();
       inputs = inputs
@@ -275,7 +278,7 @@ export async function runTerminal(
             await backend.saveDefault(target.role, change);
             view.notice(`${name} ${value} · saved`);
           } else {
-            await backend.pickModel(change, save, target.name);
+            await front.pickModel(change, save, target.name);
             const role = target.name === undefined ? "front" : "worker";
             view.notice(
               `${name} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`,
@@ -479,7 +482,7 @@ export async function runTerminal(
       }
       case "/clef":
         view.notice(
-          routingText(await backend.routing(input.text === "" ? undefined : input.text === "off")),
+          routingText(await front.routing(input.text === "" ? undefined : input.text === "off")),
         );
         return;
       case "/reload": {
@@ -537,8 +540,8 @@ export async function runTerminal(
         break;
       }
       case "/goals":
-        view.openGoals(await backend.goals(), (goal) => {
-          inputs = inputs.then(() => backend.seeGoal(goal.id, goal.updatedAt)).catch(fail);
+        view.openGoals(await front.goals(), (goal) => {
+          inputs = inputs.then(() => front.seeGoal(goal.id, goal.updatedAt)).catch(fail);
         });
         break;
       case "/model":
@@ -570,22 +573,22 @@ export async function runTerminal(
           await abort();
           break;
         }
-        await backend.stopWorker(name);
+        await front.stopWorker(name);
         view.notice(`stopped worker · ${name}`);
         await refreshWorkers();
         break;
       }
       case "/new":
-        await backend.reset(input.text);
+        await front.reset(input.text);
         view.notice(input.text ? "new context · handoff carried" : "new context");
         break;
       case "/compact":
-        await backend.compact(input.text);
+        await front.compact(input.text);
         view.notice("compaction started");
         break;
       case "/cd": {
         const name = selected;
-        const directory = await backend.changeDirectory(input.text, name);
+        const directory = await front.changeDirectory(input.text, name);
         view.notice(`${name ?? "root"} directory · ${directory}`);
         if (name !== undefined) await refreshWorkers();
         break;
@@ -596,8 +599,8 @@ export async function runTerminal(
         const name = selected;
         const text =
           input.command === "skill" ? await backend.skillInput(input.name, input.text) : input.text;
-        if (name === undefined) await backend.submit(text, randomUUID(), whenBusy);
-        else await backend.messageWorker(name, text, randomUUID(), whenBusy);
+        if (name === undefined) await front.submit(text, randomUUID(), whenBusy);
+        else await front.messageWorker(name, text, randomUUID(), whenBusy);
         if (name === undefined) view.notice("received · root");
         else view.notice(`${name} · received`, "message");
         if (name !== undefined) await refreshWorkers();
@@ -609,7 +612,7 @@ export async function runTerminal(
   process.on("SIGTERM", exit);
   process.on("SIGINT", interrupt);
   try {
-    root = await backend.viewState();
+    root = await front.viewState();
     stopRoot = root.subscribe((value) => {
       try {
         const newest = value.entries.at(-1)?.id;
@@ -641,7 +644,7 @@ export async function runTerminal(
     const shown = new Set<number>();
     const seen: { failure?: string } = {};
     let hydrated = false;
-    stopAssessments = await backend.watchAssessments((items) => {
+    stopAssessments = await front.watchAssessments((items) => {
       for (const item of items) {
         if (item.result === null || shown.has(item.taskId)) continue;
         shown.add(item.taskId);
@@ -651,7 +654,7 @@ export async function runTerminal(
       }
       hydrated = true;
     });
-    const routing = await backend.routing();
+    const routing = await front.routing();
     if (routing.paused) view.notice(routingText(routing));
     // The TUI is one client of the job event stream: events from now on show as notices.
     stopJobs = await backend.watchJobEvents((await backend.jobs()).nextEvent - 1, (events) => {

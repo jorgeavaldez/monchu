@@ -64,6 +64,9 @@ import { openModels } from "../src/core/models/index.ts";
 import { FffFinders } from "../src/core/tools/fff.ts";
 import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
+import type { Client, RootClient } from "../src/api/client.ts";
+import type { Monchu } from "../src/core/backend.ts";
+import type { Front } from "../src/core/front.ts";
 
 export const context: Context = BACKGROUND_CONTEXT;
 
@@ -729,4 +732,11 @@ export async function logText(home: string): Promise<string> {
         : [];
     })
     .join("\n");
+}
+
+/** The current root of a client, where tests send what the user types: the in-process `Front`, or a remote root. */
+export async function front(client: Monchu): Promise<Front>;
+export async function front(client: Client): Promise<RootClient>;
+export async function front(client: Client): Promise<RootClient> {
+  return client.root(await client.currentRoot());
 }

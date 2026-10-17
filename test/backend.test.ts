@@ -26,6 +26,7 @@ import {
   textOf,
   waitFor,
   type Setup,
+  front,
 } from "./support.ts";
 
 afterEach(cleanup);
@@ -145,7 +146,7 @@ describe("backend", () => {
       const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
       expect(auth).toEqual({ faux: { type: "api_key", key: "private-test-key" } });
       expect(await readFile(decoy, "utf8")).toBe("not valid JSON: must not be read or written");
-      const view = await backend.viewState();
+      const view = await (await front(backend)).viewState();
       expect(view.value.entries).toEqual([]);
       view.dispose();
     } finally {
@@ -239,9 +240,9 @@ describe("backend", () => {
       return fauxAssistantMessage("ok");
     });
     const { home, backend } = await openBackend(value);
-    const state = await backend.viewState();
+    const state = await (await front(backend)).viewState();
     try {
-      await backend.submit("held", "held", "followUp");
+      await (await front(backend)).submit("held", "held", "followUp");
       await started.promise;
       await writeFile(
         join(home, "config.json"),
@@ -272,9 +273,9 @@ describe("backend", () => {
           entry.model?.some((message) => message.role === "assistant"),
         ),
       );
-      await backend.submit("next", "next", "followUp");
+      await (await front(backend)).submit("next", "next", "followUp");
       await waitFor(() => requests.some((request) => request.text === "next"));
-      await backend.startWorker("new", "worker request", "new-worker");
+      await (await front(backend)).startWorker("new", "worker request", "new-worker");
       await waitFor(() => requests.some((request) => request.text === "worker request"));
       expect(requests.find((request) => request.text === "held")?.model).toBe("faux-1");
       expect(requests.find((request) => request.text === "held")?.timeout).not.toBe(1234);
@@ -305,30 +306,30 @@ describe("backend", () => {
       return fauxAssistantMessage("ok");
     });
     let { home, backend } = await openBackend(value);
-    const front = join(home, "FRONT.md");
+    const frontFile = join(home, "FRONT.md");
     // Each request renders the home files first; a notice it causes is a follow-up with its own turn.
     const send = async (text: string) => {
-      await backend.submit(text, text, "followUp");
+      await (await front(backend)).submit(text, text, "followUp");
       await waitFor(() => seen.includes(text));
     };
     try {
-      await writeFile(front, "f".repeat(11000));
+      await writeFile(frontFile, "f".repeat(11000));
       await send("one");
       await waitFor(() => notices.length === 1);
       expect(systemNoticeSummary(notices[0] ?? "")).toBe("FRONT.md near the home size budget");
       expect(notices[0]).toContain("FRONT.md: 11000/12000 characters (91%), 1000 left");
       expect(notices[0]).toContain("Nothing is truncated");
       await send("two");
-      await writeFile(front, "f".repeat(12100));
+      await writeFile(frontFile, "f".repeat(12100));
       await send("three");
       await waitFor(() => notices.length === 2);
       expect(systemNoticeSummary(notices[1] ?? "")).toBe(
         "FRONT.md at or over the home size budget",
       );
       expect(notices[1]).toContain("FRONT.md: 12100/12000 characters (100%), 100 over its budget");
-      await writeFile(front, "small");
+      await writeFile(frontFile, "small");
       await send("four");
-      await writeFile(front, "f".repeat(11000));
+      await writeFile(frontFile, "f".repeat(11000));
       await send("five");
       await waitFor(() => notices.length === 3);
       await backend.close();
@@ -376,9 +377,9 @@ describe("backend", () => {
         }),
       );
       const backend = await Monchu.open(value.directory, value.faux.provider);
-      const state = await backend.viewState();
+      const state = await (await front(backend)).viewState();
       try {
-        await backend.submit("check env", "env", "followUp");
+        await (await front(backend)).submit("check env", "env", "followUp");
         await waitFor(() =>
           state.value.entries.some((entry) =>
             entry.model?.some(
@@ -474,7 +475,7 @@ describe("backend", () => {
       return fauxAssistantMessage("ok");
     });
     const { home, backend } = await openBackend(value);
-    const state = await backend.viewState();
+    const state = await (await front(backend)).viewState();
     const warnings: string[] = [];
     const unsubscribe = backend.onReport((message) => warnings.push(message));
     try {
@@ -502,7 +503,7 @@ describe("backend", () => {
         ),
       );
       expect(warnings.join("\n")).toContain("Using faux/faux-1 until config.json is fixed");
-      await backend.submit("after failure", "after-failure", "followUp");
+      await (await front(backend)).submit("after failure", "after-failure", "followUp");
       await waitFor(() => requests.length === 1);
       expect(requests).toEqual(["faux-1"]);
 
@@ -541,8 +542,8 @@ describe("backend", () => {
     });
     const { backend } = await openBackend(value);
     try {
-      await backend.submit("root request", "root", "followUp");
-      await backend.startWorker("w", "worker request", "start:w");
+      await (await front(backend)).submit("root request", "root", "followUp");
+      await (await front(backend)).startWorker("w", "worker request", "start:w");
       await waitFor(() => tools.has("root request") && tools.has("worker request"));
       for (const name of ["root request", "worker request"])
         expect(tools.get(name)).toEqual(
@@ -576,17 +577,27 @@ describe("backend", () => {
     try {
       const project = join(value.directory, "project");
       await mkdir(project);
-      expect(await backend.changeDirectory(project)).toBe(project);
+      expect(await (await front(backend)).changeDirectory(project)).toBe(project);
       // A new worker starts in the root's directory.
-      await backend.startWorker("w", "hold", "start:w");
-      expect(await backend.workers()).toMatchObject([{ name: "w", cwd: project, busy: true }]);
-      await expect(backend.changeDirectory(value.directory, "w")).rejects.toThrow("idle");
-      await expect(backend.stopWorker("missing")).rejects.toThrow("No worker named missing");
+      await (await front(backend)).startWorker("w", "hold", "start:w");
+      expect(await (await front(backend)).workers()).toMatchObject([
+        { name: "w", cwd: project, busy: true },
+      ]);
+      await expect((await front(backend)).changeDirectory(value.directory, "w")).rejects.toThrow(
+        "idle",
+      );
+      await expect((await front(backend)).stopWorker("missing")).rejects.toThrow(
+        "No worker named missing",
+      );
 
-      await backend.stopWorker("w");
-      expect(await backend.workers()).toMatchObject([{ name: "w", busy: false }]);
-      expect(await backend.changeDirectory(value.directory, "w")).toBe(value.directory);
-      expect(await backend.workers()).toMatchObject([{ name: "w", cwd: value.directory }]);
+      await (await front(backend)).stopWorker("w");
+      expect(await (await front(backend)).workers()).toMatchObject([{ name: "w", busy: false }]);
+      expect(await (await front(backend)).changeDirectory(value.directory, "w")).toBe(
+        value.directory,
+      );
+      expect(await (await front(backend)).workers()).toMatchObject([
+        { name: "w", cwd: value.directory },
+      ]);
     } finally {
       await backend.close();
     }
@@ -620,16 +631,18 @@ describe("backend", () => {
     let backend = opened.backend;
     const path = join(home, "config.json");
     const sent = async (text: string) => {
-      await backend.submit(text, text, "followUp");
+      await (await front(backend)).submit(text, text, "followUp");
       await waitFor(() => requests.some((request) => request.text === text));
       return requests.find((request) => request.text === text)?.model;
     };
     try {
       // Enter changes only the root; config.json is untouched.
       const written = await readFile(path, "utf8");
-      await backend.pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
+      await (
+        await front(backend)
+      ).pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
       expect(await readFile(path, "utf8")).toBe(written);
-      expect(await backend.modelChoice()).toMatchObject({
+      expect(await (await front(backend)).modelChoice()).toMatchObject({
         model: { id: "picked" },
         defaults: { modelId: "faux-1" },
       });
@@ -644,43 +657,49 @@ describe("backend", () => {
         }),
       );
       await backend.reload();
-      expect(await backend.modelChoice()).toMatchObject({
+      expect(await (await front(backend)).modelChoice()).toMatchObject({
         model: { id: "picked" },
         thinkingLevel: "high",
         defaults: { modelId: "edited" },
       });
       await backend.close();
       backend = await Monchu.open(home, value.faux.provider);
-      expect(await backend.modelChoice()).toMatchObject({
+      expect(await (await front(backend)).modelChoice()).toMatchObject({
         model: { id: "picked" },
         thinkingLevel: "high",
       });
       expect(await sent("after reopen")).toBe("picked");
       // A fresh context keeps the pick too.
-      await backend.reset(undefined);
-      expect((await backend.modelChoice()).model?.id).toBe("picked");
+      await (await front(backend)).reset(undefined);
+      expect((await (await front(backend)).modelChoice()).model?.id).toBe("picked");
 
       // Ctrl+S on a worker saves the worker default: new workers get it, existing ones keep theirs.
-      await backend.startWorker("w0", "first worker", "w0");
-      await backend.startWorker("w1", "second worker", "w1");
-      await backend.pickModel({ model: { provider: "faux", modelId: "saved" } }, true, "w1");
+      await (await front(backend)).startWorker("w0", "first worker", "w0");
+      await (await front(backend)).startWorker("w1", "second worker", "w1");
+      await (
+        await front(backend)
+      ).pickModel({ model: { provider: "faux", modelId: "saved" } }, true, "w1");
       expect((await loadConfig(home)).worker).toEqual({ ...fauxRole, modelId: "saved" });
-      expect((await backend.modelChoice("w0")).model?.id).toBe("faux-1");
-      expect(await backend.modelChoice("w1")).toMatchObject({
+      expect((await (await front(backend)).modelChoice("w0")).model?.id).toBe("faux-1");
+      expect(await (await front(backend)).modelChoice("w1")).toMatchObject({
         model: { id: "saved" },
         defaults: { modelId: "saved" },
       });
-      await backend.startWorker("w2", "third worker", "w2");
-      expect((await backend.modelChoice("w2")).model?.id).toBe("saved");
+      await (await front(backend)).startWorker("w2", "third worker", "w2");
+      expect((await (await front(backend)).modelChoice("w2")).model?.id).toBe("saved");
       await sent("spawn");
-      await waitFor(async () => (await backend.workers()).some((worker) => worker.name === "w3"));
-      expect((await backend.modelChoice("w3")).model?.id).toBe("saved");
-      await backend.pickModel({ thinkingLevel: "low" }, false, "w0");
-      expect((await backend.modelChoice("w0")).thinkingLevel).toBe("low");
+      await waitFor(async () =>
+        (await (await front(backend)).workers()).some((worker) => worker.name === "w3"),
+      );
+      expect((await (await front(backend)).modelChoice("w3")).model?.id).toBe("saved");
+      await (await front(backend)).pickModel({ thinkingLevel: "low" }, false, "w0");
+      expect((await (await front(backend)).modelChoice("w0")).thinkingLevel).toBe("low");
       expect((await loadConfig(home)).worker.thinkingLevel).toBe("off");
 
       // Ctrl+S on the root saves the front default and clears the pick, so later edits apply on reload.
-      await backend.pickModel({ model: { provider: "faux", modelId: "saved" } }, true);
+      await (
+        await front(backend)
+      ).pickModel({ model: { provider: "faux", modelId: "saved" } }, true);
       expect((await loadConfig(home)).front).toEqual({
         ...fauxRole,
         modelId: "saved",
@@ -689,30 +708,34 @@ describe("backend", () => {
       const config = await loadConfig(home);
       await writeFile(path, JSON.stringify({ ...config, front: fauxRole, chosen: undefined }));
       await backend.reload();
-      expect(await backend.modelChoice()).toMatchObject({
+      expect(await (await front(backend)).modelChoice()).toMatchObject({
         model: { id: "faux-1" },
         thinkingLevel: "off",
       });
 
       // A thinking level the shown conversation's model supports is saved only if the role default's model does too.
-      await backend.pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
-      expect((await backend.modelChoice()).thinkingLevels).toContain("high");
+      await (
+        await front(backend)
+      ).pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
+      expect((await (await front(backend)).modelChoice()).thinkingLevels).toContain("high");
       const unsaved = await readFile(path, "utf8");
-      await expect(backend.pickModel({ thinkingLevel: "high" }, true)).rejects.toThrow(
+      await expect(
+        (await front(backend)).pickModel({ thinkingLevel: "high" }, true),
+      ).rejects.toThrow(
         "faux/faux-1 does not support thinking level high (supported: off); the front default was not saved",
       );
       expect(await readFile(path, "utf8")).toBe(unsaved);
-      expect(await backend.modelChoice()).toMatchObject({
+      expect(await (await front(backend)).modelChoice()).toMatchObject({
         thinkingLevel: "off",
         defaults: { thinkingLevel: "off" },
       });
-      await backend.pickModel({ thinkingLevel: "high" }, false);
-      expect((await backend.modelChoice()).thinkingLevel).toBe("high");
+      await (await front(backend)).pickModel({ thinkingLevel: "high" }, false);
+      expect((await (await front(backend)).modelChoice()).thinkingLevel).toBe("high");
 
       // Unknown models fail at the boundary without writing.
       const before = await readFile(path, "utf8");
       await expect(
-        backend.pickModel({ model: { provider: "faux", modelId: "missing" } }, true),
+        (await front(backend)).pickModel({ model: { provider: "faux", modelId: "missing" } }, true),
       ).rejects.toThrow("no configured model faux/missing");
       expect(await readFile(path, "utf8")).toBe(before);
     } finally {
@@ -734,15 +757,15 @@ describe("backend", () => {
       return fauxAssistantMessage(`done ${text}`);
     });
     const { backend } = await openBackend(value);
-    const root = await backend.viewState();
+    const root = await (await front(backend)).viewState();
     try {
-      await backend.submit("hold front", "hold", "followUp");
+      await (await front(backend)).submit("hold front", "hold", "followUp");
       await waitFor(() => presentation(root.value).busy);
       // A worker's report queues behind the held front with the user's own messages.
-      await backend.startWorker("quick", "quick", "start:quick");
+      await (await front(backend)).startWorker("quick", "quick", "start:quick");
       await waitFor(() => presentation(root.value).queue.length === 1);
-      await backend.submit("one", "one", "followUp");
-      await backend.submit("two", "two", "steer");
+      await (await front(backend)).submit("one", "one", "followUp");
+      await (await front(backend)).submit("two", "two", "steer");
       await waitFor(() => presentation(root.value).queue.length === 3);
       expect(presentation(root.value).queue.slice(1)).toMatchObject([
         { mode: "followUp", text: "one" },
@@ -750,11 +773,11 @@ describe("backend", () => {
       ]);
 
       // Messages to a busy worker take the chosen mode too.
-      await backend.startWorker("held", "hold worker", "start:held");
-      const worker = await backend.viewState("held");
+      await (await front(backend)).startWorker("held", "hold worker", "start:held");
+      const worker = await (await front(backend)).viewState("held");
       try {
         await waitFor(() => presentation(worker.value).busy);
-        await backend.messageWorker("held", "later", "later", "followUp");
+        await (await front(backend)).messageWorker("held", "later", "later", "followUp");
         await waitFor(() => presentation(worker.value).queue.length === 1);
         expect(presentation(worker.value).queue).toMatchObject([
           { mode: "followUp", text: "later" },
@@ -762,10 +785,10 @@ describe("backend", () => {
       } finally {
         worker.dispose();
       }
-      await backend.stopWorker("held");
+      await (await front(backend)).stopWorker("held");
 
       holding = false;
-      expect(await backend.abort()).toEqual(["one", "two"]);
+      expect(await (await front(backend)).abort()).toEqual(["one", "two"]);
       // The withdrawn report is posted again and answered; the user's messages never reach the transcript.
       await waitFor(() =>
         root.value.entries.some((entry) => workerNotice(entry)?.name === "quick"),
@@ -799,28 +822,32 @@ describe("backend", () => {
       return fauxAssistantMessage(`done ${text}`);
     });
     const { backend } = await openBackend(value);
-    const root = await backend.viewState();
+    const root = await (await front(backend)).viewState();
     const queue = () => presentation(root.value).queue;
     try {
-      await backend.submit("hold front", "hold", "followUp");
+      await (await front(backend)).submit("hold front", "hold", "followUp");
       await waitFor(() => presentation(root.value).busy);
-      await backend.startWorker("quick", "quick", "start:quick");
+      await (await front(backend)).startWorker("quick", "quick", "start:quick");
       await waitFor(() => queue().length === 1);
-      await backend.submit("one", "one", "followUp");
-      await backend.submit("two", "two", "followUp");
+      await (await front(backend)).submit("one", "one", "followUp");
+      await (await front(backend)).submit("two", "two", "followUp");
       await waitFor(() => queue().length === 3);
       const [report, one, two] = queue();
       if (report === undefined || one === undefined || two === undefined)
         throw new Error("Queue is missing items");
 
       expect(
-        await backend.editQueued(undefined, one.id, { kind: "text", text: "one edited" }),
+        await (
+          await front(backend)
+        ).editQueued(undefined, one.id, { kind: "text", text: "one edited" }),
       ).toBe(true);
-      expect(await backend.editQueued(undefined, two.id, { kind: "mode", mode: "steer" })).toBe(
-        true,
-      );
+      expect(
+        await (await front(backend)).editQueued(undefined, two.id, { kind: "mode", mode: "steer" }),
+      ).toBe(true);
       // A report's new text replaces only its body; it stays a report from its worker.
-      await backend.editQueued(undefined, report.id, { kind: "text", text: "edited report" });
+      await (
+        await front(backend)
+      ).editQueued(undefined, report.id, { kind: "text", text: "edited report" });
       await waitFor(() => queue()[1]?.text === "one edited");
       expect(parseWorkerNotice(queue()[0]?.text ?? "")).toEqual({
         name: "quick",
@@ -832,28 +859,32 @@ describe("backend", () => {
         { id: one.id, mode: "followUp" },
         { id: two.id, mode: "steer" },
       ]);
-      expect(await backend.editQueued(undefined, report.id, { kind: "delete" })).toBe(true);
-      expect(await backend.editQueued(undefined, report.id, { kind: "delete" })).toBe(false);
+      expect(
+        await (await front(backend)).editQueued(undefined, report.id, { kind: "delete" }),
+      ).toBe(true);
+      expect(
+        await (await front(backend)).editQueued(undefined, report.id, { kind: "delete" }),
+      ).toBe(false);
       await expect(
-        backend.editQueued(undefined, one.id, { kind: "text", text: " " }),
+        (await front(backend)).editQueued(undefined, one.id, { kind: "text", text: " " }),
       ).rejects.toThrow("needs text");
 
       // A worker's queue edits the same way; deleting a message reports the failure to the front.
-      await backend.startWorker("held", "hold worker", "start:held");
-      const worker = await backend.viewState("held");
+      await (await front(backend)).startWorker("held", "hold worker", "start:held");
+      const worker = await (await front(backend)).viewState("held");
       try {
         await waitFor(() => presentation(worker.value).busy);
-        await backend.messageWorker("held", "later", "later", "followUp");
+        await (await front(backend)).messageWorker("held", "later", "later", "followUp");
         await waitFor(() => presentation(worker.value).queue.length === 1);
         const [later] = presentation(worker.value).queue;
         if (later === undefined) throw new Error("Worker queue is missing its message");
-        await backend.editQueued("held", later.id, { kind: "text", text: "sooner" });
-        await backend.editQueued("held", later.id, { kind: "mode", mode: "steer" });
+        await (await front(backend)).editQueued("held", later.id, { kind: "text", text: "sooner" });
+        await (await front(backend)).editQueued("held", later.id, { kind: "mode", mode: "steer" });
         await waitFor(() => presentation(worker.value).queue[0]?.mode === "steer");
         expect(presentation(worker.value).queue).toEqual([
           { id: later.id, mode: "steer", text: "sooner" },
         ]);
-        await backend.editQueued("held", later.id, { kind: "delete" });
+        await (await front(backend)).editQueued("held", later.id, { kind: "delete" });
         await waitFor(() => presentation(worker.value).queue.length === 0);
       } finally {
         worker.dispose();
@@ -867,7 +898,7 @@ describe("backend", () => {
         ),
       );
       await waitFor(() => !presentation(root.value).busy && queue().length === 0);
-      await backend.stopWorker("held");
+      await (await front(backend)).stopWorker("held");
       // Past the reporter's 250 ms poll: a deleted report is never posted again.
       await new Promise((resolve) => setTimeout(resolve, 600));
       const users = root.value.entries.flatMap((entry) => {
@@ -914,13 +945,13 @@ describe("backend", () => {
       all.push(...events.map((event) => event.id)),
     );
     try {
-      await backend.submit("schedule", "schedule", "followUp");
+      await (await front(backend)).submit("schedule", "schedule", "followUp");
       await waitFor(() => all.length === 1);
       // A client that saw event 1 resumes after it and never gets it again.
       const stopLater = await backend.watchJobEvents(1, (events) =>
         later.push(...events.map((event) => `${event.id}:${event.kind}:${event.worker ?? ""}`)),
       );
-      await backend.submit("run", "run", "followUp");
+      await (await front(backend)).submit("run", "run", "followUp");
       await waitFor(() => later.length === 1);
       stopLater();
       expect(all).toEqual([1, 2]);
