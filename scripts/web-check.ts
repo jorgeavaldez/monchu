@@ -226,10 +226,8 @@ async function identityProvider(): Promise<{ issuer: string; server: Server }> {
 /** `monchu serve --web` from source on a fresh smoke home with faux models; resolves once it serves. */
 async function startCore(home: string, port: number, issuer: string): Promise<ChildProcess> {
   await writeFile(
-    join(home, "config.json"),
-    JSON.stringify({
-      web: { port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] },
-    }),
+    join(home, "web.json"),
+    JSON.stringify({ port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] }),
   );
   const core = spawn(process.execPath, [join(ROOT, "src", "main.ts"), "serve", "--web"], {
     env: { ...process.env, MONCHU_DEV_FAUX: "1", MONCHU_DEV_HOME: home },

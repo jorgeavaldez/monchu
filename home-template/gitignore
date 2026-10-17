@@ -23,6 +23,8 @@ auth.json
 auth.json*
 mcp-auth.json
 mcp-auth.json*
+# This device's web server: its host, port and login client.
+web.json
 # Web sign-in sessions, by token hash.
 web-sessions.json
 web-sessions.json*

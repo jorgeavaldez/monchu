@@ -123,10 +123,9 @@ export type ClaudeConfig = {
   longContextExtraUsage: boolean;
 };
 
-/** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
 /**
- * The web client's server, used only when the core runs with `--web`. It listens on 127.0.0.1 alone; a tunnel on the
- * same host publishes it. Every request needs an identity on `allow`, from an access proxy's signed JWT or this
+ * The web client's server, from `<home>/web.json`: per device, never synced, since each device has its own host, port
+ * and login client. Used only with `--web`. It listens on 127.0.0.1 alone; a tunnel on the same host publishes it. Every request needs an identity on `allow`, from an access proxy's signed JWT or this
  * server's own OIDC login; with neither configured, `--web` refuses to start.
  */
 export type WebConfig = {
@@ -158,6 +157,7 @@ export type WebConfig = {
   allow: string[];
 };
 
+/** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
 export type MonchuConfig = {
   front: ModelRole;
   worker: ModelRole;
@@ -169,7 +169,6 @@ export type MonchuConfig = {
   classifier: ClassifierRole | null;
   /** Roles `config.json` sets. The others follow the provider the user has logged in to. */
   chosen: { front: boolean; worker: boolean };
-  web: WebConfig | undefined;
 };
 
 const defaults: MonchuConfig = {
@@ -180,7 +179,6 @@ const defaults: MonchuConfig = {
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
   chosen: { front: false, worker: false },
-  web: undefined,
 };
 
 /** The built-in defaults, used for any field `config.json` leaves out. */
@@ -294,8 +292,7 @@ function url(value: unknown, field: string): string {
   return raw.replace(/\/+$/, "");
 }
 
-function webConfig(value: unknown): WebConfig | undefined {
-  if (value === undefined) return undefined;
+function webConfig(value: unknown): WebConfig {
   object(value, "web", ["port", "host", "access", "oidc", "allow"]);
   let access: WebConfig["access"];
   if (value.access !== undefined) {
@@ -487,6 +484,18 @@ function parseJson(raw: string, path: string): unknown {
   }
 }
 
+/** This device's web server settings from `<home>/web.json`; `undefined` when it has none. */
+export async function loadWebConfig(home: string): Promise<WebConfig | undefined> {
+  const path = join(home, "web.json");
+  const raw = await readRaw(path);
+  if (raw === undefined) return undefined;
+  try {
+    return webConfig(parseJson(raw, path));
+  } catch (error) {
+    throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /** A missing file means defaults. Invalid content fails startup instead of guessing. */
 export async function loadConfig(home: string): Promise<MonchuConfig> {
   const path = join(home, "config.json");
@@ -534,7 +543,8 @@ export async function saveRole(
 function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
     if (!isObject(value)) throw new Error("expected a JSON object");
-    const known = ["front", "worker", "profiles", "classifier", "settings", "claude", "web"];
+    if ("web" in value) throw new Error("web settings are per device now: move them to web.json");
+    const known = ["front", "worker", "profiles", "classifier", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
     let claude = defaults.claude;
@@ -563,7 +573,6 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
       classifier: classifierRole(value.classifier),
       settings: runSettings(value.settings),
       chosen: { front: value.front !== undefined, worker: value.worker !== undefined },
-      web: webConfig(value.web),
     };
   } catch (error) {
     throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);

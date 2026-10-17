@@ -5,7 +5,7 @@
  * close once no client has been connected for `IDLE_MS`, then exits.
  */
 import { processLock } from "@earendil-works/chord/node";
-import { loadConfig } from "../core/config.ts";
+import { loadWebConfig } from "../core/config.ts";
 import { install, installedVersion, VERSION, type UpdatePlan } from "../core/update.ts";
 import { Log } from "../telemetry/log.ts";
 import { openServerHost } from "./host.ts";
@@ -98,8 +98,8 @@ export async function runServer(options: {
     options.say(`serving ${home} on ${path}`);
     if (options.web) {
       try {
-        const config = (await loadConfig(home)).web;
-        if (config === undefined) throw new Error("config.json has no web section");
+        const config = await loadWebConfig(home);
+        if (config === undefined) throw new Error(`no web.json in ${home}`);
         const site = await (
           await import("./web.ts")
         ).serveWeb(server.ingress, { home, log }, config, options.env);

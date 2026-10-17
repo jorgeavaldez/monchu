@@ -2,7 +2,13 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultConfig, loadConfig, resolveSettings, saveRole } from "../src/core/config.ts";
+import {
+  defaultConfig,
+  loadConfig,
+  loadWebConfig,
+  resolveSettings,
+  saveRole,
+} from "../src/core/config.ts";
 import { loadMcpConfig, validateMcpServer } from "../src/core/mcp/config.ts";
 
 const codex = defaultConfig();
@@ -164,21 +170,23 @@ describe("config", () => {
     expect(typeof result === "string" ? result : "valid").toContain(message);
   });
 
-  it("reads the web section with generic defaults and refuses anything unsafe or unknown", async () => {
-    expect((await loadConfig(await home({}))).web).toBeUndefined();
+  it("reads web.json with generic defaults and refuses anything unsafe or unknown", async () => {
+    const webHome = async (web: unknown) => {
+      const directory = await home();
+      await writeFile(join(directory, "web.json"), JSON.stringify(web));
+      return directory;
+    };
+    expect(await loadWebConfig(await home({}))).toBeUndefined();
+    await expect(loadConfig(await home({ web: {} }))).rejects.toThrow("move them to web.json");
     expect(
-      (
-        await loadConfig(
-          await home({
-            web: {
-              host: "monchu.example.test",
-              access: { teamDomain: "https://team.example.test/", audience: "aud" },
-              oidc: { issuer: "http://127.0.0.1:9000", clientId: "client" },
-              allow: ["sub:abc", "email:a@example.test", "service:id"],
-            },
-          }),
-        )
-      ).web,
+      await loadWebConfig(
+        await webHome({
+          host: "monchu.example.test",
+          access: { teamDomain: "https://team.example.test/", audience: "aud" },
+          oidc: { issuer: "http://127.0.0.1:9000", clientId: "client" },
+          allow: ["sub:abc", "email:a@example.test", "service:id"],
+        }),
+      ),
     ).toEqual({
       port: 7420,
       host: "monchu.example.test",
@@ -205,7 +213,7 @@ describe("config", () => {
       [{ host: "https://monchu.example.test/" }, "web.host must be a host name"],
       [{ bind: "0.0.0.0" }, "web: unknown fields: bind"],
     ] as const)
-      await expect(loadConfig(await home({ web }))).rejects.toThrow(message);
+      await expect(loadWebConfig(await webHome(web))).rejects.toThrow(message);
   });
 
   it("reads roles and turns the classifier off with null", async () => {

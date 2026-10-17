@@ -47,7 +47,6 @@ import {
   thinkingLevels,
   type ModelRole,
   type Settings,
-  type WebConfig,
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { applyFrontRole, Front, preloadAll, prepareFront, type FrontHost } from "./front.ts";
@@ -265,11 +264,6 @@ export class Monchu implements Client {
     const skill = this.extensions.skills.find((item) => item.name === name);
     if (skill === undefined) throw new Error(`No skill named ${name}`);
     return skillMessage(skill, text);
-  }
-
-  /** The web server's settings from `config.json`, as of the last successful load or reload. */
-  get web(): WebConfig | undefined {
-    return this.extensions.config.web;
   }
 
   /** The run settings of the last successful load or reload. */

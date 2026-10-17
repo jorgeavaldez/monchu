@@ -50,6 +50,7 @@ Home paths owned by Monchu (all relative to `<home>`: `MONCHU_HOME`, default `~/
 - `logs/`: the structured log, one JSON Lines file per day (`monchu-<date>.jsonl`, rolled at 10 MB, kept 14 days), in the OpenTelemetry log data model: `time`, `severity`, `scope` (`core…`, `server…`, `tui`, `web`), `body` and `attributes`. It holds warnings, the core's open phases, reload and close times, one record per model reply (model, tokens, time, stop reason), client attaches, and clients' own timings such as the terminal's `ready`; ids, sizes and timings only, never prompts, outputs or secrets. `/logs [severity|scope]` shows the newest; in Nushell, `open --raw <file> | from json --objects | where severity == warn`.
 - `run/`: the core's local socket.
 - `attachments/`: files the user attached to messages, one folder per upload; kept until removed by hand.
+- `web.json`: this device's web server settings (see [Web](#web)).
 - `web-sessions.json`: web sign-in sessions, by token hash.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
@@ -163,7 +164,7 @@ Each home has one server process and, while anything needs it, one core process.
 
 ## Web
 
-`monchu --web` or `monchu serve --web` also serves the web client, from the server (a plain `monchu --web` only when it starts the server). It listens on `127.0.0.1` only; a tunnel on the same host (such as `cloudflared` behind an identity-aware proxy) publishes it. Any local process could reach that port, so nothing is trusted for being local:
+`monchu --web` or `monchu serve --web` also serves the web client, from the server (a plain `monchu --web` only when it starts the server), configured by the home's `web.json`. That file is per device and gitignored, since each device has its own host, port and login client; a `web` section in `config.json` is refused. It listens on `127.0.0.1` only; a tunnel on the same host (such as `cloudflared` behind an identity-aware proxy) publishes it. Any local process could reach that port, so nothing is trusted for being local:
 
 - Every request, and the WebSocket at `/api`, needs an identity on `web.allow`. Without `web.access` or `web.oidc`, or with nobody allowed, the web stays off and says why.
 - The `Host` must be `web.host` or this port's localhost (421 otherwise); the WebSocket's and sign-out's `Origin` must be `https://<web.host>` or the local one.
@@ -175,10 +176,14 @@ Identities come from either source:
 - `web.oidc`: the server's own login, OpenID Connect authorization code with PKCE (S256), state and nonce, configured from the issuer's discovery document. The ID token's signature, issuer, audience and nonce are checked; `sub:` and a verified `email:` are the identities. A session cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, 7 days) follows; `web-sessions.json` (0600, never synced) keeps only token hashes. A client secret, when the provider needs one, comes from the environment variable `clientSecretEnv` names.
 
 ```json
-"web": {
+{
   "port": 7420,
   "host": "monchu.example.com",
-  "access": { "teamDomain": "https://<team>.cloudflareaccess.com", "audience": "<aud tag>", "subjectClaim": "custom.sub" },
+  "access": {
+    "teamDomain": "https://<team>.cloudflareaccess.com",
+    "audience": "<aud tag>",
+    "subjectClaim": "custom.sub"
+  },
   "oidc": { "issuer": "https://id.example.com", "clientId": "<client id>" },
   "allow": ["sub:<subject>", "email:<address>", "service:<client id>"]
 }
