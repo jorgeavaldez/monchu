@@ -455,7 +455,7 @@ export function App() {
       ) : state === undefined ? (
         <main class="transcript">connecting…</main>
       ) : (
-        <Transcript view={state} />
+        <Transcript key={state.conversation.id} view={state} />
       )}
       <Queue />
       <Login />

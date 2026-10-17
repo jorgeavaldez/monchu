@@ -71,11 +71,11 @@ async function page(expression: string): Promise<unknown> {
   return (await browser("eval", expression)).result;
 }
 
-/**
- * Makes the page a touch screen (a coarse pointer, touch points) through the browser's DevTools socket, which
- * agent-browser's device presets don't. The emulation lasts while the returned socket stays open; close it to end it.
- */
-async function touchScreen(): Promise<WebSocket> {
+/** The browser's DevTools socket, attached to the page: `send` runs one protocol method on it. Close it when done. */
+async function devTools(): Promise<{
+  socket: WebSocket;
+  send: (method: string, params: Data) => Promise<Data>;
+}> {
   const socket = new WebSocket(text((await browser("get", "cdp-url")).cdpUrl));
   let next = 0;
   const waiting = new Map<number, (reply: Data) => void>();
@@ -84,7 +84,7 @@ async function touchScreen(): Promise<WebSocket> {
     const id = isData(reply) ? number(reply.id) : undefined;
     if (id !== undefined && isData(reply)) waiting.get(id)?.(reply);
   });
-  const send = (method: string, params: Data, sessionId?: string) =>
+  const call = (method: string, params: Data, sessionId?: string) =>
     new Promise<Data>((done, fail) => {
       next += 1;
       waiting.set(next, (reply) =>
@@ -102,26 +102,41 @@ async function touchScreen(): Promise<WebSocket> {
   });
   // The page agent-browser drives, which needn't be the browser's only one.
   const url = text((await browser("get", "url")).url);
-  const pages = list((await send("Target.getTargets", {})).targetInfos).filter(
+  const pages = list((await call("Target.getTargets", {})).targetInfos).filter(
     (item) => isData(item) && item.type === "page",
   );
   const target = pages.find((item) => isData(item) && item.url === url);
   if (!isData(target)) throw new Error(`no page target at ${url} among ${pages.length}`);
   const session = text(
-    (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId,
+    (await call("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId,
   );
-  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }, session);
-  await send(
-    "Emulation.setEmulatedMedia",
-    {
-      features: [
-        { name: "pointer", value: "coarse" },
-        { name: "any-pointer", value: "coarse" },
-      ],
-    },
-    session,
-  );
+  return { socket, send: (method, params) => call(method, params, session) };
+}
+
+/**
+ * Makes the page a touch screen (a coarse pointer, touch points) through the browser's DevTools socket, which
+ * agent-browser's device presets don't. The emulation lasts while the returned socket stays open; close it to end it.
+ */
+async function touchScreen(): Promise<WebSocket> {
+  const { socket, send } = await devTools();
+  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await send("Emulation.setEmulatedMedia", {
+    features: [
+      { name: "pointer", value: "coarse" },
+      { name: "any-pointer", value: "coarse" },
+    ],
+  });
   return socket;
+}
+
+/** A real mouse wheel over a point of the page; agent-browser's own wheel always lands at the top-left corner. */
+async function wheel(x: number, y: number, deltaY: number): Promise<void> {
+  const { socket, send } = await devTools();
+  try {
+    await send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
+  } finally {
+    socket.close();
+  }
 }
 
 function check(condition: boolean, message: string): void {
@@ -551,6 +566,124 @@ async function journeys(url: string, home: string, origin: string): Promise<void
       return "picked, uploaded, previewed, sent, and shown under the message";
     },
   );
+
+  await journey(
+    "order: notices and messages in the order they happened, the end followed",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const before = Number(await page(replies));
+      await browser("fill", "textarea", "/help");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".notice")].some((item) => item.textContent.includes("/model"))`,
+      );
+      await browser("fill", "textarea", "hello again");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      // Each item's place in the transcript, by the first element matching what it is.
+      const order = await page(`(() => {
+      const items = [...document.querySelector(".transcript").children];
+      const at = (match) => items.findIndex(match);
+      const has = (selector, text) => (item) => item.matches(selector) && item.textContent.includes(text);
+      return {
+        header: at(has(".notice", "· /help ·")),
+        hello: at(has(".user", "hello")),
+        help: at(has(".notice", "/model")),
+        again: at(has(".user", "hello again")),
+        last: items.findLastIndex((item) => item.matches(".assistant")),
+        notices: items.findLastIndex((item) => item.matches(".notice")),
+        gap: (({ scrollHeight, scrollTop, clientHeight }) => scrollHeight - scrollTop - clientHeight)(document.querySelector(".transcript")),
+      };
+    })()`);
+      if (!isData(order)) throw new Error("no order read");
+      const index = (key: string) => number(order[key]) ?? -1;
+      const sequence = ["header", "hello", "help", "again", "last"];
+      check(
+        sequence.every(
+          (key, at) => index(key) >= 0 && (at === 0 || index(key) > index(sequence[at - 1] ?? "")),
+        ),
+        `out of order: ${JSON.stringify(order)}`,
+      );
+      check(index("notices") < index("last"), "a notice sits below the newest reply");
+      check(index("gap") <= 2, `the view is ${index("gap")} px above the end`);
+      await capture("order", home, origin);
+      return "header, message, /help, message, reply in order; the view at the end";
+    },
+  );
+
+  await journey(
+    "scroll: reading back holds the view while a reply streams; the pill returns",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const before = Number(await page(replies));
+      const position = `(({ scrollHeight, scrollTop, clientHeight }) => ({ top: scrollTop, gap: scrollHeight - scrollTop - clientHeight }))(document.querySelector(".transcript"))`;
+      const read = async () => {
+        const value = await page(position);
+        if (!isData(value)) throw new Error("no scroll position read");
+        return { top: number(value.top) ?? 0, gap: number(value.gap) ?? 0 };
+      };
+      // The faux model echoes the message, so a long one streams for a few seconds.
+      await browser("fill", "textarea", `read back ${"y".repeat(400)}`);
+      await browser("press", "Enter");
+      await browser("wait", ".live");
+      await wheel(200, 300, -400);
+      const held = await read();
+      check(held.gap > 100, `the wheel left the view ${held.gap} px above the end`);
+      await browser("fill", "textarea", "drafting while reading");
+      await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      const after = await read();
+      check(Math.abs(after.top - held.top) <= 1, `the view moved from ${held.top} to ${after.top}`);
+      check(
+        (await page(
+          `/^↓ \\d+ new$/.test(document.querySelector(".unread")?.textContent ?? "")`,
+        )) === true,
+        "no new-output pill",
+      );
+      await capture("unread", home, origin);
+      await browser("click", ".unread");
+      await browser("wait", "--fn", `!document.querySelector(".unread")`);
+      const end = await read();
+      check(end.gap <= 2, `the pill left the view ${end.gap} px above the end`);
+      await browser("fill", "textarea", "");
+      return `held at ${held.top} px through the reply and typing; the pill went back to the end`;
+    },
+  );
+
+  await journey("editor: grows with its text up to a cap, then scrolls", async () => {
+    const box = `(({ clientHeight, scrollHeight }) => ({ height: clientHeight, scroll: scrollHeight, pad: parseFloat(getComputedStyle(document.querySelector("textarea")).paddingTop) }))(document.querySelector("textarea"))`;
+    const measure = async () => {
+      const value = await page(box);
+      if (!isData(value)) throw new Error("no editor size read");
+      return {
+        height: number(value.height) ?? 0,
+        scroll: number(value.scroll) ?? 0,
+        pad: number(value.pad) ?? 0,
+      };
+    };
+    await browser("fill", "textarea", "one line");
+    const one = await measure();
+    await browser("fill", "textarea", "one\ntwo\nthree");
+    const three = await measure();
+    await browser(
+      "fill",
+      "textarea",
+      Array.from({ length: 40 }, (_, at) => `line ${at}`).join("\n"),
+    );
+    const many = await measure();
+    await browser("fill", "textarea", "");
+    const empty = await measure();
+    check(one.pad >= 8, `${one.pad} px top padding`);
+    check(three.height > one.height, `three lines are ${three.height} px, one is ${one.height} px`);
+    check(
+      many.height > three.height && many.height < HEIGHT / 2 + 1,
+      `forty lines are ${many.height} px`,
+    );
+    check(many.scroll > many.height, "forty lines don't scroll inside the box");
+    check(empty.height === one.height, `emptied it is ${empty.height} px, not ${one.height} px`);
+    return `${one.height} px, ${three.height} px for three lines, capped at ${many.height} px`;
+  });
 
   await journey("model: typeahead, then the /model picker opens and Esc closes it", async () => {
     await browser("fill", "textarea", "/mod");

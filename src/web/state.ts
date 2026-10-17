@@ -33,6 +33,8 @@ export type Notice = {
   text: string;
   kind: "system" | "warning" | "event";
   root?: string;
+  /** Per attached conversation, the newest entry it showed when this was posted (-1 for none); it follows that entry. */
+  after: ReadonlyMap<ConversationView["conversation"]["id"], number>;
 };
 
 /** A choice the user makes in place of the editor: a login prompt, a model, a thinking level, a worker. */
@@ -73,6 +75,8 @@ export const ask = signal<Ask | undefined>(undefined);
 export const loginStatus = signal<{ message: string; url?: string; code?: string } | undefined>(
   undefined,
 );
+/** Bumped when the user sends a message, so the transcript goes back to its end and follows it. */
+export const following = signal(0);
 /** The editor's text, so a stopped front's queued messages can come back into it. */
 export const draft = signal("");
 
@@ -105,9 +109,21 @@ export function notice(text: string, kind: Notice["kind"] = "system", home = fal
 
 /** A notice that only `root` shows, or every root when undefined. */
 function rootNotice(text: string, kind: Notice["kind"], root: string | undefined): void {
+  const after = new Map<ConversationView["conversation"]["id"], number>();
+  for (const each of views.value.values()) {
+    const value = each.state.value;
+    after.set(value.conversation.id, value.entries.at(-1)?.id ?? -1);
+  }
   notices.value = [
     ...notices.value,
-    { id: nextNotice++, at: Date.now(), text, kind, ...(root === undefined ? {} : { root }) },
+    {
+      id: nextNotice++,
+      at: Date.now(),
+      text,
+      kind,
+      after,
+      ...(root === undefined ? {} : { root }),
+    },
   ].slice(-200);
 }
 
@@ -703,6 +719,7 @@ async function runInput(
   switch (input.command) {
     case "message":
     case "skill": {
+      following.value++;
       const text =
         input.command === "skill" ? await client().skillInput(input.name, input.text) : input.text;
       if (name === undefined)
