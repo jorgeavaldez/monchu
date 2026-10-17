@@ -1,5 +1,10 @@
 #!/usr/bin/env node
+import { enableCompileCache } from "node:module";
 import { monchuHome, seedHome } from "./home.ts";
+
+// Before the dynamic imports below, so startup and /restart reuse compiled code. Node keys the cache by version and
+// source hash in its default temp directory; NODE_DISABLE_COMPILE_CACHE turns it off.
+enableCompileCache();
 
 try {
   const home = await monchuHome(process.env.MONCHU_DEV_FAUX === "1");
