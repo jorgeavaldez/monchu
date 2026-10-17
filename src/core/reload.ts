@@ -23,6 +23,7 @@ import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
 import type { EffortAssessment } from "./agents/classifier.ts";
+import type { BudgetLevel } from "./identity.ts";
 import {
   loadConfig,
   saveRole,
@@ -101,6 +102,7 @@ async function build(
   config: MonchuConfig,
   home: string,
   reportSkipped: (warning: string) => void,
+  observeBudget: (levels: BudgetLevel[]) => void,
   finders: FffFinders,
   clients: McpClients,
   workerRole: () => ModelRole,
@@ -117,7 +119,7 @@ async function build(
   const { Codemode } = await load("codemode");
   const { Goals } = await load("goals");
   const memory = (await load("memory")).createMemory(home);
-  const identity = (await load("identity")).createIdentity(home, reportSkipped);
+  const identity = (await load("identity")).createIdentity(home, reportSkipped, observeBudget);
   const { Jj } = await load("jj");
   const mcpConfig = await loadMcpConfig(home);
   const mcp = await (await load("mcp-tools")).createMcpTools(mcpConfig.servers, clients);
@@ -192,6 +194,7 @@ export class Extensions {
   private readonly clients: McpClients;
   private readonly report: (warning: string) => void;
   private readonly reportSkipped: (warning: string) => void;
+  private readonly observeBudget: (levels: BudgetLevel[]) => void;
   private current: Build;
   private reloading: Promise<readonly string[]> | undefined;
   private saving: Promise<ModelRole> | undefined;
@@ -201,6 +204,7 @@ export class Extensions {
     home: string,
     report: (warning: string) => void,
     reportSkipped: (warning: string) => void,
+    observeBudget: (levels: BudgetLevel[]) => void,
     current: Build,
     finders: FffFinders,
     clients: McpClients,
@@ -212,6 +216,7 @@ export class Extensions {
     this.finders = finders;
     this.report = report;
     this.reportSkipped = reportSkipped;
+    this.observeBudget = observeBudget;
     this.current = current;
   }
 
@@ -221,6 +226,7 @@ export class Extensions {
     config: MonchuConfig,
     home: string,
     report: (warning: string) => void,
+    observeBudget: (levels: BudgetLevel[]) => void = () => {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
     const reportSkipped = (warning: string) => {
@@ -243,11 +249,21 @@ export class Extensions {
       config,
       home,
       reportSkipped,
+      observeBudget,
       finders,
       clients,
       () => extensions?.config.worker ?? config.worker,
     );
-    extensions = new Extensions(models, home, report, reportSkipped, current, finders, clients);
+    extensions = new Extensions(
+      models,
+      home,
+      report,
+      reportSkipped,
+      observeBudget,
+      current,
+      finders,
+      clients,
+    );
     installExtensions(extensions.registry, current.extensions);
     for (const warning of current.warnings) report(warning);
     return extensions;
@@ -342,6 +358,7 @@ export class Extensions {
         config,
         this.home,
         this.reportSkipped,
+        this.observeBudget,
         this.finders,
         this.clients,
         () => this.config.worker,

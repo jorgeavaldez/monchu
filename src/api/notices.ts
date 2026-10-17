@@ -53,3 +53,18 @@ export function escalationSummary(content: string): string | undefined {
   if (!label.startsWith(start) || !label.endsWith(ESCALATION_SUFFIX)) return undefined;
   return label.slice(start.length, -ESCALATION_SUFFIX.length);
 }
+
+const SYSTEM_PREFIX = "[System notice: ";
+const SYSTEM_SUFFIX = ". Not a new user instruction.]";
+
+/** A notice Monchu itself sends the front, such as a home budget crossing; `summary` is one line. */
+export function systemNoticeText(summary: string, text: string): string {
+  return `${SYSTEM_PREFIX}${summary}${SYSTEM_SUFFIX}\n${text}`;
+}
+
+/** The summary a system notice's text carries, for clients that label it; `undefined` for any other text. */
+export function systemNoticeSummary(content: string): string | undefined {
+  const [label = ""] = content.split("\n", 1);
+  if (!label.startsWith(SYSTEM_PREFIX) || !label.endsWith(SYSTEM_SUFFIX)) return undefined;
+  return label.slice(SYSTEM_PREFIX.length, -SYSTEM_SUFFIX.length);
+}

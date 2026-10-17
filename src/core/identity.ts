@@ -1,11 +1,16 @@
-import { defineExtension, ROOT_CONVERSATION_ID, section } from "@earendil-works/pi-durable";
+import {
+  defineDoc,
+  defineExtension,
+  ROOT_CONVERSATION_ID,
+  section,
+} from "@earendil-works/pi-durable";
 import { readFile } from "node:fs/promises";
 import { homedir, hostname, release, type, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /**
- * Character budgets of the home files every request loads. Nothing is ever truncated: a file near or over its budget
- * is named to the front, which routes a curation, and reported once as a warning.
+ * Character budgets of the home files every request loads. Nothing is ever truncated: every file loads in full, and a
+ * file (or the total) that crosses into near or full is told to the front once per crossing (see `budgetNotice`).
  */
 const BUDGETS: Record<string, number> = {
   "SOUL.md": 3000,
@@ -15,21 +20,82 @@ const BUDGETS: Record<string, number> = {
   "memories/USER.md": 4000,
   "memories/MEMORY.md": 4000,
 };
+const TOTAL = "all home files";
 const TOTAL_BUDGET = 36000;
 /** Share of a budget at which a file counts as near it. */
 const NEAR = 0.9;
 
-/** Files near or over their budget, and the total when it is, as one line each. */
-function overBudget(sizes: readonly { file: string; size: number }[]): string[] {
-  const lines = sizes.flatMap(({ file, size }) => {
-    const budget = BUDGETS[file];
-    if (budget === undefined || size < budget * NEAR) return [];
-    return [`${file}: ${size}/${budget} characters${size > budget ? ", over budget" : ""}`];
+/** A home file, or all of them, at `near` (90%) or `full` (at or over) its character budget. */
+export type BudgetLevel = { budget: string; size: number; limit: number; level: "near" | "full" };
+
+/** Budgets near or full; the total only when every budgeted file exists. */
+function budgetLevels(sizes: readonly { file: string; size: number }[]): BudgetLevel[] {
+  const level = (budget: string, size: number, limit: number): BudgetLevel[] =>
+    size < limit * NEAR ? [] : [{ budget, size, limit, level: size >= limit ? "full" : "near" }];
+  const levels = sizes.flatMap(({ file, size }) => {
+    const limit = BUDGETS[file];
+    return limit === undefined ? [] : level(file, size, limit);
   });
-  const total = sizes.reduce((sum, { size }) => sum + size, 0);
-  if (sizes.length === Object.keys(BUDGETS).length && total >= TOTAL_BUDGET * NEAR)
-    lines.push(`all home files: ${total}/${TOTAL_BUDGET} characters`);
-  return lines;
+  return sizes.length === Object.keys(BUDGETS).length
+    ? [
+        ...levels,
+        ...level(
+          TOTAL,
+          sizes.reduce((sum, { size }) => sum + size, 0),
+          TOTAL_BUDGET,
+        ),
+      ]
+    : levels;
+}
+
+/** The level each budget was last told to the front at; a budget back under 90% is removed, so it warns again. */
+export const HomeBudgetDoc = defineDoc<{
+  levels: Record<string, "near" | "full">;
+  sent: number;
+  pending?: { requestId: string; text: string };
+}>({
+  kind: "monchu.home-budget",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ levels: {}, sent: 0 }),
+});
+
+const RANK = { near: 1, full: 2 } as const;
+
+/**
+ * Record the budgets' current levels; returns the front's notice for those that rose since last told, or `undefined`.
+ * The caller commits the recorded levels with the notice, so each crossing is told once.
+ */
+export function budgetNotice(
+  state: { levels: Record<string, "near" | "full"> },
+  levels: readonly BudgetLevel[],
+): { summary: string; text: string } | undefined {
+  const risen = levels.filter(({ budget, level }) => {
+    const told = state.levels[budget];
+    return told === undefined || RANK[level] > RANK[told];
+  });
+  state.levels = Object.fromEntries(levels.map(({ budget, level }) => [budget, level]));
+  if (risen.length === 0) return undefined;
+  const line = ({ budget, size, limit, level }: BudgetLevel) =>
+    `${budget}: ${size}/${limit} characters (${Math.floor((size / limit) * 100)}%), ${
+      level === "full"
+        ? size === limit
+          ? "at its budget"
+          : `${size - limit} over its budget`
+        : `${limit - size} left`
+    }`;
+  const full = risen.some(({ level }) => level === "full");
+  return {
+    summary: `${risen.map(({ budget }) => budget).join(", ")} ${full ? "at or over" : "near"} the home size budget`,
+    text: [
+      "Home files load in full into every request under a character budget each, and in total. These crossed a threshold (near is 90%):",
+      ...risen.map(line),
+      "Nothing is truncated or dropped: a file over its budget still loads in full and costs context on every request. The memory tool refuses to grow memories/USER.md or memories/MEMORY.md past their budget; no other edit is stopped.",
+      "Route a curation now to whoever keeps the home files (FRONT.md says who): trim or compress, and move detail that not every request needs to the vault or a skill. Tell the user in one line. You hear about a budget again only when it rises a level or falls back under 90% and crosses again.",
+    ].join("\n"),
+  };
 }
 
 /** Pi's context-file names, in its precedence order (coding-agent `resource-loader.ts`). */
@@ -78,9 +144,14 @@ async function projectContextFiles(
 /**
  * Home files are reread for every request. Every agent gets the shared manual (`AGENTS.md`); only the front gets
  * the soul and its front-only manual (`FRONT.md`). Workers also get the context files of their execution directory.
+ * Every render measures all budgeted files and passes their levels to `observeBudget`.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
-export function createIdentity(home: string, reportSkipped: (warning: string) => void) {
+export function createIdentity(
+  home: string,
+  reportSkipped: (warning: string) => void,
+  observeBudget: (levels: BudgetLevel[]) => void = () => {},
+) {
   return defineExtension({
     name: "monchu.identity",
     sections: [
@@ -98,29 +169,22 @@ export function createIdentity(home: string, reportSkipped: (warning: string) =>
             : ["AGENTS.md", "DEVICES.md", "memories/USER.md", "memories/MEMORY.md"];
         const contents: string[] = [];
         const sizes: { file: string; size: number }[] = [];
-        for (const file of files) {
+        for (const file of Object.keys(BUDGETS)) {
           const path = join(home, file);
+          let text: string;
           try {
-            const text = await readFile(path, "utf8");
-            sizes.push({ file, size: text.length });
-            contents.push(`<home_file path="${path}">\n${text}\n</home_file>`);
+            text = await readFile(path, "utf8");
           } catch (error) {
             if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
               throw error;
-            reportSkipped(`Missing Monchu home file (skipped): ${path}`);
+            if (files.includes(file)) reportSkipped(`Missing Monchu home file (skipped): ${path}`);
+            continue;
           }
+          sizes.push({ file, size: text.length });
+          if (files.includes(file))
+            contents.push(`<home_file path="${path}">\n${text}\n</home_file>`);
         }
-        if (input.conversationId === ROOT_CONVERSATION_ID) {
-          const near = overBudget(sizes);
-          for (const line of near)
-            reportSkipped(
-              `Home file near its size budget: ${line.replace(/: \d+\//, ": budget ")}`,
-            );
-          if (near.length)
-            contents.push(
-              `<home_budget>\nThese home files are near or over their size budget; route a curation to the worker that owns the home files:\n${near.join("\n")}\n</home_budget>`,
-            );
-        }
+        observeBudget(budgetLevels(sizes));
         return contents.length === 0 ? undefined : contents.join("\n\n");
       }),
       section("project", async (input) => {

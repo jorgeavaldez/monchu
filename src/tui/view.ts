@@ -71,6 +71,7 @@ import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import {
   escalationSummary,
   parseWorkerNotice,
+  systemNoticeSummary,
   workerNotice,
   type WhenBusy,
 } from "../api/notices.ts";
@@ -143,7 +144,7 @@ function firstLine(text: string): string {
 /**
  * A queued inbox row, styled by who sent it: the user's own message has a yellow `you` rule and its text in the user's
  * color; a worker's keeps its transcript style, a purple rule and name for a reply or failure and gray for an update;
- * routing advice and a passive write stay muted. Every input row names its mode.
+ * routing advice, a system notice and a passive write stay muted. Every input row names its mode.
  */
 function queuedLine(item: QueuedItem): string {
   const muted = getSelectListTheme().description;
@@ -161,6 +162,8 @@ function queuedLine(item: QueuedItem): string {
   const assessment = escalationSummary(item.text);
   if (assessment !== undefined)
     return muted(`│ routing advice · ${mode} · ${firstLine(assessment)}`);
+  const system = systemNoticeSummary(item.text);
+  if (system !== undefined) return muted(`│ system · ${mode} · ${system}`);
   return `${theme.fg("warning", `│ you · ${mode}`)}${theme.fg("userMessageText", ` · ${firstLine(item.text)}`)}`;
 }
 
@@ -802,7 +805,7 @@ export class MonchuTui {
 
   /**
    * Lists the shown conversation's queue in the editor's place. Enter opens a message in the editor; a worker notice
-   * opens only its body, and routing advice is not editable. Alt+S and Delete apply at once.
+   * opens only its body, and routing advice and system notices are not editable. Alt+S and Delete apply at once.
    */
   openQueue(): void {
     this.selector = new QueuePanel(
@@ -814,7 +817,10 @@ export class MonchuTui {
             mode: item.mode === "steer" ? "followUp" : "steer",
           });
         else if (action === "delete") this.handlers.editQueued(item.id, { kind: "delete" });
-        else if (escalationSummary(item.text) === undefined) {
+        else if (
+          escalationSummary(item.text) === undefined &&
+          systemNoticeSummary(item.text) === undefined
+        ) {
           this.editing = { id: item.id, draft: this.editor.getText() };
           this.restoreEditor();
           this.editor.setText(parseWorkerNotice(item.text)?.text ?? item.text);
@@ -1067,20 +1073,16 @@ export class MonchuTui {
           ? message.content
           : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
       const assessment = escalationSummary(text);
+      const system =
+        assessment === undefined ? systemNoticeSummary(text) : `routing advice · ${assessment}`;
       this.chat.addChild(new Spacer(1));
-      if (assessment === undefined) {
+      if (system === undefined) {
         this.chat.addChild(new UserMessageComponent(text));
         const stampLine = new EntryStamp(this.ids, entry.id, time);
         this.chat.addChild(stampLine);
         label(stampLine);
       } else
-        this.chat.addChild(
-          new Text(
-            getSelectListTheme().description(`system · routing advice · ${assessment}`),
-            1,
-            0,
-          ),
-        );
+        this.chat.addChild(new Text(getSelectListTheme().description(`system · ${system}`), 1, 0));
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const container = this.streaming ?? new Container();
       if (!this.streaming) this.chat.addChild(container);

@@ -7,7 +7,7 @@ import { useSignal } from "@preact/signals";
 import type { ComponentChildren, VNode } from "preact";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
-import { escalationSummary, workerNotice } from "../api/notices.ts";
+import { escalationSummary, systemNoticeSummary, workerNotice } from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { expandAll, notices, type Notice } from "./state.ts";
@@ -173,6 +173,8 @@ function entryNode(
     const text = textOf(message.content);
     const escalation = escalationSummary(text);
     if (escalation !== undefined) return <div class="system">clef · escalated · {escalation}</div>;
+    const system = systemNoticeSummary(text);
+    if (system !== undefined) return <div class="system">system · {system}</div>;
     return (
       <>
         <div class="user">

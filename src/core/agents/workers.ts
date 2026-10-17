@@ -272,8 +272,8 @@ type WorkerResult = {
   text: string;
 } & ({ status: "completed"; answerId: EntryId } | { status: "failed" });
 
-/** Front inputs that are not the user's own words: worker notices and routing-helper follow-ups. */
-const NOT_THE_USER = /^\[(Worker |Background worker |Routing advice)/;
+/** Front inputs that are not the user's own words: worker notices, routing-helper follow-ups and system notices. */
+const NOT_THE_USER = /^\[(Worker |Background worker |Routing advice|System notice)/;
 
 /** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
 export const DELETED_FROM_QUEUE = "deleted";

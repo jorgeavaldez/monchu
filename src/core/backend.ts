@@ -28,7 +28,14 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Client, ModelChoice, ModelPick, QueueChange } from "../api/client.ts";
 import { parseRelease, type Release } from "../api/release.ts";
-import { escalationSummary, noticeText, parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
+import {
+  escalationSummary,
+  noticeText,
+  parseWorkerNotice,
+  systemNoticeSummary,
+  systemNoticeText,
+  type WhenBusy,
+} from "../api/notices.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { Log } from "../telemetry/log.ts";
@@ -46,7 +53,7 @@ import {
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
 import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
-import { FRONT_INSTRUCTIONS } from "./identity.ts";
+import { budgetNotice, FRONT_INSTRUCTIONS, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
@@ -157,6 +164,9 @@ export class Monchu implements Client {
   private readonly reports: Reports;
   private readonly extensions: Extensions;
   private closing: Promise<void> | undefined;
+  /** The budget levels last observed, so an unchanged render costs no commit; budget notices go out one at a time. */
+  private budgetSeen = "";
+  private budgetWork: Promise<void> = Promise.resolve();
   private readonly envs: ExecutionEnvs;
   /** The structured log: warnings, timings, model replies and client events. */
   readonly log: Log;
@@ -228,8 +238,14 @@ export class Monchu implements Client {
       const models = await openModels(home, devProvider, written.claude);
       const { config, warnings } = await configuredRoles(models, written);
       for (const warning of warnings) reports.report(warning);
-      const loaded = await Extensions.load(models, config, home, (warning) =>
-        reports.report(warning),
+      // Renders start once the harness resumes, after the backend below takes over.
+      let observeBudget = (_levels: BudgetLevel[]) => {};
+      const loaded = await Extensions.load(
+        models,
+        config,
+        home,
+        (warning) => reports.report(warning),
+        (levels) => observeBudget(levels),
       );
       extensions = loaded;
       phase("extensions");
@@ -271,6 +287,7 @@ export class Monchu implements Client {
         log,
       );
       log.write("info", "core.open", "opened", phases);
+      observeBudget = (levels) => backend.observeBudget(levels);
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
@@ -627,7 +644,8 @@ export class Monchu implements Client {
         item.mode !== "write" &&
         typeof item.content === "string" &&
         parseWorkerNotice(item.content) === undefined &&
-        escalationSummary(item.content) === undefined
+        escalationSummary(item.content) === undefined &&
+        systemNoticeSummary(item.content) === undefined
           ? [{ id: item.id, text: item.content }]
           : [],
       );
@@ -795,6 +813,51 @@ export class Monchu implements Client {
   /** A client's own telemetry, such as its render timings, into the core's log. */
   record(scope: "tui" | "web", body: string, attributes?: LogAttributes): void {
     this.log.write("info", scope, body, attributes);
+  }
+
+  /**
+   * Home budget levels from a request's render (any conversation's). A budget that rose to near or full since the front
+   * was last told reaches it as a follow-up system notice and a warning, once; falling back under 90% re-arms it.
+   */
+  private observeBudget(levels: BudgetLevel[]): void {
+    const seen = JSON.stringify(levels.map(({ budget, level }) => [budget, level]));
+    if (seen === this.budgetSeen || this.closing !== undefined) return;
+    this.budgetSeen = seen;
+    this.budgetWork = this.budgetWork
+      .then(() => this.noticeBudget(levels))
+      .catch((error: unknown) => {
+        this.budgetSeen = "";
+        this.reports.report(
+          `Home budget notice failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
+  private async noticeBudget(levels: BudgetLevel[]): Promise<void> {
+    // The notice is recorded with the levels and cleared once admitted, so a crash in between posts it again.
+    const { pending, summary } = await this.front.commit(async (tx) => {
+      const state = await tx.doc(HomeBudgetDoc, this.front.id);
+      const notice = budgetNotice(state, levels);
+      if (notice !== undefined) {
+        state.sent++;
+        state.pending = {
+          requestId: `home-budget:${state.sent}`,
+          text: systemNoticeText(notice.summary, notice.text),
+        };
+      }
+      // A copy: the document's own values are unusable once the commit settles.
+      return { pending: state.pending && { ...state.pending }, summary: notice?.summary };
+    }, context);
+    if (summary !== undefined) this.reports.report(`Home budget: ${summary}`);
+    if (pending === undefined) return;
+    await this.front.submit(
+      { type: "input", content: pending.text, requestId: pending.requestId, whenBusy: "followUp" },
+      context,
+    );
+    await this.front.commit(async (tx) => {
+      const state = await tx.doc(HomeBudgetDoc, this.front.id);
+      if (state.pending?.requestId === pending.requestId) delete state.pending;
+    }, context);
   }
 
   /** A non-fatal failure from outside the core, such as its socket server: logged and shown like the core's own. */

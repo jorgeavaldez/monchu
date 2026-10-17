@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { presentation } from "../src/ui/state.ts";
-import { parseWorkerNotice, workerNotice } from "../src/api/notices.ts";
+import { parseWorkerNotice, systemNoticeSummary, workerNotice } from "../src/api/notices.ts";
 import {
   cleanup,
   fauxRole,
@@ -290,6 +290,56 @@ describe("backend", () => {
     } finally {
       release.resolve();
       state.dispose();
+      await backend.close();
+    }
+  });
+
+  it("tells the front once per home budget crossing, re-arming when a file falls back under, across restarts", async () => {
+    const value = await setup();
+    const seen: string[] = [];
+    const notices: string[] = [];
+    route(value.faux, (request) => {
+      const text = textOf(lastMessage(request.messages));
+      seen.push(text);
+      if (systemNoticeSummary(text) !== undefined) notices.push(text);
+      return fauxAssistantMessage("ok");
+    });
+    let { home, backend } = await openBackend(value);
+    const front = join(home, "FRONT.md");
+    // Each request renders the home files first; a notice it causes is a follow-up with its own turn.
+    const send = async (text: string) => {
+      await backend.submit(text, text, "followUp");
+      await waitFor(() => seen.includes(text));
+    };
+    try {
+      await writeFile(front, "f".repeat(11000));
+      await send("one");
+      await waitFor(() => notices.length === 1);
+      expect(systemNoticeSummary(notices[0] ?? "")).toBe("FRONT.md near the home size budget");
+      expect(notices[0]).toContain("FRONT.md: 11000/12000 characters (91%), 1000 left");
+      expect(notices[0]).toContain("Nothing is truncated");
+      await send("two");
+      await writeFile(front, "f".repeat(12100));
+      await send("three");
+      await waitFor(() => notices.length === 2);
+      expect(systemNoticeSummary(notices[1] ?? "")).toBe(
+        "FRONT.md at or over the home size budget",
+      );
+      expect(notices[1]).toContain("FRONT.md: 12100/12000 characters (100%), 100 over its budget");
+      await writeFile(front, "small");
+      await send("four");
+      await writeFile(front, "f".repeat(11000));
+      await send("five");
+      await waitFor(() => notices.length === 3);
+      await backend.close();
+      ({ backend } = await openBackend(value));
+      await send("six");
+      await send("seven");
+      expect(notices).toHaveLength(3);
+      expect(await logText(home)).toContain(
+        "Home budget: FRONT.md at or over the home size budget",
+      );
+    } finally {
       await backend.close();
     }
   });

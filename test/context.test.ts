@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.ts";
 import { createContext } from "../src/core/context.ts";
-import { createIdentity, FRONT_INSTRUCTIONS } from "../src/core/identity.ts";
+import { createIdentity, FRONT_INSTRUCTIONS, type BudgetLevel } from "../src/core/identity.ts";
 import { Extensions } from "../src/core/reload.ts";
 import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
 import {
@@ -208,18 +208,20 @@ describe("Monchu home context", () => {
     }
   });
 
-  it("names home files near their size budget to the front, never truncating them, and warns once", async () => {
+  it("loads home files over their size budget in full and passes every budget's level from each render", async () => {
     const value = await setup();
-    const warnings: string[] = [];
+    const observed: BudgetLevel[][] = [];
     const extensions = await Extensions.load(
       value.models,
       await loadConfig(value.directory),
       value.directory,
-      (warning) => warnings.push(warning),
+      () => {},
+      (levels) => observed.push(levels),
     );
-    const front = "f".repeat(11000);
+    const front = "f".repeat(12500);
     await writeFile(join(value.directory, "FRONT.md"), front);
-    await writeFile(join(value.directory, "AGENTS.md"), "small manual");
+    await writeFile(join(value.directory, "AGENTS.md"), "a".repeat(9000));
+    await writeFile(join(value.directory, "SOUL.md"), "small soul");
     let home = "";
     route(value.faux, (request) => {
       home = sectionTexts(request.messages, "home").join("\n");
@@ -227,14 +229,12 @@ describe("Monchu home context", () => {
     });
     const { harness, root } = await open({ ...value, registry: extensions.registry });
     try {
-      for (const content of ["first", "second"])
-        await (await root.submit({ type: "input", content }, context)).wait(context);
+      await (await root.submit({ type: "input", content: "first" }, context)).wait(context);
       expect(home).toContain(front);
-      expect(home).toContain("<home_budget>");
-      expect(home).toContain("FRONT.md: 11000/12000 characters\n");
-      expect(home).not.toContain("AGENTS.md: ");
-      expect(warnings.filter((warning) => warning.startsWith("Home file near"))).toEqual([
-        "Home file near its size budget: FRONT.md: budget 12000 characters",
+      expect(home).not.toContain("budget");
+      expect(observed.at(-1)).toEqual([
+        { budget: "AGENTS.md", size: 9000, limit: 10000, level: "near" },
+        { budget: "FRONT.md", size: 12500, limit: 12000, level: "full" },
       ]);
     } finally {
       await harness.close(context);
