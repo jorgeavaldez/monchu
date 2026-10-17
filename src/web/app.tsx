@@ -338,6 +338,42 @@ function Login() {
   );
 }
 
+const LINK = {
+  connecting: "connecting",
+  live: "connected",
+  lost: "reconnecting",
+  updating: "reconnecting · installing an update",
+  gone: "disconnected · tap to reload",
+};
+
+/** The link to the core as one dot: green while it answers, hollow while it redials, red once it's gone. */
+function LinkDot() {
+  const state = connection.value;
+  if (state === "gone")
+    return (
+      <button
+        class="link"
+        data-state="gone"
+        aria-label={LINK.gone}
+        title={LINK.gone}
+        onClick={() => location.reload()}
+      >
+        ●
+      </button>
+    );
+  return (
+    <span
+      class="link"
+      data-state={state}
+      role="status"
+      aria-label={LINK[state]}
+      title={LINK[state]}
+    >
+      {state === "live" ? "●" : "○"}
+    </span>
+  );
+}
+
 function Footer() {
   const state = view(shown.value)?.value;
   const root = view(undefined)?.value;
@@ -377,8 +413,7 @@ function Footer() {
           : ""}
         {" · "}
         <span title="provider/model">{name}</span>
-        {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""}
-        {connection.value === "open" ? null : <span class="lost"> · ⚠ {connection.value}</span>}
+        {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""} <LinkDot />
       </span>
     </footer>
   );

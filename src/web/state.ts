@@ -18,6 +18,7 @@ import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { shortId } from "../api/ids.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
+import type { Connection } from "../api/remote.ts";
 import { help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -56,7 +57,8 @@ export type Ask = {
   cancel(): void;
 };
 
-export const connection = signal<"connecting" | "open" | "lost" | "gone">("connecting");
+/** The link to the core, as the status bar's dot shows it; a drop and its redial never write to the transcript. */
+export const connection = signal<Connection | "connecting">("connecting");
 /** Every root, archived ones included, as the core reports them. */
 export const roots = signal<readonly RootSummary[]>([]);
 /** The root this page shows, by full id. */
@@ -256,7 +258,7 @@ export async function start(connected: Client): Promise<void> {
     const id = new URL(location.href).searchParams.get("root");
     if (id !== null && id !== rootId.value) void openRoot(id).catch(reportFailure);
   });
-  connected.onReport((message) => notice(message, "warning", true));
+  connected.onReport((message) => notice(message, "warning", true), { connection: false });
   await connected.watchJobEvents((await connected.jobs()).nextEvent - 1, (events) => {
     // Each job event shows in its own root; an event from before roots belongs to the first.
     const first = roots.value.reduce<RootSummary | undefined>(
@@ -846,11 +848,4 @@ async function runInput(
     case "/thinking":
       return await runModel(true, "");
   }
-}
-
-/** Connection changes, as the shell shows them. */
-export function connected(state: "open" | "lost" | "gone"): void {
-  batch(() => {
-    connection.value = state;
-  });
 }

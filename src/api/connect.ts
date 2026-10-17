@@ -82,7 +82,7 @@ export async function connectRemote(
       }
       return;
     }
-    if (!closing) current.notice("Monchu is gone; start it again, then reload");
+    if (!closing) current.gone();
   };
   const closed = use(link);
   const opening = RemoteClient.open(host);

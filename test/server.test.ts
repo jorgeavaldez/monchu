@@ -82,6 +82,11 @@ describe("server", () => {
       expect(core.starts).toBe(1);
       const notices: string[] = [];
       client.onReport((message) => notices.push(message));
+      // A page that shows the link as a dot hears its states, and none of its notices.
+      const states: string[] = [];
+      client.onConnection((state) => states.push(state));
+      const quiet: string[] = [];
+      client.onReport((message) => quiet.push(message), { connection: false });
       const root = await front(client);
       const view = await root.viewState();
       await root.submit("before", "server:1", "followUp");
@@ -98,6 +103,10 @@ describe("server", () => {
       expect(
         notices.filter((notice) => /Monchu/.test(notice) && !notice.includes("home file")),
       ).toEqual(["connection to Monchu lost · reconnecting", "reconnected to Monchu"]);
+      expect(states).toEqual(["lost", "live"]);
+      expect(
+        quiet.filter((notice) => notice.includes("connection") || notice.includes("reconnected")),
+      ).toEqual([]);
       expect(links.map((link) => link.closed)).toEqual([false]);
       expect(said("before")).toBe(true);
       await root.submit("after", "server:2", "followUp");

@@ -290,7 +290,8 @@ pre {
   border: none;
   padding: var(--s1);
   outline: none;
-  /* Grows with its text (editor.tsx) up to here, then scrolls. */
+  /* Grows with its text up to here, then scrolls; editor.tsx measures it where field-sizing isn't supported. */
+  field-sizing: content;
   max-height: min(14em, 40vh);
   overflow-y: auto;
 }
@@ -485,8 +486,21 @@ pre {
   direction: rtl;
   text-align: left;
 }
-.footer .lost {
+.footer .link {
+  color: var(--muted);
+}
+.footer .link[data-state="live"] {
+  color: var(--green);
+}
+.footer .link[data-state="lost"],
+.footer .link[data-state="updating"] {
+  color: var(--yellow);
+}
+.footer .link[data-state="gone"] {
   color: var(--red);
+  border: none;
+  padding: 0;
+  background: none;
 }
 .rootsPanel {
   flex: 1;

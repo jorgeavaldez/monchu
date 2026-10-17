@@ -216,6 +216,9 @@ export interface Client {
   record(scope: "tui" | "web", body: string, attributes?: LogAttributes): void;
   /** Successful reloads; returns an unsubscribe function. */
   onReload(listener: () => void): () => void;
-  /** Non-fatal runtime failures; returns an unsubscribe function. */
-  onReport(listener: (message: string) => void): () => void;
+  /**
+   * Non-fatal runtime failures, and a remote client's own notices about its connection unless `connection` is false
+   * (for a client that shows the connection some other way); returns an unsubscribe function.
+   */
+  onReport(listener: (message: string) => void, options?: { connection?: boolean }): () => void;
 }

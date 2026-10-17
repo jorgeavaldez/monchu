@@ -177,12 +177,16 @@ class RemoteRoot implements RootClient {
   }
 }
 
+/** Whether the core answers: live, out of reach and redialled (`updating` while it installs a release), or gone. */
+export type Connection = "live" | "lost" | "updating" | "gone";
+
 export class RemoteClient implements Client {
   readonly restartsProcess = false;
   /** The client host whose upstream is the core. */
   readonly host: Host<Principal>;
   private readonly localReports = new Set<(message: string) => void>();
   private readonly reconnects = new Set<(ms: number) => void>();
+  private readonly connections = new Set<(state: Connection) => void>();
   private readonly session: Lasting<typeof Session>;
   private readonly helloState: Watched<Hello>;
   private readonly releaseState: Watched<Release>;
@@ -202,6 +206,7 @@ export class RemoteClient implements Client {
       this.lostAt = undefined;
       if (lost === undefined) return;
       this.notice("reconnected to Monchu");
+      this.tell("live");
       for (const listener of this.reconnects) listener(Date.now() - lost);
     });
   }
@@ -287,10 +292,27 @@ export class RemoteClient implements Client {
         ? "connection to Monchu lost · reconnecting"
         : `Monchu is installing ${updating} · reconnecting`,
     );
+    this.tell(updating === null ? "lost" : "updating");
+  }
+
+  /** The redials gave up: the core stays out of reach until it is started again. */
+  gone(): void {
+    this.notice("Monchu is gone; start it again, then reload");
+    this.tell("gone");
+  }
+
+  /** Hears each change of the connection; returns an unsubscribe function. */
+  onConnection(listener: (state: Connection) => void): () => void {
+    this.connections.add(listener);
+    return () => this.connections.delete(listener);
+  }
+
+  private tell(state: Connection): void {
+    for (const listener of this.connections) listener(state);
   }
 
   /** Tell this client's report listeners something about the connection itself. */
-  notice(message: string): void {
+  private notice(message: string): void {
     for (const listener of this.localReports) listener(message);
   }
 
@@ -444,7 +466,10 @@ export class RemoteClient implements Client {
     });
   }
 
-  onReport(listener: (message: string) => void): () => void {
+  onReport(
+    listener: (message: string) => void,
+    options: { connection?: boolean } = {},
+  ): () => void {
     let seen = 0;
     const stop = this.followState(
       (ref) => ref.reports,
@@ -456,7 +481,7 @@ export class RemoteClient implements Client {
         seen = Math.max(seen, newest);
       },
     );
-    this.localReports.add(listener);
+    if (options.connection !== false) this.localReports.add(listener);
     return () => {
       stop();
       this.localReports.delete(listener);

@@ -29,6 +29,8 @@ import {
   toggleMode,
 } from "./state.ts";
 
+const SIZES_ITSELF = CSS.supports("field-sizing", "content");
+
 type Suggestion = { value: string; usage: string; help: string };
 
 function suggestions(text: string): Suggestion[] {
@@ -57,10 +59,11 @@ export function Editor() {
   const list = useComputed(() => (closed.value ? [] : suggestions(draft.value)));
   // Back from a pick or a prompt, typing goes to the editor again.
   useEffect(() => area.current?.focus(), []);
-  // The box grows with its text up to the stylesheet's max-height, then scrolls.
+  // The box grows with its text up to the stylesheet's max-height, then scrolls: by itself where the browser sizes a
+  // field to its content, else measured here, which lays the page out again on every keystroke.
   useLayoutEffect(() => {
     const element = area.current;
-    if (element === null) return;
+    if (element === null || SIZES_ITSELF) return;
     element.style.height = "auto";
     element.style.height = `${element.scrollHeight + element.offsetHeight - element.clientHeight}px`;
   }, [draft.value]);

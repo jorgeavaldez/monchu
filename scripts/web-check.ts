@@ -4,7 +4,9 @@
  * out dir: `report.json`, `summary.md`, and per screen an accessibility snapshot and a screenshot. Hard gates fail the
  * run; with `--baseline <dir>` (an earlier run's out dir) it also compares metrics, snapshots and pixels.
  *
- *   node scripts/web-check.ts [--out web-check] [--baseline <dir>] [--viewport 412x915]
+ *   node scripts/web-check.ts [--out web-check] [--baseline <dir>] [--viewport 412x915] [--only <journey>]
+ *
+ * `--only` runs the load journey and the ones whose name starts with it, for working on one.
  *
  * Needs `agent-browser` on PATH with a browser it can launch. Nothing here touches a real home or a model provider.
  */
@@ -28,6 +30,7 @@ const { values: args } = parseArgs({
     out: { type: "string", default: "web-check" },
     baseline: { type: "string" },
     viewport: { type: "string", default: "412x915" },
+    only: { type: "string" },
   },
 });
 const OUT = resolve(args.out);
@@ -405,6 +408,7 @@ async function capture(name: string, home: string, origin: string): Promise<void
 
 /** Run one journey as a gate: its assertions, or the error that stopped it. */
 async function journey(name: string, steps: () => Promise<string>): Promise<void> {
+  if (args.only !== undefined && !name.startsWith("load:") && !name.startsWith(args.only)) return;
   try {
     gate(`journey ${name}`, true, await steps());
   } catch (error) {
@@ -464,6 +468,129 @@ async function gradientPng(width: number, height: number): Promise<Uint8Array> {
     return image.get_bytes();
   } finally {
     image.free();
+  }
+}
+
+/**
+ * What typing may cost with the CPU slowed down as on a mid-range phone, on a transcript of a few hundred items: each
+ * key from its event to the task after the next frame, at the median (p95 is tracked, too noisy to gate), and the
+ * virtual nodes a keystroke renders: an editor's worth, never the transcript's. The same while a reply streams in,
+ * which re-renders the transcript.
+ */
+const TYPING = {
+  cpuSlowdown: 4,
+  keys: 32,
+  gapMs: 90,
+  idleP50Ms: 50,
+  streamingP50Ms: 60,
+  vnodesPerKey: 60,
+};
+
+/** In the page: each keystroke's latency and the vnodes it rendered (`monchuPerf`, from telemetry.ts). */
+const PROBE = `(() => {
+  const probe = { latency: [], vnodes: [], longTasks: 0 };
+  addEventListener("keydown", (event) => {
+    const at = event.timeStamp;
+    const before = monchuPerf.vnodes;
+    requestAnimationFrame(() => {
+      const after = new MessageChannel();
+      after.port1.onmessage = () => {
+        probe.latency.push(performance.now() - at);
+        probe.vnodes.push(monchuPerf.vnodes - before);
+      };
+      after.port2.postMessage(0);
+    });
+  }, true);
+  new PerformanceObserver((list) => { probe.longTasks += list.getEntries().length; }).observe({ type: "longtask" });
+  window.typingProbe = probe;
+  return true;
+})()`;
+
+/** The value at `share` of the way up `values`, rounded. */
+function percentile(values: number[], share: number): number {
+  const sorted = values.toSorted((a, b) => a - b);
+  return Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))] ?? 0);
+}
+
+/** Real keystrokes into the focused editor, `gapMs` apart, as the probe measured them. */
+async function typeKeys(
+  send: (method: string, params: Data) => Promise<Data>,
+): Promise<{ latency: number[]; vnodes: number[]; longTasks: number }> {
+  await page(
+    `Object.assign(window.typingProbe, { latency: [], vnodes: [], longTasks: 0 }) && true`,
+  );
+  for (let at = 0; at < TYPING.keys; at++) {
+    const key = String.fromCharCode(97 + (at % 26));
+    const code = `Key${key.toUpperCase()}`;
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key, code, text: key });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key, code });
+    await new Promise((done) => setTimeout(done, TYPING.gapMs));
+  }
+  await browser("wait", "--fn", `window.typingProbe.latency.length >= ${TYPING.keys}`);
+  const probe = await page("window.typingProbe");
+  if (!isData(probe)) throw new Error("no typing probe in the page");
+  const numbers = (value: unknown) =>
+    list(value).flatMap((item) => (typeof item === "number" ? [item] : []));
+  return {
+    latency: numbers(probe.latency),
+    vnodes: numbers(probe.vnodes),
+    longTasks: number(probe.longTasks) ?? 0,
+  };
+}
+
+/** Seeds a long transcript, then types on it, idle and while a reply streams, with the CPU slowed down. */
+async function typing(): Promise<string> {
+  const finished = `[...document.querySelectorAll(".assistant:not(.live)")].filter((item) => item.textContent.includes("Faux tool finished")).length`;
+  const before = Number(await page(finished));
+  for (let round = 1; round <= 3; round++) {
+    await browser("fill", "textarea", "tools 40");
+    await browser("press", "Enter");
+    await browser(
+      "wait",
+      "--fn",
+      `${finished} >= ${before + round} && !document.querySelector(".status")`,
+    );
+  }
+  await browser("fill", "textarea", "");
+  const nodes = number(await page(`document.querySelectorAll("*").length`)) ?? 0;
+  check((await page(PROBE)) === true, "the typing probe didn't install");
+  const { socket, send } = await devTools();
+  try {
+    await send("Emulation.setCPUThrottlingRate", { rate: TYPING.cpuSlowdown });
+    await browser("focus", "textarea");
+    const idle = await typeKeys(send);
+    // The faux model echoes a message back, so a long one streams for several seconds; Esc stops it after the keys.
+    await browser("fill", "textarea", `stream ${"z ".repeat(3000)}`);
+    await browser("press", "Enter");
+    await browser("wait", "--fn", `!!document.querySelector(".live")`);
+    await browser("fill", "textarea", "");
+    const streaming = await typeKeys(send);
+    const streamed = (await page(`!!document.querySelector(".live")`)) === true;
+    await send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await browser("press", "Escape");
+    await browser("wait", "--fn", `!document.querySelector(".live")`);
+    await browser("fill", "textarea", "");
+    const metrics = {
+      "typing.idleP50Ms": percentile(idle.latency, 0.5),
+      "typing.idleP95Ms": percentile(idle.latency, 0.95),
+      "typing.vnodesPerKey": percentile(idle.vnodes, 0.5),
+      "typing.streamingP50Ms": percentile(streaming.latency, 0.5),
+      "typing.streamingP95Ms": percentile(streaming.latency, 0.95),
+      "typing.longTasks": idle.longTasks + streaming.longTasks,
+    };
+    Object.assign(report.metrics, metrics);
+    check(streamed, "the reply was done before the keys were in");
+    const over = [
+      ["idle p50", metrics["typing.idleP50Ms"], TYPING.idleP50Ms, " ms"],
+      ["streaming p50", metrics["typing.streamingP50Ms"], TYPING.streamingP50Ms, " ms"],
+      ["vnodes a key", metrics["typing.vnodesPerKey"], TYPING.vnodesPerKey, ""],
+    ] as const;
+    for (const [what, value, budget, unit] of over)
+      check(value <= budget, `${what} ${value}${unit}, over its ${budget}${unit} budget`);
+    return `${nodes} DOM nodes at ${TYPING.cpuSlowdown}x CPU: idle p50/p95 ${metrics["typing.idleP50Ms"]}/${metrics["typing.idleP95Ms"]} ms, ${metrics["typing.vnodesPerKey"]} vnodes a key; streaming p50/p95 ${metrics["typing.streamingP50Ms"]}/${metrics["typing.streamingP95Ms"]} ms`;
+  } finally {
+    await send("Emulation.setCPUThrottlingRate", { rate: 1 }).catch(() => undefined);
+    socket.close();
   }
 }
 
@@ -950,6 +1077,11 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     },
   );
 
+  await journey(
+    "typing: keystrokes keep up on a long transcript, also while a reply streams",
+    typing,
+  );
+
   const errors = list((await browser("errors")).errors);
   const logged = list((await browser("console")).messages).filter(
     (item) => isData(item) && item.type === "error",
@@ -968,6 +1100,9 @@ async function journeys(url: string, home: string, origin: string): Promise<void
 
 /** Lower is better for every metric; a regression is past noise for its kind. */
 function worse(key: string, before: number, after: number): boolean {
+  // Keystrokes take tens of milliseconds, so half again as long is past their noise.
+  if (key.startsWith("typing.") && key.endsWith("Ms"))
+    return after > before * 1.5 && after - before > 10;
   if (key.endsWith("Ms")) return after > before * 1.25 && after - before > 50;
   if (key.endsWith("Bytes")) return after > before * 1.02;
   return after > before + 0.01;

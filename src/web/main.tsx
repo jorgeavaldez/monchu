@@ -4,7 +4,7 @@ import { webSocketLink, type Link, type WebSocketLike } from "@earendil-works/ch
 import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
-import { cancelLogin, connected, connection, loginStatus, notice, start, view } from "./state.ts";
+import { cancelLogin, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
 
 /**
@@ -44,10 +44,7 @@ async function dial(): Promise<Link | undefined> {
     );
     // Wrapped at once, so the core's first frames are never missed.
     const link = webSocketLink(socketLike(socket));
-    socket.addEventListener("open", () => {
-      socket.addEventListener("close", () => connected("lost"));
-      resolve(link);
-    });
+    socket.addEventListener("open", () => resolve(link));
     // Refused or signed out: the page reloads into the login once the core is reachable again.
     socket.addEventListener("error", () => resolve(undefined));
   });
@@ -76,7 +73,6 @@ async function boot(): Promise<void> {
       // An update replaced the page's own files: load the new ones.
       if (page !== undefined && page.client.release.version !== page.version)
         return location.reload();
-      connected("open");
       page?.client.record("web", "reconnected", { ms });
     },
   });
@@ -89,10 +85,15 @@ async function boot(): Promise<void> {
   const { client } = attached;
   page = { client, version: client.release.version };
   const watch = telemetry(client);
+  client.onConnection((state) => {
+    connection.value = state;
+  });
   await start(client);
-  connected("open");
-  client.onReport((message) => {
-    if (message.startsWith("Monchu is gone")) connection.value = "gone";
+  connection.value = client.connected ? "live" : "lost";
+  // A phone that put the page away may come back to a core that's back too: a reload finds it, through the login if
+  // need be.
+  addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && connection.value === "gone") location.reload();
   });
   view(undefined)?.subscribe(() => watch.painted(performance.now()));
   client.record("web", "ready", { ms: Math.round(performance.now()) });

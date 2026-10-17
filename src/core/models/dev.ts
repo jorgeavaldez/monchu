@@ -28,6 +28,14 @@ export function createDevProvider(): Provider {
           ? last.content
           : (last?.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ??
             "");
+      // `tools <n>` makes n tool calls in one reply, for a long transcript in a few steps.
+      if (/^tools \d+$/.test(text))
+        return fauxAssistantMessage(
+          Array.from({ length: Number(text.slice(6)) }, (_, at) =>
+            fauxToolCall("read", { path: `missing-${at}.txt` }),
+          ),
+          { stopReason: "toolUse" },
+        );
       if (text === "read")
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",

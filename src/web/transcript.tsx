@@ -364,20 +364,28 @@ export function Transcript({ view }: { view: ConversationView }) {
     const element = main.current;
     if (element !== null) element.scrollTop = element.scrollHeight;
   };
-  useLayoutEffect(() => {
-    if (left.value === undefined) toEnd();
-  });
+  // The end moves when an item arrives or grows (a streamed reply, a card sizing on first paint) and when the editor
+  // grows. Watched once, after layout, so neither a render nor a keystroke forces a layout of its own.
   useLayoutEffect(() => {
     const element = main.current;
     if (element === null) return;
-    // The end moves without a render too: the editor growing, cards sizing on first paint.
     const sized = new ResizeObserver(() => {
       if (left.peek() === undefined) toEnd();
     });
     sized.observe(element);
     for (const child of element.children) sized.observe(child);
-    return () => sized.disconnect();
-  });
+    const items = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node instanceof Element) sized.observe(node);
+        for (const node of record.removedNodes) if (node instanceof Element) sized.unobserve(node);
+      }
+    });
+    items.observe(element, { childList: true });
+    return () => {
+      items.disconnect();
+      sized.disconnect();
+    };
+  }, []);
   useEffect(() => {
     const stop = following.subscribe(() => {
       left.value = undefined;
