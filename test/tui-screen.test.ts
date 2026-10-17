@@ -693,10 +693,11 @@ describe.each([
   it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen, backend) => {
       await backend.startWorker("reader", "inspect", "start:reader");
-      // The worker's name and the message's short id are the only label: the rule's style tells an update from a report.
+      // The worker's name, when it was sent and its short id are the only label: the rule's style tells an update from a
+      // report.
       const update = await visible(screen, "│ Faux worker progress: checking.");
       expect(update[update.findIndex((line) => line.includes("worker progress")) - 1]).toMatch(
-        /^│ reader · [k-z]{4}\s*$/,
+        /^│ reader · .*\d:\d{2}.* · [k-z]{1,4}\s*$/,
       );
       await visible(screen, "Faux front: result received.");
       const shown = (await screen.flushAndGetViewport()).join("\n");
@@ -715,9 +716,9 @@ describe.each([
         );
       });
       const bar = docked.findIndex((line) => line.includes("Workers · ○ 1 idle"));
-      // A blank row separates the bar from the last message's timestamp.
+      // A blank row separates the bar from the last message's timestamp and short id.
       expect(docked[bar - 1]?.trim()).toBe("");
-      expect(docked[bar - 2]).toMatch(/\d{4}, \d+:\d{2}/);
+      expect(docked[bar - 2]).toMatch(/\d:\d{2}.* · [k-z]{4}\s*$/);
       // The footer keeps the view and model but drops the command hints.
       const footer = docked.findLast((line) => line.includes("• root"));
       expect(footer).toBeDefined();
@@ -741,6 +742,9 @@ describe.each([
         const lines = await screen.flushAndGetViewport();
         // The worker answers the new message; its first answer may have scrolled above it.
         const more = lines.findIndex((line) => line.trim() === "more");
+        // The user's input is stamped like a reply.
+        if (more !== -1)
+          expect(lines.slice(more + 2, more + 3).join()).toMatch(/\d:\d{2}.* · [k-z]{4}/);
         return (
           more !== -1 &&
           lines.slice(more).some((line) => line.includes("Faux worker result: done."))

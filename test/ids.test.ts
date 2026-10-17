@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseShortId, shortId } from "../src/api/ids.ts";
+import { ShortIds } from "../src/ui/ids.ts";
 
 describe("short ids", () => {
   it("pins the encoding, since every client and stored reference depends on it", () => {
@@ -39,5 +40,29 @@ describe("short ids", () => {
       ),
     ).toBe(false);
     for (const id of [-1, 1.5, 16 ** 8]) expect(() => shortId(id)).toThrow("No short id");
+  });
+
+  it("finds each shown id's shortest unique prefix, as jj does, and names the ids a new one lengthened", () => {
+    const ids = new ShortIds();
+    const codes: string[] = [];
+    // The shortest prefix no other shown id starts with.
+    const expected = (code: string) => {
+      let length = 1;
+      while (codes.some((other) => other !== code && other.startsWith(code.slice(0, length))))
+        length++;
+      return length;
+    };
+    for (const id of [5, 77, 300, 301, 4096, 9000, 12002, 40000, 65535, 70000, 70001]) {
+      const before = new Map(codes.map((code) => [code, ids.prefix(code)]));
+      const lengthened = ids.add(id);
+      codes.push(shortId(id));
+      expect(ids.add(id)).toEqual([]);
+      for (const code of codes) expect(ids.prefix(code)).toBe(expected(code));
+      expect(lengthened.toSorted()).toEqual(
+        codes.filter((code) => before.get(code) !== ids.prefix(code)).toSorted(),
+      );
+      const { code, unique, rest } = ids.split(id);
+      expect([unique + rest, unique.length]).toEqual([code, expected(code)]);
+    }
   });
 });

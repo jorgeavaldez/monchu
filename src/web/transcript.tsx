@@ -7,8 +7,8 @@ import { useSignal } from "@preact/signals";
 import type { ComponentChildren, VNode } from "preact";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
-import { shortId } from "../api/ids.ts";
 import { escalationSummary, workerNotice } from "../api/notices.ts";
+import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { expandAll, notices, type Notice } from "./state.ts";
 
@@ -41,7 +41,7 @@ function Card(props: {
   kind: string;
   header: ComponentChildren;
   body: string;
-  id?: string;
+  stamp?: ComponentChildren;
   error?: boolean;
 }) {
   const open = useSignal<boolean | undefined>(undefined);
@@ -60,7 +60,7 @@ function Card(props: {
       <header>
         {long ? (expanded ? "▾ " : "▸ ") : ""}
         {props.header}
-        {props.id === undefined ? null : <span class="id"> · {props.id}</span>}
+        {props.stamp === undefined ? null : <> · {props.stamp}</>}
       </header>
       {props.body ? (
         <pre>
@@ -100,7 +100,22 @@ function ToolCard(props: {
   );
 }
 
-function Assistant(props: { message: AssistantMessage; results: Map<string, ToolResultMessage> }) {
+/** When an entry was sent and its short id, the unique prefix highlighted as jj does. */
+function Stamp(props: { entry: EntryRecord; ids: ShortIds }) {
+  const { unique, rest } = props.ids.split(props.entry.id);
+  return (
+    <span class="stamp">
+      {stamp(sentAt(props.entry) ?? 0)} · <span class="prefix">{unique}</span>
+      {rest}
+    </span>
+  );
+}
+
+function Assistant(props: {
+  message: AssistantMessage;
+  results: Map<string, ToolResultMessage>;
+  stamp: ComponentChildren;
+}) {
   return (
     <>
       {props.message.content.map((part) => {
@@ -123,6 +138,7 @@ function Assistant(props: { message: AssistantMessage; results: Map<string, Tool
         // Thinking stays private, as in the terminal.
         return null;
       })}
+      {props.stamp}
       {props.message.stopReason === "error" ? (
         <div class="system warning">reply failed · {props.message.errorMessage ?? "error"}</div>
       ) : null}
@@ -131,7 +147,12 @@ function Assistant(props: { message: AssistantMessage; results: Map<string, Tool
 }
 
 /** One committed entry; cached by its immutable record (and its tool results'), so unchanged entries never re-render. */
-function entryNode(entry: EntryRecord, results: Map<string, ToolResultMessage>): VNode | null {
+function entryNode(
+  entry: EntryRecord,
+  results: Map<string, ToolResultMessage>,
+  ids: ShortIds,
+): VNode | null {
+  const shown = addressable(entry) ? <Stamp entry={entry} ids={ids} /> : undefined;
   const notice = workerNotice(entry);
   if (notice !== undefined)
     return (
@@ -143,7 +164,7 @@ function entryNode(entry: EntryRecord, results: Map<string, ToolResultMessage>):
             {notice.status === "failed" ? <span class="failed"> · failed</span> : null}
           </>
         }
-        id={shortId(entry.id)}
+        stamp={shown}
         body={notice.text}
       />
     );
@@ -153,19 +174,30 @@ function entryNode(entry: EntryRecord, results: Map<string, ToolResultMessage>):
     const escalation = escalationSummary(text);
     if (escalation !== undefined) return <div class="system">clef · escalated · {escalation}</div>;
     return (
-      <div class="user">
-        <Text text={text} />
-      </div>
+      <>
+        <div class="user">
+          <Text text={text} />
+        </div>
+        <div class="meta">{shown}</div>
+      </>
     );
   }
   if (entry.kind === "pi.assistant" && message?.role === "assistant")
-    return <Assistant message={message} results={results} />;
+    return (
+      <Assistant
+        message={message}
+        results={results}
+        stamp={shown === undefined ? null : <div class="meta">{shown}</div>}
+      />
+    );
   if (entry.kind === "pi.compaction") return <div class="system">context compacted</div>;
   if (entry.kind === "pi.reset") return <div class="system">new context</div>;
   return null;
 }
 
 const cache = new WeakMap<EntryRecord, { results: string; node: VNode | null }>();
+// Each conversation's shown short ids; a new one can lengthen a neighbour's unique prefix, which re-renders it.
+const shortIds = new Map<ConversationView["conversation"]["id"], ShortIds>();
 
 function NoticeLine({ item }: { item: Notice }) {
   return (
@@ -181,6 +213,11 @@ export function Transcript({ view }: { view: ConversationView }) {
   for (const entry of view.entries)
     for (const message of entry.model ?? [])
       if (message.role === "toolResult") results.set(message.toolCallId, message);
+  const ids = shortIds.get(view.conversation.id) ?? new ShortIds();
+  shortIds.set(view.conversation.id, ids);
+  const shown = view.entries.filter(addressable);
+  for (const entry of shown) ids.add(entry.id);
+  const prefixes = new Map(shown.map((entry) => [entry.id, ids.split(entry.id).unique.length]));
   const nodes = view.entries.map((entry) => {
     const calls =
       entry.kind === "pi.assistant"
@@ -193,10 +230,11 @@ export function Transcript({ view }: { view: ConversationView }) {
             .map((id) => (results.has(id) ? "1" : "0"))
             .join("")
         : "";
+    const key = `${calls}:${prefixes.get(entry.id) ?? 0}`;
     const cached = cache.get(entry);
-    if (cached !== undefined && cached.results === calls) return cached.node;
-    const node = entryNode(entry, results);
-    cache.set(entry, { results: calls, node });
+    if (cached !== undefined && cached.results === key) return cached.node;
+    const node = entryNode(entry, results, ids);
+    cache.set(entry, { results: key, node });
     return node;
   });
   const live = presentation(view);

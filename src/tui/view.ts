@@ -32,6 +32,7 @@ import { formatKeyText } from "./components/keybinding-hints.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { WorkerMessageComponent } from "./components/worker-message.ts";
+import { EntryStamp, shortIdLabel } from "./components/entry-stamp.ts";
 import { getMarkdownTheme, getSelectListTheme, theme } from "./theme/theme.ts";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import {
@@ -66,6 +67,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Goal, QueueChange } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
+import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import {
   escalationSummary,
   parseWorkerNotice,
@@ -418,6 +420,9 @@ export class MonchuTui {
   /** Placed notices, each after the entry it follows; `undefined` when no entry was shown. */
   private readonly notices: { text: string; kind: NoticeKind; after: number | undefined }[] = [];
   private renderedIds: number[] = [];
+  // The shown entries' short ids, and the chat child that renders each, to repaint one whose unique prefix grows.
+  private readonly ids = new ShortIds();
+  private readonly labeled = new Map<string, Component>();
   private applied: ConversationView | undefined;
   private workersLine = "";
   private streaming: Container | undefined;
@@ -948,6 +953,8 @@ export class MonchuTui {
       this.unfinished.clear();
       this.streamedCalls.clear();
       this.renderedIds = [];
+      this.ids.clear();
+      this.labeled.clear();
       this.streaming = undefined;
       this.ui.resetTextSelection();
     }
@@ -1028,17 +1035,32 @@ export class MonchuTui {
   }
 
   private addEntry(entry: EntryRecord): void {
+    const shown = addressable(entry);
+    const lengthened = shown ? this.ids.add(entry.id) : [];
+    const time = shown ? stamp(sentAt(entry) ?? 0) : "";
+    const label = (child: Component) => {
+      this.labeled.set(shortId(entry.id), child);
+      for (const code of lengthened) {
+        const other = this.labeled.get(code);
+        if (other !== undefined && other !== child) this.chat.changed(other);
+      }
+    };
     const worker = workerNotice(entry);
     const message = entry.model?.[0];
     if (worker) {
-      const component = new WorkerMessageComponent(worker, shortId(entry.id), (changed) => {
-        this.chat.changed(changed);
-        this.ui.requestRender();
-      });
+      const component = new WorkerMessageComponent(
+        worker,
+        () => `${theme.fg("dim", `${time} · `)}${shortIdLabel(this.ids, entry.id)}`,
+        (changed) => {
+          this.chat.changed(changed);
+          this.ui.requestRender();
+        },
+      );
       component.setExpanded(this.expanded);
       this.workerMessages.push(component);
       this.chat.addChild(new Spacer(1));
       this.chat.addChild(component);
+      label(component);
     } else if (entry.kind === "pi.user" && message?.role === "user") {
       const text =
         typeof message.content === "string"
@@ -1046,35 +1068,30 @@ export class MonchuTui {
           : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
       const assessment = escalationSummary(text);
       this.chat.addChild(new Spacer(1));
-      this.chat.addChild(
-        assessment === undefined
-          ? new UserMessageComponent(text)
-          : new Text(
-              getSelectListTheme().description(`system · routing advice · ${assessment}`),
-              1,
-              0,
-            ),
-      );
+      if (assessment === undefined) {
+        this.chat.addChild(new UserMessageComponent(text));
+        const stampLine = new EntryStamp(this.ids, entry.id, time);
+        this.chat.addChild(stampLine);
+        label(stampLine);
+      } else
+        this.chat.addChild(
+          new Text(
+            getSelectListTheme().description(`system · routing advice · ${assessment}`),
+            1,
+            0,
+          ),
+        );
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const container = this.streaming ?? new Container();
       if (!this.streaming) this.chat.addChild(container);
       container.clear();
       // Monchu's component never renders private thinking content.
       container.addChild(new AssistantMessageComponent(message));
-      // When the reply was sent: the request start plus its duration, in local time.
-      if (message.content.some((part) => part.type === "text" && part.text.trim()))
-        container.addChild(
-          new Text(
-            getSelectListTheme().description(
-              new Date(message.timestamp + (message.durationMs ?? 0)).toLocaleString(undefined, {
-                dateStyle: "medium",
-                timeStyle: "short",
-              }),
-            ),
-            1,
-            0,
-          ),
-        );
+      // When the reply was sent, and its short id.
+      if (shown) {
+        container.addChild(new EntryStamp(this.ids, entry.id, time));
+        label(container);
+      }
       this.streaming = undefined;
       for (const part of message.content) {
         if (part.type !== "toolCall") continue;

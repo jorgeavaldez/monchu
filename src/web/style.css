@@ -117,7 +117,7 @@ pre {
   padding: 0 1ch;
 }
 .card footer,
-.id,
+.stamp,
 .time,
 .help,
 .usage,
@@ -125,6 +125,10 @@ pre {
 .status,
 .notice.event {
   color: var(--muted);
+}
+.stamp .prefix {
+  color: var(--yellow);
+  font-weight: bold;
 }
 .card.report {
   border-left: 3px solid var(--accent);
