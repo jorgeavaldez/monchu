@@ -33,7 +33,7 @@ export const commands: Record<
   "/goals": { usage: "", help: "ongoing projects and commitments" },
   "/jobs": {
     usage: "",
-    help: "every scheduled job, watcher and background process, and recent job events",
+    help: "every job (agent, command, bg) and recent job events",
   },
   "/model": { usage: "[search]", help: "pick a model, for a conversation or a role default" },
   "/thinking": { usage: "", help: "pick a thinking level, for a conversation or a role default" },

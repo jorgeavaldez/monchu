@@ -646,7 +646,11 @@ async function busySubWorkers(
 }
 
 /** A worker's model choice as tools take it: a profile name, or a model and thinking level, each optional. */
-type ModelChoice = { profile?: string; model?: string; thinking?: ModelRole["thinkingLevel"] };
+type ModelChoice = {
+  profile?: string;
+  model?: string;
+  thinking?: ModelRole["thinkingLevel"];
+};
 
 const modelChoice = {
   profile: Type.Optional(Type.String({ minLength: 1 })),
@@ -664,7 +668,7 @@ function describeRole(role: Pick<ModelRole, "provider" | "modelId" | "thinkingLe
  * The role a choice selects on top of `base`: the profile first, then an explicit model and thinking level. Unknown
  * names, unregistered models, and levels the model doesn't support are errors, never a silent fallback.
  */
-function chooseRole(
+export function chooseRole(
   models: Models,
   profiles: Record<string, WorkerProfile>,
   base: ModelRole,

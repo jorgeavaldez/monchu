@@ -13,33 +13,45 @@ import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ModelRole } from "./config.ts";
-import { messageWorker, reopenWorker, startWorker, WorkersDoc } from "./agents/workers.ts";
+import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
+import {
+  chooseRole,
+  messageWorker,
+  reopenWorker,
+  startWorker,
+  WorkersDoc,
+} from "./agents/workers.ts";
 
-/** A job's worker: an existing worker under `parentId`, or none, and the job starts its own under the root. */
-type JobOwner = { parentId: ConversationId; worker: string };
+/**
+ * What a job is. `agent`: on a cron schedule, wake a worker with the job's prompt. `command`: on a cron schedule, run a
+ * command with no model call, and wake the worker only when its output changes or it fails anew. `bg`: run a command
+ * once in the background now, and wake the worker when it ends.
+ */
+type JobType = "agent" | "command" | "bg";
+
+/** The worker a job wakes: by name under `parentId`; the job starts it, on `role`, if it does not exist then. */
+type JobWorker = { parentId: ConversationId; name: string };
 
 export type Job = {
   name: string;
-  kind: "schedule" | "watch" | "process";
-  /** Five-field cron expression in the device's local time; schedule jobs only. */
+  type: JobType;
+  /** Five-field cron expression in the device's local time; `agent` and `command` jobs. */
   schedule?: string;
-  /** Minutes between polls; watch jobs only. */
-  every?: number;
-  /**
-   * Shell command: a watch's poll, or output a schedule job hands its worker, both safe to rerun; or the process a
-   * process job runs once.
-   */
+  /** `command`: run at each slot, safe to rerun. `bg`: run once. */
   command?: string;
-  /** What the worker does when the job fires; empty for a process job started without one. */
+  /** What the worker should do when the job wakes it; may be empty for `command` and `bg`. */
   prompt: string;
   cwd: string;
   rootId: ConversationId;
-  owner: JobOwner | null;
+  worker: JobWorker;
+  /** The model a worker the job starts runs on; an existing worker keeps its own model for life. */
+  role?: ModelRole;
   /** The worker or `front` that created it. */
   createdBy: string;
   createdAt: number;
-  /** `done` only for a process job that ended. */
+  /** The tool call that created it, so a replayed create returns it instead of failing. */
+  callId?: string;
+  /** `done` only for a `bg` job that ended. */
   status: "active" | "paused" | "done";
   /** The runner task; a runner whose ID this is not stops itself. */
   taskId: TaskId;
@@ -48,18 +60,18 @@ export type Job = {
   nextAt?: number;
   lastRunAt?: number;
   runs: number;
-  /** Hash of a watch's last output, and of the last failure reported, so only changes wake anyone. */
+  /** `command`: hash of the last output, and of the last failure reported, so only changes wake anyone. */
   cursor?: string;
   failure?: string;
-  /** Process jobs: the output log, the limit in minutes, a pending kill, and how it ended. */
+  /** `bg`: the output log, the limit in minutes, a pending kill, and how it ended. */
   log?: string;
   timeout?: number;
   kill?: true;
-  ended?: ProcessEnd;
+  ended?: BgEnd;
 };
 
-/** How a process job ended. `interrupted`: Monchu quit or restarted while it ran, which kills it. */
-type ProcessEnd = {
+/** How a `bg` job ended. `interrupted`: Monchu quit or restarted while it ran, which kills it. */
+type BgEnd = {
   reason: "exited" | "killed" | "timed out" | "interrupted";
   /** The exit code; `null` when it did not exit by itself or never started. */
   code: number | null;
@@ -208,6 +220,9 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex").s
 const OUTPUT_KEPT = 8000;
 const COMMAND_TIMEOUT_S = 300;
 
+/** Finished `bg` jobs, and their logs, are kept this long. */
+const ENDED_KEPT_MS = 7 * 24 * 60 * 60_000;
+
 type RunOutcome = { ok: true; output: string } | { ok: false; error: string };
 
 type RunnerState =
@@ -216,15 +231,12 @@ type RunnerState =
   | { phase: "run"; at: number; key: string; manual: boolean }
   | { phase: "act"; at: number; key: string; manual: boolean; outcome: RunOutcome | null };
 
-/** The job this runner serves, or `undefined` once it was deleted, paused or handed to another runner. */
+const EMPTY: JobsState = { jobs: [], events: [], nextEvent: 1 };
+
+/** The job this runner serves, or `undefined` once it was deleted, paused, ended or handed to another runner. */
 function served(state: Readonly<JobsState>, name: string, taskId: TaskId): Job | undefined {
   const job = state.jobs.find((item) => item.name === name);
   return job?.status === "active" && job.taskId === taskId ? job : undefined;
-}
-
-function due(job: Job, now: number): number {
-  if (job.kind === "watch") return now + (job.every ?? 5) * 60_000;
-  return nextSlot(parseCron(job.schedule ?? ""), now);
 }
 
 function message(job: Job, header: string, body: string): string {
@@ -232,12 +244,9 @@ function message(job: Job, header: string, body: string): string {
     `[Job ${job.name} · ${header}] This comes from a background job, not from the user.`,
     ...(job.prompt ? [job.prompt] : []),
     ...(body ? [body] : []),
-    `Your answer reaches the front only if its first line starts with "NEEDS USER"; start it that way only when the user must decide or act. Manage the job with job_control when it is done.`,
+    `Your answer reaches the front only if its first line starts with "NEEDS USER"; start it that way only when the user must decide or act. Manage the job with the job tool when it is done.`,
   ].join("\n\n");
 }
-
-/** Finished process jobs, and their logs, are kept this long. */
-const ENDED_KEPT_MS = 7 * 24 * 60 * 60_000;
 
 /** The last `chars` characters of a file, reading only its tail; empty when it is missing. */
 async function tail(path: string, chars: number): Promise<string> {
@@ -268,7 +277,7 @@ const duration = (ms: number) => {
     : `${Math.floor(minutes / 60)}h${minutes % 60}m`;
 };
 
-function endText(job: Job, end: ProcessEnd): string {
+function endText(job: Job, end: BgEnd): string {
   const after = `after ${duration(end.at - job.createdAt)}`;
   switch (end.reason) {
     case "exited":
@@ -284,53 +293,65 @@ function endText(job: Job, end: ProcessEnd): string {
   }
 }
 
+/** Remove a `bg` job's log directory. A process a delete is still killing may hold it a moment longer. */
+async function removeLog(log: string): Promise<void> {
+  await rm(join(log, ".."), { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+}
+
+const ACTIONS = [
+  "create",
+  "list",
+  "pause",
+  "resume",
+  "run_now",
+  "output",
+  "kill",
+  "delete",
+] as const;
+
 /**
- * Durable scheduled jobs and watchers. Each job is one background runner task on the root conversation, so stopping a
- * worker never stops its jobs, and every job lives in one store-wide list. A runner is replay-safe: its command must be
- * safe to rerun, and what a run changes (the job's cursor, its event, and the worker it wakes) commits atomically with
- * the runner's next checkpoint, so a restart never wakes anyone twice for one slot or change.
+ * Durable background jobs: one `job` tool for every role, and one store-wide list. Each job is a background runner task
+ * on the root conversation, so stopping a worker never stops its jobs. Runners are replay-safe. A scheduled run commits
+ * what it changes (the command's cursor, its event, the worker it wakes) atomically with the runner's next checkpoint,
+ * so a restart never wakes anyone twice for one slot or change. A `bg` command runs as Durable runs a tool, inside its
+ * runner's invocation, so quitting Monchu kills it; its replay reports it interrupted, once.
  * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createJobs(
   workerRole: () => ModelRole,
   home: string,
+  profiles: Record<string, WorkerProfile> = {},
   preload: readonly string[] = [],
 ) {
-  /** Wake the job's worker inside the commit that records the run. Returns the worker's name. */
+  /**
+   * Wake the job's worker inside the commit that records the run: message it if it exists (reopened if closed), or
+   * start it on the job's model. Returns the worker's name.
+   */
   async function wake(tx: Tx, job: Job, text: string, requestId: string): Promise<string> {
-    if (job.owner !== null) {
-      const workers = await tx.doc(WorkersDoc, job.owner.parentId);
-      const worker = workers.workers.find((item) => item.name === job.owner?.worker);
-      if (worker === undefined) throw new Error(`owner worker ${job.owner.worker} is gone`);
-      if (worker.closed) await reopenWorker(tx, job.owner.parentId, worker.name);
-      await messageWorker(tx, job.owner.parentId, worker.name, text, requestId, "followUp", true);
-      return worker.name;
-    }
-    const name = `job-${job.name}`;
-    const workers = await tx.doc(WorkersDoc, job.rootId);
-    const worker = workers.workers.find((item) => item.name === name);
+    const { parentId, name } = job.worker;
+    const worker = (await tx.doc(WorkersDoc, parentId)).workers.find((item) => item.name === name);
     if (worker === undefined)
       await startWorker(
         tx,
-        job.rootId,
+        parentId,
         name,
         text,
         job.cwd,
         requestId,
-        workerRole(),
+        job.role ?? workerRole(),
         preload,
         true,
       );
     else {
-      if (worker.closed) await reopenWorker(tx, job.rootId, name);
-      await messageWorker(tx, job.rootId, name, text, requestId, "followUp", true);
+      if (worker.closed) await reopenWorker(tx, parentId, name);
+      await messageWorker(tx, parentId, name, text, requestId, "followUp", true);
     }
     return name;
   }
 
   const Runner = defineTask<{ name: string }, RunnerState, null>({
     name: "monchu.job",
-    version: 1,
+    version: 2,
     initial: () => ({ phase: "plan" }),
     phases: {
       plan: (task, runtime, context) =>
@@ -340,8 +361,11 @@ export function createJobs(
           if (job === undefined)
             return { status: "terminal", outcome: { status: "completed", result: null } };
           const now = runtime.now();
-          // A watch takes its baseline at once; a schedule waits for its first slot.
-          const nextAt = job.kind === "watch" && job.cursor === undefined ? now : due(job, now);
+          // A command takes its baseline at once; an agent job waits for its first slot.
+          const nextAt =
+            job.type === "command" && job.cursor === undefined
+              ? now
+              : nextSlot(parseCron(job.schedule ?? ""), now);
           job.nextAt = nextAt;
           return { status: "running", checkpoint: { phase: "wait", nextAt } };
         }, context),
@@ -382,19 +406,21 @@ export function createJobs(
           }
           if (now < nextAt) return { status: "running", checkpoint: { phase: "wait", nextAt } };
           // A slot missed while Monchu was closed runs once now; the next one counts from now.
-          const key = job.kind === "schedule" ? slotKey(nextAt) : `poll:${job.runs}`;
-          return { status: "running", checkpoint: { phase: "run", at: now, key, manual: false } };
+          return {
+            status: "running",
+            checkpoint: { phase: "run", at: now, key: slotKey(nextAt), manual: false },
+          };
         }, context);
       },
       run: async (task, runtime, context) => {
         const { at, key, manual } = task.state.checkpoint;
         const job = served(
-          (await runtime.snapshot(JobsDoc, context)) ?? { jobs: [], events: [], nextEvent: 1 },
+          (await runtime.snapshot(JobsDoc, context)) ?? EMPTY,
           task.input.name,
           task.id,
         );
         let outcome: RunOutcome | null = null;
-        if (job?.command !== undefined) {
+        if (job?.type === "command" && job.command !== undefined) {
           const env = await runtime.env(context);
           if (env === undefined) outcome = { ok: false, error: "no execution environment" };
           else {
@@ -432,21 +458,8 @@ export function createJobs(
           job.lastRunAt = at;
           const requestId = `job:${job.name}:${job.createdAt}:${key}`;
           const event = async (kind: JobEvent["kind"], text: string, wakeText?: string) => {
-            let worker: string | undefined;
-            if (wakeText !== undefined)
-              try {
-                worker = await wake(tx, job, wakeText, requestId);
-              } catch (error) {
-                // A job whose worker is gone pauses rather than failing every slot.
-                job.status = "paused";
-                addEvent(state, {
-                  at,
-                  job: job.name,
-                  kind: "failed",
-                  text: `paused: ${error instanceof Error ? error.message : String(error)}`,
-                });
-                return;
-              }
+            const worker =
+              wakeText === undefined ? undefined : await wake(tx, job, wakeText, requestId);
             addEvent(state, {
               at,
               job: job.name,
@@ -455,10 +468,16 @@ export function createJobs(
               ...(worker === undefined ? {} : { worker }),
             });
           };
-          if (outcome !== null && !outcome.ok) {
+          if (job.type === "agent")
+            await event(
+              "fired",
+              manual ? "ran now" : `slot ${key}`,
+              message(job, manual ? "run now" : `slot ${key}`, ""),
+            );
+          else if (outcome !== null && !outcome.ok) {
             const failure = hash(outcome.error);
-            // A watch reports a failure once until it changes or the command recovers; a schedule reports every run.
-            if (job.kind === "schedule" || manual || job.failure !== failure) {
+            // A failure wakes the worker once, until it changes or the command recovers.
+            if (job.failure !== failure) {
               job.failure = failure;
               await event(
                 "failed",
@@ -470,17 +489,6 @@ export function createJobs(
                 ),
               );
             }
-          } else if (job.kind === "schedule") {
-            delete job.failure;
-            await event(
-              "fired",
-              manual ? "ran now" : `slot ${key}`,
-              message(
-                job,
-                manual ? "run now" : `slot ${key}`,
-                outcome === null ? "" : `Command output:\n${outcome.output}`,
-              ),
-            );
           } else {
             const output = outcome?.output ?? "";
             const cursor = hash(output);
@@ -488,18 +496,16 @@ export function createJobs(
             const changed = !first && job.cursor !== cursor;
             delete job.failure;
             job.cursor = cursor;
-            // Run now polls at once; like any poll it wakes the worker only on a change.
+            // Run now runs at once; like any run it wakes the worker only on a change.
             if (changed)
               await event(
                 "changed",
                 "output changed",
                 message(job, "change", `Command output now:\n${output}`),
               );
-            else if (first) await event("fired", "watching: baseline taken");
+            else if (first) await event("fired", "baseline taken");
           }
-          if (job.status !== "active")
-            return { status: "terminal", outcome: { status: "completed", result: null } };
-          const nextAt = due(job, runtime.now());
+          const nextAt = nextSlot(parseCron(job.schedule ?? ""), runtime.now());
           job.nextAt = nextAt;
           return { status: "running", checkpoint: { phase: "wait", nextAt } };
         }, context),
@@ -509,25 +515,25 @@ export function createJobs(
   });
 
   /**
-   * Runs a process job's command once, as Durable runs a tool: inside this task's invocation, so Monchu quitting or
+   * Runs a `bg` job's command once, as Durable runs a tool: inside this task's invocation, so Monchu quitting or
    * restarting kills it. The `launched` memo marks the start; a phase that finds it set is a replay after such a stop,
    * so it reports the process interrupted instead of starting it again. The end, its event and the ping commit at once,
    * under one request ID, so a replay never pings twice.
    */
-  const ProcessRunner = defineTask<
+  const BgRunner = defineTask<
     { name: string },
-    { phase: "run" } | { phase: "end"; end: ProcessEnd },
+    { phase: "run" } | { phase: "end"; end: BgEnd },
     null
   >({
-    name: "monchu.job-process",
+    name: "monchu.job-bg",
     version: 1,
     initial: () => ({ phase: "run" }),
     phases: {
       run: async (task, runtime, context) => {
-        const finish = (end: ProcessEnd) =>
+        const finish = (end: BgEnd) =>
           runtime.commit(() => ({ status: "running", checkpoint: { phase: "end", end } }), context);
         const job = served(
-          (await runtime.snapshot(JobsDoc, context)) ?? { jobs: [], events: [], nextEvent: 1 },
+          (await runtime.snapshot(JobsDoc, context)) ?? EMPTY,
           task.input.name,
           task.id,
         );
@@ -603,7 +609,7 @@ export function createJobs(
       end: async (task, runtime, context) => {
         const { end } = task.state.checkpoint;
         const job = served(
-          (await runtime.snapshot(JobsDoc, context)) ?? { jobs: [], events: [], nextEvent: 1 },
+          (await runtime.snapshot(JobsDoc, context)) ?? EMPTY,
           task.input.name,
           task.id,
         );
@@ -619,20 +625,19 @@ export function createJobs(
           const summary = endText(current, end);
           const text = message(
             current,
-            `process ${summary}`,
+            `bg ${summary}`,
             [
               `Command: ${current.command ?? ""}`,
               output ? `Output tail:\n${output.trimEnd()}` : "No output.",
               `Full log: ${current.log ?? ""}`,
             ].join("\n"),
           );
-          let worker: string | undefined;
-          let failure: string | undefined;
-          try {
-            worker = await wake(tx, current, text, `job:${current.name}:${current.createdAt}:end`);
-          } catch (error) {
-            failure = error instanceof Error ? error.message : String(error);
-          }
+          const worker = await wake(
+            tx,
+            current,
+            text,
+            `job:${current.name}:${current.createdAt}:end`,
+          );
           addEvent(state, {
             at: end.at,
             job: current.name,
@@ -644,11 +649,8 @@ export function createJobs(
                 : end.reason === "interrupted"
                   ? "interrupted"
                   : "killed",
-            text: (failure === undefined ? summary : `${summary}; no ping: ${failure}`).slice(
-              0,
-              300,
-            ),
-            ...(worker === undefined ? {} : { worker }),
+            text: summary.slice(0, 300),
+            worker,
           });
           return { status: "terminal", outcome: { status: "completed", result: null } };
         }, context);
@@ -661,7 +663,7 @@ export function createJobs(
   /** The calling conversation's root and, for a worker, its parent and name. */
   async function caller(tx: Tx, id: ConversationId) {
     const record = await tx.conversation(id);
-    if (record?.owner === undefined) return { rootId: id, owner: null };
+    if (record?.owner === undefined) return { rootId: id, self: undefined };
     const parentId = record.owner.conversationId;
     const worker = (await tx.doc(WorkersDoc, parentId)).workers.find(
       (item) => item.conversationId === id,
@@ -672,17 +674,17 @@ export function createJobs(
       rootId = up.owner.conversationId;
       up = await tx.conversation(rootId);
     }
-    return { rootId, owner: { parentId, worker: worker.name } };
+    return { rootId, self: { parentId, name: worker.name } };
   }
 
-  function startRunner(tx: Tx, job: Pick<Job, "name" | "rootId" | "kind">): Promise<TaskId> {
+  function startRunner(tx: Tx, job: Pick<Job, "name" | "rootId" | "type">): Promise<TaskId> {
     const options = {
       conversationId: job.rootId,
       ownership: { kind: "conversation" },
       background: true,
     } as const;
-    return job.kind === "process"
-      ? tx.createTask(ProcessRunner, { name: job.name }, options)
+    return job.type === "bg"
+      ? tx.createTask(BgRunner, { name: job.name }, options)
       : tx.createTask(Runner, { name: job.name }, options);
   }
 
@@ -691,141 +693,48 @@ export function createJobs(
 
   return defineExtension({
     name: "monchu.jobs",
-    tasks: [Runner, ProcessRunner],
+    tasks: [Runner, BgRunner],
     tools: [
       defineTool({
-        name: "job_create",
+        name: "job",
         description:
-          "Create a durable background job. kind process: start a command in the background now (a build, a test run, `gh pr checks 12 --watch`) and keep working; when it ends, its worker gets one message with the exit code, the output tail and the full log path. A process runs only while Monchu is open: quitting or restarting Monchu kills it, and its worker hears it was interrupted. Schedules and watches run while Monchu is open and survive restarts. kind schedule: a cron expression in the device's local time (five fields, or @hourly/@daily/@weekly/@monthly); at each slot your prompt goes to the job's worker, with the command's output when a command is given. A slot missed while Monchu was closed runs once on startup. kind watch: polls a shell command every N minutes and wakes the worker only when its output changes or the command fails (first poll takes a baseline); unchanged polls wake no model. Commands must be read-only and safe to rerun, for example `gh pr view 12 --json state,reviews,statusCheckRollup`. A job created by a worker wakes that worker; one created by the front starts its own worker, job-<name>. The worker's answer reaches the front only when it starts with NEEDS USER. Every job is listed globally (job_list, /jobs).",
+          "Background jobs; every job is listed for everyone (list, /jobs). create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. Other actions take name: pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
         parameters: Type.Object(
           {
-            name: Type.String({
-              pattern: "^[a-z][a-z0-9-]{0,39}$",
-              description: "Unique job name, for example pr-123-ci",
-            }),
-            kind: StringEnum(["schedule", "watch", "process"] as const),
-            schedule: Type.Optional(text(100, "Cron expression, for schedule jobs")),
-            every: Type.Optional(
-              Type.Integer({
-                minimum: 1,
-                maximum: 1440,
-                description: "Minutes between polls, for watch jobs (default 5)",
+            action: StringEnum(ACTIONS),
+            name: Type.Optional(
+              Type.String({
+                pattern: "^[a-z][a-z0-9-]{0,39}$",
+                description: "Job name, unique, for example pr-123-ci",
               }),
             ),
-            command: Type.Optional(
-              text(4000, "Shell command; required for watch and process jobs"),
-            ),
+            type: Type.Optional(StringEnum(["agent", "command", "bg"] as const)),
+            schedule: Type.Optional(text(100, "Cron expression, for agent and command jobs")),
+            command: Type.Optional(text(4000, "Shell command, for command and bg jobs")),
             prompt: Type.Optional(
-              text(
-                4000,
-                "What the worker should do when the job fires or the process ends; required for schedule and watch jobs",
-              ),
+              text(4000, "What the worker should do when woken; required for agent jobs"),
             ),
+            worker: Type.Optional(
+              Type.String({ minLength: 1, maxLength: 100, description: "Worker to wake" }),
+            ),
+            profile: Type.Optional(Type.String({ minLength: 1 })),
+            model: Type.Optional(
+              Type.String({ minLength: 1, description: "provider/modelId, for a started worker" }),
+            ),
+            thinking: Type.Optional(StringEnum(thinkingLevels)),
             timeout: Type.Optional(
               Type.Integer({
                 minimum: 1,
                 maximum: 10_080,
-                description: "Minutes before a process job is killed (default none)",
+                description: "Minutes before a bg command is killed (default none)",
               }),
             ),
             cwd: Type.Optional(
               Type.String({
                 minLength: 1,
-                description: "Directory for the command and a started worker; default your own",
+                description: "Directory for commands and a started worker; default your own",
               }),
             ),
-          },
-          { additionalProperties: false },
-        ),
-        executionMode: "sequential",
-        execute: async (args, api, context) => {
-          const { schedule } = args;
-          if (args.kind === "schedule") {
-            if (schedule === undefined) throw new Error("A schedule job needs schedule");
-            nextSlot(parseCron(schedule), Date.now());
-          } else if (args.command === undefined)
-            throw new Error(`A ${args.kind} job needs command`);
-          if (args.kind !== "process" && args.prompt === undefined)
-            throw new Error(`A ${args.kind} job needs prompt`);
-          const cwd = args.cwd ?? (await api.agent(context)).cwd;
-          if (cwd === undefined) throw new Error("No directory: pass cwd");
-          const createdAt = Date.now();
-          const { job, pruned } = await api.commit(async (tx) => {
-            const state = await tx.doc(JobsDoc);
-            // Finished process jobs leave the list a week after they end.
-            const pruned: string[] = [];
-            for (let index = state.jobs.length - 1; index >= 0; index--) {
-              const item = state.jobs[index];
-              if (item?.ended === undefined || item.ended.at > createdAt - ENDED_KEPT_MS) continue;
-              if (item.log !== undefined) pruned.push(item.log);
-              state.jobs.splice(index, 1);
-            }
-            if (state.jobs.some((item) => item.name === args.name))
-              throw new Error(`A job named ${args.name} exists; pick another name or delete it`);
-            const { rootId, owner } = await caller(tx, api.conversationId);
-            const base = { name: args.name, rootId, kind: args.kind };
-            const job: Job = {
-              ...base,
-              ...(args.kind === "schedule" && schedule !== undefined ? { schedule } : {}),
-              ...(args.kind === "watch" ? { every: args.every ?? 5 } : {}),
-              ...(args.kind === "process"
-                ? {
-                    log: join(home, "jobs", `${args.name}-${createdAt}`, "output.log"),
-                    ...(args.timeout === undefined ? {} : { timeout: args.timeout }),
-                  }
-                : {}),
-              ...(args.command === undefined ? {} : { command: args.command }),
-              prompt: args.prompt ?? "",
-              cwd,
-              owner,
-              createdBy: owner?.worker ?? "front",
-              createdAt,
-              status: "active",
-              taskId: await startRunner(tx, base),
-              runs: 0,
-            };
-            state.jobs.push(job);
-            addEvent(state, {
-              at: job.createdAt,
-              job: job.name,
-              kind: job.kind === "process" ? "started" : "created",
-              text: describeJob(job),
-            });
-            return { job, pruned };
-          }, context);
-          for (const log of pruned) await removeLog(log);
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  job.kind === "process"
-                    ? `Started ${formatJob(job)}\nKeep working: you get one message when it ends. job_control output shows its log so far; kill stops it.`
-                    : `Created: ${formatJob(job)}`,
-              },
-            ],
-          };
-        },
-      }),
-      defineTool({
-        name: "job_list",
-        description:
-          "List every background job in this Monchu, whoever created it: kind, schedule, owner worker, status, last and next run.",
-        parameters: Type.Object({}),
-        replay: "safe",
-        execute: async (_args, api, context) => {
-          const state = await api.snapshot(JobsDoc, context);
-          return { content: [{ type: "text", text: formatJobs(state?.jobs ?? []) }] };
-        },
-      }),
-      defineTool({
-        name: "job_control",
-        description:
-          "Manage a background job by name. Schedules and watches: pause, resume, run_now. Process jobs: output (the last lines of its log), kill. Any job: delete (a running process is killed first, and its log removed). Any worker or the front may manage any job.",
-        parameters: Type.Object(
-          {
-            name: Type.String({ minLength: 1 }),
-            action: StringEnum(["pause", "resume", "run_now", "kill", "output", "delete"] as const),
             lines: Type.Optional(
               Type.Integer({
                 minimum: 1,
@@ -839,100 +748,204 @@ export function createJobs(
         replay: "safe",
         executionMode: "sequential",
         execute: async (args, api, context) => {
+          const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
+          if (args.action === "list") {
+            const state = await api.snapshot(JobsDoc, context);
+            return reply(formatJobs(state?.jobs ?? []));
+          }
+          const name = args.name;
+          if (name === undefined) throw new Error(`${args.action} needs name`);
           if (args.action === "output") {
             const job = (await api.snapshot(JobsDoc, context))?.jobs.find(
-              (item) => item.name === args.name,
+              (item) => item.name === name,
             );
-            if (job === undefined) throw new Error(`No job named ${args.name}`);
-            if (job.log === undefined) throw new Error(`${job.name} is not a process job`);
+            if (job === undefined) throw new Error(`No job named ${name}`);
+            if (job.log === undefined) throw new Error(`${name} is not a bg job`);
             const lines = (await tail(job.log, OUTPUT_KEPT * 4))
               .trimEnd()
               .split("\n")
               .slice(-(args.lines ?? 50));
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `${formatJob(job)}\n${lines.join("\n") || "(no output yet)"}`,
-                },
-              ],
+            return reply(`${formatJob(job)}\n${lines.join("\n") || "(no output yet)"}`);
+          }
+          if (args.action === "create") {
+            const { type, schedule, command } = args;
+            if (type === undefined) throw new Error("create needs type: agent, command or bg");
+            if (type !== "bg") {
+              if (schedule === undefined) throw new Error(`A ${type} job needs schedule`);
+              nextSlot(parseCron(schedule), Date.now());
+            }
+            if (type !== "agent" && command === undefined)
+              throw new Error(`A ${type} job needs command`);
+            if (type === "agent" && args.prompt === undefined)
+              throw new Error("An agent job needs prompt");
+            const choice = {
+              ...(args.profile === undefined ? {} : { profile: args.profile }),
+              ...(args.model === undefined ? {} : { model: args.model }),
+              ...(args.thinking === undefined ? {} : { thinking: args.thinking }),
             };
+            const role =
+              Object.keys(choice).length === 0
+                ? undefined
+                : chooseRole(api.models, profiles, workerRole(), choice);
+            const cwd = args.cwd ?? (await api.agent(context)).cwd;
+            if (cwd === undefined) throw new Error("No directory: pass cwd");
+            const createdAt = Date.now();
+            const { job, pruned, replayed } = await api.commit(async (tx) => {
+              const state = await tx.doc(JobsDoc);
+              const existing = state.jobs.find((item) => item.name === name);
+              if (existing !== undefined && existing.callId === api.callId)
+                return { job: existing, pruned: [], replayed: true };
+              // Finished bg jobs leave the list a week after they end.
+              const pruned: string[] = [];
+              for (let index = state.jobs.length - 1; index >= 0; index--) {
+                const item = state.jobs[index];
+                if (item?.ended === undefined || item.ended.at > createdAt - ENDED_KEPT_MS)
+                  continue;
+                if (item.log !== undefined) pruned.push(item.log);
+                state.jobs.splice(index, 1);
+              }
+              if (state.jobs.some((item) => item.name === name))
+                throw new Error(`A job named ${name} exists; pick another name or delete it`);
+              const { rootId, self } = await caller(tx, api.conversationId);
+              const worker = await target(
+                tx,
+                rootId,
+                self,
+                args.worker ?? self?.name ?? `job-${name}`,
+              );
+              if (role !== undefined && worker.exists)
+                throw new Error(
+                  `${worker.name} already runs on its own model, which it keeps for life (prompt cache); leave out profile, model and thinking, or name a new worker`,
+                );
+              const base = { name, rootId, type };
+              const job: Job = {
+                ...base,
+                ...(type !== "bg" && schedule !== undefined ? { schedule } : {}),
+                ...(type !== "agent" && command !== undefined ? { command } : {}),
+                ...(type === "bg"
+                  ? {
+                      log: join(home, "jobs", `${name}-${createdAt}`, "output.log"),
+                      ...(args.timeout === undefined ? {} : { timeout: args.timeout }),
+                    }
+                  : {}),
+                prompt: args.prompt ?? "",
+                cwd,
+                worker: { parentId: worker.parentId, name: worker.name },
+                ...(role === undefined ? {} : { role }),
+                createdBy: self?.name ?? "front",
+                createdAt,
+                callId: api.callId,
+                status: "active",
+                taskId: await startRunner(tx, base),
+                runs: 0,
+              };
+              state.jobs.push(job);
+              addEvent(state, {
+                at: createdAt,
+                job: name,
+                kind: type === "bg" ? "started" : "created",
+                text: describeJob(job),
+              });
+              return { job, pruned, replayed: false };
+            }, context);
+            for (const log of pruned) await removeLog(log);
+            if (replayed) return reply(`Created: ${formatJob(job)}`);
+            return reply(
+              job.type === "bg"
+                ? `Started ${formatJob(job)}\nKeep working: ${job.worker.name} gets one message when it ends. action output shows its log so far; kill stops it.`
+                : `Created: ${formatJob(job)}`,
+            );
           }
           let removed: string | undefined;
           const result = await api.commit(async (tx) => {
             const state = await tx.doc(JobsDoc);
-            const index = state.jobs.findIndex((item) => item.name === args.name);
+            const index = state.jobs.findIndex((item) => item.name === name);
             const job = state.jobs[index];
-            if (job === undefined) throw new Error(`No job named ${args.name}`);
+            if (job === undefined) throw new Error(`No job named ${name}`);
             const at = Date.now();
-            if (
-              job.kind === "process" &&
-              (args.action === "pause" || args.action === "resume" || args.action === "run_now")
-            )
-              throw new Error(`${args.action} is not for process jobs; use kill or delete`);
+            if (job.type === "bg" && args.action !== "kill" && args.action !== "delete")
+              throw new Error(`${args.action} is not for bg jobs; use output, kill or delete`);
             switch (args.action) {
-              case "output":
-                throw new Error("output reads the log outside a commit");
               case "kill":
-                if (job.kind !== "process") throw new Error(`${job.name} is not a process job`);
-                if (job.status !== "active") return `${job.name} already ended`;
+                if (job.type !== "bg")
+                  throw new Error(`${name} is not a bg job; use pause or delete`);
+                if (job.status !== "active") return `${name} already ended`;
                 job.kill = true;
-                return `Killing ${job.name}; its worker gets the usual message when it ends`;
+                return `Killing ${name}; ${job.worker.name} gets the usual message when it ends`;
               case "pause":
-                if (job.status === "paused") return `${job.name} is already paused`;
+                if (job.status === "paused") return `${name} is already paused`;
                 job.status = "paused";
                 delete job.nextAt;
-                addEvent(state, { at, job: job.name, kind: "paused", text: "paused" });
-                return `Paused ${job.name}`;
+                addEvent(state, { at, job: name, kind: "paused", text: "paused" });
+                return `Paused ${name}`;
               case "resume":
-                if (job.status === "active") return `${job.name} is already active`;
+                if (job.status === "active") return `${name} is already active`;
                 job.status = "active";
                 job.taskId = await startRunner(tx, job);
-                addEvent(state, { at, job: job.name, kind: "resumed", text: "resumed" });
-                return `Resumed ${job.name}`;
+                addEvent(state, { at, job: name, kind: "resumed", text: "resumed" });
+                return `Resumed ${name}`;
               case "run_now":
-                if (job.status !== "active")
-                  throw new Error(`${job.name} is paused; resume it first`);
+                if (job.status !== "active") throw new Error(`${name} is paused; resume it first`);
                 job.runNow = true;
-                return `${job.name} runs now`;
+                return `${name} runs now`;
               case "delete":
                 state.jobs.splice(index, 1);
                 removed = job.log;
-                addEvent(state, { at, job: job.name, kind: "deleted", text: "deleted" });
-                return `Deleted ${job.name}`;
+                addEvent(state, { at, job: name, kind: "deleted", text: "deleted" });
+                return `Deleted ${name}`;
+              case "create":
+              case "list":
+              case "output":
+                throw new Error(`${args.action} is handled before this commit`);
             }
           }, context);
           if (removed !== undefined) await removeLog(removed);
-          return { content: [{ type: "text", text: result }] };
+          return reply(result);
         },
       }),
     ],
   });
 }
 
-/** Remove a process job's log directory. A process a delete is still killing may hold it a moment longer. */
-async function removeLog(log: string): Promise<void> {
-  await rm(join(log, ".."), { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+/**
+ * The worker a new job wakes, by name: the caller itself, one of the root's workers, or else a new one the job starts
+ * under the root.
+ */
+async function target(
+  tx: Tx,
+  rootId: ConversationId,
+  self: JobWorker | undefined,
+  name: string,
+): Promise<JobWorker & { exists: boolean }> {
+  if (self !== undefined && self.name === name) return { ...self, exists: true };
+  const exists = (await tx.doc(WorkersDoc, rootId)).workers.some((item) => item.name === name);
+  return { parentId: rootId, name, exists };
 }
 
 function describeJob(job: Job): string {
-  switch (job.kind) {
-    case "schedule":
-      return `schedule ${job.schedule ?? ""}`;
-    case "watch":
-      return `watch every ${job.every ?? 5}m: ${job.command ?? ""}`;
-    case "process":
-      return `process: ${job.command ?? ""}`;
+  switch (job.type) {
+    case "agent":
+      return `agent ${job.schedule ?? ""}`;
+    case "command":
+      return `command ${job.schedule ?? ""}: ${job.command ?? ""}`;
+    case "bg":
+      return `bg: ${job.command ?? ""}`;
   }
 }
 
 const time = (at: number | undefined) => (at === undefined ? "never" : slotKey(at));
 
-/** One job on one line, as `job_list` and `/jobs` show it. */
+/** One job on one line, as `list` and `/jobs` show it. */
 function formatJob(job: Job): string {
-  if (job.kind === "process")
-    return `${job.name} (${job.ended === undefined ? `running ${duration(Date.now() - job.createdAt)}` : endText(job, job.ended).split(":", 1)[0]}) ${describeJob(job).slice(0, 120)} · worker ${job.owner?.worker ?? `job-${job.name}`} · by ${job.createdBy} · log ${job.log ?? ""}`;
-  return `${job.name} (${job.status}) ${describeJob(job).slice(0, 120)} · worker ${job.owner?.worker ?? `job-${job.name}`} · by ${job.createdBy} · runs ${job.runs}, last ${time(job.lastRunAt)}, next ${job.status === "active" ? time(job.nextAt) : "-"}`;
+  const who = `worker ${job.worker.name} · by ${job.createdBy}`;
+  if (job.type === "bg") {
+    const state =
+      job.ended === undefined
+        ? `running ${duration(Date.now() - job.createdAt)}`
+        : (endText(job, job.ended).split(":", 1)[0] ?? "");
+    return `${job.name} (${state}) ${describeJob(job).slice(0, 120)} · ${who} · log ${job.log ?? ""}`;
+  }
+  return `${job.name} (${job.status}) ${describeJob(job).slice(0, 120)} · ${who} · runs ${job.runs}, last ${time(job.lastRunAt)}, next ${job.status === "active" ? time(job.nextAt) : "-"}`;
 }
 
 export function formatJobs(jobs: readonly Job[]): string {

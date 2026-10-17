@@ -842,9 +842,10 @@ describe("backend", () => {
       if (text === "schedule")
         return fauxAssistantMessage(
           [
-            fauxToolCall("job_create", {
+            fauxToolCall("job", {
+              action: "create",
               name: "brief",
-              kind: "schedule",
+              type: "agent",
               schedule: "@daily",
               prompt: "write the brief",
             }),
@@ -852,10 +853,9 @@ describe("backend", () => {
           { stopReason: "toolUse" },
         );
       if (text === "run")
-        return fauxAssistantMessage(
-          [fauxToolCall("job_control", { name: "brief", action: "run_now" })],
-          { stopReason: "toolUse" },
-        );
+        return fauxAssistantMessage([fauxToolCall("job", { action: "run_now", name: "brief" })], {
+          stopReason: "toolUse",
+        });
       return fauxAssistantMessage("ok");
     });
     const { backend } = await openBackend(value);

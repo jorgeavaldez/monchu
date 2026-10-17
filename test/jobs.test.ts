@@ -55,52 +55,86 @@ describe("cron", () => {
   });
 });
 
+/** Never during a test: only the baseline and run_now run a command job. */
+const NEVER = "0 0 1 1 *";
+
 const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
   watch: {
-    tool: "job_create",
+    tool: "job",
     args: {
+      action: "create",
       name: "pr",
-      kind: "watch",
-      every: 60,
+      type: "command",
+      schedule: NEVER,
       command: "cat state.txt",
       prompt: "check the PR",
     },
   },
   daily: {
-    tool: "job_create",
-    args: { name: "brief", kind: "schedule", schedule: "0 9 * * *", prompt: "write the brief" },
+    tool: "job",
+    args: {
+      action: "create",
+      name: "brief",
+      type: "agent",
+      schedule: "0 9 * * *",
+      prompt: "write the brief",
+      model: "faux/faux-1",
+      thinking: "off",
+    },
   },
-  "poll pr": { tool: "job_control", args: { name: "pr", action: "run_now" } },
-  "pause pr": { tool: "job_control", args: { name: "pr", action: "pause" } },
-  "resume pr": { tool: "job_control", args: { name: "pr", action: "resume" } },
-  "delete pr": { tool: "job_control", args: { name: "pr", action: "delete" } },
+  "poll pr": { tool: "job", args: { action: "run_now", name: "pr" } },
+  "pause pr": { tool: "job", args: { action: "pause", name: "pr" } },
+  "resume pr": { tool: "job", args: { action: "resume", name: "pr" } },
+  "delete pr": { tool: "job", args: { action: "delete", name: "pr" } },
   "start w": { tool: "start_worker", args: { name: "w", task: "make watch" } },
   "make watch": {
-    tool: "job_create",
-    args: { name: "mine", kind: "watch", command: "cat state.txt", prompt: "mine changed" },
-  },
-  "poll mine": { tool: "job_control", args: { name: "mine", action: "run_now" } },
-  "run brief": { tool: "job_control", args: { name: "brief", action: "run_now" } },
-  build: {
-    tool: "job_create",
+    tool: "job",
     args: {
+      action: "create",
+      name: "mine",
+      type: "command",
+      schedule: NEVER,
+      command: "cat state.txt",
+      prompt: "mine changed",
+    },
+  },
+  "poll mine": { tool: "job", args: { action: "run_now", name: "mine" } },
+  "agent for w": {
+    tool: "job",
+    args: {
+      action: "create",
+      name: "nudge",
+      type: "agent",
+      schedule: "@daily",
+      prompt: "nudge",
+      worker: "w",
+      thinking: "off",
+    },
+  },
+  "run brief": { tool: "job", args: { action: "run_now", name: "brief" } },
+  list: { tool: "job", args: { action: "list" } },
+  build: {
+    tool: "job",
+    args: {
+      action: "create",
       name: "build",
-      kind: "process",
+      type: "bg",
       command: "echo compiling; sleep 1; echo built; exit 3",
       prompt: "see how the build went",
     },
   },
   long: {
-    tool: "job_create",
+    tool: "job",
     args: {
+      action: "create",
       name: "long",
-      kind: "process",
+      type: "bg",
       command: "echo line1; echo line2; sleep 30 & echo $! > child.pid; wait",
     },
   },
-  "tail long": { tool: "job_control", args: { name: "long", action: "output", lines: 1 } },
-  "kill long": { tool: "job_control", args: { name: "long", action: "kill" } },
-  "delete long": { tool: "job_control", args: { name: "long", action: "delete" } },
+  "tail long": { tool: "job", args: { action: "output", name: "long", lines: 1 } },
+  "kill long": { tool: "job", args: { action: "kill", name: "long" } },
+  "delete long": { tool: "job", args: { action: "delete", name: "long" } },
 };
 
 async function withJobs() {
@@ -157,7 +191,7 @@ describe("jobs", () => {
     // The first poll takes a baseline and wakes no one.
     expect(await waitForEvent(harness, 2)).toMatchObject([
       { job: "pr", kind: "created" },
-      { job: "pr", kind: "fired", text: "watching: baseline taken" },
+      { job: "pr", kind: "fired", text: "baseline taken" },
     ]);
     expect((await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? []).toEqual([]);
 
@@ -239,7 +273,10 @@ describe("jobs", () => {
     expect(
       new Date((await harness.snapshot(JobsDoc, context))?.jobs[0]?.nextAt ?? 0).getHours(),
     ).toBe(9);
-    expect(job?.owner).toBeNull();
+    expect(job).toMatchObject({
+      worker: { parentId: root.id, name: "job-brief" },
+      role: { provider: "faux", modelId: "faux-1", thinkingLevel: "off" },
+    });
     await send(root, "run brief");
     expect((await waitForEvent(harness, 2))[1]).toMatchObject({
       kind: "fired",
@@ -258,7 +295,7 @@ describe("jobs", () => {
     expect((await harness.snapshot(JobsDoc, context))?.jobs[0]).toMatchObject({
       name: "mine",
       createdBy: "w",
-      owner: { parentId: root.id, worker: "w" },
+      worker: { parentId: root.id, name: "w" },
     });
     await writeFile(join(value.directory, "state.txt"), "done\n");
     await send(root, "poll mine");
@@ -266,6 +303,11 @@ describe("jobs", () => {
     await waitFor(() => value.jobMessages.some((text) => text.includes("mine changed")));
     const workers = (await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? [];
     expect(workers.map((worker) => worker.name)).toEqual(["w"]);
+    // An existing worker keeps its model for life, so a job naming it can't pick one.
+    await send(root, "agent for w");
+    expect(textOf((await toolResults(root)).at(-1))).toContain("keeps for life");
+    await send(root, "list");
+    expect(textOf((await toolResults(root)).at(-1))).toMatch(/^- mine \(active\) command /);
     await harness.close(context);
   });
 });
@@ -294,14 +336,14 @@ describe("process jobs", () => {
     await send(root, "build");
     // The tool returned while the command still runs.
     const started = (await harness.snapshot(JobsDoc, context))?.jobs[0];
-    expect(started).toMatchObject({ kind: "process", status: "active" });
+    expect(started).toMatchObject({ type: "bg", status: "active" });
     expect(started?.ended).toBeUndefined();
     expect((await events(harness))[0]).toMatchObject({ kind: "started" });
     const ended = await waitForEvent(harness, 2);
     expect(ended[1]).toMatchObject({ kind: "exited", worker: "job-build" });
     expect(ended[1]?.text).toMatch(/^exited 3 after/);
     await waitFor(() => value.jobMessages.length === 1);
-    expect(value.jobMessages[0]).toContain("process exited 3");
+    expect(value.jobMessages[0]).toContain("bg exited 3");
     expect(value.jobMessages[0]).toContain("see how the build went");
     expect(value.jobMessages[0]).toMatch(/compiling\nbuilt/);
     const job = (await harness.snapshot(JobsDoc, context))?.jobs[0];
@@ -324,7 +366,7 @@ describe("process jobs", () => {
     });
     // Git Bash reports its own pids, which Node cannot signal on Windows.
     if (process.platform !== "win32") await waitFor(() => !alive(pid));
-    await waitFor(() => value.jobMessages.some((text) => text.includes("process killed")));
+    await waitFor(() => value.jobMessages.some((text) => text.includes("bg killed")));
     const log = (await harness.snapshot(JobsDoc, context))?.jobs[0]?.log ?? "";
     await send(root, "delete long");
     expect((await harness.snapshot(JobsDoc, context))?.jobs).toEqual([]);
@@ -347,7 +389,7 @@ describe("process jobs", () => {
       worker: "job-long",
     });
     await waitFor(() => value.jobMessages.length === 1);
-    expect(value.jobMessages[0]).toContain("process interrupted");
+    expect(value.jobMessages[0]).toContain("bg interrupted");
     expect(value.jobMessages[0]).toContain("line2");
     await root.waitForIdle(context);
     await harness.close(context);
