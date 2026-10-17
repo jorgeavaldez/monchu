@@ -1,7 +1,8 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { Conversation, Harness, JsonObject } from "@earendil-works/pi-durable";
 import assert from "node:assert";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
@@ -9,6 +10,7 @@ import { WorkersDoc, workerNotice } from "../src/core/agents/workers.ts";
 import {
   allEntries,
   callTools,
+  toolResults,
   cleanup,
   context,
   conversationOf,
@@ -79,11 +81,31 @@ const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
   },
   "poll mine": { tool: "job_control", args: { name: "mine", action: "run_now" } },
   "run brief": { tool: "job_control", args: { name: "brief", action: "run_now" } },
+  build: {
+    tool: "job_create",
+    args: {
+      name: "build",
+      kind: "process",
+      command: "echo compiling; sleep 1; echo built; exit 3",
+      prompt: "see how the build went",
+    },
+  },
+  long: {
+    tool: "job_create",
+    args: {
+      name: "long",
+      kind: "process",
+      command: "echo line1; echo line2; sleep 30 & echo $! > child.pid; wait",
+    },
+  },
+  "tail long": { tool: "job_control", args: { name: "long", action: "output", lines: 1 } },
+  "kill long": { tool: "job_control", args: { name: "long", action: "kill" } },
+  "delete long": { tool: "job_control", args: { name: "long", action: "delete" } },
 };
 
 async function withJobs() {
   const value = await setup();
-  value.registry.install(createJobs(() => fauxRole));
+  value.registry.install(createJobs(() => fauxRole, value.directory));
   await writeFile(join(value.directory, "state.txt"), "pending\n");
   /** What a job's worker answers; the front's requests follow `FRONT_CALLS`. */
   let answer = "ok";
@@ -244,6 +266,97 @@ describe("jobs", () => {
     await waitFor(() => value.jobMessages.some((text) => text.includes("mine changed")));
     const workers = (await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? [];
     expect(workers.map((worker) => worker.name)).toEqual(["w"]);
+    await harness.close(context);
+  });
+});
+
+/** Whether a process with this pid still runs. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The pid the `long` process wrote, once it has. */
+async function childPid(directory: string): Promise<number> {
+  const file = join(directory, "child.pid");
+  await waitFor(async () => existsSync(file) && (await readFile(file, "utf8")).trim() !== "");
+  return Number((await readFile(file, "utf8")).trim());
+}
+
+describe("process jobs", () => {
+  it("starts a command in the background and pings its worker once, with code and output, when it exits", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    await send(root, "build");
+    // The tool returned while the command still runs.
+    const started = (await harness.snapshot(JobsDoc, context))?.jobs[0];
+    expect(started).toMatchObject({ kind: "process", status: "active" });
+    expect(started?.ended).toBeUndefined();
+    expect((await events(harness))[0]).toMatchObject({ kind: "started" });
+    const ended = await waitForEvent(harness, 2);
+    expect(ended[1]).toMatchObject({ kind: "exited", worker: "job-build" });
+    expect(ended[1]?.text).toMatch(/^exited 3 after/);
+    await waitFor(() => value.jobMessages.length === 1);
+    expect(value.jobMessages[0]).toContain("process exited 3");
+    expect(value.jobMessages[0]).toContain("see how the build went");
+    expect(value.jobMessages[0]).toMatch(/compiling\nbuilt/);
+    const job = (await harness.snapshot(JobsDoc, context))?.jobs[0];
+    expect(job).toMatchObject({ status: "done", ended: { reason: "exited", code: 3 } });
+    expect(await readFile(job?.log ?? "", "utf8")).toBe("compiling\nbuilt\n");
+    await harness.close(context);
+  });
+
+  it("shows a running process's output, kills it on request, and deletes it with its log", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    await send(root, "long");
+    const pid = await childPid(value.directory);
+    await send(root, "tail long");
+    expect(textOf((await toolResults(root)).at(-1))).toMatch(/running .*\nline2$/);
+    await send(root, "kill long");
+    expect((await waitForEvent(harness, 2))[1]).toMatchObject({
+      kind: "killed",
+      worker: "job-long",
+    });
+    // Git Bash reports its own pids, which Node cannot signal on Windows.
+    if (process.platform !== "win32") await waitFor(() => !alive(pid));
+    await waitFor(() => value.jobMessages.some((text) => text.includes("process killed")));
+    const log = (await harness.snapshot(JobsDoc, context))?.jobs[0]?.log ?? "";
+    await send(root, "delete long");
+    expect((await harness.snapshot(JobsDoc, context))?.jobs).toEqual([]);
+    expect(existsSync(log)).toBe(false);
+    await harness.close(context);
+  });
+
+  it("kills a running process when Monchu closes, and reports it interrupted once after reopening", async () => {
+    const value = await withJobs();
+    let { harness, root } = await open(value);
+    await send(root, "long");
+    const pid = await childPid(value.directory);
+    await harness.close(context);
+    // Git Bash reports its own pids, which Node cannot signal on Windows.
+    if (process.platform !== "win32") await waitFor(() => !alive(pid));
+
+    ({ harness, root } = await open(value));
+    expect((await waitForEvent(harness, 2))[1]).toMatchObject({
+      kind: "interrupted",
+      worker: "job-long",
+    });
+    await waitFor(() => value.jobMessages.length === 1);
+    expect(value.jobMessages[0]).toContain("process interrupted");
+    expect(value.jobMessages[0]).toContain("line2");
+    await root.waitForIdle(context);
+    await harness.close(context);
+
+    // Another restart neither starts it again nor pings twice.
+    ({ harness, root } = await open(value));
+    await harness.waitForIdle(context);
+    expect((await events(harness)).map((event) => event.kind)).toEqual(["started", "interrupted"]);
+    expect((await harness.snapshot(JobsDoc, context))?.jobs[0]?.status).toBe("done");
     await harness.close(context);
   });
 });
