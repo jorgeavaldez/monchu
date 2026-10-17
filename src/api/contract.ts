@@ -18,14 +18,33 @@ import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
 /**
- * Who asks: the core's own code, or one client connection. Stamped by the core where the connection comes in, never by
- * what a client sends. `person` is false for a service login, which may never replace Monchu's code.
+ * Who asks: the core's or the server's own code, or one client connection. Stamped by the server where the connection
+ * comes in, never by what a client sends. `person` is false for a service login, which may never replace Monchu's code.
  */
-export type Principal = { kind: "core" } | { kind: "client"; connection: string; person: boolean };
+export type Principal =
+  | { kind: "core" }
+  | { kind: "server" }
+  | { kind: "client"; connection: string; person: boolean };
 
 /** One object per connection: what one client opens and starts stays its own. */
 export const principalKey = (principal: Principal): string =>
-  principal.kind === "core" ? "core" : `client:${principal.connection}`;
+  principal.kind === "client" ? `client:${principal.connection}` : principal.kind;
+
+/**
+ * The server process every client connects to, and the core process it runs. `serve` keeps the core running;
+ * `background` was started by a client and exits once no client has been connected for a while.
+ */
+export type ServerStatus = {
+  mode: "serve" | "background";
+  pid: number;
+  core: {
+    state: "stopped" | "starting" | "running" | "stopping";
+    pid: number | null;
+    since: number | null;
+  };
+  /** Clients connected now: terminals and web pages. */
+  clients: number;
+};
 
 /** What a client needs before it can render: replaced after each reload. */
 export type Hello = {
@@ -197,6 +216,31 @@ export const Root = remote("monchu.root", {
         ),
         modelChoice: method(Type.Object({ worker }), trusted<ModelChoice>()),
         pickModel: method(Type.Object({ pick, saveDefault: Type.Boolean(), worker })),
+      },
+    },
+  },
+});
+
+/**
+ * The server: its state for every client, `stop` for a person, and for the core the restart it asks for. Lives in the
+ * server process, which outlasts the core it runs.
+ */
+export const Server = remote("monchu.server", {
+  version: 1,
+  input: Type.Object({}),
+  host: hostNamed("server"),
+  variants: {
+    owner: { state: { state: trusted<ServerStatus>() }, methods: { stop: method() } },
+    viewer: { state: { state: trusted<ServerStatus>() } },
+    core: {
+      state: { state: trusted<ServerStatus>() },
+      methods: {
+        /** Close the core and start a new one; the server and its clients' sockets stay. */
+        replace: method(),
+        /** Close the core, install a release, and run it. */
+        update: method(
+          Type.Object({ plan: Type.Object({ release: text, url: text, prefix: text }) }),
+        ),
       },
     },
   },

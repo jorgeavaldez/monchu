@@ -10,19 +10,14 @@ import { RemoteClient } from "./remote.ts";
 /** What a client says when the core speaks another protocol: a web page reloads, a terminal must restart. */
 export const OUTDATED_CORE = "Monchu's core speaks another protocol than this client: restart it";
 
-/** How long a client keeps trying after the core goes away: long enough for a restart. */
-const RECONNECT_FOR_MS = 30_000;
-/** The same while the core said it is updating: npm's install comes first. */
-const UPDATE_RECONNECT_FOR_MS = 120_000;
-
 /**
  * Connect a client through `dial`, or `undefined` when nothing answers the first time. After a drop it redials for 30
  * seconds, or two minutes for an update, then says so through the client's notices. `onReconnect` hears each
- * successful redial with how long it took; `onError` hears a core that can't be used, such as another protocol's.
+ * time the core answers again (a redial, or a restarted core), with how long it was out of reach; `onError` hears a core that can't be used, such as another protocol's.
  */
 export async function connectRemote(
   dial: () => Promise<Link | undefined>,
-  options: { onError(error: Error): void; onReconnect?(ms: number): void },
+  options: { onError: (error: Error) => void; onReconnect?: (ms: number) => void },
 ): Promise<{ client: RemoteClient; close: () => Promise<void> } | undefined> {
   let link = await dial();
   if (link === undefined) return undefined;
@@ -67,8 +62,7 @@ export async function connectRemote(
   };
   const reconnect = async (current: RemoteClient) => {
     const started = Date.now();
-    const waitMs = current.release.updating === null ? RECONNECT_FOR_MS : UPDATE_RECONNECT_FOR_MS;
-    current.disconnected();
+    const waitMs = current.patience();
     for (
       let delay = 50;
       Date.now() < started + waitMs && !closing;
@@ -78,9 +72,8 @@ export async function connectRemote(
       const next = await dial();
       if (next === undefined) continue;
       try {
+        // The client tells its own reconnect once the session answers again.
         await Promise.race([use(next), current.live()]);
-        current.reconnected();
-        options.onReconnect?.(Date.now() - started);
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
         if (failure.message !== OUTDATED_CORE) continue;
@@ -102,6 +95,7 @@ export async function connectRemote(
     await host.close();
     throw error;
   }
+  if (options.onReconnect !== undefined) client.onReconnect(options.onReconnect);
   return {
     client,
     close: async () => {

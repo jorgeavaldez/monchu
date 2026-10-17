@@ -1,24 +1,43 @@
 /**
- * The core's Chord host: it serves the backend to the facets as `Core` and loads them. Connections come in through
- * `socket.ts` and `web.ts`, which stamp each one's principal and hand its link to `accept`.
+ * Monchu's Chord hosts. The core's host serves the backend to the facets as `Core` and loads them. The server's host
+ * is what clients connect to: it relays their references to the core through a route that starts the core when one
+ * is needed, and serves `Server`. Connections come in through `socket.ts` and `web.ts`, which stamp each one's
+ * principal and hand its socket to an `Ingress`.
  */
-import { createHost, webSocketLink, type Host, type WebSocketLike } from "@earendil-works/chord";
-import { principalKey, type Principal } from "../api/contract.ts";
+import {
+  createHost,
+  webSocketLink,
+  type Host,
+  type Link,
+  type WebSocketLike,
+} from "@earendil-works/chord";
+import { Type } from "typebox";
+import { principalKey, Server, type Principal, type ServerStatus } from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
+import type { UpdatePlan } from "../core/update.ts";
+import type { Log } from "../telemetry/log.ts";
 import session, { Core } from "./session.ts";
 
 export type CoreHost = Host<Principal>;
 
-/** Open the core's host over a running backend; the caller closes the host, then the backend. */
-export async function openCoreHost(backend: Monchu): Promise<CoreHost> {
+const failures = (log: Log) => (error: unknown) =>
+  log.write("warn", "server.chord", "background failure", {
+    reason: error instanceof Error ? error.message : String(error),
+  });
+
+/**
+ * Open the core's host over a running backend; the caller closes the host, then the backend. `upstream` is the link to
+ * the server when the core runs as its child.
+ */
+export async function openCoreHost(backend: Monchu, upstream?: Link): Promise<CoreHost> {
   const host = createHost<Principal>({
     name: "core",
     self: { kind: "core" },
     principalKey,
-    onError: (error) =>
-      backend.log.write("warn", "server.chord", "background failure", {
-        reason: error instanceof Error ? error.message : String(error),
-      }),
+    onError: failures(backend.log),
+    ...(upstream === undefined
+      ? {}
+      : { upstream: { link: upstream, principal: { kind: "server" } } }),
   });
   host.serve(
     Core,
@@ -34,17 +53,164 @@ export async function openCoreHost(backend: Monchu): Promise<CoreHost> {
 /** Calls one client may have running at once: far above what a person does, low enough to bound a runaway page. */
 const MAX_CALLS = 64;
 
+/** Where authenticated client sockets go: the host that serves them, which counts them. */
+export type Ingress = {
+  /** Serve one socket, every request on it acting as `principal`; resolves when it closes. */
+  accept(socket: WebSocketLike, principal: Principal): Promise<string>;
+  /** Close a client connection and dispose what it opened, as when its login is revoked. */
+  revoke(connection: string): Promise<void>;
+};
+
 /**
- * Serve one authenticated client socket: every request on it acts as `principal`. Large payloads go out deflated, and
- * the client may not send packed frames (a small message could inflate to anything). Resolves when it closes.
+ * Accept one client socket on `host`. Large payloads go out deflated, and the client may not send packed frames (a
+ * small message could inflate to anything).
  */
-export function acceptClient(
-  host: CoreHost,
-  socket: WebSocketLike,
-  principal: Principal,
-): Promise<string> {
+function acceptOn(host: Host<Principal>, socket: WebSocketLike, principal: Principal) {
   const link = webSocketLink(socket, { compress: true, acceptPacked: false });
   const closed = new Promise<string>((done) => link.onClose(done));
   host.accept(link, { principal, kind: "client", maxCalls: MAX_CALLS });
   return closed;
+}
+
+/** Clients straight onto a host: the core's own, in tests and when nothing sits between them. */
+export function ingress(host: Host<Principal>): Ingress {
+  return {
+    accept: (socket, principal) => acceptOn(host, socket, principal),
+    revoke: (connection) => host.invalidatePrincipal({ kind: "client", connection }),
+  };
+}
+
+/** The core process as the server runs it: started on demand, replaced for `/restart`, stopped when idle. */
+export type CoreProcess = {
+  /** The link to a running core, started first when none runs; one core at a time. */
+  start(): Promise<Link>;
+  /** Close the core gracefully, then start a new one. */
+  replace(): Promise<void>;
+  stop(): Promise<void>;
+  readonly status: ServerStatus["core"];
+  /** Hears each change of `status`. */
+  onStatus(listener: () => void): void;
+};
+
+export type ServerHost = {
+  readonly host: Host<Principal>;
+  /** Start the core now, as `serve` does, rather than when a client first needs it. */
+  startCore(): Promise<void>;
+  readonly ingress: Ingress;
+  readonly status: ServerStatus;
+  /** Hears each change of `status`. */
+  onStatus(listener: (status: ServerStatus) => void): () => void;
+  close(): Promise<void>;
+};
+
+/**
+ * The server's host over a core process. `stop` is what a person's `monchu stop` asks for: the caller stops the core
+ * and exits.
+ */
+export function openServerHost(
+  core: CoreProcess,
+  options: {
+    mode: ServerStatus["mode"];
+    log: Log;
+    stop(): void;
+    update(plan: UpdatePlan): void;
+  },
+): ServerHost {
+  const host = createHost<Principal>({
+    name: "server",
+    self: { kind: "server" },
+    principalKey,
+    onError: failures(options.log),
+  });
+  // Each new core is admitted as soon as it runs, before a client needs it: an unanswered link times out.
+  const admitted = new WeakSet<Link>();
+  const reach = async () => {
+    const link = await core.start();
+    if (!admitted.has(link)) {
+      admitted.add(link);
+      host.accept(link, { principal: { kind: "core" }, kind: "host", name: "core" });
+    }
+    return link;
+  };
+  // Only what connected through a socket, and the server itself, reach the core: never a forwarded principal.
+  host.route("core", {
+    authorize: (principal) => principal.kind !== "core",
+    resolve: reach,
+    principal: () => ({ kind: "core" }),
+  });
+  let clients = 0;
+  const listeners = new Set<(status: ServerStatus) => void>();
+  const status = (): ServerStatus => ({
+    mode: options.mode,
+    pid: process.pid,
+    core: core.status,
+    clients,
+  });
+  const changed = () => {
+    const now = status();
+    for (const listener of listeners) listener(now);
+  };
+  core.onStatus(changed);
+  host.serve(Server, (_input, principal, self) => {
+    const source = self.resource("status", {
+      version: 1,
+      open: () => {
+        let stop = () => {};
+        return {
+          subscribe(listener: (value: ServerStatus) => void) {
+            listeners.add(listener);
+            listener(status());
+            stop = () => listeners.delete(listener);
+            return stop;
+          },
+          stop: () => stop(),
+        };
+      },
+      close: (value) => value.stop(),
+    });
+    const state = self.state("status", Type.Unsafe<ServerStatus>(Type.Unknown()), status());
+    self.on("status", source, (value, ctx) => state.replace(ctx, value, { diff: true }));
+    if (principal.kind === "core")
+      return {
+        variant: "core",
+        state,
+        // Answered first: the core that asks is the one that goes.
+        replace: () =>
+          void setTimeout(() => void core.replace().then(reach).catch(failures(options.log)), 0),
+        update: ({ plan }) => void setTimeout(() => options.update(plan), 0),
+      };
+    if (principal.kind === "client" && !principal.person) return { variant: "viewer", state };
+    return {
+      variant: "owner",
+      state,
+      stop: () => void setTimeout(() => options.stop(), 0),
+    };
+  });
+  return {
+    host,
+    startCore: async () => {
+      await reach();
+    },
+    ingress: {
+      accept: async (socket, principal) => {
+        clients++;
+        changed();
+        try {
+          return await acceptOn(host, socket, principal);
+        } finally {
+          clients--;
+          changed();
+        }
+      },
+      revoke: (connection) => host.invalidatePrincipal({ kind: "client", connection }),
+    },
+    get status() {
+      return status();
+    },
+    onStatus(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    close: () => host.close(),
+  };
 }

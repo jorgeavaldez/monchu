@@ -31,136 +31,112 @@ try {
       log: (line) => console.log(line),
       error: (line) => console.error(line),
     });
+  } else if (process.argv[2] === "__core") {
+    // The server's child: it owns the store. Seeding happens here, so its notes reach every client's first screen.
+    const seeded = await seedHome(home);
+    const { runCore } = await import("./server/child.ts");
+    await runCore(async () => {
+      const { Monchu } = await import("./core/backend.ts");
+      const backend =
+        process.env.MONCHU_DEV_FAUX === "1"
+          ? await (await import("./core/dev-faux.ts")).openDevMonchu(home)
+          : await Monchu.open(home);
+      backend.addNotes(...seeded);
+      // Left by the server this one came back from after /update.
+      const updated = process.env.MONCHU_UPDATE_OUTCOME;
+      if (updated) backend.updated(updated);
+      return backend;
+    });
   } else {
     // The web client only when asked for: `monchu --web` or `monchu serve --web`.
     const web = process.argv.includes("--web");
     const args = process.argv.slice(2).filter((arg) => arg !== "--web");
-    const serve = args[0] === "serve";
-    const { randomUUID } = await import("node:crypto");
-    // Which root this terminal opens: the current one, one by id, or a new one.
-    // A /restart re-executes these arguments: it reopens the root its terminal showed, never a new one.
-    const reopened = process.env.MONCHU_RESTART_ROOT;
-    delete process.env.MONCHU_RESTART_ROOT;
-    const choice: RootChoice =
-      reopened !== undefined
-        ? { kind: "resume", prefix: reopened }
-        : args[0] === "new" && args.length === 1
+    const command = args[0];
+    const { socketPath } = await import("./server/socket.ts");
+    const path = socketPath(home);
+    if (command === "serve" || command === "server") {
+      if (args.length !== 1) throw new Error(`Unknown arguments: ${args.join(" ")}`);
+      // `serve` runs in the foreground and keeps the core; `server` is what a terminal starts in the background.
+      const updated = process.env.MONCHU_UPDATE_OUTCOME;
+      delete process.env.MONCHU_UPDATE_OUTCOME;
+      const say = (line: string) => console.log(`monchu · ${line}`);
+      const stopped = new Promise<void>((done) => {
+        // A closed terminal (SIGHUP) stops it as cleanly as Ctrl-C or a service manager.
+        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, done);
+      });
+      const { runServer } = await import("./server/server.ts");
+      const end = await runServer({
+        home,
+        mode: command === "serve" ? "serve" : "background",
+        web,
+        core: { entry: process.argv[1] ?? "", args: ["__core"] },
+        firstCoreEnv: updated ? { MONCHU_UPDATE_OUTCOME: updated } : {},
+        env: process.env,
+        signal: stopped,
+        say,
+      });
+      if (end.kind === "updated") {
+        // The new release's server and core: clients redial and pick up where they were.
+        process.env.MONCHU_UPDATE_OUTCOME = end.outcome;
+        const { reexecute } = await import("./reexec.ts");
+        await reexecute();
+      }
+    } else if (command === "stop") {
+      if (args.length !== 1) throw new Error(`Unknown arguments: ${args.join(" ")}`);
+      const { stopServer } = await import("./server/socket.ts");
+      console.log(
+        (await stopServer(path))
+          ? `monchu · stopped the Monchu of ${home}`
+          : `monchu · no Monchu runs for ${home}`,
+      );
+    } else {
+      const { randomUUID } = await import("node:crypto");
+      // Which root this terminal opens: the current one, one by id, or a new one.
+      const choice: RootChoice =
+        command === "new" && args.length === 1
           ? { kind: "new", requestId: randomUUID() }
-          : args[0] === "resume" && args.length === 2 && args[1] !== undefined
+          : command === "resume" && args.length === 2 && args[1] !== undefined
             ? { kind: "resume", prefix: args[1] }
             : { kind: "current" };
-    const usage =
-      args[0] === "new"
-        ? args.length === 1
-        : args[0] === "resume"
-          ? args.length === 2
-          : args.length === 0 || (serve && args.length === 1);
-    if (!usage)
-      throw new Error(
-        `Unknown arguments: ${args.join(" ")}. Usage: monchu [new | resume <id> | serve] [--web]`,
-      );
-    const seeded = await seedHome(home);
-    const { attachSocket, serveSocket, socketPath } = await import("./server/socket.ts");
-    const path = socketPath(home);
-    const openCore = async () => {
-      const { Monchu } = await import("./core/backend.ts");
-      return process.env.MONCHU_DEV_FAUX === "1"
-        ? (await import("./core/dev-faux.ts")).openDevMonchu(home)
-        : Monchu.open(home);
-    };
-    // One core owns a home. A plain `monchu` attaches its terminal to the running one, or becomes it.
-    const attached = serve ? undefined : await attachSocket(path, () => {});
-    if (attached !== undefined && web)
-      seeded.push(
-        "--web applies only to the process that becomes the core; this terminal attached to a running one",
-      );
-    if (attached !== undefined) {
+      const usage =
+        command === "new"
+          ? args.length === 1
+          : command === "resume"
+            ? args.length === 2
+            : args.length === 0;
+      if (!usage)
+        throw new Error(
+          `Unknown arguments: ${args.join(" ")}. Usage: monchu [new | resume <id> | serve | stop] [--web]`,
+        );
+      // Checked before anything starts: a terminal that can't show the TUI leaves no server behind.
+      if (!process.stdin.isTTY || !process.stdout.isTTY)
+        throw new Error("Monchu's TUI needs an interactive terminal.");
+      const { attachOrStart } = await import("./server/socket.ts");
+      const notes: string[] = [];
+      const { spawn } = await import("node:child_process");
+      const { mkdirSync, openSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const attached = await attachOrStart(path, () => {
+        // Detached, so it outlives this terminal; its output goes to the run directory.
+        mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
+        const output = openSync(join(home, "run", "server.log"), "w", 0o600);
+        spawn(
+          process.execPath,
+          [...process.execArgv, process.argv[1] ?? "", "server", ...(web ? ["--web"] : [])],
+          { detached: true, stdio: ["ignore", output, output], windowsHide: true },
+        ).unref();
+      });
+      if (attached.started === false && web)
+        notes.push(
+          "--web applies only when a terminal starts Monchu; this one attached to a running one",
+        );
       const { runTerminal } = await import("./tui/app.ts");
       const { herdrAgent } = await import("./tui/herdr-agent.ts");
       try {
         const rootId = await chooseRoot(attached.client, choice);
-        await runTerminal(attached.client, rootId, undefined, herdrAgent(process.env), seeded);
+        await runTerminal(attached.client, rootId, undefined, herdrAgent(process.env), notes);
       } finally {
         await attached.close();
-      }
-    } else {
-      const backend = await openCore();
-      const notes = [...seeded];
-      const { openCoreHost } = await import("./server/host.ts");
-      const host = await openCoreHost(backend);
-      let server: { close(): Promise<void> } | undefined;
-      try {
-        server = await serveSocket(host, backend, path);
-      } catch (error) {
-        notes.push(
-          `other terminals can't attach: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      let site: { url: string; close(): Promise<void> } | undefined;
-      if (web) {
-        const config = backend.web;
-        try {
-          if (config === undefined) throw new Error("config.json has no web section");
-          site = await (
-            await import("./server/web.ts")
-          ).serveWeb(host, backend, config, process.env);
-          notes.push(
-            `web · ${site.url}${config.host === undefined ? "" : ` · public host ${config.host}`}`,
-          );
-        } catch (error) {
-          notes.push(`web is off: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      backend.addNotes(...notes);
-      // Left by the process this one replaced after /update; once said, it is not carried into later restarts.
-      const updated = process.env.MONCHU_UPDATE_OUTCOME;
-      delete process.env.MONCHU_UPDATE_OUTCOME;
-      if (updated) backend.updated(updated);
-      let outcome: "quit" | "restart" = "quit";
-      try {
-        if (serve) {
-          console.log(`monchu · serving ${home} on ${path} · Ctrl-C stops`);
-          for (const note of notes) console.log(`monchu · ${note}`);
-          outcome = await new Promise<"quit" | "restart">((done) => {
-            backend.onRestartRequest(() => done("restart"));
-            // A closed terminal (SIGHUP) stops it as cleanly as Ctrl-C or a service manager.
-            for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
-              process.once(signal, () => done("quit"));
-          });
-          if (outcome === "restart") {
-            await site?.close();
-            await server?.close();
-            await host.close();
-            await backend.restart();
-          }
-        } else {
-          const { runTerminal } = await import("./tui/app.ts");
-          const { herdrAgent } = await import("./tui/herdr-agent.ts");
-          const rootId = await chooseRoot(backend, choice);
-          outcome = await runTerminal(backend, rootId, undefined, herdrAgent(process.env));
-          if (outcome === "restart") process.env.MONCHU_RESTART_ROOT = rootId;
-        }
-      } finally {
-        await site?.close();
-        await server?.close();
-        await host.close();
-        await backend.close();
-      }
-      if (outcome === "restart") {
-        // Loaded before npm replaces the package's files under this process.
-        const { reexecute } = await import("./reexec.ts");
-        const plan = backend.plannedUpdate;
-        if (plan !== undefined) {
-          const { install, installedVersion, VERSION } = await import("./core/update.ts");
-          console.log(`monchu · installing ${plan.url} into ${plan.prefix}`);
-          const { code, tail } = await install(plan, (line) => console.log(`npm · ${line}`));
-          process.env.MONCHU_UPDATE_OUTCOME =
-            code === 0
-              ? `updated · ${VERSION} → ${installedVersion()}`
-              : `warning · update failed: npm exited ${code}; still on ${VERSION}\n${tail.join("\n")}`;
-        }
-        // Inside the try: the exit backstop below must not cut a Windows child short.
-        await reexecute();
       }
     }
   }

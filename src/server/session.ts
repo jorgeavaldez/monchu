@@ -370,7 +370,7 @@ export default defineFacet<Principal>(
         loginAnswer: ({ login, prompt, value }) => runs.value.answer(login, prompt, value),
         loginCancel: ({ login }) => runs.value.cancel(login),
       };
-      if (principal.kind === "core" || principal.person) return owner;
+      if (principal.kind !== "client" || principal.person) return owner;
       const { update: _update, variant: _variant, ...service } = owner;
       return { ...service, variant: "service" };
     });

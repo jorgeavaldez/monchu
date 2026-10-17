@@ -45,7 +45,7 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
 
 describe("backend", () => {
   it.each([false, true])(
-    "ignores Pi resources in the real source entry point (smoke=%s)",
+    "ignores Pi resources in the real source entry point: serve, then stop (smoke=%s)",
     async (smoke) => {
       const value = await setup();
       const home = smoke
@@ -55,38 +55,57 @@ describe("backend", () => {
       await mkdir(value.agentDir, { recursive: true });
       for (const name of ["auth.json", "settings.json", "models.json"])
         await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
-      const result = await new Promise<{ code: number | null; output: string }>(
-        (resolve, reject) => {
-          const child = spawn(
-            process.execPath,
-            [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
-            {
-              env: {
-                ...process.env,
-                HOME: value.directory,
-                USERPROFILE: value.directory,
-                MONCHU_DEV_FAUX: smoke ? "1" : "0",
-                ...(smoke ? { MONCHU_DEV_HOME: home } : {}),
-                PI_OFFLINE: "1",
-              },
-              stdio: ["ignore", "pipe", "pipe"],
-              // A cold Windows runner type-strips every source module first; it takes 13-15 s there.
-              timeout: 40000,
-            },
-          );
-          let output = "";
-          child.stdout.on("data", (data: Buffer) => {
-            output += data.toString();
-          });
-          child.stderr.on("data", (data: Buffer) => {
-            output += data.toString();
-          });
+      const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+      /** Run the entry point; `until` resolves `seen` once its output contains that text. */
+      const run = (args: string[], until?: string) => {
+        const child = spawn(process.execPath, [entry, ...args], {
+          env: {
+            ...process.env,
+            HOME: value.directory,
+            USERPROFILE: value.directory,
+            MONCHU_DEV_FAUX: smoke ? "1" : "0",
+            ...(smoke ? { MONCHU_DEV_HOME: home } : {}),
+            PI_OFFLINE: "1",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+          // A cold Windows runner type-strips every source module first; it takes 13-15 s there, for each process.
+          timeout: 60_000,
+        });
+        let output = "";
+        const seen = Promise.withResolvers<void>();
+        const read = (data: Buffer) => {
+          output += data.toString();
+          if (until !== undefined && output.includes(until)) seen.resolve();
+        };
+        child.stdout.on("data", read);
+        child.stderr.on("data", read);
+        const exited = new Promise<{ code: number | null; output: string }>((resolve, reject) => {
           child.once("error", reject);
-          child.once("close", (code) => resolve({ code, output }));
-        },
-      );
-      expect(result, result.output).toMatchObject({ code: 1 });
-      expect(result.output).toContain("TUI needs an interactive terminal");
+          child.once("close", (code) => {
+            seen.reject(new Error(`exited before "${until}":\n${output}`));
+            resolve({ code, output });
+          });
+        });
+        seen.promise.catch(() => {});
+        return { seen: seen.promise, exited };
+      };
+
+      // A plain `monchu` needs a terminal, and starts nothing without one.
+      const plain = await run([]).exited;
+      expect(plain, plain.output).toMatchObject({ code: 1 });
+      expect(plain.output).toContain("TUI needs an interactive terminal");
+
+      // `serve` runs the server, which forks the core; `stop` closes both.
+      const serve = run(["serve"], "core ready");
+      await serve.seen;
+      const stop = await run(["stop"]).exited;
+      expect(stop, stop.output).toMatchObject({ code: 0 });
+      expect(stop.output).toContain("stopped the Monchu of");
+      const served = await serve.exited;
+      expect(served, served.output).toMatchObject({ code: 0 });
+      // Nothing answers any more.
+      expect((await run(["stop"]).exited).output).toContain("no Monchu runs for");
+
       for (const name of ["auth.json", "settings.json", "models.json"])
         expect(await readFile(join(value.agentDir, name), "utf8")).toBe("decoy: not valid JSON");
       const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
@@ -103,7 +122,7 @@ describe("backend", () => {
         });
       }
     },
-    45000,
+    150_000,
   );
 
   it("owns auth independently of a decoy Pi directory and uses private provider login", async () => {

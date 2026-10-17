@@ -3,7 +3,15 @@
  * terminal attached over the local socket and the web page both use it. State keeps its last value through a reconnect
  * and picks up again from a fresh snapshot.
  */
-import { isChordError, type Host, type Readable, type Ref } from "@earendil-works/chord";
+import {
+  isChordError,
+  type AnyContract,
+  type GetOptions,
+  type Host,
+  type InputOf,
+  type Readable,
+  type Ref,
+} from "@earendil-works/chord";
 import type { Api, AuthInteraction, AuthType, Model } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import type { Client, RootClient, RootSummary, Watched } from "./client.ts";
@@ -15,6 +23,7 @@ import {
   type LoginState,
   type Principal,
 } from "./contract.ts";
+import { Lasting, UPDATE_REGAIN_FOR_MS } from "./lasting.ts";
 import type { Release } from "./release.ts";
 
 /** A failure as a client shows it: the core's own message, without Chord's code for an ordinary error. */
@@ -22,38 +31,6 @@ function plain(error: unknown): Error {
   if (isChordError(error, "unavailable") && error.reason === undefined)
     return new Error(error.message.replace(/^unavailable: /, ""), { cause: error });
   return error instanceof Error ? error : new Error(String(error));
-}
-
-/** A state member as clients render it: its last value stays readable after the reference goes. */
-function watched<T>(state: Readable<T>, release: () => void): Watched<T> {
-  let last = state.value;
-  const listeners = new Set<(value: T) => void>();
-  const stop = state.subscribe((value) => {
-    last = value;
-    for (const listener of listeners) listener(value);
-  });
-  return {
-    get value() {
-      return last;
-    },
-    subscribe(listener) {
-      listeners.add(listener);
-      queueMicrotask(() => {
-        if (listeners.has(listener)) listener(last);
-      });
-      return () => listeners.delete(listener);
-    },
-    dispose() {
-      listeners.clear();
-      stop();
-      release();
-    },
-  };
-}
-
-/** Follows `state`, its current value first, until the returned function runs. */
-function following<T>(state: Readable<T>, listener: (value: T) => void): () => void {
-  return state.subscribe(listener);
 }
 
 /** One root of a remote core. */
@@ -70,13 +47,11 @@ class RemoteRoot implements RootClient {
   }
 
   async viewState(workerName?: string) {
-    const ref = await this.client.run(() =>
-      this.client.host.get(Conversation, {
-        root: this.id,
-        ...(workerName === undefined ? {} : { worker: workerName }),
-      }),
-    );
-    return watched(ref.view, () => ref.release());
+    const lasting = await this.client.hold(Conversation, {
+      root: this.id,
+      ...(workerName === undefined ? {} : { worker: workerName }),
+    });
+    return lasting.state((ref) => ref.view, true);
   }
   submit(message: string, requestId: string, whenBusy: "steer" | "followUp") {
     return this.run((root) => root.submit({ message, requestId, whenBusy }));
@@ -123,11 +98,14 @@ class RemoteRoot implements RootClient {
     return this.run((root) => root.seeGoal({ id, updatedAt }));
   }
   async watchAssessments(listener: Parameters<RootClient["watchAssessments"]>[0]) {
-    const ref = await this.client.run(() => this.client.host.get(Root, { root: this.id }));
-    const stop = following(ref.assessments, listener);
+    const state = (await this.client.hold(Root, { root: this.id })).state(
+      (ref) => ref.assessments,
+      true,
+    );
+    const stop = state.subscribe(listener);
     return () => {
       stop();
-      ref.release();
+      state.dispose();
     };
   }
   routing(paused?: boolean) {
@@ -158,38 +136,68 @@ export class RemoteClient implements Client {
   /** The client host whose upstream is the core. */
   readonly host: Host<Principal>;
   private readonly localReports = new Set<(message: string) => void>();
-  private readonly session: Ref<typeof Session>;
+  private readonly reconnects = new Set<(ms: number) => void>();
+  private readonly session: Lasting<typeof Session>;
+  private readonly helloState: Watched<Hello>;
+  private readonly releaseState: Watched<Release>;
   /** Method-only references to the roots this client called, kept until it closes. */
-  private readonly roots = new Map<string, Promise<Ref<typeof Root>>>();
+  private readonly roots = new Map<string, Promise<Lasting<typeof Root>>>();
+  private lostAt: number | undefined;
 
-  private constructor(host: Host<Principal>, session: Ref<typeof Session>) {
+  private constructor(host: Host<Principal>, session: Lasting<typeof Session>) {
     this.host = host;
     this.session = session;
+    this.helloState = session.state((ref) => ref.hello);
+    this.releaseState = session.state((ref) => ref.releaseState);
+    session.patience = () => this.patience();
+    session.onReach((reach) => {
+      if (reach === "lost") return this.disconnected();
+      const lost = this.lostAt;
+      this.lostAt = undefined;
+      if (lost === undefined) return;
+      this.notice("reconnected to Monchu");
+      for (const listener of this.reconnects) listener(Date.now() - lost);
+    });
   }
 
   /** Start on a client host connected to the core: the values every client shows from its first screen. */
   static async open(host: Host<Principal>): Promise<RemoteClient> {
-    return new RemoteClient(host, await host.get(Session, {}));
+    return new RemoteClient(host, await Lasting.open(host, Session, {}));
   }
 
-  /** Whether the core answers: false while a reconnect re-holds the session. */
+  /** How long a lost core is waited for: longer while it installs an update. */
+  patience(): number {
+    return this.release.updating === null ? 30_000 : UPDATE_REGAIN_FOR_MS;
+  }
+
+  /** A lasting reference of this client, as patient as its session. */
+  async hold<C extends AnyContract>(
+    type: C,
+    input: InputOf<C>,
+    options: GetOptions<Principal> = {},
+  ): Promise<Lasting<C>> {
+    const lasting = await this.run(() => Lasting.open(this.host, type, input, options));
+    lasting.patience = () => this.patience();
+    return lasting;
+  }
+
+  /** Whether the core answers: false while a reconnect or a new core gets the session again. */
   get connected(): boolean {
-    return this.session.status === "live";
+    return this.session.reach === "live";
   }
 
-  /** Resolves once the session is live again after a reconnect. */
+  /** Resolves once the session is live again. */
   live(): Promise<void> {
-    if (this.connected) return Promise.resolve();
-    return new Promise((resolve) => {
-      const stop = this.session.onStatus((status) => {
-        if (status !== "live") return;
-        stop();
-        resolve();
-      });
-    });
+    return this.session.live();
   }
 
-  /** Runs a call while connected: calls fail at once while the connection is down, as the client's notices say. */
+  /** Hears each reconnect, with how long the core was out of reach; returns an unsubscribe function. */
+  onReconnect(listener: (ms: number) => void): () => void {
+    this.reconnects.add(listener);
+    return () => this.reconnects.delete(listener);
+  }
+
+  /** Runs a call while connected: calls fail at once while the core is out of reach, as the client's notices say. */
   async run<T>(call: () => Promise<T>): Promise<T> {
     if (!this.connected) throw new Error("Not connected to Monchu");
     try {
@@ -199,30 +207,27 @@ export class RemoteClient implements Client {
     }
   }
 
-  rootRef(id: string): Promise<Ref<typeof Root>> {
-    let ref = this.roots.get(id);
-    if (ref === undefined) {
-      ref = this.host.get(Root, { root: id }, { state: false });
-      this.roots.set(id, ref);
+  async rootRef(id: string): Promise<Ref<typeof Root>> {
+    let lasting = this.roots.get(id);
+    if (lasting === undefined) {
+      lasting = this.hold(Root, { root: id }, { state: false });
+      this.roots.set(id, lasting);
       // An unknown root is asked again next time.
-      ref.catch(() => this.roots.delete(id));
+      lasting.catch(() => this.roots.delete(id));
     }
-    return ref;
+    return (await lasting).ref;
   }
 
-  /** The connection dropped: calls fail until it is back; values stay as they were. */
-  disconnected(): void {
+  /** The core is out of reach: calls fail until it is back; values stay as they were. */
+  private disconnected(): void {
+    if (this.lostAt !== undefined) return;
+    this.lostAt = Date.now();
     const updating = this.release.updating;
     this.notice(
       updating === null
         ? "connection to Monchu lost · reconnecting"
         : `Monchu is installing ${updating} · reconnecting`,
     );
-  }
-
-  /** A new connection was admitted, and every reference held again. */
-  reconnected(): void {
-    this.notice("reconnected to Monchu");
   }
 
   /** Tell this client's report listeners something about the connection itself. */
@@ -232,8 +237,8 @@ export class RemoteClient implements Client {
 
   close(): void {
     this.session.release();
-    for (const ref of this.roots.values())
-      void ref.then(
+    for (const lasting of this.roots.values())
+      void lasting.then(
         (root) => root.release(),
         () => {},
       );
@@ -241,7 +246,7 @@ export class RemoteClient implements Client {
   }
 
   private get hello(): Hello {
-    return this.session.hello.value;
+    return this.helloState.value;
   }
 
   get home(): string {
@@ -266,89 +271,105 @@ export class RemoteClient implements Client {
     );
   }
 
+  /** Follows one of the session's state members, its current value first, until the returned function runs. */
+  private followState<T>(
+    pick: (ref: Ref<typeof Session>) => Readable<T>,
+    listener: (value: T) => void,
+  ) {
+    const state = this.session.state(pick);
+    const stop = state.subscribe(listener);
+    return () => {
+      stop();
+      state.dispose();
+    };
+  }
+
   root(id: string): RootClient {
     return new RemoteRoot(this, id);
   }
   async watchRoots(listener: (roots: readonly RootSummary[]) => void) {
-    return following(this.session.roots, listener);
+    return this.followState((ref) => ref.roots, listener);
   }
   findRoot(prefix: string) {
-    return this.run(() => this.session.findRoot({ prefix }));
+    return this.run(() => this.session.ref.findRoot({ prefix }));
   }
   currentRoot() {
-    return this.run(() => this.session.currentRoot());
+    return this.run(() => this.session.ref.currentRoot());
   }
   createRoot(requestId: string) {
-    return this.run(() => this.session.createRoot({ requestId }));
+    return this.run(() => this.session.ref.createRoot({ requestId }));
   }
   renameRoot(id: string, label: string) {
-    return this.run(() => this.session.renameRoot({ root: id, label }));
+    return this.run(() => this.session.ref.renameRoot({ root: id, label }));
   }
   archiveRoot(id: string, archived: boolean) {
-    return this.run(() => this.session.archiveRoot({ root: id, archived }));
+    return this.run(() => this.session.ref.archiveRoot({ root: id, archived }));
   }
 
   skillInput(name: string, text: string) {
-    return this.run(() => this.session.skillInput({ name, text }));
+    return this.run(() => this.session.ref.skillInput({ name, text }));
   }
   jobs() {
-    return this.run(() => this.session.jobs());
+    return this.run(() => this.session.ref.jobs());
   }
   async watchJobEvents(after: number, listener: Parameters<Client["watchJobEvents"]>[1]) {
     let seen = after;
-    return following(this.session.jobsState, (value) => {
-      const fresh = value.events.filter((event) => event.id > seen);
-      const last = fresh.at(-1);
-      if (last === undefined) return;
-      seen = last.id;
-      listener(fresh);
-    });
+    return this.followState(
+      (ref) => ref.jobsState,
+      (value) => {
+        const fresh = value.events.filter((event) => event.id > seen);
+        const last = fresh.at(-1);
+        if (last === undefined) return;
+        seen = last.id;
+        listener(fresh);
+      },
+    );
   }
   roleChoice(role: "front" | "worker") {
-    return this.run(() => this.session.roleChoice({ role }));
+    return this.run(() => this.session.ref.roleChoice({ role }));
   }
   saveDefault(role: "front" | "worker", pick: Parameters<Client["saveDefault"]>[1]) {
-    return this.run(() => this.session.saveDefault({ role, pick }));
+    return this.run(() => this.session.ref.saveDefault({ role, pick }));
   }
   async loginNeeds() {
-    const needs = await this.run(() => this.session.loginNeeds());
+    const needs = await this.run(() => this.session.ref.loginNeeds());
     return { ...needs, classifier: needs.classifier ?? undefined };
   }
   mcpServers() {
-    return this.run(() => this.session.mcpServers());
+    return this.run(() => this.session.ref.mcpServers());
   }
   mcpLogout(name: string) {
-    return this.run(() => this.session.mcpLogout({ name }));
+    return this.run(() => this.session.ref.mcpLogout({ name }));
   }
   mcpReconnect() {
-    return this.run(() => this.session.mcpReconnect());
+    return this.run(() => this.session.ref.mcpReconnect());
   }
   reload() {
-    return this.run(() => this.session.reload());
+    return this.run(() => this.session.ref.reload());
   }
   logs(query: Parameters<Client["logs"]>[0]) {
-    return this.run(() => this.session.logs({ query }));
+    return this.run(() => this.session.ref.logs({ query }));
   }
   record(scope: "tui" | "web", body: string, attributes?: Parameters<Client["record"]>[2]): void {
     // Telemetry is best effort: a lost record never fails the client.
     void this.run(() =>
-      this.session.record({ scope, body, ...(attributes === undefined ? {} : { attributes }) }),
+      this.session.ref.record({ scope, body, ...(attributes === undefined ? {} : { attributes }) }),
     ).catch(() => {});
   }
   restart() {
-    return this.run(() => this.session.restart());
+    return this.run(() => this.session.ref.restart());
   }
   onRestartRequest(): () => void {
     return () => {};
   }
   get release(): Release {
-    return this.session.releaseState.value;
+    return this.releaseState.value;
   }
   onRelease(listener: (release: Release) => void): () => void {
-    return this.session.releaseState.subscribe(listener);
+    return this.releaseState.subscribe(listener);
   }
   update(release: string) {
-    const session = this.session;
+    const session = this.session.ref;
     if (session.variant !== "owner")
       return Promise.reject(
         new Error("Only a person's login can update Monchu, not a service token"),
@@ -358,7 +379,7 @@ export class RemoteClient implements Client {
 
   onReload(listener: () => void): () => void {
     let hydrated = false;
-    return this.session.hello.subscribe(() => {
+    return this.helloState.subscribe(() => {
       if (hydrated) listener();
       hydrated = true;
     });
@@ -366,13 +387,16 @@ export class RemoteClient implements Client {
 
   onReport(listener: (message: string) => void): () => void {
     let seen = 0;
-    const stop = this.session.reports.subscribe((value) => {
-      const newest = value.recent.at(-1)?.id ?? 0;
-      // A restarted core, or a new connection, numbers its reports from 1 again.
-      if (newest < seen) seen = 0;
-      for (const report of value.recent) if (report.id > seen) listener(report.message);
-      seen = Math.max(seen, newest);
-    });
+    const stop = this.followState(
+      (ref) => ref.reports,
+      (value) => {
+        const newest = value.recent.at(-1)?.id ?? 0;
+        // A restarted core, or a new connection, numbers its reports from 1 again.
+        if (newest < seen) seen = 0;
+        for (const report of value.recent) if (report.id > seen) listener(report.message);
+        seen = Math.max(seen, newest);
+      },
+    );
     this.localReports.add(listener);
     return () => {
       stop();
@@ -392,7 +416,7 @@ export class RemoteClient implements Client {
       let prompted = 0;
       let started = false;
       const cancel = () =>
-        void this.run(() => this.session.loginCancel({ login: id })).catch(() => {});
+        void this.run(() => this.session.ref.loginCancel({ login: id })).catch(() => {});
       signal?.addEventListener("abort", cancel, { once: true });
       const finish = () => {
         queueMicrotask(() => stop());
@@ -400,42 +424,50 @@ export class RemoteClient implements Client {
         signal?.removeEventListener("abort", cancel);
       };
       // A reconnect can't bring a login back: the core cancels a connection's logins when it goes.
-      const stopStatus = this.session.onStatus((status) => {
-        if (status === "live") return;
+      const stopStatus = this.session.onReach((reach) => {
+        if (reach === "live") return;
         finish();
-        reject(new Error(`Login ended: ${status === "loading" ? "connection lost" : status}`));
+        reject(new Error("Login ended: connection lost"));
       });
-      const stop = this.session.logins.subscribe((logins) => {
-        const state = logins[String(id)];
-        if (state === undefined) {
-          if (!started) return;
+      const stop = this.followState(
+        (ref) => ref.logins,
+        (logins) => {
+          const state = logins[String(id)];
+          if (state === undefined) {
+            if (!started) return;
+            finish();
+            return reject(new Error("Login ended: closed"));
+          }
+          started = true;
+          for (const event of state.events.slice(events)) onEvent(event);
+          events = state.events.length;
+          const prompt = state.prompt;
+          if (prompt !== null && prompt.id > prompted) {
+            prompted = prompt.id;
+            void answer(prompt.request)
+              .catch(() => null)
+              .then((value) =>
+                this.run(() =>
+                  this.session.ref.loginAnswer({ login: id, prompt: prompt.id, value }),
+                ),
+              )
+              .catch(() => {});
+          }
+          if (state.done === null) return;
           finish();
-          return reject(new Error("Login ended: closed"));
-        }
-        started = true;
-        for (const event of state.events.slice(events)) onEvent(event);
-        events = state.events.length;
-        const prompt = state.prompt;
-        if (prompt !== null && prompt.id > prompted) {
-          prompted = prompt.id;
-          void answer(prompt.request)
-            .catch(() => null)
-            .then((value) =>
-              this.run(() => this.session.loginAnswer({ login: id, prompt: prompt.id, value })),
-            )
-            .catch(() => {});
-        }
-        if (state.done === null) return;
-        finish();
-        if (state.done.ok) resolve(state.done.message);
-        else reject(new Error(`Login ${state.done.message}`));
-      });
+          if (state.done.ok) resolve(state.done.message);
+          else reject(new Error(`Login ${state.done.message}`));
+        },
+      );
     });
   }
 
   async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void> {
     const id = await this.run(() =>
-      this.session.login({ provider: providerId, auth: type === "api_key" ? "api_key" : "oauth" }),
+      this.session.ref.login({
+        provider: providerId,
+        auth: type === "api_key" ? "api_key" : "oauth",
+      }),
     );
     await this.follow(
       id,
@@ -453,7 +485,7 @@ export class RemoteClient implements Client {
     prompt: Parameters<Client["mcpLogin"]>[1],
     signal: AbortSignal,
   ): Promise<string> {
-    const id = await this.run(() => this.session.mcpLogin({ server: name }));
+    const id = await this.run(() => this.session.ref.mcpLogin({ server: name }));
     return this.follow(
       id,
       signal,

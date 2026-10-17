@@ -9,7 +9,7 @@ import { webSocketLink, type Link } from "@earendil-works/chord";
 import { connectRemote } from "../src/api/connect.ts";
 import { Monchu } from "../src/core/backend.ts";
 import type { WebConfig } from "../src/core/config.ts";
-import { openCoreHost } from "../src/server/host.ts";
+import { ingress, openCoreHost } from "../src/server/host.ts";
 import { serveWeb } from "../src/server/web.ts";
 import { cleanup, fauxRole, front, prepareHome, setup } from "./support.ts";
 
@@ -156,10 +156,10 @@ describe("web server", () => {
         oidc: undefined,
         allow: ["sub:x"],
       };
-      await expect(serveWeb(core, backend, bare, {})).rejects.toThrow("web needs a login");
+      await expect(serveWeb(ingress(core), backend, bare, {})).rejects.toThrow("web needs a login");
       await expect(
         serveWeb(
-          core,
+          ingress(core),
           backend,
           {
             ...bare,
@@ -180,7 +180,7 @@ describe("web server", () => {
     const { backend, host: core } = await openCore();
     const port = await freePort();
     const site = await serveWeb(
-      core,
+      ingress(core),
       backend,
       {
         port,
@@ -288,7 +288,7 @@ describe("web server", () => {
     const { home, backend, host: core } = await openCore();
     const port = await freePort();
     const site = await serveWeb(
-      core,
+      ingress(core),
       backend,
       {
         port,

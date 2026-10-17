@@ -9,9 +9,9 @@ import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import type { WebConfig } from "../core/config.ts";
-import type { Monchu } from "../core/backend.ts";
+import type { Log } from "../telemetry/log.ts";
 import { WebAuth } from "./auth.ts";
-import { acceptClient, type CoreHost } from "./host.ts";
+import type { Ingress } from "./host.ts";
 
 /** The built web client, in the package beside `dist/main.js` and from a checkout alike. */
 const ASSETS = fileURLToPath(new URL("../../dist/web/", import.meta.url));
@@ -66,12 +66,12 @@ function sessionToken(request: IncomingMessage): string | undefined {
 }
 
 export async function serveWeb(
-  host: CoreHost,
-  backend: Monchu,
+  ingress: Ingress,
+  { home, log: logs }: { home: string; log: Log },
   config: WebConfig,
   env: Readonly<Record<string, string | undefined>>,
-): Promise<{ url: string; close(): Promise<void> }> {
-  const auth = new WebAuth(config, backend.home, env);
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const auth = new WebAuth(config, home, env);
   const local = [`127.0.0.1:${config.port}`, `localhost:${config.port}`];
   const hosts = new Set([...(config.host === undefined ? [] : [config.host]), ...local]);
   const origins = new Set([
@@ -82,7 +82,7 @@ export async function serveWeb(
     severity: "info" | "warn",
     body: string,
     attributes?: Record<string, string | number>,
-  ) => backend.log.write(severity, "server.web", body, attributes);
+  ) => logs.write(severity, "server.web", body, attributes);
 
   /** The request's allowed identities, or a response already sent. */
   async function guard(request: IncomingMessage, response: ServerResponse | undefined) {
@@ -161,7 +161,7 @@ export async function serveWeb(
         await auth.logout(token);
         // Signed out means its open sockets go too: their objects are disposed and their links close.
         for (const connection of token === undefined ? [] : (signedIn.get(token) ?? []))
-          await host.invalidatePrincipal({ kind: "client", connection });
+          await ingress.revoke(connection);
         if (token !== undefined) signedIn.delete(token);
         return send(response, 204, "", {
           "set-cookie": "monchu_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
@@ -204,7 +204,7 @@ export async function serveWeb(
         const token = sessionToken(request);
         if (token !== undefined)
           signedIn.set(token, (signedIn.get(token) ?? new Set()).add(principal.connection));
-        void acceptClient(host, connection, principal).then(() => {
+        void ingress.accept(connection, principal).then(() => {
           if (token !== undefined) signedIn.get(token)?.delete(principal.connection);
           log("info", "client left", {
             clients: sockets.clients.size,

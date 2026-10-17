@@ -3,11 +3,12 @@ import { chmod, mkdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
-import { webSocketLink, type Link } from "@earendil-works/chord";
+import { createHost, webSocketLink, type Link } from "@earendil-works/chord";
+import { Server, type Principal } from "../api/contract.ts";
 import WebSocket, { WebSocketServer } from "ws";
 import { connectRemote } from "../api/connect.ts";
-import type { Monchu } from "../core/backend.ts";
-import { acceptClient, type CoreHost } from "./host.ts";
+import type { Log } from "../telemetry/log.ts";
+import type { Ingress } from "./host.ts";
 
 /** The owner's local socket: `<home>/run/monchu.sock`, or a named pipe on Windows, where sockets are not files. */
 export function socketPath(home: string): string {
@@ -21,10 +22,10 @@ export function socketPath(home: string): string {
  * person's.
  */
 export async function serveSocket(
-  host: CoreHost,
-  backend: Monchu,
+  ingress: Ingress,
+  log: Log,
   path: string,
-): Promise<{ close(): Promise<void> }> {
+): Promise<{ close: () => Promise<void> }> {
   if (process.platform !== "win32") {
     await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
     await rm(path, { force: true });
@@ -39,12 +40,12 @@ export async function serveSocket(
     sockets.handleUpgrade(request, socket, head, (connection) => {
       connection.on("error", () => {});
       const attached = performance.now();
-      backend.log.write("info", "server.socket", "client attached", {
+      log.write("info", "server.socket", "client attached", {
         clients: sockets.clients.size,
       });
       const principal = { kind: "client" as const, connection: `s${next++}`, person: true };
-      void acceptClient(host, connection, principal).then(() =>
-        backend.log.write("info", "server.socket", "client left", {
+      void ingress.accept(connection, principal).then(() =>
+        log.write("info", "server.socket", "client left", {
           clients: sockets.clients.size,
           ms: Math.round(performance.now() - attached),
         }),
@@ -101,4 +102,50 @@ export function attachSocket(
   onError: (error: Error) => void,
 ): ReturnType<typeof connectRemote> {
   return connectRemote(() => dial(path), { onError });
+}
+
+/** How long a terminal waits for the server it started: a cold Windows start type-strips every module first. */
+const START_TIMEOUT_MS = 60_000;
+
+/**
+ * Attach to the home's server, starting one with `start` when nothing answers. `started` says whether this call
+ * started it.
+ */
+export async function attachOrStart(
+  path: string,
+  start: () => void,
+): Promise<NonNullable<Awaited<ReturnType<typeof connectRemote>>> & { started: boolean }> {
+  const running = await attachSocket(path, () => {});
+  if (running !== undefined) return { ...running, started: false };
+  start();
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  for (let delay = 50; Date.now() < deadline; delay = Math.min(delay * 2, 500)) {
+    await new Promise((wait) => setTimeout(wait, delay));
+    const attached = await attachSocket(path, () => {});
+    if (attached !== undefined) return { ...attached, started: true };
+  }
+  throw new Error(`Monchu did not start; its output is in ${join(path, "..", "server.log")}`);
+}
+
+/** Ask the home's server to stop, and wait until it is gone; false when none runs. */
+export async function stopServer(path: string): Promise<boolean> {
+  const link = await dial(path);
+  if (link === undefined) return false;
+  const host = createHost<Principal>({
+    name: "stop",
+    kind: "client",
+    self: { kind: "core" },
+    onError: () => {},
+  });
+  const gone = new Promise<void>((done) => link.onClose(() => done()));
+  host.connect(link, { principal: { kind: "core" } });
+  try {
+    const server = await host.get(Server, {}, { signal: AbortSignal.timeout(10_000) });
+    if (server.variant !== "owner") throw new Error("Only a person's login can stop Monchu");
+    await server.stop();
+    await gone;
+  } finally {
+    await host.close();
+  }
+  return true;
 }

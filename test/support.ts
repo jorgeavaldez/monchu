@@ -11,6 +11,7 @@ import {
   type UserContentBlock,
 } from "cc-session-io";
 import { memoryLinkPair, type Context, type Frame, type Link } from "@earendil-works/chord";
+import type { ServerStatus } from "../src/api/contract.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,
@@ -66,7 +67,8 @@ import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
 import type { Client, RootClient } from "../src/api/client.ts";
 import type { Principal } from "../src/api/contract.ts";
-import type { CoreHost } from "../src/server/host.ts";
+import type { CoreHost, CoreProcess } from "../src/server/host.ts";
+import { serveUpstream } from "../src/server/child.ts";
 import type { Monchu } from "../src/core/backend.ts";
 import type { Front } from "../src/core/front.ts";
 
@@ -783,7 +785,7 @@ export function memoryDial(
   host: CoreHost,
   principal: Principal,
   wrap: (link: Link) => Link = (link) => link,
-): { dial(): Promise<Link>; links: Link[] } {
+): { dial: () => Promise<Link>; links: Link[] } {
   const links: Link[] = [];
   return {
     links,
@@ -793,5 +795,70 @@ export function memoryDial(
       host.accept(core, { principal, kind: "client" });
       return wrap(client);
     },
+  };
+}
+
+/**
+ * The core "process" in this test process: each start opens a backend and serves it over a memory link, as the forked
+ * child does over IPC; a stop closes it the same graceful way. `starts` counts the cores it opened.
+ */
+export function memoryCore(open: () => Promise<Monchu>): CoreProcess & { readonly starts: number } {
+  let running: { link: Link; close(): Promise<void> } | undefined;
+  let starting: Promise<Link> | undefined;
+  let state: ServerStatus["core"]["state"] = "stopped";
+  let starts = 0;
+  let since: number | null = null;
+  const listeners = new Set<() => void>();
+  const set = (next: ServerStatus["core"]["state"]) => {
+    state = next;
+    for (const listener of listeners) listener();
+  };
+  const start = (): Promise<Link> => {
+    if (running !== undefined) return Promise.resolve(running.link);
+    starting ??= (async () => {
+      set("starting");
+      const backend = await open();
+      const [up, down] = memoryLinkPair();
+      const served = await serveUpstream(backend, up);
+      running = { link: down, close: served.close };
+      starts++;
+      since = Date.now();
+      set("running");
+      starting = undefined;
+      return down;
+    })();
+    return starting;
+  };
+  const stop = async () => {
+    const current = running;
+    if (current === undefined) return;
+    set("stopping");
+    running = undefined;
+    await current.close();
+    since = null;
+    set("stopped");
+  };
+  // One step at a time, as Chord's host manager runs them: a start waits for a stop that runs.
+  let queue: Promise<unknown> = Promise.resolve();
+  const serialized = <T>(step: () => Promise<T>): Promise<T> => {
+    const next = queue.then(step, step);
+    queue = next.catch(() => {});
+    return next;
+  };
+  return {
+    start: () => serialized(start),
+    stop: () => serialized(stop),
+    replace: () =>
+      serialized(async () => {
+        await stop();
+        await start();
+      }),
+    get status() {
+      return { state, pid: running === undefined ? null : starts, since };
+    },
+    get starts() {
+      return starts;
+    },
+    onStatus: (listener) => void listeners.add(listener),
   };
 }
