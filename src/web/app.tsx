@@ -194,15 +194,18 @@ function Agents() {
         <button class={shown.value === undefined ? "on" : ""} onClick={() => void show(undefined)}>
           {rootBusy ? "●" : "○"} root
         </button>
-        {workers.value.map((worker) => (
-          <button
-            key={worker.name}
-            class={shown.value === worker.name ? "on" : ""}
-            onClick={() => void show(worker.name)}
-          >
-            {worker.busy ? "●" : "○"} {worker.name}
-          </button>
-        ))}
+        {/* Working workers first, idle ones after, each in the order the crew lists them. */}
+        {workers.value
+          .toSorted((x, y) => Number(y.busy) - Number(x.busy))
+          .map((worker) => (
+            <button
+              key={worker.name}
+              class={shown.value === worker.name ? "on" : ""}
+              onClick={() => void show(worker.name)}
+            >
+              {worker.busy ? "●" : "○"} {worker.name}
+            </button>
+          ))}
       </div>
       <RootTab />
     </nav>
