@@ -10,7 +10,7 @@ import {
   type ContentBlock,
   type UserContentBlock,
 } from "cc-session-io";
-import type { Context } from "@earendil-works/chord";
+import { memoryLinkPair, type Context, type Frame, type Link } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,
@@ -65,6 +65,8 @@ import { FffFinders } from "../src/core/tools/fff.ts";
 import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
 import type { Client, RootClient } from "../src/api/client.ts";
+import type { Principal } from "../src/api/contract.ts";
+import type { CoreHost } from "../src/server/host.ts";
 import type { Monchu } from "../src/core/backend.ts";
 import type { Front } from "../src/core/front.ts";
 
@@ -739,4 +741,57 @@ export async function front(client: Monchu): Promise<Front>;
 export async function front(client: Client): Promise<RootClient>;
 export async function front(client: Client): Promise<RootClient> {
   return client.root(await client.currentRoot());
+}
+
+/**
+ * A link whose frames a test rewrites on their way out or in, as a client that breaks its contract would; a rewrite
+ * returning `undefined` drops the frame.
+ */
+export function tamper(
+  link: Link,
+  rewrite: {
+    send?: (frame: Frame) => Frame | undefined;
+    receive?: (frame: Frame) => Frame | undefined;
+  },
+): Link {
+  const pass = (frame: Frame) => frame;
+  const out = rewrite.send ?? pass;
+  const into = rewrite.receive ?? pass;
+  return {
+    get closed() {
+      return link.closed;
+    },
+    send: (frame) => {
+      const sent = out(frame);
+      return sent === undefined ? undefined : link.send(sent);
+    },
+    receive: (handler) =>
+      link.receive((frame) => {
+        const received = into(frame);
+        if (received !== undefined) handler(received);
+      }),
+    onClose: (handler) => link.onClose(handler),
+    close: (reason) => link.close(reason),
+  };
+}
+
+/**
+ * Dial a core host over memory links, the way a client dials the socket: each dial is a new pair, accepted as
+ * `principal`. `links` holds the core's ends, so a test can drop a connection as a restarting core does.
+ */
+export function memoryDial(
+  host: CoreHost,
+  principal: Principal,
+  wrap: (link: Link) => Link = (link) => link,
+): { dial(): Promise<Link>; links: Link[] } {
+  const links: Link[] = [];
+  return {
+    links,
+    dial: async () => {
+      const [core, client] = memoryLinkPair();
+      links.push(core);
+      host.accept(core, { principal, kind: "client" });
+      return wrap(client);
+    },
+  };
 }

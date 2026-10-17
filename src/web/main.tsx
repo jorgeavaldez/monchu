@@ -1,8 +1,8 @@
 /** Connect to the core over the page's own WebSocket, then render. A dropped connection reconnects by itself. */
 import { render } from "preact";
-import { connectRemote, type Connection } from "../api/connect.ts";
+import { webSocketLink, type Link, type WebSocketLike } from "@earendil-works/chord";
+import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
-import { OUTDATED_CORE } from "../api/rpc.ts";
 import { App } from "./app.tsx";
 import { cancelLogin, connected, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
@@ -16,30 +16,38 @@ async function up(): Promise<boolean> {
   return response !== undefined && response.status < 500;
 }
 
-async function dial(): Promise<Connection | undefined> {
+/** The browser's socket as Chord's link sees it: binary messages arrive as ArrayBuffers. */
+function socketLike(socket: WebSocket): WebSocketLike {
+  socket.binaryType = "arraybuffer";
+  return {
+    get readyState() {
+      return socket.readyState;
+    },
+    send: (data) => socket.send(typeof data === "string" ? data : new Uint8Array(data)),
+    close: (code, reason) => socket.close(code, reason),
+    addEventListener(
+      type: "message" | "open" | "close" | "error",
+      listener: (event: { readonly data: unknown }) => void,
+    ) {
+      socket.addEventListener(type, (event) =>
+        listener({ data: event instanceof MessageEvent ? event.data : undefined }),
+      );
+    },
+  };
+}
+
+async function dial(): Promise<Link | undefined> {
   if (!(await up())) return undefined;
   return new Promise((resolve) => {
     const socket = new WebSocket(
       `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api`,
     );
-    socket.addEventListener("open", () =>
-      resolve({
-        send: (text) => {
-          if (socket.readyState === WebSocket.OPEN) socket.send(text);
-        },
-        close: () => socket.close(),
-        listen: (onMessage, onClose) => {
-          socket.addEventListener("message", (event) => {
-            const data: unknown = event.data;
-            if (typeof data === "string") onMessage(data);
-          });
-          socket.addEventListener("close", () => {
-            connected("lost");
-            onClose();
-          });
-        },
-      }),
-    );
+    // Wrapped at once, so the core's first frames are never missed.
+    const link = webSocketLink(socketLike(socket));
+    socket.addEventListener("open", () => {
+      socket.addEventListener("close", () => connected("lost"));
+      resolve(link);
+    });
     // Refused or signed out: the page reloads into the login once the core is reachable again.
     socket.addEventListener("error", () => resolve(undefined));
   });

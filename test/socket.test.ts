@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
+import { openCoreHost } from "../src/server/host.ts";
 import { attachSocket, serveSocket, socketPath } from "../src/server/socket.ts";
 import { presentation } from "../src/ui/state.ts";
 import { cleanup, fauxRole, prepareHome, route, setup, textOf, waitFor, front } from "./support.ts";
@@ -41,7 +42,8 @@ describe("local socket", () => {
     const path = socketPath(home);
     const reports: string[] = [];
     backend.addNotes("seeded a test home");
-    let server = await serveSocket(backend, path);
+    const host = await openCoreHost(backend);
+    let server = await serveSocket(host, backend, path);
     const attached = await attachSocket(path, (error) => reports.push(error.message));
     try {
       if (attached === undefined) throw new Error("Nothing answered on the socket");
@@ -125,7 +127,7 @@ describe("local socket", () => {
       const stop = client.onReport((message) => notices.push(message));
       await server.close();
       await waitFor(() => notices.includes("connection to Monchu lost · reconnecting"));
-      server = await serveSocket(backend, path);
+      server = await serveSocket(host, backend, path);
       await waitFor(() => notices.includes("reconnected to Monchu"));
       await (await front(client)).submit("after reconnect", "remote:2", "followUp");
       await waitFor(() =>
@@ -139,6 +141,7 @@ describe("local socket", () => {
     } finally {
       await attached?.close();
       await server.close();
+      await host.close();
       await backend.close();
     }
   }, 30_000);

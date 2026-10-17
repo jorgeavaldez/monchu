@@ -5,10 +5,11 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { RemoteClient } from "../src/api/remote.ts";
-import { Rpc } from "../src/api/rpc.ts";
+import { webSocketLink, type Link } from "@earendil-works/chord";
+import { connectRemote } from "../src/api/connect.ts";
 import { Monchu } from "../src/core/backend.ts";
 import type { WebConfig } from "../src/core/config.ts";
+import { openCoreHost } from "../src/server/host.ts";
 import { serveWeb } from "../src/server/web.ts";
 import { cleanup, fauxRole, front, prepareHome, setup } from "./support.ts";
 
@@ -139,12 +140,13 @@ async function openCore() {
     JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
   );
   prepareHome(home);
-  return { home, backend: await Monchu.open(home, value.faux.provider) };
+  const backend = await Monchu.open(home, value.faux.provider);
+  return { home, backend, host: await openCoreHost(backend) };
 }
 
 describe("web server", () => {
   it("refuses to start without a login or with nobody allowed", async () => {
-    const { backend } = await openCore();
+    const { backend, host: core } = await openCore();
     try {
       const port = await freePort();
       const bare: WebConfig = {
@@ -154,9 +156,10 @@ describe("web server", () => {
         oidc: undefined,
         allow: ["sub:x"],
       };
-      await expect(serveWeb(backend, bare, {})).rejects.toThrow("web needs a login");
+      await expect(serveWeb(core, backend, bare, {})).rejects.toThrow("web needs a login");
       await expect(
         serveWeb(
+          core,
           backend,
           {
             ...bare,
@@ -167,15 +170,17 @@ describe("web server", () => {
         ),
       ).rejects.toThrow("web.allow is empty");
     } finally {
+      await core.close();
       await backend.close();
     }
   });
 
   it("takes an access proxy's signed identity, checks host, audience, key id and the allow list, and serves the core over a WebSocket", async () => {
     const provider = await identityProvider();
-    const { backend } = await openCore();
+    const { backend, host: core } = await openCore();
     const port = await freePort();
     const site = await serveWeb(
+      core,
       backend,
       {
         port,
@@ -238,50 +243,41 @@ describe("web server", () => {
       expect([200, 503]).toContain(await refused(service));
 
       // A page from another origin can't open the API, even with valid credentials.
-      const open = (origin: string) =>
-        new Promise<WebSocket>((done, fail) => {
+      const open = (origin: string, jwt = user) =>
+        new Promise<Link>((done, fail) => {
           const socket = new WebSocket(`ws://127.0.0.1:${port}/api`, {
-            headers: { host: "monchu.example.test", origin, "cf-access-jwt-assertion": user },
+            headers: { host: "monchu.example.test", origin, "cf-access-jwt-assertion": jwt },
           });
-          socket.once("open", () => done(socket));
+          const link = webSocketLink(socket);
+          socket.once("open", () => done(link));
           socket.once("error", fail);
         });
       await expect(open("https://evil.example.test")).rejects.toThrow();
-      const socket = await open("https://monchu.example.test");
-      const rpc = new Rpc();
-      socket.on("message", (data: Buffer) => rpc.receive(data.toString("utf8")));
-      await rpc.attach({ send: (text) => socket.send(text) });
-      const client = await RemoteClient.open(rpc);
+      const link = await open("https://monchu.example.test");
+      const attached = await connectRemote(async () => link, {
+        onError: () => {},
+      });
+      if (attached === undefined) throw new Error("The web socket did not connect");
+      const { client } = attached;
       expect(client.home).toBe(backend.home);
       expect(await (await front(client)).workers()).toEqual([]);
       // A person may ask for an update (this checkout refuses it later, for its own reason).
       await expect(client.update("edge")).rejects.toThrow("Nothing here can restart this Monchu");
-      client.close();
-      socket.close();
+      await attached.close();
 
       // A service token reaches the core, but never swaps its code.
-      const serviceSocket = await new Promise<WebSocket>((done, fail) => {
-        const opened = new WebSocket(`ws://127.0.0.1:${port}/api`, {
-          headers: {
-            host: "monchu.example.test",
-            origin: "https://monchu.example.test",
-            "cf-access-jwt-assertion": service,
-          },
-        });
-        opened.once("open", () => done(opened));
-        opened.once("error", fail);
+      const serviceLink = await open("https://monchu.example.test", service);
+      const serviceClient = await connectRemote(async () => serviceLink, {
+        onError: () => {},
       });
-      const serviceRpc = new Rpc();
-      serviceSocket.on("message", (data: Buffer) => serviceRpc.receive(data.toString("utf8")));
-      await serviceRpc.attach({ send: (text) => serviceSocket.send(text) });
-      const serviceClient = await RemoteClient.open(serviceRpc);
-      await expect(serviceClient.update("edge")).rejects.toThrow(
+      if (serviceClient === undefined) throw new Error("The service socket did not connect");
+      await expect(serviceClient.client.update("edge")).rejects.toThrow(
         "Only a person's login can update Monchu",
       );
-      serviceClient.close();
-      serviceSocket.close();
+      await serviceClient.close();
     } finally {
       await site.close();
+      await core.close();
       await backend.close();
       await provider.close();
     }
@@ -289,9 +285,10 @@ describe("web server", () => {
 
   it("signs in through OpenID Connect with PKCE, keeps the session hashed on disk, and signs out", async () => {
     const provider = await identityProvider();
-    const { home, backend } = await openCore();
+    const { home, backend, host: core } = await openCore();
     const port = await freePort();
     const site = await serveWeb(
+      core,
       backend,
       {
         port,
@@ -329,6 +326,21 @@ describe("web server", () => {
       if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
       expect(await readFile(file, "utf8")).not.toContain(cookie.split("=")[1] ?? "-");
       expect((await get(port, "/auth/logout", { ...local, cookie }, "POST")).status).toBe(403);
+
+      // A page signed in with this session is connected until it signs out.
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api`, {
+        headers: { ...local, cookie, origin: `http://127.0.0.1:${port}` },
+      });
+      const link = webSocketLink(socket);
+      await new Promise<void>((done, fail) => {
+        socket.once("open", () => done());
+        socket.once("error", fail);
+      });
+      const page = await connectRemote(async () => link, { onError: () => {} });
+      if (page === undefined) throw new Error("The signed-in page did not connect");
+      expect(page.client.home).toBe(home);
+      const dropped = new Promise<string>((done) => link.onClose(done));
+
       const out = await get(
         port,
         "/auth/logout",
@@ -336,11 +348,15 @@ describe("web server", () => {
         "POST",
       );
       expect(out.status).toBe(204);
+      // Signing out closes the session's sockets; it can't sign back in on its own.
+      await dropped;
+      await page.close();
       expect((await get(port, "/", { ...local, cookie, accept: "application/json" })).status).toBe(
         401,
       );
     } finally {
       await site.close();
+      await core.close();
       await backend.close();
       await provider.close();
     }

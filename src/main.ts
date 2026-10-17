@@ -86,9 +86,11 @@ try {
     } else {
       const backend = await openCore();
       const notes = [...seeded];
+      const { openCoreHost } = await import("./server/host.ts");
+      const host = await openCoreHost(backend);
       let server: { close(): Promise<void> } | undefined;
       try {
-        server = await serveSocket(backend, path);
+        server = await serveSocket(host, backend, path);
       } catch (error) {
         notes.push(
           `other terminals can't attach: ${error instanceof Error ? error.message : String(error)}`,
@@ -99,7 +101,9 @@ try {
         const config = backend.web;
         try {
           if (config === undefined) throw new Error("config.json has no web section");
-          site = await (await import("./server/web.ts")).serveWeb(backend, config, process.env);
+          site = await (
+            await import("./server/web.ts")
+          ).serveWeb(host, backend, config, process.env);
           notes.push(
             `web · ${site.url}${config.host === undefined ? "" : ` · public host ${config.host}`}`,
           );
@@ -126,6 +130,7 @@ try {
           if (outcome === "restart") {
             await site?.close();
             await server?.close();
+            await host.close();
             await backend.restart();
           }
         } else {
@@ -138,6 +143,7 @@ try {
       } finally {
         await site?.close();
         await server?.close();
+        await host.close();
         await backend.close();
       }
       if (outcome === "restart") {

@@ -1,12 +1,13 @@
 /**
- * What a remote client may ask of the core: each method's argument schema and result, and each topic's key schema and
- * value. The core checks every argument and key against these before use; results and values come from the trusted
- * core and are typed only. Per-root methods take the root's full id first. Optional arguments are `null` on the wire.
- * Clients import this file as types only, so the schemas stay out of the web bundle.
+ * What a remote client may ask of the core, as Chord contracts: home-wide methods and state on `Session`, each root's on
+ * `Root`, and a front's or worker's view on `Conversation`. Every object lives on the host named `core`. The core checks
+ * every argument against these schemas; results and state come from the trusted core and are typed, not checked.
+ * Adding a method, an optional argument or a field keeps the version; anything else bumps it.
  */
 import type { Api, AuthEvent, Model } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { Type, type Static } from "typebox";
+import { hostNamed, method, remote } from "@earendil-works/chord";
+import { Type } from "typebox";
 import type { Assessment } from "../core/agents/classifier.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { Settings } from "../core/config.ts";
@@ -15,6 +16,16 @@ import type { ModelChoice, RootSummary, WorkerSummary } from "./client.ts";
 import type { LogRecord } from "./logs.ts";
 import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
+
+/**
+ * Who asks: the core's own code, or one client connection. Stamped by the core where the connection comes in, never by
+ * what a client sends. `person` is false for a service login, which may never replace Monchu's code.
+ */
+export type Principal = { kind: "core" } | { kind: "client"; connection: string; person: boolean };
+
+/** One object per connection: what one client opens and starts stays its own. */
+export const principalKey = (principal: Principal): string =>
+  principal.kind === "core" ? "core" : `client:${principal.connection}`;
 
 /** What a client needs before it can render: replaced after each reload. */
 export type Hello = {
@@ -49,9 +60,13 @@ export type LoginState = {
   done: { ok: true; message: string } | { ok: false; message: string } | null;
 };
 
+type McpReport = { servers: McpServerReport[]; errors: string[] };
+
+/** A value from the trusted core: typed for the client, not checked. */
+const trusted = <T>() => Type.Unsafe<T>(Type.Unknown());
+
 const text = Type.String();
-const optionalText = Type.Union([Type.String(), Type.Null()]);
-const root = Type.String({ minLength: 1 });
+const id = Type.String({ minLength: 1 });
 const count = Type.Integer({ minimum: 0 });
 const whenBusy = Type.Union([Type.Literal("steer"), Type.Literal("followUp")]);
 const role = Type.Union([Type.Literal("front"), Type.Literal("worker")]);
@@ -75,124 +90,122 @@ const logAttributes = Type.Record(
   Type.String(),
   Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]),
 );
+/** A worker of the root, or its front when left out. */
+const worker = Type.Optional(text);
 
-export const methods = {
-  skillInput: Type.Tuple([text, text]),
-  findRoot: Type.Tuple([text]),
-  currentRoot: Type.Tuple([]),
-  createRoot: Type.Tuple([text]),
-  renameRoot: Type.Tuple([root, text]),
-  archiveRoot: Type.Tuple([root, Type.Boolean()]),
+const sessionState = {
+  hello: trusted<Hello>(),
+  releaseState: trusted<Release>(),
+  /** Reports since this connection opened. */
+  reports: trusted<Reports>(),
+  roots: trusted<RootSummary[]>(),
+  jobsState: trusted<JobsState>(),
+  /** This connection's own logins by id: no other connection sees them. */
+  logins: trusted<Record<string, LoginState>>(),
+};
 
-  submit: Type.Tuple([root, text, text, whenBusy]),
-  messageWorker: Type.Tuple([root, text, text, text, whenBusy]),
-  editQueued: Type.Tuple([root, optionalText, count, queueChange]),
-  abort: Type.Tuple([root]),
-  stopWorker: Type.Tuple([root, text]),
-  reset: Type.Tuple([root, optionalText]),
-  compact: Type.Tuple([root, optionalText]),
-  changeDirectory: Type.Tuple([root, text, optionalText]),
-  workers: Type.Tuple([root]),
-  handOff: Type.Tuple([root, text, text]),
-  goals: Type.Tuple([root]),
-  seeGoal: Type.Tuple([root, text, Type.Number()]),
-  routing: Type.Tuple([root, Type.Union([Type.Boolean(), Type.Null()])]),
-  modelChoice: Type.Tuple([root, optionalText]),
-  pickModel: Type.Tuple([root, pick, Type.Boolean(), optionalText]),
-
-  jobs: Type.Tuple([]),
-  roleChoice: Type.Tuple([role]),
-  saveDefault: Type.Tuple([role, pick]),
-  loginNeeds: Type.Tuple([]),
-  mcpServers: Type.Tuple([]),
-  mcpLogout: Type.Tuple([text]),
-  mcpReconnect: Type.Tuple([]),
-  reload: Type.Tuple([]),
-  logs: Type.Tuple([logQuery]),
-  record: Type.Tuple([
-    Type.Union([Type.Literal("tui"), Type.Literal("web")]),
-    text,
-    Type.Union([logAttributes, Type.Null()]),
-  ]),
-  restart: Type.Tuple([]),
-  update: Type.Tuple([text]),
-  /** Starts a provider login for this connection; resolves with its id, whose `login` topic it then watches. */
-  login: Type.Tuple([text, Type.Union([Type.Literal("oauth"), Type.Literal("api_key")])]),
+const sessionMethods = {
+  skillInput: method(Type.Object({ name: text, text }), trusted<string>()),
+  findRoot: method(Type.Object({ prefix: text }), trusted<string>()),
+  currentRoot: method(undefined, trusted<string>()),
+  createRoot: method(Type.Object({ requestId: text }), trusted<string>()),
+  renameRoot: method(Type.Object({ root: id, label: text })),
+  archiveRoot: method(Type.Object({ root: id, archived: Type.Boolean() })),
+  jobs: method(undefined, trusted<JobsState & { listing: string }>()),
+  roleChoice: method(Type.Object({ role }), trusted<ModelChoice>()),
+  saveDefault: method(Type.Object({ role, pick })),
+  loginNeeds: method(
+    undefined,
+    trusted<{ chat: string[]; anyOf: boolean; classifier: string | null }>(),
+  ),
+  mcpServers: method(undefined, trusted<McpReport>()),
+  mcpLogout: method(Type.Object({ name: text }), trusted<string>()),
+  mcpReconnect: method(undefined, trusted<McpReport>()),
+  reload: method(undefined, trusted<string[]>()),
+  logs: method(Type.Object({ query: logQuery }), trusted<LogRecord[]>()),
+  record: method(
+    Type.Object({
+      scope: Type.Union([Type.Literal("tui"), Type.Literal("web")]),
+      body: text,
+      attributes: Type.Optional(logAttributes),
+    }),
+  ),
+  restart: method(),
+  /** Starts a provider login for this connection; resolves with its id in `logins`. */
+  login: method(
+    Type.Object({
+      provider: text,
+      auth: Type.Union([Type.Literal("oauth"), Type.Literal("api_key")]),
+    }),
+    trusted<number>(),
+  ),
   /** Starts an MCP sign-in for this connection, as for `login`. */
-  mcpLogin: Type.Tuple([text]),
+  mcpLogin: method(Type.Object({ server: text }), trusted<number>()),
   /** Answers a login's prompt; `null` declines it. */
-  loginAnswer: Type.Tuple([count, count, optionalText]),
-  loginCancel: Type.Tuple([count]),
+  loginAnswer: method(
+    Type.Object({ login: count, prompt: count, value: Type.Union([text, Type.Null()]) }),
+  ),
+  loginCancel: method(Type.Object({ login: count })),
 };
 
-export const topics = {
-  hello: Type.Null(),
-  release: Type.Null(),
-  reports: Type.Null(),
-  roots: Type.Null(),
-  jobs: Type.Null(),
-  /** A root's routing assessments. */
-  assessments: Type.Tuple([root]),
-  /** A root's front (`null`) or one of its workers. */
-  conversation: Type.Tuple([root, optionalText]),
-  /** One of this connection's own logins: no other connection can watch it. */
-  login: Type.Tuple([count]),
-};
+/**
+ * The home: what every client shows from its first screen, and what is not one root's. A person's login gets `owner`;
+ * a service login gets `service`, which can't `update`.
+ */
+export const Session = remote("monchu.session", {
+  version: 1,
+  input: Type.Object({}),
+  host: hostNamed("core"),
+  variants: {
+    owner: {
+      state: sessionState,
+      methods: { ...sessionMethods, update: method(Type.Object({ release: text })) },
+    },
+    service: { state: sessionState, methods: sessionMethods },
+  },
+});
 
-type McpReport = { servers: McpServerReport[]; errors: string[] };
+/** One root's front and crew; methods with a `worker` act on that worker of the root. */
+export const Root = remote("monchu.root", {
+  version: 1,
+  input: Type.Object({ root: id }),
+  host: hostNamed("core"),
+  variants: {
+    owner: {
+      state: { assessments: trusted<Assessment[]>() },
+      methods: {
+        submit: method(Type.Object({ message: text, requestId: text, whenBusy })),
+        messageWorker: method(
+          Type.Object({ worker: text, message: text, requestId: text, whenBusy }),
+        ),
+        editQueued: method(
+          Type.Object({ worker, id: count, change: queueChange }),
+          trusted<boolean>(),
+        ),
+        abort: method(undefined, trusted<string[]>()),
+        stopWorker: method(Type.Object({ worker: text })),
+        reset: method(Type.Object({ handoff: Type.Optional(text) })),
+        compact: method(Type.Object({ instructions: Type.Optional(text) })),
+        changeDirectory: method(Type.Object({ path: text, worker }), trusted<string>()),
+        workers: method(undefined, trusted<WorkerSummary[]>()),
+        handOff: method(Type.Object({ worker: text, toRoot: text })),
+        goals: method(undefined, trusted<(Goal & { changed: boolean })[]>()),
+        seeGoal: method(Type.Object({ id: text, updatedAt: Type.Number() })),
+        routing: method(
+          Type.Object({ paused: Type.Optional(Type.Boolean()) }),
+          trusted<{ configured: boolean; paused: boolean }>(),
+        ),
+        modelChoice: method(Type.Object({ worker }), trusted<ModelChoice>()),
+        pickModel: method(Type.Object({ pick, saveDefault: Type.Boolean(), worker })),
+      },
+    },
+  },
+});
 
-export type Results = {
-  skillInput: string;
-  findRoot: string;
-  currentRoot: string;
-  createRoot: string;
-  renameRoot: void;
-  archiveRoot: void;
-  submit: void;
-  messageWorker: void;
-  editQueued: boolean;
-  abort: string[];
-  stopWorker: void;
-  reset: void;
-  compact: void;
-  changeDirectory: string;
-  workers: WorkerSummary[];
-  handOff: void;
-  goals: (Goal & { changed: boolean })[];
-  seeGoal: void;
-  routing: { configured: boolean; paused: boolean };
-  modelChoice: ModelChoice;
-  pickModel: void;
-  jobs: JobsState & { listing: string };
-  roleChoice: ModelChoice;
-  saveDefault: void;
-  loginNeeds: { chat: string[]; anyOf: boolean; classifier: string | null };
-  mcpServers: McpReport;
-  mcpLogout: string;
-  mcpReconnect: McpReport;
-  reload: string[];
-  logs: LogRecord[];
-  record: void;
-  restart: void;
-  update: void;
-  login: number;
-  mcpLogin: number;
-  loginAnswer: void;
-  loginCancel: void;
-};
-
-export type Values = {
-  hello: Hello;
-  release: Release;
-  reports: Reports;
-  roots: RootSummary[];
-  jobs: JobsState;
-  assessments: Assessment[];
-  conversation: ConversationView;
-  login: LoginState;
-};
-
-export type Method = keyof typeof methods;
-export type Args<M extends Method> = Static<(typeof methods)[M]>;
-export type Topic = keyof typeof topics;
-export type Key<T extends Topic> = Static<(typeof topics)[T]>;
+/** The committed view of a root's front, or of one of its workers. */
+export const Conversation = remote("monchu.conversation", {
+  version: 1,
+  input: Type.Object({ root: id, worker }),
+  host: hostNamed("core"),
+  variants: { owner: { state: { view: trusted<ConversationView>() } } },
+});

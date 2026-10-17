@@ -11,7 +11,7 @@ import { WebSocketServer } from "ws";
 import type { WebConfig } from "../core/config.ts";
 import type { Monchu } from "../core/backend.ts";
 import { WebAuth } from "./auth.ts";
-import { serveConnection } from "./session.ts";
+import { acceptClient, type CoreHost } from "./host.ts";
 
 /** The built web client, in the package beside `dist/main.js` and from a checkout alike. */
 const ASSETS = fileURLToPath(new URL("../../dist/web/", import.meta.url));
@@ -56,7 +56,17 @@ function header(request: IncomingMessage, name: string): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+/** The request's sign-in session cookie, if it has one. */
+function sessionToken(request: IncomingMessage): string | undefined {
+  return (header(request, "cookie") ?? "")
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("monchu_session="))
+    ?.slice("monchu_session=".length);
+}
+
 export async function serveWeb(
+  host: CoreHost,
   backend: Monchu,
   config: WebConfig,
   env: Readonly<Record<string, string | undefined>>,
@@ -147,12 +157,12 @@ export async function serveWeb(
       }
       if (url.pathname === "/auth/logout" && request.method === "POST") {
         if (!origins.has(header(request, "origin") ?? "")) return send(response, 403, "Bad origin");
-        const token = (header(request, "cookie") ?? "")
-          .split(";")
-          .map((part) => part.trim())
-          .find((part) => part.startsWith("monchu_session="))
-          ?.slice("monchu_session=".length);
+        const token = sessionToken(request);
         await auth.logout(token);
+        // Signed out means its open sockets go too: their objects are disposed and their links close.
+        for (const connection of token === undefined ? [] : (signedIn.get(token) ?? []))
+          await host.invalidatePrincipal({ kind: "client", connection });
+        if (token !== undefined) signedIn.delete(token);
         return send(response, 204, "", {
           "set-cookie": "monchu_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
         });
@@ -168,6 +178,9 @@ export async function serveWeb(
   });
 
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
+  let next = 1;
+  /** The connections each sign-in session opened, so signing out closes them. */
+  const signedIn = new Map<string, Set<string>>();
   server.on("upgrade", (request, socket, head) => {
     const refuse = (status: number) => {
       socket.end(`HTTP/1.1 ${status} Refused\r\nConnection: close\r\n\r\n`);
@@ -180,26 +193,19 @@ export async function serveWeb(
       const identities = await guard(request, undefined);
       if (identities === undefined) return refuse(401);
       sockets.handleUpgrade(request, socket, head, (connection) => {
+        connection.on("error", () => {});
         const attached = performance.now();
         log("info", "client attached", { clients: sockets.clients.size });
-        const served = serveConnection(
-          backend,
-          { updates: !identities.some((identity) => identity.startsWith("service:")) },
-          (text) => {
-            if (connection.readyState === connection.OPEN) connection.send(text);
-          },
-        );
-        connection.on("message", (data, binary) => {
-          if (binary) return;
-          const text = Buffer.isBuffer(data)
-            ? data.toString("utf8")
-            : Array.isArray(data)
-              ? Buffer.concat(data).toString("utf8")
-              : Buffer.from(data).toString("utf8");
-          served.receive(text);
-        });
-        connection.on("close", () => {
-          served.dispose();
+        const principal = {
+          kind: "client" as const,
+          connection: `w${next++}`,
+          person: !identities.some((identity) => identity.startsWith("service:")),
+        };
+        const token = sessionToken(request);
+        if (token !== undefined)
+          signedIn.set(token, (signedIn.get(token) ?? new Set()).add(principal.connection));
+        void acceptClient(host, connection, principal).then(() => {
+          if (token !== undefined) signedIn.get(token)?.delete(principal.connection);
           log("info", "client left", {
             clients: sockets.clients.size,
             ms: Math.round(performance.now() - attached),

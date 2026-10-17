@@ -1,17 +1,14 @@
 /**
  * A remote client that keeps itself connected: the same for a terminal on the local socket and a browser on the
- * WebSocket. The caller only dials; this attaches the wire, follows drops, and redials, quickly at first.
+ * WebSocket. The caller only dials a link; this connects a Chord client host over it, follows drops, and redials,
+ * quickly at first. A reconnect re-holds every reference over the new link.
  */
+import { createHost, type Link } from "@earendil-works/chord";
+import type { Principal } from "./contract.ts";
 import { RemoteClient } from "./remote.ts";
-import { Rpc } from "./rpc.ts";
 
-/** One open connection, whatever carries it. */
-export type Connection = {
-  send(text: string): void;
-  close(): void;
-  /** Install the handlers; messages before this are not expected. */
-  listen(onMessage: (text: string) => void, onClose: () => void): void;
-};
+/** What a client says when the core speaks another protocol: a web page reloads, a terminal must restart. */
+export const OUTDATED_CORE = "Monchu's core speaks another protocol than this client: restart it";
 
 /** How long a client keeps trying after the core goes away: long enough for a restart. */
 const RECONNECT_FOR_MS = 30_000;
@@ -20,32 +17,58 @@ const UPDATE_RECONNECT_FOR_MS = 120_000;
 
 /**
  * Connect a client through `dial`, or `undefined` when nothing answers the first time. After a drop it redials for 30
- * seconds, or two minutes for an update, then says so through the client's notices. `onReconnect` hears each successful redial with how long it took.
+ * seconds, or two minutes for an update, then says so through the client's notices. `onReconnect` hears each
+ * successful redial with how long it took; `onError` hears a core that can't be used, such as another protocol's.
  */
 export async function connectRemote(
-  dial: () => Promise<Connection | undefined>,
+  dial: () => Promise<Link | undefined>,
   options: { onError(error: Error): void; onReconnect?(ms: number): void },
-): Promise<{ client: RemoteClient; close(): Promise<void> } | undefined> {
-  const rpc = new Rpc();
-  let connection = await dial();
-  if (connection === undefined) return undefined;
+): Promise<{ client: RemoteClient; close: () => Promise<void> } | undefined> {
+  let link = await dial();
+  if (link === undefined) return undefined;
+  const host = createHost<Principal>({
+    name: "client",
+    kind: "client",
+    self: { kind: "core" },
+    onError: () => {},
+  });
   let closing = false;
+  let reconnecting = false;
   let client: RemoteClient | undefined;
-  /** Attach a connection and say hello on it; rejects when the core speaks another protocol. */
-  const use = (connected: Connection) => {
-    connection = connected;
-    connected.listen(
-      (text) => rpc.receive(text),
-      () => void lost(),
+  /** Connect over `next`; the promise rejects once it closes, with `OUTDATED_CORE` for another protocol. */
+  const use = (next: Link) => {
+    link = next;
+    let outdated = false;
+    const closed = new Promise<never>((_resolve, reject) =>
+      next.onClose((reason) => {
+        if (reason.startsWith("protocol-version")) outdated = true;
+        reject(new Error(outdated ? OUTDATED_CORE : "Connection to Monchu lost"));
+        if (link === next && !outdated) void lost();
+      }),
     );
-    return rpc.attach({ send: (text) => connected.send(text) });
+    // The first failure is the caller's to read; later ones only end a wait.
+    closed.catch(() => {});
+    host.connect(next, {
+      principal: { kind: "core" },
+      onProtocolMismatch: () => {
+        outdated = true;
+      },
+    });
+    return closed;
   };
   const lost = async () => {
-    rpc.detach("Connection to Monchu lost");
-    if (closing || client === undefined) return;
+    if (closing || reconnecting || client === undefined) return;
+    reconnecting = true;
+    try {
+      await reconnect(client);
+    } finally {
+      reconnecting = false;
+    }
+  };
+  const reconnect = async (current: RemoteClient) => {
     const started = Date.now();
-    const waitMs = client.release.updating === null ? RECONNECT_FOR_MS : UPDATE_RECONNECT_FOR_MS;
-    client.disconnected();
+    const waitMs = current.release.updating === null ? RECONNECT_FOR_MS : UPDATE_RECONNECT_FOR_MS;
+    current.disconnected();
     for (
       let delay = 50;
       Date.now() < started + waitMs && !closing;
@@ -55,22 +78,28 @@ export async function connectRemote(
       const next = await dial();
       if (next === undefined) continue;
       try {
-        await use(next);
-        client.reconnected();
+        await Promise.race([use(next), current.live()]);
+        current.reconnected();
         options.onReconnect?.(Date.now() - started);
       } catch (error) {
-        options.onError(error instanceof Error ? error : new Error(String(error)));
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (failure.message !== OUTDATED_CORE) continue;
+        options.onError(failure);
         next.close();
       }
       return;
     }
-    if (!closing) client.notice("Monchu is gone; start it again, then reload");
+    if (!closing) current.notice("Monchu is gone; start it again, then reload");
   };
+  const closed = use(link);
+  const opening = RemoteClient.open(host);
+  // Whichever loses the race below must not reject unheard.
+  opening.catch(() => {});
   try {
-    await use(connection);
-    client = await RemoteClient.open(rpc);
+    client = await Promise.race([closed, opening]);
   } catch (error) {
-    connection.close();
+    link.close();
+    await host.close();
     throw error;
   }
   return {
@@ -78,7 +107,8 @@ export async function connectRemote(
     close: async () => {
       closing = true;
       client?.close();
-      connection?.close();
+      link?.close();
+      await host.close();
     },
   };
 }

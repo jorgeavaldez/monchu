@@ -12,7 +12,11 @@ import { gzipSync } from "node:zlib";
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SOURCE = join(ROOT, "src", "web");
 const OUT = join(ROOT, "dist", "web");
-const BUDGET_GZIP_BYTES = 50 * 1024;
+/**
+ * Chord's client host brings its whole runtime and TypeBox (about 80 KB gzip of the ~110); the rest is the app. The
+ * service worker keeps the script, so it is fetched once per release.
+ */
+const BUDGET_GZIP_BYTES = 120 * 1024;
 
 await rm(OUT, { recursive: true, force: true });
 await mkdir(OUT, { recursive: true });

@@ -20,10 +20,17 @@ import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
-import type { Watched } from "./rpc.ts";
 import type { McpServerReport } from "./reports.ts";
 
 export type { Goal, JobEvent };
+
+/** A value kept current from the core: the shape clients render from, the same as Durable's attached states. */
+export interface Watched<T> {
+  readonly value: T;
+  /** Hears the current value once, soon, then every new one; returns an unsubscribe function. */
+  subscribe(listener: (value: T) => void): () => void;
+  dispose(): void;
+}
 
 /** A model or thinking-level pick, for the root or a worker. */
 export type ModelPick = { model: ModelRef } | { thinkingLevel: ModelThinkingLevel };
