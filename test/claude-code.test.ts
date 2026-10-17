@@ -657,6 +657,52 @@ PROJECT RULES
     }
   });
 
+  it("keeps a live conversation's system prompt and resumes with a home edit as an in-stream reminder", async () => {
+    const value = await setup();
+    await writeFile(
+      join(value.directory, "config.json"),
+      JSON.stringify({ front: role, worker: role, classifier: null, claude: config }),
+    );
+    await writeFile(join(value.directory, "FRONT.md"), "FRONT BEFORE");
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" + script.requests.length }]);
+    });
+    await openClaudeModels(value.directory, script.provider, token);
+    const backend = await Monchu.open(value.directory, script.provider);
+    const view = await backend.viewState();
+    try {
+      for (const n of [1, 2]) {
+        if (n === 2) await writeFile(join(value.directory, "FRONT.md"), "FRONT AFTER");
+        await backend.submit("turn" + n, "turn" + n, "followUp");
+        await waitFor(() =>
+          view.value.entries.some((entry) =>
+            entry.model?.some(
+              (message) => message.role === "assistant" && textOf(message) === "answer" + n,
+            ),
+          ),
+        );
+      }
+      const [first, second] = script.requests;
+      assert(first && second);
+      expect(second.input.options?.systemPrompt).toEqual(first.input.options?.systemPrompt);
+      expect(JSON.stringify(first.input.options?.systemPrompt)).toContain("FRONT BEFORE");
+      // The same Claude session resumes; only the new turn carries the change.
+      expect(second.path).toBe(first.path);
+      const content = second.prompt[0]?.message.content;
+      assert(Array.isArray(content));
+      expect(content[0]).toEqual({ type: "text", text: "turn2" });
+      const reminder = content[1];
+      assert(reminder?.type === "text");
+      expect(reminder.text).toMatch(
+        /^<system-reminder>\nUpdated system prompt section "home":\n\n<home>\n[\s\S]*FRONT AFTER[\s\S]*<\/system-reminder>$/,
+      );
+      expect(content).toHaveLength(2);
+    } finally {
+      view.dispose();
+      await backend.close();
+    }
+  });
+
   it.each(["front", "worker"])(
     "closes a parked %s query when its real Durable tool is cancelled",
     async (target) => {
@@ -830,7 +876,7 @@ PROJECT RULES
     expect(script.requests).toHaveLength(0);
   });
 
-  it("keeps user images and tool-result images, normalizes IDs once, and applies current transcript prompt/tool deltas", async () => {
+  it("keeps user images and tool-result images, normalizes IDs once, and applies transcript prompt/tool deltas in place", async () => {
     const value = await setup();
     const script = scriptedClaude(value.directory, config, async function* () {
       yield* claudeResponse([{ type: "text", text: "ok" }]);
@@ -878,7 +924,7 @@ PROJECT RULES
     expect(captured.input.options?.systemPrompt).toEqual({
       type: "preset",
       preset: "claude_code",
-      append: "base docs/custom-provider.md\n\nlater\n\nfresh",
+      append: "base docs/custom-provider.md\n\nold",
     });
     expect(captured.input.options?.mcpServers).toBeUndefined();
     expect(captured.history[0]?.message.content).toEqual([
@@ -897,6 +943,10 @@ PROJECT RULES
           {
             type: "image",
             source: { type: "base64", media_type: "image/png", data: "image-data" },
+          },
+          {
+            type: "text",
+            text: '<system-reminder>\nlater\n\nUpdated system prompt section "current":\n\nfresh\n</system-reminder>',
           },
         ],
       },

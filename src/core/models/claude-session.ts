@@ -21,7 +21,14 @@
 // SOFTWARE.
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ImageContent, Message, UserMessage } from "@earendil-works/pi-ai";
+import {
+  getSystemMessageText,
+  renderSystemMessageUpdate,
+  type ImageContent,
+  type Message,
+  type TextContent,
+  type UserMessage,
+} from "@earendil-works/pi-ai";
 import { createSession, type ContentBlock } from "cc-session-io";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -55,9 +62,57 @@ function userContent(content: UserMessage["content"]) {
       );
 }
 
+type ModelMessage = Exclude<Message, { role: "system" }>;
+
+/**
+ * Claude Code records a session's system prompt on its first request and replays that record on every resume, so a
+ * prompt change never reaches the model through `append`, and a rebuilt session that renders a new one re-caches
+ * everything. The transcript's first system message (Durable's baseline, rewritten only at compaction) is the system
+ * prompt; each later one is folded into the stream as a reminder after the input that precedes the next reply, where
+ * pi-ai's Anthropic transport places mid-conversation system messages.
+ */
+export function claudeTranscript(messages: Message[]): {
+  systemPrompt: string;
+  history: ModelMessage[];
+} {
+  const first = messages.find((message) => message.role === "system");
+  const history: ModelMessage[] = [];
+  let held: TextContent[] = [];
+  const attach = (message: ModelMessage, blocks: TextContent[], before: boolean): ModelMessage => {
+    if (message.role === "assistant")
+      throw new Error("Claude Code cannot attach a reminder to a reply");
+    const content =
+      typeof message.content === "string"
+        ? [{ type: "text" as const, text: message.content }]
+        : message.content;
+    return { ...message, content: before ? [...blocks, ...content] : [...content, ...blocks] };
+  };
+  for (const message of messages) {
+    if (message.role === "system") {
+      const text = message === first ? "" : renderSystemMessageUpdate(message);
+      if (!text) continue;
+      const block = {
+        type: "text" as const,
+        text: `<system-reminder>\n${text}\n</system-reminder>`,
+      };
+      const last = history.at(-1);
+      if (last === undefined || last.role === "assistant") held.push(block);
+      else history[history.length - 1] = attach(last, [block], false);
+    } else if (held.length && message.role !== "assistant") {
+      history.push(attach(message, held, true));
+      held = [];
+    } else {
+      if (held.length) history.push({ role: "user", content: held, timestamp: message.timestamp });
+      held = [];
+      history.push(message);
+    }
+  }
+  if (held.length) history.push({ role: "user", content: held, timestamp: 0 });
+  return { systemPrompt: first === undefined ? "" : getSystemMessageText(first), history };
+}
+
 /** The bridge's history/prompt split: all trailing user messages belong to this turn. */
-export function claudeTurn(messages: Message[]) {
-  const history = messages.filter((message) => message.role !== "system");
+export function claudeTurn(history: ModelMessage[]) {
   let start = history.length;
   while (start > 0 && history[start - 1]?.role === "user") start--;
   const content = history.slice(start).flatMap((message) => {

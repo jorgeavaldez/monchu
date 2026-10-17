@@ -60,6 +60,7 @@ import type { ClaudeConfig } from "../config.ts";
 import {
   claudeHistoryKeys,
   claudeToolResult,
+  claudeTranscript,
   claudeTurn,
   rebuildClaudeSession,
 } from "./claude-session.ts";
@@ -294,11 +295,13 @@ export function createClaudeCodeProvider(
           throw new Error(
             "Claude Code requires a stored setup-token; use /login and choose Claude Code",
           );
-        const systemPrompt = getCurrentSystemPrompt(context.messages);
+        const transcript = claudeTranscript(context.messages);
+        const { systemPrompt } = transcript;
+        // The current prompt covers every section a reminder may carry.
+        const sent = `${systemPrompt}\n${getCurrentSystemPrompt(context.messages)}`;
         if (
-          /(^|\n)You are an expert coding assistant operating inside pi/.test(systemPrompt) ||
-          (systemPrompt.includes("docs/custom-provider.md") &&
-            systemPrompt.includes("docs/packages.md"))
+          /(^|\n)You are an expert coding assistant operating inside pi/.test(sent) ||
+          (sent.includes("docs/custom-provider.md") && sent.includes("docs/packages.md"))
         )
           throw new Error(
             "Refusing Claude Code prompt: Pi harness text or its documentation-path pair may trigger Extra Usage. Fix the source prompt before retrying.",
@@ -334,7 +337,7 @@ export function createClaudeCodeProvider(
                 : undefined;
         if (effort !== undefined) output.providerThinkingLevel = effort;
         if (options.reasoning !== undefined) output.thinkingLevel = options.reasoning;
-        const turn = claudeTurn(context.messages);
+        const turn = claudeTurn(transcript.history);
         const keys = claudeHistoryKeys(turn.history);
         if (!isolated && !sessionCleanups.has(key)) {
           const unregister = registerSessionResourceCleanup((sessionId) => {
