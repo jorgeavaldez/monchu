@@ -5,6 +5,7 @@ import {
   type Models,
 } from "@earendil-works/pi-ai";
 import {
+  AgentDoc,
   configure,
   defineDoc,
   InboxDoc,
@@ -79,9 +80,15 @@ export async function prepareFront(
   id: ConversationId,
   extensions: Extensions,
 ): Promise<void> {
+  // Groups the root already loaded stay, in place: dropping one at a restart changes its tools and costs the prompt cache.
+  const selected = (await tx.doc(AgentDoc, id)).extensions;
+  const names = Array.isArray(selected) ? selected : (selected?.add ?? []);
+  const loaded = extensions.groups
+    .filter((group) => names.includes(group.name))
+    .sort((left, right) => names.indexOf(left.name) - names.indexOf(right.name));
   await configure(tx, id, {
     // Goals, memory and roots are not in the host default. Workers get them too: a new worker copies this agent.
-    extensions: { add: extensions.root },
+    extensions: { add: [...extensions.root, ...loaded] },
     instructions: FRONT_INSTRUCTIONS,
   });
   await applyFrontRole(tx, id, extensions.config.front, extensions.preload);

@@ -190,13 +190,14 @@ export function createIdentity(
       section("project", async (input) => {
         if (input.conversationId === ROOT_CONVERSATION_ID || input.env?.cwd === undefined)
           return undefined;
+        // Never undefined for a worker: a section that appears later re-sends every section after it.
         const files = await projectContextFiles(
           input.env.cwd,
           join(home, "AGENTS.md"),
           reportSkipped,
         );
         return files.length === 0
-          ? undefined
+          ? "No project instructions in the execution directory."
           : files
               .map(
                 ({ path, content }) =>

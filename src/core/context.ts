@@ -26,6 +26,9 @@ export function harnessSettings(current: {
       const provider = current.settings.providerRetry;
       const idle = current.settings.httpIdleTimeoutMs;
       return {
+        // An agent idles between turns for minutes; ask for the longest prompt cache where the provider offers one
+        // (Anthropic's 1h TTL). Durable's compaction requests still pass `none`.
+        cacheRetention: "long" as const,
         timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
         maxRetryDelayMs: provider.maxRetryDelayMs,
         ...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),

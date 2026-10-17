@@ -172,7 +172,7 @@ describe("Claude Code subscription provider", () => {
     });
   });
 
-  it("parks one query across Durable tool rounds, pairs out-of-order MCP calls, and rebuilds after restart", async () => {
+  it("parks one query across Durable tool rounds, pairs out-of-order MCP calls, and resumes Claude's own session after restart", async () => {
     const value = await setup();
     await writeFile(join(value.directory, "known.txt"), "durable-owned file");
     let declarations: Awaited<ReturnType<Client["listTools"]>> | undefined;
@@ -263,13 +263,11 @@ describe("Claude Code subscription provider", () => {
       expect(root.id).toBe(rootId);
       await root.configure({ model: role }, context);
       await (await root.submit({ type: "input", content: "continue" }, context)).wait(context);
-      expect(restarted.requests[0]?.history.map((record) => record.type)).toEqual([
-        "user",
-        "assistant",
-        "user",
-        "user",
-        "assistant",
-      ]);
+      // The session Claude Code wrote is resumed as it stands, not rebuilt from Durable's history.
+      expect(restarted.requests[0]?.path).toBe(script.requests[0]?.path);
+      expect(restarted.requests[0]?.input.options?.resume).toBe(
+        basename(script.requests[0]?.path ?? "", ".jsonl"),
+      );
       expect(restarted.requests[0]?.prompt[0]?.message.content).toEqual([
         { type: "text", text: "continue" },
       ]);
@@ -344,7 +342,7 @@ describe("Claude Code subscription provider", () => {
     expect(script.requests[7]?.path).toBe(firstPath);
   });
 
-  it("rotates after an abort and rebuilds an orphaned tool result with the bridge continuation prompt", async () => {
+  it("resumes its session after an abort, cut back to the last clean turn, and imports an orphaned tool result with the continuation prompt", async () => {
     const value = await setup();
     const entered = Promise.withResolvers<void>();
     let attempt = 0;
@@ -389,7 +387,10 @@ describe("Claude Code subscription provider", () => {
       },
     );
     expect((await models.completeSimple(model, { messages }, options)).stopReason).toBe("stop");
-    expect(script.requests[2]?.path).not.toBe(script.requests[0]?.path);
+    expect(script.requests[2]?.path).toBe(script.requests[0]?.path);
+    // The aborted attempt's partial records are cut; Durable's history since the clean turn is appended once.
+    expect(script.requests[2]?.history.map((record) => record.message.content)).toHaveLength(5);
+    expect(script.requests[2]?.history[2]?.message.content).toBe("abort");
     expect(script.requests[2]?.history.at(-1)?.message.content).toEqual([
       {
         type: "tool_result",
@@ -636,7 +637,16 @@ describe("Claude Code subscription provider", () => {
     try {
       await (await front(backend)).submit("front", "front-request", "followUp");
       await waitFor(() => script.requests.length === 1);
-      await (await front(backend)).changeDirectory(project);
+      // The run ends after the request is captured, once the bridge records its checkpoint.
+      await waitFor(async () => {
+        try {
+          await (await front(backend)).changeDirectory(project);
+          return true;
+        } catch (error) {
+          if (error instanceof Error && error.message.includes("idle conversation")) return false;
+          throw error;
+        }
+      });
       await (await front(backend)).startWorker("reader", "inspect", "worker-request");
       await waitFor(() => script.requests.length === 2);
       const [frontPrompt, worker] = prompts();

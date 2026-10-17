@@ -132,7 +132,10 @@ describe("Monchu home context", () => {
       ]);
       const homed = requests.find(({ message }) => message === "homed");
       expect(homed?.home).toContain("SHARED MANUAL");
-      expect(homed?.project).toEqual([]);
+      // A stable placeholder, so a later cd into a project patches this section instead of re-sending the rest.
+      expect(homed?.project).toEqual([
+        "<project>\nNo project instructions in the execution directory.\n</project>",
+      ]);
     } finally {
       await harness.close(context);
     }

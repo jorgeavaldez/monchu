@@ -28,7 +28,11 @@ describe("config", () => {
     try {
       const current = { settings: resolveSettings({}), defaults: () => [] };
       const policy = harnessSettings(current);
-      expect(policy.stream).toEqual({ timeoutMs: 300000, maxRetryDelayMs: 60000 });
+      expect(policy.stream).toEqual({
+        cacheRetention: "long",
+        timeoutMs: 300000,
+        maxRetryDelayMs: 60000,
+      });
       expect(policy.retry).toEqual({
         enabled: true,
         maxRetries: 3,
@@ -61,7 +65,12 @@ describe("config", () => {
       current.settings = resolveSettings({
         retry: { provider: { timeoutMs: 1234, maxRetries: 0, maxRetryDelayMs: 0 } },
       });
-      expect(policy.stream).toEqual({ timeoutMs: 1234, maxRetries: 0, maxRetryDelayMs: 0 });
+      expect(policy.stream).toEqual({
+        cacheRetention: "long",
+        timeoutMs: 1234,
+        maxRetries: 0,
+        maxRetryDelayMs: 0,
+      });
     } finally {
       await cleanup();
     }

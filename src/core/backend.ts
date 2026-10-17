@@ -131,8 +131,9 @@ export class Monchu implements Client {
       show: (id) => this.show(id),
       findRoot: async (prefix) => findRoot(await this.records(), prefix),
     };
+    const telemetry = modelTelemetry(log);
     this.stopTelemetry = harness.subscribeCommits((publication) => {
-      modelTelemetry(log, publication);
+      telemetry(publication);
       if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
     });
   }
@@ -852,24 +853,48 @@ export class Monchu implements Client {
   }
 }
 
-/** One log record per model reply, from the committed assistant entry: model, tokens, time and stop reason, never content. */
-function modelTelemetry(log: Log, publication: CommitPublication): void {
-  for (const change of publication.changes) {
-    if (change.type !== "entry" || change.value.kind !== "pi.assistant") continue;
-    const message = change.value.model?.[0];
-    if (message?.role !== "assistant") continue;
-    log.write(message.stopReason === "error" ? "warn" : "info", "core.model", "reply", {
-      conversation: change.value.conversationId,
-      entry: change.value.id,
-      model: `${message.provider}/${message.model}`,
-      input: message.usage.input,
-      output: message.usage.output,
-      cacheRead: message.usage.cacheRead,
-      cacheWrite: message.usage.cacheWrite,
-      ms: message.durationMs ?? null,
-      stop: message.stopReason,
-    });
-  }
+/** A prompt this large that reads under half of the conversation's previous prompt from cache is a cache miss. */
+const CACHE_MISS_TOKENS = 4096;
+
+/**
+ * One log record per model reply, from the committed assistant entry: model, tokens, cache read ratio, time and stop
+ * reason, never content. A reply whose prompt lost most of the previous one's cache is logged as a warning, so prompt
+ * cache regressions show in the logs.
+ */
+function modelTelemetry(log: Log): (publication: CommitPublication) => void {
+  const previous = new Map<string, number>();
+  return (publication) => {
+    for (const change of publication.changes) {
+      if (change.type !== "entry" || change.value.kind !== "pi.assistant") continue;
+      const message = change.value.model?.[0];
+      if (message?.role !== "assistant") continue;
+      const { input, cacheRead, cacheWrite } = message.usage;
+      const prompt = input + cacheRead + cacheWrite;
+      const conversation = String(change.value.conversationId);
+      const before = previous.get(conversation);
+      const cacheMiss =
+        prompt > 0 && before !== undefined && before >= CACHE_MISS_TOKENS && cacheRead < before / 2;
+      if (prompt > 0) previous.set(conversation, prompt);
+      log.write(
+        message.stopReason === "error" || cacheMiss ? "warn" : "info",
+        "core.model",
+        "reply",
+        {
+          conversation: change.value.conversationId,
+          entry: change.value.id,
+          model: `${message.provider}/${message.model}`,
+          input: message.usage.input,
+          output: message.usage.output,
+          cacheRead: message.usage.cacheRead,
+          cacheWrite: message.usage.cacheWrite,
+          cacheRatio: prompt > 0 ? Math.round((cacheRead / prompt) * 1000) / 1000 : null,
+          ...(cacheMiss ? { cacheMiss: true } : {}),
+          ms: message.durationMs ?? null,
+          stop: message.stopReason,
+        },
+      );
+    }
+  };
 }
 
 /** Whether a commit can change a root's summary: its run, crew, jobs, registry, or a reply. */

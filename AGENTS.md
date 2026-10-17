@@ -19,6 +19,17 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 - Retries and worker deliveries use stable request IDs. Mark a tool replay-safe only if repeating it is safe; a committed call does not prove its side effect happened once.
 - Durable doesn't persist registries or host settings. Reinstall definitions before resuming their tasks, and apply config changes at turn boundaries.
 
+## Prompt cache
+
+Providers cache each request's prefix (tools, system prompt, then messages). Anything that changes what was already sent re-bills the whole conversation, so:
+
+- Nothing dynamic goes in the system prompt or the tool list: no clocks, counters, ids or per-request state. Dynamic context belongs in a Durable section, which sends a change as a later system message, or in the conversation itself.
+- A prompt change is delivered in the stream, never by editing the prefix. Transports that can't send system messages mid-conversation (the Claude Code bridge) fold them into the next input, not into the system prompt.
+- A section never toggles between text and `undefined`: one that appears later re-sends every section after it. Render a short stable placeholder instead.
+- A conversation's tools only grow. Never drop, reorder or redeclare one (restarts included), and keep tool descriptions stable; on the Claude Code bridge any change re-caches the conversation.
+- A restart, abort or retry resumes the provider's existing session; it never rebuilds one that renders differently.
+- Touching prompt, section, tool or provider code: run `test/cache.test.ts` and the Claude Code tests, and check `cacheMiss` in the `core.model` reply log.
+
 ## Code rules
 
 `mise run check` enforces most of these. Never weaken a check to pass it.

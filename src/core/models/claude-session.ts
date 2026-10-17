@@ -29,7 +29,15 @@ import {
   type TextContent,
   type UserMessage,
 } from "@earendil-works/pi-ai";
-import { createSession, type ContentBlock } from "cc-session-io";
+import {
+  createSession,
+  getSessionPath,
+  normalizeProjectPath,
+  openSession,
+  type ContentBlock,
+  type Session,
+} from "cc-session-io";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 function imageBlock(image: ImageContent): {
@@ -176,6 +184,38 @@ export function rebuildClaudeSession(
     model,
     ...(sessionId === undefined ? {} : { sessionId }),
   });
+  appendClaudeHistory(session, history);
+  return session;
+}
+
+/**
+ * Reopen a session Claude Code wrote itself, cut back to `bytes` (a clean turn end it recorded), and append the history
+ * since. Claude Code's own records keep the request bytes it already sent, so its cached prefix survives a restart or an
+ * abort; a rebuilt mirror would not render them identically. Undefined when the file no longer holds that point.
+ */
+export function restoreClaudeSession(
+  missed: Message[],
+  cwd: string,
+  claudeDir: string,
+  sessionId: string,
+  bytes: number,
+): Session | undefined {
+  const path = getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir);
+  let content: Buffer;
+  try {
+    content = readFileSync(path);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (bytes <= 0 || content.length < bytes || content[bytes - 1] !== 0x0a) return undefined;
+  if (content.length > bytes) writeFileSync(path, content.subarray(0, bytes));
+  const session = openSession({ sessionId, projectPath: cwd, claudeDir });
+  appendClaudeHistory(session, missed);
+  return session;
+}
+
+function appendClaudeHistory(session: Session, history: Message[]): void {
   const pending = new Set<string>();
   const ids = new Map<string, string>();
   // Both directions use the same sanitized id; collisions are rejected, not silently merged.
@@ -237,5 +277,4 @@ export function rebuildClaudeSession(
     }
   }
   if (pending.size) throw new Error("Claude Code history is missing tool results");
-  return session;
 }

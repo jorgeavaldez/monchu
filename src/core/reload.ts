@@ -326,6 +326,11 @@ export class Extensions {
     return this.current.root;
   }
 
+  /** Deferred tool groups, loaded per conversation by `tool_search` or preloading. */
+  get groups(): readonly Extension[] {
+    return this.current.groups;
+  }
+
   /** Every installed extension except the ones only added to the root. */
   defaults(): readonly Extension[] {
     const names = new Set(this.current.extensions.map((extension) => extension.name));
@@ -466,10 +471,11 @@ export function createReloadControls(reload: () => Promise<readonly string[]>) {
   return defineExtension({
     name: "monchu.reload",
     sections: [
+      // Never undefined: a section that appears later re-sends every section after it, see AGENTS.md (prompt cache).
       section("restart_request", async (input, context) => {
         const request = (await input.read.snapshot(RestartRequest, context))?.request;
         return request === undefined || request === null
-          ? undefined
+          ? "No restart requested."
           : `Restart requested: ${request.reason}. Only the user can approve it with /restart.`;
       }),
     ],

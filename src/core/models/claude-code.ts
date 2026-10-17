@@ -51,9 +51,10 @@ import {
   ToolSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { deleteSession } from "cc-session-io";
+import { deleteSession, getSessionPath, normalizeProjectPath } from "cc-session-io";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, chmod, mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ClaudeConfig } from "../config.ts";
@@ -63,6 +64,7 @@ import {
   claudeTranscript,
   claudeTurn,
   rebuildClaudeSession,
+  restoreClaudeSession,
 } from "./claude-session.ts";
 
 /** Injectable SDK boundary; scripts need only iteration, interrupt and close, not a fake extension host. */
@@ -197,13 +199,29 @@ type LiveQuery = {
   preserveSharedSession: boolean;
   pushPrompt: (prompt: ReturnType<typeof claudeTurn>["prompt"]) => Promise<void>;
 };
+/** The last clean turn end of a session Claude Code wrote: its history (hashed keys) and the file length then. */
+type Checkpoint = { sessionId: string; hashes: string[]; bytes: number };
 type SessionState = {
   sessionId: string;
   cursor: number;
   history: string[];
   needsRebuild: boolean;
   forceRotate: boolean;
+  checkpoint?: Checkpoint;
 };
+
+const hashKey = (key: string) => createHash("sha256").update(key).digest("base64url");
+
+function isCheckpoint(value: unknown): value is Checkpoint {
+  return (
+    isJsonObject(value) &&
+    typeof value.sessionId === "string" &&
+    /^[0-9a-f-]+$/i.test(value.sessionId) &&
+    typeof value.bytes === "number" &&
+    Array.isArray(value.hashes) &&
+    value.hashes.every((hash) => typeof hash === "string")
+  );
+}
 
 /** Durable owns history and tool execution; Claude owns one persisted query for the whole turn. */
 export function createClaudeCodeProvider(
@@ -241,6 +259,51 @@ export function createClaudeCodeProvider(
   const sessions = new Map<string, SessionState>();
   const liveQueries = new Map<string, LiveQuery>();
   const sessionCleanups = new Map<string, () => void>();
+  // Checkpoints outlive the process, so a restart resumes Claude Code's own session instead of a rebuilt mirror.
+  const checkpoints = join(home, "claude", "checkpoints");
+  const checkpointPath = (key: string) =>
+    /^[A-Za-z0-9_-]+$/.test(key) ? join(checkpoints, `${key}.json`) : undefined;
+  const loadCheckpoint = async (key: string): Promise<Checkpoint | undefined> => {
+    const path = checkpointPath(key);
+    if (path === undefined) return undefined;
+    let text: string;
+    try {
+      text = await readFile(path, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+      throw error;
+    }
+    const value: unknown = JSON.parse(text);
+    return isCheckpoint(value) ? value : undefined;
+  };
+  /** Record a clean point: the session file cut at its last complete line, and the history it holds. */
+  const saveCheckpoint = async (
+    key: string,
+    state: SessionState,
+    sessionId: string,
+    keys: string[],
+    cwd: string,
+    claudeDir: string,
+  ) => {
+    // Only the tail is read: a session holding tool results and images runs to megabytes.
+    const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir));
+    let bytes: number;
+    try {
+      const { size } = await file.stat();
+      const tail = Buffer.alloc(Math.min(size, 1 << 20));
+      await file.read(tail, 0, tail.length, size - tail.length);
+      const end = tail.lastIndexOf(0x0a);
+      bytes = end < 0 ? 0 : size - tail.length + end + 1;
+    } finally {
+      await file.close();
+    }
+    const checkpoint = { sessionId, hashes: keys.map(hashKey), bytes };
+    state.checkpoint = checkpoint;
+    const path = checkpointPath(key);
+    if (path === undefined) return;
+    await mkdir(checkpoints, { recursive: true, mode: 0o700 });
+    await writeFile(path, JSON.stringify(checkpoint), { mode: 0o600 });
+  };
   const streamClaude: StreamFunction<Api, SimpleStreamOptions> = (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     const output: AssistantMessage = {
@@ -339,6 +402,19 @@ export function createClaudeCodeProvider(
         if (options.reasoning !== undefined) output.thinkingLevel = options.reasoning;
         const turn = claudeTurn(transcript.history);
         const keys = claudeHistoryKeys(turn.history);
+        if (!isolated && !sessions.has(key)) {
+          // After a restart: cut the session back to its checkpoint before resuming, since a turn may have stopped midway.
+          const checkpoint = await loadCheckpoint(key);
+          if (checkpoint !== undefined)
+            sessions.set(key, {
+              sessionId: checkpoint.sessionId,
+              cursor: checkpoint.hashes.length,
+              history: [],
+              needsRebuild: true,
+              forceRotate: false,
+              checkpoint,
+            });
+        }
         if (!isolated && !sessionCleanups.has(key)) {
           const unregister = registerSessionResourceCleanup((sessionId) => {
             if (sessionId !== undefined && sessionId !== key) return;
@@ -424,26 +500,40 @@ export function createClaudeCodeProvider(
               // The bridge's shorter-context clean start must not overwrite the shared mirror.
               preserveSharedSession = true;
             } else if (turn.prior.length) {
-              const previousId = state?.forceRotate ? undefined : state?.sessionId;
-              if (previousId !== undefined) deleteSession(previousId, cwd, claudeDir);
-              const session = rebuildClaudeSession(
-                turn.prior,
-                cwd,
-                claudeDir,
-                model.id,
-                previousId,
-              );
+              // Prefer Claude Code's own session up to its last clean turn: its records keep the cached request bytes.
+              const checkpoint = state?.checkpoint;
+              const restored =
+                checkpoint !== undefined &&
+                checkpoint.hashes.length <= priorKeys.length &&
+                checkpoint.hashes.every((hash, index) => hash === hashKey(priorKeys[index] ?? ""))
+                  ? restoreClaudeSession(
+                      turn.prior.slice(checkpoint.hashes.length),
+                      cwd,
+                      claudeDir,
+                      checkpoint.sessionId,
+                      checkpoint.bytes,
+                    )
+                  : undefined;
+              let session = restored;
+              if (session === undefined) {
+                const previousId = state?.forceRotate ? undefined : state?.sessionId;
+                if (previousId !== undefined) deleteSession(previousId, cwd, claudeDir);
+                session = rebuildClaudeSession(turn.prior, cwd, claudeDir, model.id, previousId);
+              }
               session.save();
               await chmod(session.jsonlPath, 0o600);
               resume = session.sessionId;
-              if (!isolated)
-                sessions.set(key, {
+              if (!isolated) {
+                const next = {
                   sessionId: resume,
                   cursor: turn.prior.length,
                   history: priorKeys,
                   needsRebuild: false,
                   forceRotate: false,
-                });
+                };
+                sessions.set(key, next);
+                await saveCheckpoint(key, next, resume, priorKeys, cwd, claudeDir);
+              }
             }
           }
           const env = Object.fromEntries(
@@ -627,14 +717,17 @@ export function createClaudeCodeProvider(
                   message.subtype === "init" &&
                   !preserveSharedSession &&
                   !isolated
-                )
+                ) {
+                  const checkpoint = sessions.get(key)?.checkpoint;
                   sessions.set(key, {
                     sessionId: message.session_id,
                     cursor: turn.history.length,
                     history: keys,
                     needsRebuild: false,
                     forceRotate: false,
+                    ...(checkpoint === undefined ? {} : { checkpoint }),
                   });
+                }
                 if (message.type === "system" && message.subtype === "api_retry")
                   throw new Error("Claude Code attempted an internal API retry; request stopped");
                 if (message.type === "system" && message.subtype === "compact_boundary")
@@ -688,6 +781,18 @@ export function createClaudeCodeProvider(
             sawResult = true;
             if (preserveSharedSession || isolated)
               deleteSession(message.session_id, cwd, claudeDir);
+            else {
+              const state = sessions.get(key);
+              if (state !== undefined)
+                await saveCheckpoint(
+                  key,
+                  state,
+                  message.session_id,
+                  [...keys, ...claudeHistoryKeys([output])],
+                  cwd,
+                  claudeDir,
+                );
+            }
             break;
           }
           if (message.type !== "stream_event") continue;
