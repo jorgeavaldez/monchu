@@ -27,6 +27,7 @@ import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/p
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { theme } from "../theme/theme.ts";
+import type { RootStatus } from "../../api/client.ts";
 import type { ContextUsage } from "../../ui/state.ts";
 
 /** Pi's compact token count: 999, 1.2k, 45k, 1.2M. */
@@ -47,6 +48,17 @@ export function shortPath(path: string): string {
   return `~${sep}${inside}`;
 }
 
+/** A root's status as the indicator draws it: working and done as dots, idle as a hollow one. */
+export function rootMark(status: RootStatus, shown = false): string {
+  if (status === "idle") return theme.fg("dim", "○");
+  return theme.fg(status === "working" ? "accent" : "success", shown ? "◉" : "●");
+}
+
+/** A root id as jj shows one: the unique prefix in the warning color, the rest dim. */
+export function rootIdText(split: { unique: string; rest: string }): string {
+  return theme.fg("warning", split.unique) + theme.fg("dim", split.rest);
+}
+
 /** One conversation's context: its usage and its model's context window, when the model is known. */
 export type Meter = { usage: ContextUsage; window: number | undefined };
 
@@ -64,6 +76,11 @@ export function meterText(meter: Meter): string {
 
 export type FooterState = {
   cwd: string;
+  /** The shown root's id, split at its unique prefix, and label. */
+  rootId: { unique: string; rest: string } | undefined;
+  rootLabel: string;
+  /** The root indicator: one dot per active root. */
+  roots: readonly { status: Exclude<RootStatus, "idle">; shown: boolean }[];
   /** The shown conversation: undefined for the root. */
   worker: string | undefined;
   steer: boolean;
@@ -88,12 +105,15 @@ function spread(left: string, right: string, width: number): string {
 }
 
 /**
- * Pi's two-line footer: the directory and shown conversation with the input mode, then token totals, context fill and
+ * Pi's two-line footer: the root dots, directory, shown root and worker with the input mode, then token totals, context fill and
  * model. On a worker the root's context stays beside the worker's. Narrow terminals drop totals before context.
  */
 export class Footer implements Component {
   state: FooterState = {
     cwd: "",
+    rootId: undefined,
+    rootLabel: "",
+    roots: [],
     worker: undefined,
     steer: false,
     editing: false,
@@ -109,17 +129,26 @@ export class Footer implements Component {
     const width = Math.max(1, full - 2);
     const state = this.state;
     const dim = (text: string) => theme.fg("dim", text);
-    // The shown conversation stays named on a narrow screen: the directory gives way first.
-    const view = ` • ${state.worker ?? "root"}`;
+    // The root dots and the shown root and worker stay on a narrow screen: the directory gives way first, then the label.
+    const dots = state.roots.map((root) => rootMark(root.status, root.shown)).join("");
+    const lead = dots ? `${dots} ` : "";
+    const view = `${dim(" • ")}${state.rootId === undefined ? dim("root") : rootIdText(state.rootId)}`;
+    const worker = state.worker === undefined ? "" : dim(` • ${state.worker}`);
     const mode = state.editing
       ? theme.fg("warning", "editing · Enter saves · Esc cancels")
       : state.steer
         ? `${theme.fg("warning", "steer")}${dim(" (Alt+S)")}`
         : dim("follow-up (Alt+S)");
     const modeWidth = visibleWidth(mode);
-    const room = Math.max(0, width - visibleWidth(view) - modeWidth - 2);
+    let room = Math.max(0, width - modeWidth - 2 - visibleWidth(lead + view + worker));
+    const label =
+      state.rootLabel && room > 4
+        ? dim(` ${truncateToWidth(state.rootLabel, Math.min(room, 24) - 1, "…")}`)
+        : "";
+    room -= visibleWidth(label);
+    const cwd = room >= 6 ? dim(truncateToWidth(shortPath(state.cwd), room, "...")) : "";
     const cut = truncateToWidth(
-      dim(`${truncateToWidth(shortPath(state.cwd), room, "...")}${view}`),
+      `${lead}${cwd}${view}${label}${worker}`,
       Math.max(0, width - modeWidth - 2),
       "",
     );

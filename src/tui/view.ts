@@ -26,6 +26,7 @@ import {
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { Footer, shortPath, type FooterState } from "./components/footer.ts";
 import { GoalsPanel, type GoalRow } from "./components/goals-panel.ts";
+import { RootsPanel, type RootActions } from "./components/roots-panel.ts";
 import { LinkRows } from "./components/link.ts";
 import { copyText, openUrl } from "./system.ts";
 import { formatKeyText } from "./components/keybinding-hints.ts";
@@ -65,7 +66,7 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { Goal, QueueChange } from "../api/client.ts";
+import type { Goal, QueueChange, RootSummary } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import {
@@ -780,6 +781,35 @@ export class MonchuTui {
   updateAgents(rows: readonly AgentRow[]): void {
     if (!(this.selector instanceof AgentsPanel)) return;
     this.selector.update(rows);
+    this.ui.requestRender();
+  }
+
+  /** Lists every root in the editor's place; `updateRoots` keeps it live while open. Opening a root closes it. */
+  openRoots(
+    roots: readonly RootSummary[],
+    shown: string,
+    actions: Omit<RootActions, "close">,
+  ): void {
+    this.showSelector(
+      new RootsPanel(
+        roots,
+        shown,
+        {
+          ...actions,
+          open: (id) => {
+            this.restoreEditor();
+            actions.open(id);
+          },
+          close: () => this.restoreEditor(),
+        },
+        () => this.ui.requestRender(),
+      ),
+    );
+  }
+
+  updateRoots(roots: readonly RootSummary[]): void {
+    if (!(this.selector instanceof RootsPanel)) return;
+    this.selector.update(roots);
     this.ui.requestRender();
   }
 

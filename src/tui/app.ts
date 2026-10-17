@@ -10,8 +10,8 @@ import { assessmentNotice, formatReports, routingText } from "../api/reports.ts"
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { releaseNotices } from "../api/release.ts";
 import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
-import { formatJobEvent } from "../ui/jobs.ts";
-import { listedRoots, parseRootsCommand, rootCounts, rootIds, rootLabel } from "../ui/roots.ts";
+import { formatJobEvent, jobEventRoot } from "../ui/jobs.ts";
+import { activeRoots, parseRootsCommand, rootIds, rootLabel } from "../ui/roots.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets, type PickTarget } from "../ui/login.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -31,7 +31,7 @@ import { MonchuTui } from "./view.ts";
  */
 export async function runTerminal(
   backend: Client,
-  /** The root this terminal shows, by full id. */
+  /** The root this terminal opens, by full id; `/roots` switches it. */
   rootId: string,
   terminal: Terminal = new ProcessTerminal(),
   herdr?: HerdrAgent,
@@ -53,7 +53,10 @@ export async function runTerminal(
     initTheme(name && name !== "system" ? name : scheme);
   }
   applyTheme();
-  const front = backend.root(rootId);
+  let front = backend.root(rootId);
+  let roots: readonly RootSummary[] = [];
+  // Each switch of root starts a generation; work for an earlier root stops when it sees a newer one.
+  let generation = 0;
   let exit = () => {};
   const exited = new Promise<void>((resolve) => {
     exit = resolve;
@@ -64,6 +67,7 @@ export async function runTerminal(
   let root: Watched<ConversationView> | undefined;
   let stopRoot: (() => void) | undefined;
   let stopReports: (() => void) | undefined;
+  let stopRoots: (() => void) | undefined;
   let stopAssessments: (() => void) | undefined;
   let stopJobs: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
@@ -134,7 +138,11 @@ export async function runTerminal(
         shown.provider === undefined
           ? undefined
           : backend.model({ provider: shown.provider, modelId: shown.model });
+      const split = rootIds(roots);
       view.setFooter({
+        rootId: split(rootId),
+        rootLabel: roots.find((each) => each.id === rootId)?.label ?? "",
+        roots: activeRoots(roots).map((each) => ({ ...each, shown: each.id === rootId })),
         shown: meter(state.value),
         root: root === undefined ? undefined : meter(root.value),
         thinking: model?.reasoning ? (shown.thinkingLevel ?? "off") : undefined,
@@ -174,9 +182,10 @@ export async function runTerminal(
     editQueued: (id, change) => {
       // The queue shown now: a later view switch must not redirect the edit.
       const name = selected;
+      const target = front;
       inputs = inputs
         .then(async () => {
-          if (await front.editQueued(name, id, change)) return;
+          if (await target.editQueued(name, id, change)) return;
           view.notice("that message already left the queue");
           // An edit that came too late stays in the editor, to send as a new message.
           if (change.kind === "text") view.restoreQueued([change.text]);
@@ -195,11 +204,13 @@ export async function runTerminal(
     if (closing) return;
     refreshAgain = true;
     if (refreshing) return refreshing;
+    const current = generation;
+    const stale = () => closing || current !== generation;
     refreshing = (async () => {
-      while (refreshAgain && !closing) {
+      while (refreshAgain && !stale()) {
         refreshAgain = false;
         const summaries = await front.workers();
-        if (closing) return;
+        if (stale()) return;
         // A closed worker leaves the active list: drop its view, and return a selected view to the root.
         const active = new Set(summaries.map((summary) => summary.name));
         for (const [name, worker] of workers) {
@@ -213,14 +224,14 @@ export async function runTerminal(
           }
         }
         for (const summary of summaries) {
-          if (closing) return;
+          if (stale()) return;
           const existing = workers.get(summary.name);
           if (existing) {
             existing.summary = summary;
             continue;
           }
           const state = await front.viewState(summary.name);
-          if (closing) {
+          if (stale()) {
             state.dispose();
             return;
           }
@@ -247,6 +258,89 @@ export async function runTerminal(
       refreshing = undefined;
     });
     return refreshing;
+  }
+
+  const seen: { failure?: string } = {};
+  /**
+   * Shows a root: attaches its front, workers and routing advice, then lets go of the root shown before, which marks
+   * that one seen. Notices stay with the root they were posted in.
+   */
+  async function openRoot(id: string): Promise<void> {
+    const next = backend.root(id);
+    const state = await next.viewState();
+    if (closing) {
+      state.dispose();
+      return;
+    }
+    generation++;
+    await refreshing?.catch(() => {});
+    stopRoot?.();
+    stopAssessments?.();
+    for (const worker of workers.values()) {
+      worker.stop();
+      worker.state.dispose();
+    }
+    workers.clear();
+    root?.dispose();
+    front = next;
+    rootId = id;
+    root = state;
+    selected = undefined;
+    lastRootEntry = undefined;
+    stopRoot = state.subscribe((value) => {
+      try {
+        const newest = value.entries.at(-1)?.id;
+        if (newest !== lastRootEntry) {
+          lastRootEntry = newest;
+          void refreshWorkers().catch(fail);
+        }
+        show();
+      } catch (error) {
+        fail(error);
+        process.exitCode = 1;
+        exit();
+      }
+    });
+    const shown = new Set<number>();
+    let hydrated = false;
+    stopAssessments = await next.watchAssessments((items) => {
+      for (const item of items) {
+        if (item.result === null || shown.has(item.taskId)) continue;
+        shown.add(item.taskId);
+        if (!hydrated) continue;
+        const text = assessmentNotice(item.result, seen);
+        if (text !== undefined) view.notice(text);
+      }
+      hydrated = true;
+    });
+    const routing = await next.routing();
+    if (routing.paused) view.notice(routingText(routing));
+    await refreshWorkers();
+    show(true);
+  }
+
+  /** Opens another root and says which, with its label. */
+  async function switchRoot(id: string): Promise<void> {
+    if (id !== rootId) await openRoot(id);
+    const summary = roots.find((each) => each.id === id);
+    view.notice(`root · ${id}${summary === undefined ? "" : ` · ${rootLabel(summary)}`}`);
+  }
+
+  async function newRoot(): Promise<void> {
+    await switchRoot(await backend.createRoot(randomUUID()));
+  }
+
+  async function archive(id: string, archived: boolean): Promise<void> {
+    await backend.archiveRoot(id, archived);
+    // An archived root leaves the list: this terminal moves on to the current root.
+    if (archived && id === rootId) await switchRoot(await backend.currentRoot());
+  }
+
+  /** Runs a menu's action in turn with typed input; rejects with its failure, which the menu shows. */
+  async function queued(task: () => Promise<void>): Promise<void> {
+    const run = inputs.then(task);
+    inputs = run.catch(() => {});
+    await run;
   }
 
   async function switchTo(name: string | undefined): Promise<void> {
@@ -521,30 +615,50 @@ export async function runTerminal(
         break;
       }
       case "/roots": {
-        // The list only for now; switching and the menu come with the root indicator.
-        if (parseRootsCommand(input.text).kind !== "list") {
-          view.notice("roots · only the list so far; monchu new and monchu resume <id> open roots");
-          break;
+        const command = parseRootsCommand(input.text);
+        switch (command.kind) {
+          case "list":
+            view.openRoots(roots, rootId, {
+              open: (id) => {
+                inputs = inputs.then(() => switchRoot(id)).catch(fail);
+              },
+              // Through the input chain, so a root change never races a message being sent; the panel shows failures.
+              create: () =>
+                queued(async () => {
+                  await newRoot();
+                  view.closeSelector();
+                }),
+              rename: (id, label) => queued(() => backend.renameRoot(id, label)),
+              archive: (id, archived) =>
+                queued(async () => {
+                  const shown = rootId;
+                  await archive(id, archived);
+                  if (rootId !== shown) view.closeSelector();
+                }),
+            });
+            break;
+          case "switch":
+            await switchRoot(await backend.findRoot(command.prefix));
+            break;
+          case "new":
+            await newRoot();
+            break;
+          case "rename":
+            await backend.renameRoot(rootId, command.label);
+            view.notice(
+              command.label ? `root renamed · ${command.label}` : "root named by its next message",
+            );
+            break;
+          case "archive": {
+            const id =
+              command.prefix === undefined ? rootId : await backend.findRoot(command.prefix);
+            await archive(id, command.archived);
+            view.notice(
+              `${command.archived ? "archived" : "unarchived"} · ${id}${command.archived ? " · nothing deleted; /roots h shows it" : ""}`,
+            );
+            break;
+          }
         }
-        let roots: readonly RootSummary[] = [];
-        (await backend.watchRoots((next) => (roots = next)))();
-        const split = rootIds(roots);
-        view.notice(
-          [
-            `roots · ${roots.filter((each) => !each.archived).length} open`,
-            ...listedRoots(roots, false).map((each) => {
-              const { unique, rest } = split(each.id);
-              return [
-                `${unique}${rest}${each.id === rootId ? " (shown)" : ""}`,
-                rootLabel(each),
-                each.status,
-                rootCounts(each),
-              ]
-                .filter(Boolean)
-                .join(" · ");
-            }),
-          ].join("\n"),
-        );
         break;
       }
       case "/logs": {
@@ -640,20 +754,11 @@ export async function runTerminal(
   process.on("SIGTERM", exit);
   process.on("SIGINT", interrupt);
   try {
-    root = await front.viewState();
-    stopRoot = root.subscribe((value) => {
-      try {
-        const newest = value.entries.at(-1)?.id;
-        if (newest !== lastRootEntry) {
-          lastRootEntry = newest;
-          void refreshWorkers().catch(fail);
-        }
-        show();
-      } catch (error) {
-        fail(error);
-        process.exitCode = 1;
-        exit();
-      }
+    await openRoot(rootId);
+    stopRoots = await backend.watchRoots((next) => {
+      roots = next;
+      view.updateRoots(next);
+      show();
     });
     view.setSkills(backend.skills());
     stopReload = backend.onReload(() => {
@@ -669,26 +774,12 @@ export async function runTerminal(
       closing = true;
       exit();
     });
-    const shown = new Set<number>();
-    const seen: { failure?: string } = {};
-    let hydrated = false;
-    stopAssessments = await front.watchAssessments((items) => {
-      for (const item of items) {
-        if (item.result === null || shown.has(item.taskId)) continue;
-        shown.add(item.taskId);
-        if (!hydrated) continue;
-        const text = assessmentNotice(item.result, seen);
-        if (text !== undefined) view.notice(text);
-      }
-      hydrated = true;
-    });
-    const routing = await front.routing();
-    if (routing.paused) view.notice(routingText(routing));
     // The TUI is one client of the job event stream: events from now on show as notices.
     stopJobs = await backend.watchJobEvents((await backend.jobs()).nextEvent - 1, (events) => {
-      for (const event of events) view.notice(formatJobEvent(event));
+      // Each terminal hears its shown root's jobs; `/jobs` lists them all.
+      for (const event of events)
+        if (jobEventRoot(event, roots) === rootId) view.notice(formatJobEvent(event));
     });
-    await refreshWorkers();
     // Read before input starts, so the startup hint never lands mid-command.
     const needs = await backend.loginNeeds();
     view.start();
@@ -734,6 +825,7 @@ export async function runTerminal(
     stopRelease?.();
     stopScheme?.();
     stopReports?.();
+    stopRoots?.();
     stopAssessments?.();
     stopJobs?.();
     stopRoot?.();

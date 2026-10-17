@@ -104,7 +104,7 @@ export const help = [
   "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
   "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
-  "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the root.",
+  "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the shown root. Footer dots are roots at work (●) or done unseen; /roots has them.",
 ].join("\n");
 
 /** Parse once at the input boundary; directory/message tails may contain spaces and newlines. */

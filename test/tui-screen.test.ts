@@ -21,6 +21,9 @@ import {
 } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
+/** The footer's name of the shown root, as `withTerminal` opens it. */
+let shownRoot = "";
+
 async function withTerminal(
   columns: number,
   theme: string,
@@ -51,7 +54,9 @@ async function withTerminal(
       JSON.stringify({ ...config, settings: { theme }, chosen: undefined }),
     );
     await backend.reload();
-    running = runTerminal(backend, await backend.currentRoot(), screen);
+    const rootId = await backend.currentRoot();
+    shownRoot = `• ${rootId}`;
+    running = runTerminal(backend, rootId, screen);
     await Promise.race([waitFor(() => screen.started), running]);
     await visible(screen, "/help · home");
     await test(screen, backend, home);
@@ -158,7 +163,7 @@ it("drops a closed worker from the roster at once and returns its selected view 
     // Plain input goes to the shown worker, so the front's close goes through the backend seam the editor uses.
     await (await front(backend)).submit("close reader", "close-reader", "followUp");
     const back = await visible(screen, "worker reader closed · back to root");
-    expect(back.join("\n")).toContain("• root");
+    expect(back.findLast((line) => line.includes(shownRoot))).not.toContain("• reader");
     await waitFor(
       async () => !(await screen.flushAndGetViewport()).join("\n").includes("Workers ·"),
     );
@@ -243,7 +248,7 @@ it("drills down from /model to a conversation or role default, and saves a role 
     screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     const picked = await visible(screen, "root model · faux/worker · this conversation only");
-    expect(picked.slice(-2).join("\n")).toMatch(/• root[\s\S]*worker\s*$/);
+    expect(picked.slice(-2).join("\n")).toMatch(new RegExp(`${shownRoot}[\\s\\S]*worker\\s*$`));
     expect(await readFile(path, "utf8")).toBe(written);
     // The picked model now leads, ahead of the default; the dev front model answers as the root again.
     send(screen, "/model");
@@ -614,7 +619,7 @@ describe.each([
       expect(panel[title + 1]).toMatch(/^› ● Smoke goal\s+\d+s\s*$/);
       expect(panel.slice(title).join("\n")).not.toContain("first step");
       expect(panel[title + 3]?.trim()).toMatch(/^─+$/);
-      expect(panel[title + 4]).toContain("• root");
+      expect(panel[title + 4]).toContain(shownRoot);
       // Typing goes to the panel, not the editor; Enter drills into the goal.
       screen.sendInput("z");
       screen.sendInput("\r");
@@ -637,7 +642,7 @@ describe.each([
       screen.resize(columns, 14);
       const short = await visible(screen, "1-4 of");
       expect(short).toHaveLength(14);
-      expect(short.at(-2)).toContain("• root");
+      expect(short.at(-2)).toContain(shownRoot);
       screen.sendInput("\x1b[B");
       await visible(screen, "2-5 of");
       screen.resize(columns, 40);
@@ -713,7 +718,7 @@ describe.each([
           docked.some((line) => line.includes("result received.")) &&
           docked.some((line) => line.includes("Workers · ○ 1 idle")) &&
           // The whole dock, down to the footer, has settled at the new height.
-          docked.some((line) => line.includes("• root"))
+          docked.some((line) => line.includes(shownRoot))
         );
       });
       const bar = docked.findIndex((line) => line.includes("Workers · ○ 1 idle"));
@@ -721,7 +726,7 @@ describe.each([
       expect(docked[bar - 1]?.trim()).toBe("");
       expect(docked[bar - 2]).toMatch(/\d:\d{2}.* · [k-z]{4}\s*$/);
       // The footer keeps the view and model but drops the command hints.
-      const footer = docked.findLast((line) => line.includes("• root"));
+      const footer = docked.findLast((line) => line.includes(shownRoot));
       expect(footer).toBeDefined();
       expect(footer).not.toContain("/agents");
       expect(footer).not.toContain("/help");
@@ -752,10 +757,68 @@ describe.each([
         );
       });
       send(screen, "/agents root");
-      await visible(screen, "• root");
+      await waitFor(async () =>
+        (await screen.flushAndGetViewport()).some(
+          (line) => line.includes(shownRoot) && !line.includes("• reader"),
+        ),
+      );
       send(screen, "/reload");
       await visible(screen, "reloaded · context");
       expect(screen.stopped).toBe(false);
     });
   }, 30_000);
 });
+
+it("shows active roots as footer dots, and lists, switches, renames and archives roots from /roots", async () => {
+  await withTerminal(48, "dark", async (screen, backend) => {
+    const first = await backend.currentRoot();
+    const second = await backend.createRoot("create:second");
+    await backend.root(second).submit("hello two", "hello-two", "followUp");
+    // Finished while not shown: one dot, in the footer, before the shown root.
+    const footer = (lines: string[]) => lines.findLast((line) => line.includes(`• ${first}`)) ?? "";
+    await waitFor(async () => footer(await screen.flushAndGetViewport()).startsWith(" ● "));
+
+    send(screen, "/roots");
+    const panel = await visible(screen, "Enter open");
+    const rows = panel.filter((line) => line.includes(first) || line.includes(second));
+    // Newest input first; the shown root is selected and marked.
+    expect(rows[0]).toMatch(new RegExp(`^  ${second} ● hello two`));
+    expect(rows[1]).toMatch(new RegExp(`^› ${first} ○ new root \\(here\\)`));
+    screen.sendInput("\x1b[A");
+    screen.sendInput("\r");
+    await visible(screen, `root · ${second} · hello two`);
+    // Shown is seen: the dot goes, and the footer names the root with its label.
+    await waitFor(async () => {
+      const line = (await screen.flushAndGetViewport()).findLast((each) =>
+        each.includes(`• ${second}`),
+      );
+      return line !== undefined && /^ [^●]/.test(line) && line.includes("hello two");
+    });
+
+    send(screen, "/roots rename garden");
+    await visible(screen, "root renamed · garden");
+    send(screen, "/roots");
+    await visible(screen, "Enter open");
+    screen.sendInput("\x1b[B");
+    screen.sendInput("a");
+    await visible(screen, "Nothing is deleted");
+    screen.sendInput("a");
+    await visible(screen, "archived · h shows it");
+    // Archived roots leave the list until h shows them.
+    await waitFor(
+      async () =>
+        !(await screen.flushAndGetViewport()).some(
+          (line) => /^[ ›] [k-z]+ /.test(line) && line.includes(first),
+        ),
+    );
+    screen.sendInput("h");
+    await visible(screen, `${first} archived`);
+    screen.sendInput("\x1b[B");
+    screen.sendInput("a");
+    await visible(screen, "unarchived");
+    screen.sendInput("\x1b");
+    send(screen, `/roots ${first}`);
+    await visible(screen, `root · ${first} · new root`);
+    expect(screen.stopped).toBe(false);
+  });
+}, 30_000);
