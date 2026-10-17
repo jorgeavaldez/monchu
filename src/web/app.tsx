@@ -42,8 +42,9 @@ import { Transcript } from "./transcript.tsx";
 const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idle" };
 
 /**
- * The root indicator, right of the agent tabs: the shown root's name, after one dot per active root (working, or done
- * and not seen yet) with the shown one underlined. Its detail is the roots panel, which a tap opens.
+ * The root menu, right of the agent tabs: one dot per active root (working, or done and not seen yet) with the shown
+ * one underlined, or a hollow one while all are idle, and ▾. The shown root's name is its label and title; its detail is
+ * the roots panel, which a tap opens.
  */
 function RootTab() {
   const active = activeRoots(roots.value);
@@ -60,10 +61,14 @@ function RootTab() {
       class={`roots${rootsOpen.value ? " on" : ""}`}
       aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
       aria-expanded={rootsOpen.value}
-      title={summary || name}
+      title={summary ? `${name} · ${summary}` : name}
       onClick={() => toggleRoots()}
     >
-      {active.length === 0 ? null : (
+      {active.length === 0 ? (
+        <span aria-hidden="true" class="dot">
+          ○
+        </span>
+      ) : (
         <span class="dots">
           {active.map((root) => (
             <span
@@ -76,7 +81,6 @@ function RootTab() {
           ))}
         </span>
       )}
-      <span class="name">{name}</span>
       <span aria-hidden="true">▾</span>
     </button>
   );
@@ -372,7 +376,7 @@ function Footer() {
           ? ` · root ${Math.round((contextUsage(root).context ?? 0) / 1000)}k`
           : ""}
         {" · "}
-        <span title={name}>{live.model}</span>
+        <span title="provider/model">{name}</span>
         {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""}
         {connection.value === "open" ? null : <span class="lost"> · ⚠ {connection.value}</span>}
       </span>

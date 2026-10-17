@@ -717,6 +717,38 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     return `${one.height} px, ${three.height} px for three lines, capped at ${many.height} px`;
   });
 
+  await journey(
+    "tool: a call folds to one line at the text's rhythm, and a tap opens it",
+    async () => {
+      await browser("fill", "textarea", "read");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("Faux tool finished"))`,
+      );
+      const tool = `document.querySelector(".transcript .tool")`;
+      check(
+        (await page(
+          `${tool}.querySelector(".row").getBoundingClientRect().height <= parseFloat(getComputedStyle(${tool}).lineHeight) + 1 && !${tool}.querySelector("pre")`,
+        )) === true,
+        "the tool call isn't folded to one line",
+      );
+      check(
+        (await page(
+          `(() => { const left = (item) => item.getBoundingClientRect().left + parseFloat(getComputedStyle(item).borderLeftWidth) + parseFloat(getComputedStyle(item).paddingLeft); return left(${tool}) === left(document.querySelector(".transcript .user")); })()`,
+        )) === true,
+        "the tool row's text doesn't line up with a message's",
+      );
+      await capture("tool", home, origin);
+      await page(`${tool}.querySelector(".row").click()`);
+      check((await page(`!!${tool}.querySelector("pre")`)) === true, "a tap doesn't open the call");
+      await page(`${tool}.querySelector(".row").click()`);
+      check((await page(`!${tool}.querySelector("pre")`)) === true, "a second tap doesn't fold it");
+      return "folded to one line, aligned with the messages, opened and folded by tap";
+    },
+  );
+
   await journey("model: typeahead, then the /model picker opens and Esc closes it", async () => {
     await browser("fill", "textarea", "/mod");
     await browser("wait", "[role=listbox]");
@@ -839,9 +871,9 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         };
         check(
           (await page(
-            `(() => { const nav = document.querySelector(".agents"), tab = nav.lastElementChild; return tab.matches(".roots") && Math.abs(tab.getBoundingClientRect().right - nav.getBoundingClientRect().right) < 2 && tab.querySelector(".name")?.textContent.startsWith("second root"); })()`,
+            `(() => { const nav = document.querySelector(".agents"), tab = nav.lastElementChild; return tab.matches(".roots") && Math.abs(tab.getBoundingClientRect().right - nav.getBoundingClientRect().right) < 2 && tab.title.startsWith("second root") && tab.textContent.length < 12; })()`,
           )) === true,
-          "the root tab isn't on the right with the root's name",
+          "the root menu isn't an icon on the right named for the root",
         );
 
         await browser("fill", "textarea", "a");

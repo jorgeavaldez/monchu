@@ -2,17 +2,17 @@
 .attach-tray {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5ch;
+  gap: var(--s0);
   margin: 0;
-  padding: 0.5ch 1ch 0;
+  padding: var(--s0) var(--s1) 0;
   list-style: none;
 }
 .attach-tray li {
   display: flex;
   align-items: center;
-  gap: 0.5ch;
+  gap: var(--s0);
   max-width: 100%;
-  padding: 0.25ch 0.5ch;
+  padding: 0 var(--s0);
   border: 1px solid var(--line);
   background: var(--card);
 }
@@ -45,8 +45,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 0.5ch;
-  margin-top: 0.5ch;
+  gap: var(--s0);
+  margin-top: var(--s0);
   white-space: normal;
 }
 .attached img {
@@ -60,7 +60,7 @@
   cursor: zoom-out;
 }
 .attached-file {
-  padding: 0 0.5ch;
+  padding: 0 var(--s0);
   border: 1px solid var(--line);
   background: var(--card);
   overflow-wrap: anywhere;

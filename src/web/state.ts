@@ -467,7 +467,7 @@ async function runMcp(text: string): Promise<void> {
   }
 }
 
-/** `/model` and `/thinking`: first what to change, as the terminal asks, then the pick; Ctrl+S saves a role default. */
+/** `/model` and `/thinking`: first what to change, as the terminal asks, then the pick; Ctrl+S or a row's second button saves a role default. */
 async function runModel(thinking: boolean, search: string): Promise<void> {
   await refreshWorkers();
   const targets = pickTargets(
@@ -476,7 +476,13 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   );
   const which = await pick(
     thinking ? "Pick the thinking level of" : "Pick the model of",
-    targets.map(({ label, description }) => ({ id: label, label, detail: description })),
+    // The terminal's Ctrl+S is a button on each row of the next list here.
+    targets.map(({ label, target, description }) => ({
+      id: label,
+      label,
+      detail:
+        target.kind === "conversation" ? "this conversation, or its role default" : description,
+    })),
   );
   const target = targets.find((each) => each.label === which?.id)?.target;
   if (target === undefined) return;

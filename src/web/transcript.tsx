@@ -1,7 +1,7 @@
 /**
  * The transcript: committed entries render once and are reused while their immutable Durable record is unchanged, so a
- * streaming token re-renders only the live tail. Tool calls and worker reports collapse to a header row, as in the
- * terminal; a click toggles one, and the expand-all switch opens every one.
+ * streaming token re-renders only the live tail. Tool calls fold to one line and worker reports to a header and a few
+ * lines, as in the terminal; a click toggles one, and the expand-all switch opens every one.
  */
 import { useSignal } from "@preact/signals";
 import { Fragment, type ComponentChildren, type VNode } from "preact";
@@ -71,6 +71,12 @@ function Card(props: {
       <header>
         {long ? (expanded ? "▾ " : "▸ ") : ""}
         {props.header}
+        {long && preview === 0 && !expanded ? (
+          <span class="help">
+            {" "}
+            · {lines.length} line{lines.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
         {props.stamp === undefined ? null : <> · {props.stamp}</>}
       </header>
       {shownText ? (
@@ -78,7 +84,7 @@ function Card(props: {
           <Text text={shownText} />
         </pre>
       ) : null}
-      {long && !expanded ? (
+      {long && !expanded && preview > 0 ? (
         <footer>
           {`… ${lines.length - preview} ${preview === 0 ? "" : "more "}line${lines.length - preview === 1 ? "" : "s"}`}
         </footer>
@@ -87,27 +93,60 @@ function Card(props: {
   );
 }
 
-/** A tool call and its result, collapsed to its name, a short argument summary and the first lines of output. */
+/** A tool call's arguments in a few words, as the terminal heads its card: the plain values, not the JSON around them. */
+function argSummary(args: unknown): string {
+  if (typeof args !== "object" || args === null) return JSON.stringify(args) ?? "";
+  return Object.values(args)
+    .flatMap((value) =>
+      typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+        ? [String(value)]
+        : [],
+    )
+    .join(" ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * A tool call and its result, folded to one line as in the terminal: its name, its arguments in a few words, and the
+ * output's first line (the newest one while it runs). A tap, or expand all, shows the arguments and all the output.
+ */
 function ToolCard(props: {
   name: string;
   args: unknown;
   result: ToolResultMessage | undefined;
   running: string | undefined;
 }) {
-  const summary = JSON.stringify(props.args) ?? "";
+  const open = useSignal<boolean | undefined>(undefined);
+  const expanded = open.value ?? expandAll.value;
   const output = props.result === undefined ? (props.running ?? "") : textOf(props.result.content);
+  const lines = output.split("\n").filter((line) => line.trim());
+  const line = props.result === undefined ? lines.at(-1) : lines[0];
+  const error = props.result?.isError === true;
   return (
-    <Card
-      kind="tool"
-      header={
+    <section class={`tool${error ? " error" : ""}${props.result === undefined ? " running" : ""}`}>
+      <button
+        type="button"
+        class="row"
+        aria-expanded={expanded}
+        onClick={() => {
+          open.value = !expanded;
+        }}
+      >
+        <span aria-hidden="true">{expanded ? "▾" : "▸"}</span> <b>{props.name}</b>{" "}
+        <span class="args">{argSummary(props.args)}</span>
+        {line === undefined || expanded ? null : <span class="out"> · {line}</span>}
+      </button>
+      {expanded ? (
         <>
-          <b>{props.name}</b> {summary.length > 80 ? `${summary.slice(0, 80)}…` : summary}
-          {props.result === undefined ? " · running" : ""}
+          <pre class="args">{JSON.stringify(props.args, null, 2)}</pre>
+          {output ? (
+            <pre>
+              <Text text={output} />
+            </pre>
+          ) : null}
         </>
-      }
-      body={output}
-      error={props.result?.isError === true}
-    />
+      ) : null}
+    </section>
   );
 }
 
