@@ -267,6 +267,7 @@ describe("in-process reload", () => {
       "mcp-tools",
       "browser",
       "tool-search",
+      "jobs",
       "herdr",
       "classifier",
     ]);

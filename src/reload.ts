@@ -44,6 +44,7 @@ type Reloadable = {
   "tool-search": typeof import("./tool-search.ts");
   "mcp-tools": typeof import("./mcp-tools.ts");
   browser: typeof import("./browser.ts");
+  jobs: typeof import("./jobs.ts");
 };
 
 async function freshImport<Name extends keyof Reloadable>(
@@ -102,6 +103,7 @@ async function build(
   const { Browser } = await load("browser");
   const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
   const workers = workersModule.createWorkerTools(workerRole, config.profiles, search.preload);
+  const jobs = (await load("jobs")).createJobs(workerRole, search.preload);
   const herdr = (await load("herdr")).createHerdr({
     command: { executable: "herdr", args: [] },
     env: process.env,
@@ -118,6 +120,7 @@ async function build(
       context.extension,
       tools.extension,
       workers,
+      jobs,
       Codemode,
       Goals,
       memory,

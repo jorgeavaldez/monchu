@@ -346,7 +346,14 @@ type DeliveryInput = {
   message: string;
   requestId: string;
   whenBusy: WhenBusy;
+  /** The parent hears the worker's answer only when it starts with `NEEDS USER` (`needsUser`); failures always. */
+  quiet?: true;
 };
+
+/** Whether a quiet delivery's answer asks the parent to bring something to the user. */
+function needsUser(text: string): boolean {
+  return /^\s*NEEDS USER\b/.test(text);
+}
 
 const Delivery = defineTask<
   DeliveryInput,
@@ -405,7 +412,8 @@ const Delivery = defineTask<
           if (!record.reported.includes(settled.answer)) {
             if (entry === undefined) throw new Error("Worker answer is missing");
             record.reported.push(settled.answer);
-            result = { ...base, status: "completed", answerId: settled.answer, text };
+            if (task.input.quiet !== true || needsUser(text))
+              result = { ...base, status: "completed", answerId: settled.answer, text };
           }
         }
         return { status: "running", checkpoint: { phase: "report", result } };
@@ -481,6 +489,7 @@ export async function startWorker(
   requestId: string,
   role: ModelRole,
   preload: readonly string[] = [],
+  quiet = false,
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const previous = state.deliveries.find((item) => item.requestId === requestId);
@@ -511,7 +520,14 @@ export async function startWorker(
     reported: [],
     brief: message.slice(0, 300),
   });
-  const input: DeliveryInput = { parentId, name, message, requestId, whenBusy: "followUp" };
+  const input: DeliveryInput = {
+    parentId,
+    name,
+    message,
+    requestId,
+    whenBusy: "followUp",
+    ...(quiet ? { quiet: true } : {}),
+  };
   const taskId = await tx.createTask(Delivery, input, {
     // Keeping deliveries inside the worker's abort scope prevents a pending delivery resurrecting stopped work.
     conversationId: worker.id,
@@ -530,13 +546,21 @@ export async function messageWorker(
   message: string,
   requestId: string,
   whenBusy: WhenBusy,
+  quiet = false,
 ): Promise<ConversationId> {
   const state = await tx.doc(WorkersDoc, parentId);
   const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
     if (worker.closed) throw new Error(`${name} is closed; reopen it with reopen_worker first`);
     await pruneRecords(tx, parentId);
-    const input: DeliveryInput = { parentId, name, message, requestId, whenBusy };
+    const input: DeliveryInput = {
+      parentId,
+      name,
+      message,
+      requestId,
+      whenBusy,
+      ...(quiet ? { quiet: true } : {}),
+    };
     const taskId = await tx.createTask(Delivery, input, {
       conversationId: worker.conversationId,
       ownership: { kind: "conversation" },
