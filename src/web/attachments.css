@@ -1,0 +1,82 @@
+/* The attach button, the tray of files waiting for the next message, and a sent message's images and files. */
+/* A tab on the editor's top edge, at the right, so it never covers what is typed; the typeahead hides it. */
+.attach-button {
+  position: absolute;
+  right: -1px;
+  bottom: 100%;
+  height: 2em;
+  padding: 0 1ch;
+  font-weight: bold;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  background: var(--bg);
+}
+.editor:has(.typeahead) .attach-button {
+  display: none;
+}
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5ch;
+  margin: 0;
+  padding: 0.5ch 1ch 0;
+  list-style: none;
+}
+.attach-tray li {
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  max-width: 100%;
+  padding: 0.25ch 0.5ch;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.attach-tray li.failed {
+  border-color: var(--red);
+  color: var(--red);
+}
+.attach-tray img {
+  height: 3em;
+  max-width: 6em;
+  object-fit: cover;
+}
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.attach-tray li.failed .attach-meta {
+  color: inherit;
+}
+.attach-tray button {
+  border: none;
+  background: none;
+}
+.attached {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5ch;
+  margin-top: 0.5ch;
+  white-space: normal;
+}
+.attached img {
+  max-height: 12em;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  cursor: zoom-in;
+}
+.attached img.open {
+  max-height: none;
+  cursor: zoom-out;
+}
+.attached-file {
+  padding: 0 0.5ch;
+  border: 1px solid var(--line);
+  background: var(--card);
+  overflow-wrap: anywhere;
+}

@@ -12,6 +12,12 @@ import type { Assessment } from "../core/agents/classifier.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
+import {
+  ATTACHMENTS_PER_MESSAGE,
+  UPLOAD_CHUNK_BYTES,
+  UPLOAD_ID,
+  type Attachment,
+} from "./attachments.ts";
 import type { ModelChoice, RootSummary, WorkerSummary } from "./client.ts";
 import type { LogRecord } from "./logs.ts";
 import type { Release } from "./release.ts";
@@ -87,6 +93,9 @@ const trusted = <T>() => Type.Unsafe<T>(Type.Unknown());
 const text = Type.String();
 const id = Type.String({ minLength: 1 });
 const count = Type.Integer({ minimum: 0 });
+const attachments = Type.Optional(
+  Type.Array(Type.Object({ id, name: text, size: count }), { maxItems: ATTACHMENTS_PER_MESSAGE }),
+);
 const whenBusy = Type.Union([Type.Literal("steer"), Type.Literal("followUp")]);
 const role = Type.Union([Type.Literal("front"), Type.Literal("worker")]);
 const pick = Type.Union([
@@ -193,9 +202,20 @@ export const Root = remote("monchu.root", {
     owner: {
       state: { assessments: trusted<Assessment[]>() },
       methods: {
-        submit: method(Type.Object({ message: text, requestId: text, whenBusy })),
+        submit: method(Type.Object({ message: text, requestId: text, whenBusy, attachments })),
         messageWorker: method(
-          Type.Object({ worker: text, message: text, requestId: text, whenBusy }),
+          Type.Object({ worker: text, message: text, requestId: text, whenBusy, attachments }),
+        ),
+        /** One chunk of a file the user attaches; the last (`done`) resolves with the stored attachment. */
+        upload: method(
+          Type.Object({
+            upload: Type.String({ pattern: UPLOAD_ID.source }),
+            name: text,
+            offset: count,
+            data: Type.String({ maxLength: Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4 }),
+            done: Type.Boolean(),
+          }),
+          trusted<Attachment | null>(),
         ),
         editQueued: method(
           Type.Object({ worker, id: count, change: queueChange }),

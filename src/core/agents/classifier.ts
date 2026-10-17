@@ -14,6 +14,7 @@ import {
   type SubmissionId,
   type TaskId,
   type Tx,
+  type UserInput,
 } from "@earendil-works/pi-durable";
 import { ESCALATION_PREFIX, ESCALATION_SUFFIX, type WhenBusy } from "../../api/notices.ts";
 import { describeAssessment, type AssessmentResult } from "../../api/reports.ts";
@@ -435,8 +436,9 @@ export function createEffortAssessment(
   return {
     available,
     /**
-     * Admit the user's message to the front, then start its assessment. Resolves on admission; neither the front's reply
-     * nor this call waits for the classifier. A retry with the same request ID reuses the submission and assessment.
+     * Admit the user's message to the front, then start its assessment of `message`, the text of `content` (by default
+     * the message itself). Resolves on admission; neither the front's reply nor this call waits for the classifier. A
+     * retry with the same request ID reuses the submission and assessment.
      */
     async submit(
       front: Conversation,
@@ -444,8 +446,9 @@ export function createEffortAssessment(
       requestId: string,
       whenBusy: WhenBusy,
       context: Context,
+      content: UserInput = message,
     ) {
-      const input = { type: "input" as const, content: message, requestId, whenBusy };
+      const input = { type: "input" as const, content, requestId, whenBusy };
       // Clef is optional: without its provider's credentials, or paused by the user, input goes to the front unassessed.
       if (!(await available())) return front.submit(input, context);
       const paused = await front.commit(

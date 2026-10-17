@@ -14,6 +14,13 @@ import {
 } from "@earendil-works/chord";
 import type { Api, AuthInteraction, AuthType, Model } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
+import {
+  ATTACHMENT_MAX_BYTES,
+  formatBytes,
+  toBase64,
+  UPLOAD_CHUNK_BYTES,
+  type Attachment,
+} from "./attachments.ts";
 import type { Client, RootClient, RootSummary, Watched } from "./client.ts";
 import {
   Conversation,
@@ -32,6 +39,10 @@ function plain(error: unknown): Error {
     return new Error(error.message.replace(/^unavailable: /, ""), { cause: error });
   return error instanceof Error ? error : new Error(String(error));
 }
+
+/** Attachments as a call carries them: left out when there are none. */
+const sent = (attachments: readonly Attachment[] | undefined) =>
+  attachments?.length ? { attachments: [...attachments] } : {};
 
 /** One root of a remote core. */
 class RemoteRoot implements RootClient {
@@ -53,11 +64,43 @@ class RemoteRoot implements RootClient {
     });
     return lasting.state((ref) => ref.view, true);
   }
-  submit(message: string, requestId: string, whenBusy: "steer" | "followUp") {
-    return this.run((root) => root.submit({ message, requestId, whenBusy }));
+  /** Sends the file in chunks under the socket's message limit; a retried chunk writes the same bytes again. */
+  async attach(name: string, data: Uint8Array) {
+    if (data.length > ATTACHMENT_MAX_BYTES)
+      throw new Error(
+        `${name} is larger than the ${formatBytes(ATTACHMENT_MAX_BYTES)} attachment limit`,
+      );
+    const upload = crypto.randomUUID();
+    for (let offset = 0; ; offset += UPLOAD_CHUNK_BYTES) {
+      const done = offset + UPLOAD_CHUNK_BYTES >= data.length;
+      const chunk = toBase64(data.subarray(offset, offset + UPLOAD_CHUNK_BYTES));
+      const stored = await this.run((root) =>
+        root.upload({ upload, name, offset, data: chunk, done }),
+      );
+      if (done) {
+        if (stored === null) throw new Error(`Upload of ${name} did not finish`);
+        return stored;
+      }
+    }
   }
-  messageWorker(name: string, message: string, requestId: string, whenBusy: "steer" | "followUp") {
-    return this.run((root) => root.messageWorker({ worker: name, message, requestId, whenBusy }));
+  submit(
+    message: string,
+    requestId: string,
+    whenBusy: "steer" | "followUp",
+    attachments?: readonly Attachment[],
+  ) {
+    return this.run((root) => root.submit({ message, requestId, whenBusy, ...sent(attachments) }));
+  }
+  messageWorker(
+    name: string,
+    message: string,
+    requestId: string,
+    whenBusy: "steer" | "followUp",
+    attachments?: readonly Attachment[],
+  ) {
+    return this.run((root) =>
+      root.messageWorker({ worker: name, message, requestId, whenBusy, ...sent(attachments) }),
+    );
   }
   editQueued(
     workerName: string | undefined,

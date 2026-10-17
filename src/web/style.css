@@ -1,4 +1,5 @@
 /* Brutalist: system monospace, black and white with the terminal's few status colors, hard borders, no motion. */
+@import "./attachments.css";
 :root {
   --fg: #000;
   --bg: #fff;

@@ -12,6 +12,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
 import type { Assessment } from "../core/agents/classifier.ts";
+import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { listWorkers } from "../core/agents/workers.ts";
 import type { ModelRole, Settings } from "../core/config.ts";
@@ -90,13 +91,25 @@ export interface RootClient {
   readonly id: string;
   /** Read-only committed conversation state of the front or a worker. The caller disposes it. */
   viewState(workerName?: string): Promise<Watched<ConversationView>>;
-  /** Resolves on durable admission, never on the answer. */
-  submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void>;
+  /** Stores a file the user attaches, for a later `submit` or `messageWorker` to carry. */
+  attach(name: string, data: Uint8Array): Promise<Attachment>;
+  /**
+   * Resolves on durable admission, never on the answer. Attached images the model can take go inline, refused when
+   * they would pass the conversation's image budget; every attachment is named by its path.
+   */
+  submit(
+    message: string,
+    requestId: string,
+    whenBusy: WhenBusy,
+    attachments?: readonly Attachment[],
+  ): Promise<void>;
+  /** A worker gets its attachments by path only. */
   messageWorker(
     name: string,
     message: string,
     requestId: string,
     whenBusy: WhenBusy,
+    attachments?: readonly Attachment[],
   ): Promise<void>;
   /** Changes a still-queued input in place; false once it left the queue. */
   editQueued(workerName: string | undefined, id: number, change: QueueChange): Promise<boolean>;

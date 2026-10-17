@@ -15,6 +15,9 @@ logs/
 # Background process job output logs.
 jobs/
 
+# Files the user attached to messages, kept on the device that received them.
+attachments/
+
 # Credentials stay on the device that logged in: model logins and MCP OAuth tokens.
 auth.json
 auth.json*

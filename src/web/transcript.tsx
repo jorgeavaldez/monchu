@@ -7,9 +7,11 @@ import { useSignal } from "@preact/signals";
 import type { ComponentChildren, VNode } from "preact";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
+import { messageParts } from "../api/attachments.ts";
 import { escalationSummary, systemNoticeSummary, workerNotice } from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
+import { UserAttachments } from "./attachments.tsx";
 import { expandAll, notices, rootId, type Notice } from "./state.ts";
 
 const PREVIEW_LINES = 4;
@@ -170,7 +172,7 @@ function entryNode(
     );
   const message = entry.model?.[0];
   if (entry.kind === "pi.user" && message?.role === "user") {
-    const text = textOf(message.content);
+    const { text, files, images } = messageParts(message.content);
     const escalation = escalationSummary(text);
     if (escalation !== undefined) return <div class="system">clef · escalated · {escalation}</div>;
     const system = systemNoticeSummary(text);
@@ -179,6 +181,7 @@ function entryNode(
       <>
         <div class="user">
           <Text text={text} />
+          <UserAttachments files={files} images={images} />
         </div>
         <div class="meta">{shown}</div>
       </>

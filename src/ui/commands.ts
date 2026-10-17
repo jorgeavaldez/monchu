@@ -12,7 +12,8 @@ type Input =
         | "/reload"
         | "/restart"
         | "/login"
-        | "/thinking";
+        | "/thinking"
+        | "/detach";
     }
   | {
       command:
@@ -26,7 +27,8 @@ type Input =
         | "/mcp"
         | "/logs"
         | "/clef"
-        | "/update";
+        | "/update"
+        | "/attach";
       text: string;
     }
   | { command: "skill"; name: string; text: string };
@@ -63,6 +65,11 @@ export const commands: Record<
     usage: "[name]",
     help: "stop the shown conversation, or the named worker; others keep going",
   },
+  "/attach": {
+    usage: "[path]",
+    help: "attach a file or image to your next message (Ctrl+V pastes one)",
+  },
+  "/detach": { usage: "", help: "drop the files waiting for your next message" },
   "/new": { usage: "[handoff]", help: "fresh root context, optionally carrying a handoff" },
   "/compact": { usage: "[instructions]", help: "summarize the root's context now" },
   "/cd": { usage: "<path>", help: "change the shown conversation's directory (while idle)" },
@@ -103,6 +110,7 @@ export const help = [
   `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
   "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
   "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
+  "Ctrl+V (Alt+V on Windows) attaches a copied image or file, and a pasted image path attaches that image; in the web, use the attach button, paste or drop.",
   "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
   "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the shown root. Footer dots are roots at work (●) or done unseen; /roots has them.",
 ].join("\n");
@@ -126,6 +134,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/thinking":
     case "/reload":
     case "/restart":
+    case "/detach":
       if (rest) throw new Error(`Usage: ${command}`);
       return { command };
     case "/new":
@@ -136,6 +145,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/mcp":
     case "/stop":
     case "/logs":
+    case "/attach":
       return { command, text: rest };
     case "/clef":
       if (rest !== "" && rest !== "on" && rest !== "off")

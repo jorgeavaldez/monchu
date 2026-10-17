@@ -67,6 +67,7 @@ import {
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import type { Goal, QueueChange, RootSummary } from "../api/client.ts";
+import { formatBytes, messageParts } from "../api/attachments.ts";
 import { shortId } from "../api/ids.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import {
@@ -395,9 +396,19 @@ class SecretInput extends Input {
   }
 }
 
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+
+/** A file the user attached in this terminal, waiting for the next message. */
+export type LocalFile = { name: string; data: Uint8Array };
+
 /** What the terminal asks of its owner; input admission and every side effect stay there. */
 type Handlers = {
-  submit(text: string, whenBusy: WhenBusy): void;
+  submit(text: string, whenBusy: WhenBusy, files: readonly LocalFile[]): void;
+  /** Ctrl+V (Alt+V on Windows): attach the clipboard's files or image, else type its text. */
+  pasteClipboard?(): void;
+  /** A terminal paste, such as a dropped file's path; true when it was attached instead of typed. */
+  pasted?(text: string): boolean;
   editQueued(id: number, change: QueueChange): void;
   abort(): void;
   exit(): void;
@@ -410,6 +421,8 @@ export class MonchuTui {
   private readonly workers = new Container();
   private readonly queue = new Container();
   private readonly status = new Container();
+  private readonly tray = new Container();
+  private files: LocalFile[] = [];
   private readonly editorContainer = new Container();
   private readonly footer = new Footer();
   private readonly editor: Editor;
@@ -470,15 +483,15 @@ export class MonchuTui {
     this.home = home;
     this.setSkills([]);
     this.editor.onSubmit = (text) => {
-      if (!text.trim()) return;
+      if (!text.trim() && (this.files.length === 0 || this.editing !== undefined)) return;
       if (this.editing !== undefined) {
         handlers.editQueued(this.editing.id, { kind: "text", text });
         this.endEdit();
         return;
       }
-      this.editor.addToHistory(text);
+      if (text.trim()) this.editor.addToHistory(text);
       this.editor.setText("");
-      handlers.submit(text, this.mode);
+      handlers.submit(text, this.mode, this.takeFiles());
     };
     this.editorContainer.addChild(this.editor);
     this.transcript = new ScrollView(this.chat, {
@@ -490,6 +503,7 @@ export class MonchuTui {
       { component: this.workers, shrink: 1, minSize: 0 },
       { component: this.queue, shrink: 1, minSize: 0 },
       { component: this.status, shrink: 1, minSize: 0 },
+      { component: this.tray, shrink: 1, minSize: 0 },
       { component: this.editorContainer, shrink: 1, minSize: 3 },
       { component: this.footer, shrink: 1, minSize: 0 },
     ]);
@@ -498,6 +512,7 @@ export class MonchuTui {
       this.workers,
       this.queue,
       this.status,
+      this.tray,
       this.editorContainer,
       this.footer,
     ])
@@ -559,6 +574,18 @@ export class MonchuTui {
         else handlers.abort();
         return { consume: true };
       }
+      if (matchesKey(data, process.platform === "win32" ? "alt+v" : "ctrl+v")) {
+        handlers.pasteClipboard?.();
+        return { consume: true };
+      }
+      // The terminal delivers a bracketed paste whole.
+      if (
+        data.startsWith(PASTE_START) &&
+        data.endsWith(PASTE_END) &&
+        this.editing === undefined &&
+        handlers.pasted?.(data.slice(PASTE_START.length, -PASTE_END.length))
+      )
+        return { consume: true };
       if (matchesKey(data, "alt+q") && this.editing === undefined) {
         this.openQueue();
         return { consume: true };
@@ -892,6 +919,45 @@ export class MonchuTui {
   }
 
   /** Put withdrawn queued messages back in the editor, oldest first, ahead of anything already typed. */
+  /** Files for the next message, shown above the editor until it goes or `/detach` drops them. */
+  attachFiles(files: readonly LocalFile[]): void {
+    this.files.push(...files);
+    this.showTray();
+  }
+
+  /** Drops the waiting files; returns how many there were. */
+  detachFiles(): number {
+    return this.takeFiles().length;
+  }
+
+  /** Types `text` at the cursor, as a paste would. */
+  insertText(text: string): void {
+    this.editor.insertTextAtCursor(text);
+    this.ui.requestRender();
+  }
+
+  private takeFiles(): LocalFile[] {
+    const files = this.files;
+    this.files = [];
+    this.showTray();
+    return files;
+  }
+
+  private showTray(): void {
+    this.tray.clear();
+    if (this.files.length > 0)
+      this.tray.addChild(
+        new Text(
+          getSelectListTheme().description(
+            `attached · ${this.files.map((file) => `${file.name} ${formatBytes(file.data.length)}`).join(", ")} · /detach drops`,
+          ),
+          1,
+          0,
+        ),
+      );
+    this.ui.requestRender();
+  }
+
   restoreQueued(texts: readonly string[]): void {
     const combined = [...texts, this.editor.getText()].filter((text) => text.trim());
     this.editor.setText(combined.join("\n\n"));
@@ -1098,16 +1164,13 @@ export class MonchuTui {
       this.chat.addChild(component);
       label(component);
     } else if (entry.kind === "pi.user" && message?.role === "user") {
-      const text =
-        typeof message.content === "string"
-          ? message.content
-          : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+      const { text, files } = messageParts(message.content);
       const assessment = escalationSummary(text);
       const system =
         assessment === undefined ? systemNoticeSummary(text) : `routing advice · ${assessment}`;
       this.chat.addChild(new Spacer(1));
       if (system === undefined) {
-        this.chat.addChild(new UserMessageComponent(text));
+        this.chat.addChild(new UserMessageComponent(text, files));
         const stampLine = new EntryStamp(this.ids, entry.id, time);
         this.chat.addChild(stampLine);
         label(stampLine);

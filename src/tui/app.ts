@@ -2,8 +2,18 @@ import { initTheme } from "./theme/theme.ts";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { stdin, stdout } from "node:process";
 import type { Client, ModelPick, RootClient, RootSummary, Watched } from "../api/client.ts";
+import {
+  ATTACHMENT_MAX_BYTES,
+  formatBytes,
+  imageFileName,
+  imageMimeType,
+  type Attachment,
+} from "../api/attachments.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
@@ -18,8 +28,8 @@ import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
 import type { Meter } from "./components/footer.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { contextUsage, lastActive, presentation } from "../ui/state.ts";
-import { browserHere } from "./system.ts";
-import { MonchuTui } from "./view.ts";
+import { browserHere, pastedImagePaths, readClipboard } from "./system.ts";
+import { MonchuTui, type LocalFile } from "./view.ts";
 
 /** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
 
@@ -174,9 +184,53 @@ export async function runTerminal(
     }
     inputs = inputs.then(abort).catch(fail);
   };
+  /** Reads files from this machine into the editor's attachments; refuses one past the limit before reading it. */
+  async function attachPaths(paths: readonly string[]): Promise<void> {
+    const files: LocalFile[] = [];
+    for (const path of paths) {
+      const resolved = resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+      const info = await stat(resolved);
+      if (!info.isFile()) throw new Error(`${path} is not a file`);
+      if (info.size > ATTACHMENT_MAX_BYTES)
+        throw new Error(
+          `${basename(resolved)} is larger than the ${formatBytes(ATTACHMENT_MAX_BYTES)} attachment limit`,
+        );
+      files.push({ name: basename(resolved), data: new Uint8Array(await readFile(resolved)) });
+    }
+    view.attachFiles(files);
+  }
+
+  async function pasteClipboard(): Promise<void> {
+    const clipboard = await readClipboard();
+    if (clipboard === undefined)
+      view.notice("nothing to attach on the clipboard here · /attach <path> attaches a file");
+    else if (clipboard.kind === "files") await attachPaths(clipboard.paths);
+    else if (clipboard.kind === "image") {
+      const type = imageMimeType(clipboard.data);
+      if (clipboard.data.length > ATTACHMENT_MAX_BYTES)
+        throw new Error(
+          `The copied image is larger than the ${formatBytes(ATTACHMENT_MAX_BYTES)} attachment limit`,
+        );
+      view.attachFiles([{ name: imageFileName(type ?? "image/png"), data: clipboard.data }]);
+    } else view.insertText(clipboard.text);
+  }
+
   const view = new MonchuTui(terminal, backend.home, {
-    submit: (text, whenBusy) => {
-      inputs = inputs.then(() => handle(text, whenBusy)).catch(fail);
+    submit: (text, whenBusy, files) => {
+      inputs = inputs
+        .then(() => handle(text, whenBusy, files))
+        .catch((error: unknown) => {
+          // A message that didn't go keeps its files waiting for the next one.
+          view.attachFiles(files);
+          fail(error);
+        });
+    },
+    pasteClipboard: () => void pasteClipboard().catch(fail),
+    pasted: (text) => {
+      const paths = pastedImagePaths(text);
+      if (paths === undefined) return false;
+      void attachPaths(paths).catch(fail);
+      return true;
     },
     editQueued: (id, change) => {
       // The queue shown now: a later view switch must not redirect the edit.
@@ -416,11 +470,31 @@ export async function runTerminal(
       view.notice(line);
   }
 
-  async function handle(raw: string, whenBusy: WhenBusy): Promise<void> {
+  async function handle(
+    raw: string,
+    whenBusy: WhenBusy,
+    files: readonly LocalFile[] = [],
+  ): Promise<void> {
     if (closing) return;
-    const input = parseInput(raw);
+    // Files alone make a message; with a command, they wait for the next message.
+    const input =
+      raw.trim() || files.length === 0
+        ? parseInput(raw)
+        : { command: "message" as const, text: "" };
     if (!input) return;
+    if (input.command !== "message" && input.command !== "skill") view.attachFiles(files);
     switch (input.command) {
+      case "/attach":
+        if (!input.text) view.notice(`Usage: /attach <path>`);
+        else await attachPaths([input.text]);
+        break;
+      case "/detach": {
+        const count = view.detachFiles();
+        view.notice(
+          count ? `dropped ${count} attachment${count === 1 ? "" : "s"}` : "nothing attached",
+        );
+        break;
+      }
       case "/quit":
         exit();
         break;
@@ -740,8 +814,10 @@ export async function runTerminal(
         const name = selected;
         const text =
           input.command === "skill" ? await backend.skillInput(input.name, input.text) : input.text;
-        if (name === undefined) await front.submit(text, randomUUID(), whenBusy);
-        else await front.messageWorker(name, text, randomUUID(), whenBusy);
+        const attachments: Attachment[] = [];
+        for (const file of files) attachments.push(await front.attach(file.name, file.data));
+        if (name === undefined) await front.submit(text, randomUUID(), whenBusy, attachments);
+        else await front.messageWorker(name, text, randomUUID(), whenBusy, attachments);
         if (name === undefined) view.notice("received · root");
         else view.notice(`${name} · received`, "message");
         if (name !== undefined) await refreshWorkers();

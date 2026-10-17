@@ -433,6 +433,27 @@ async function bundle(): Promise<void> {
   }
 }
 
+/** A PNG of `width` by `height` with a gradient, for the attach journey. */
+async function gradientPng(width: number, height: number): Promise<Uint8Array> {
+  const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+  const pixels = new Uint8Array(width * height * 4).map((_, index) => {
+    const pixel = Math.floor(index / 4);
+    const channel = index % 4;
+    if (channel === 3) return 255;
+    return channel === 0
+      ? (pixel % width) % 256
+      : channel === 1
+        ? Math.floor(pixel / width) % 256
+        : 160;
+  });
+  const image = new PhotonImage(pixels, width, height);
+  try {
+    return image.get_bytes();
+  } finally {
+    image.free();
+  }
+}
+
 const SETTLED = `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("DONE"))`;
 
 async function journeys(url: string, home: string, origin: string): Promise<void> {
@@ -496,6 +517,40 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     await capture("send", home, origin);
     return "reply settled";
   });
+
+  await journey(
+    "attach: a picked image uploads, previews in the tray, and goes with the message",
+    async () => {
+      const file = join(home, "attach-check.png");
+      await writeFile(file, await gradientPng(240, 140));
+      await browser("upload", "input[type=file]", file);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".attach-tray img")?.naturalWidth > 0 && !document.querySelector(".attach-tray").textContent.includes("uploading")`,
+      );
+      await capture("attach-tray", home, origin);
+      await browser("fill", "textarea", "what is this?");
+      const sent = performance.now();
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("what is this?"))`,
+      );
+      report.metrics["attach.replyMs"] = ms(sent);
+      check(
+        (await page(`document.querySelector(".attach-tray") === null`)) === true,
+        "the tray kept the sent file",
+      );
+      check(
+        (await page(`document.querySelector(".user .attached img")?.naturalWidth > 0`)) === true,
+        "the sent image isn't shown in the transcript",
+      );
+      await capture("attach", home, origin);
+      return "picked, uploaded, previewed, sent, and shown under the message";
+    },
+  );
 
   await journey("model: typeahead, then the /model picker opens and Esc closes it", async () => {
     await browser("fill", "textarea", "/mod");

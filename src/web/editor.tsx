@@ -7,8 +7,16 @@
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { commands } from "../ui/commands.ts";
+import {
+  addFiles,
+  AttachButton,
+  AttachmentTray,
+  clearPending,
+  readyAttachments,
+} from "./attachments.tsx";
 import { Keys } from "./keys.tsx";
 import {
+  attachFile,
   client,
   draft,
   editing,
@@ -16,6 +24,7 @@ import {
   expandAll,
   interrupt,
   mode,
+  notice,
   submit,
   toggleMode,
 } from "./state.ts";
@@ -49,12 +58,17 @@ export function Editor() {
   // Back from a pick or a prompt, typing goes to the editor again.
   useEffect(() => area.current?.focus(), []);
 
+  const attach = (files: Iterable<File>) => addFiles(files, attachFile);
   const send = () => {
     const text = draft.value;
     closed.value = false;
     if (editing.value !== undefined) return endEdit(text);
+    const attachments = readyAttachments();
+    if (attachments === undefined) return notice("still uploading · send when the files are up");
     draft.value = "";
-    void submit(text);
+    void submit(text, attachments).then((sent) => {
+      if (sent) clearPending();
+    });
   };
   const accept = (item: Suggestion) => {
     draft.value = `${item.value}${item.usage ? " " : ""}`;
@@ -63,7 +77,18 @@ export function Editor() {
   };
 
   return (
-    <div class="editor">
+    <div
+      class="editor"
+      onDragOver={(event) => {
+        if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        const files = [...(event.dataTransfer?.files ?? [])];
+        if (files.length === 0) return;
+        event.preventDefault();
+        attach(files);
+      }}
+    >
       {list.value.length > 0 ? (
         <ul class="typeahead" role="listbox">
           {list.value.map((item, index) => (
@@ -83,8 +108,17 @@ export function Editor() {
           ))}
         </ul>
       ) : null}
+      <AttachmentTray />
+      <AttachButton onFiles={attach} />
       <textarea
         ref={area}
+        onPaste={(event) => {
+          // Pasted images and files attach; text pastes as usual.
+          const files = [...(event.clipboardData?.files ?? [])];
+          if (files.length === 0) return;
+          event.preventDefault();
+          attach(files);
+        }}
         class={mode.value === "steer" ? "steer" : ""}
         rows={Math.min(8, draft.value.split("\n").length)}
         value={draft.value}

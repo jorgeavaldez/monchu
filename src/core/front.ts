@@ -17,6 +17,8 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { randomUUID } from "node:crypto";
+import { DEFAULT_IMAGE_LIMITS } from "@earendil-works/pi-durable/tools";
+import type { Attachment } from "../api/attachments.ts";
 import type { ModelChoice, ModelPick, QueueChange, RootClient } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
 import {
@@ -27,6 +29,7 @@ import {
   systemNoticeSummary,
   type WhenBusy,
 } from "../api/notices.ts";
+import { attachedInput, storeAttachment, writeUpload, type ImageInput } from "./attachments.ts";
 import { AssessmentsDoc, RoutingDoc, type Assessment } from "./agents/classifier.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
 import { noteInput, rootRecord, RootsDoc, sendHandOff, type RootRecord } from "./agents/roots.ts";
@@ -43,6 +46,7 @@ import {
 import { thinkingLevels, type ModelRole } from "./config.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import type { Extensions } from "./reload.ts";
+import { IMAGE_BUDGET_BYTES, imageBytes, images } from "./tools/images.ts";
 import { preloadGroups } from "./tools/tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
@@ -221,15 +225,56 @@ export class Front implements RootClient {
    * Resolves on durable admission, never on the model answer. Retry with the same request ID. `whenBusy` decides
    * whether a message reaching a busy front steers its run or waits for it to finish.
    */
-  async submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void> {
-    if (!message.trim() || !requestId.trim())
+  async submit(
+    message: string,
+    requestId: string,
+    whenBusy: WhenBusy,
+    attachments: readonly Attachment[] = [],
+  ): Promise<void> {
+    if ((!message.trim() && attachments.length === 0) || !requestId.trim())
       throw new Error("Message and request ID are required");
     const front = await this.conversation();
-    await front.commit((tx) => noteInput(tx, front.id, message), context);
+    const input = await attachedInput(
+      this.host.home,
+      message,
+      attachments,
+      attachments.length ? await this.imageInput(front) : undefined,
+    );
+    await front.commit(
+      (tx) => noteInput(tx, front.id, message || attachments.map(({ name }) => name).join(", ")),
+      context,
+    );
     const assessment = this.host.extensions.assessment;
     if (assessment === undefined)
-      await front.submit({ type: "input", content: message, requestId, whenBusy }, context);
-    else await assessment.submit(front, message, requestId, whenBusy, context);
+      await front.submit({ type: "input", content: input.content, requestId, whenBusy }, context);
+    else await assessment.submit(front, input.text, requestId, whenBusy, context, input.content);
+  }
+
+  /** How the front's model takes images: its limits, and the image bytes its context holds now. */
+  private async imageInput(front: Conversation): Promise<ImageInput> {
+    const ref = (await front.agent(context)).model;
+    const model =
+      ref === undefined ? undefined : this.host.models.getModel(ref.provider, ref.modelId);
+    const resize = model?.inputLimits?.images?.resize;
+    return {
+      processor: images,
+      limits: {
+        maxWidth: resize?.maxWidth ?? DEFAULT_IMAGE_LIMITS.maxWidth,
+        maxHeight: resize?.maxHeight ?? DEFAULT_IMAGE_LIMITS.maxHeight,
+        maxBytes: resize?.maxBytes ?? DEFAULT_IMAGE_LIMITS.maxBytes,
+      },
+      budget: IMAGE_BUDGET_BYTES,
+      held: async () => imageBytes((await front.context(context)).messages),
+    };
+  }
+
+  attach(name: string, data: Uint8Array): Promise<Attachment> {
+    return storeAttachment(this.host.home, name, data);
+  }
+
+  /** One chunk of a remote client's upload. */
+  upload(chunk: Parameters<typeof writeUpload>[1]): Promise<Attachment | null> {
+    return writeUpload(this.host.home, chunk);
   }
 
   /**
@@ -336,12 +381,14 @@ export class Front implements RootClient {
     message: string,
     requestId: string,
     whenBusy: WhenBusy,
+    attachments: readonly Attachment[] = [],
   ): Promise<void> {
-    if (!message.trim() || !requestId.trim())
+    if ((!message.trim() && attachments.length === 0) || !requestId.trim())
       throw new Error("Message and request ID are required");
     const front = await this.conversation();
+    const { text } = await attachedInput(this.host.home, message, attachments, undefined);
     await front.commit(
-      (tx) => messageWorker(tx, front.id, name, message, requestId, whenBusy),
+      (tx) => messageWorker(tx, front.id, name, text, requestId, whenBusy),
       context,
     );
     this.host.harness.resume();
@@ -421,16 +468,22 @@ export class Front implements RootClient {
     const front = await this.conversation();
     const restored = await front.commit(async (tx) => {
       const inbox = await tx.doc(InboxDoc, front.id);
-      const mine = inbox.items.flatMap((item) =>
-        item.mode !== "write" &&
-        typeof item.content === "string" &&
-        parseWorkerNotice(item.content) === undefined &&
-        parseRootNotice(item.content) === undefined &&
-        escalationSummary(item.content) === undefined &&
-        systemNoticeSummary(item.content) === undefined
-          ? [{ id: item.id, text: item.content }]
-          : [],
-      );
+      const mine = inbox.items.flatMap((item) => {
+        if (item.mode === "write") return [];
+        // A message with attachments comes back as its text and their note: sent again, it still names them.
+        const text =
+          typeof item.content === "string"
+            ? item.content
+            : item.content
+                .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                .join("\n\n");
+        return parseWorkerNotice(text) === undefined &&
+          parseRootNotice(text) === undefined &&
+          escalationSummary(text) === undefined &&
+          systemNoticeSummary(text) === undefined
+          ? [{ id: item.id, text }]
+          : [];
+      });
       for (const { id } of mine) {
         tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
         inbox.items.splice(

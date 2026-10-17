@@ -1,6 +1,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import type { Message, Usage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
+import { parseAttachmentsNote } from "../api/attachments.ts";
 
 /** Narrow the JSON document boundary before reading presentation fields. */
 function object(value: JsonValue | undefined): JsonObject | undefined {
@@ -18,12 +19,16 @@ function scalar(value: JsonValue | undefined): string {
 function text(content: JsonValue | undefined): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      const block = object(part);
-      return block?.type === "text" && typeof block.text === "string" ? block.text : "";
-    })
-    .join("");
+  let joined = "";
+  for (const part of content) {
+    const block = object(part);
+    if (block?.type !== "text" || typeof block.text !== "string") continue;
+    // A message's attachments note shows as the files' names.
+    const files = parseAttachmentsNote(block.text);
+    if (files === undefined) joined += block.text;
+    else joined += `${joined ? " " : ""}[attached: ${files.map((file) => file.name).join(", ")}]`;
+  }
+  return joined;
 }
 
 /** A queued inbox item by submission ID: input with its busy mode and text, or a passive write with its entry kind. */

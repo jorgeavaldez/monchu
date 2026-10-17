@@ -23,19 +23,38 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-import { Container, Markdown } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text } from "@earendil-works/pi-tui";
+import type { AttachedFile } from "../../api/attachments.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
+/** One muted line per attached file: its name, size, and type when it isn't an image shown to the model. */
+function attachedLines(files: readonly AttachedFile[]): string {
+  return files
+    .map((file) =>
+      theme.fg(
+        "muted",
+        `attached · ${file.name} · ${file.size}${file.detail?.startsWith("shown") ? " · image" : ` · ${file.mimeType}`}`,
+      ),
+    )
+    .join("\n");
+}
+
 /**
- * Component that renders a user message
+ * Component that renders a user message, and the files attached to it
  */
 export class UserMessageComponent extends Container {
-  constructor(text: string) {
+  constructor(text: string, files: readonly AttachedFile[] = []) {
     super();
+    const background = (content: string) => theme.bg("userMessageBg", content);
+    // A message of only attachments shows just their lines, padded as the text would be.
+    if (!text.trim() && files.length > 0) {
+      this.addChild(new Text(attachedLines(files), 1, 1, background));
+      return;
+    }
     // The Markdown pads and colors its own background: a Box around it would keep a second full-width copy of every
     // line, with identical output.
     this.addChild(
@@ -54,6 +73,7 @@ export class UserMessageComponent extends Container {
         },
       ),
     );
+    if (files.length > 0) this.addChild(new Text(attachedLines(files), 1, 0, background));
   }
 
   override render(width: number): string[] {

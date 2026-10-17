@@ -5,6 +5,7 @@
 import { batch, signal, type Signal } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
+import type { Attachment } from "../api/attachments.ts";
 import type {
   Client,
   ModelPick,
@@ -23,6 +24,7 @@ import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
 import { presentation, type QueuedItem } from "../ui/state.ts";
+import { clearPending, openPicker } from "./attachments.tsx";
 
 /** A line under the transcript; one with a `root` shows only while that root is shown. */
 export type Notice = {
@@ -660,134 +662,166 @@ export async function interrupt(): Promise<void> {
   notice("stopped · root");
 }
 
-/** One editor submission: a message, a skill, or a command, as the terminal handles it. */
-export async function submit(raw: string): Promise<void> {
+/** Stores a file the user attaches, for the next message. */
+export function attachFile(name: string, data: Uint8Array): Promise<Attachment> {
+  return root().attach(name, data);
+}
+
+/**
+ * One editor submission: a message, a skill, or a command, as the terminal handles it. Resolves true once a message
+ * carried `attachments`; files alone make a message, and with a command they wait for the next one.
+ */
+export async function submit(
+  raw: string,
+  attachments: readonly Attachment[] = [],
+): Promise<boolean> {
   let input;
   try {
-    input = parseInput(raw);
-  } catch (error) {
-    return notice(error instanceof Error ? error.message : String(error), "warning");
-  }
-  if (input === undefined) return;
-  const name = shown.value;
-  try {
-    switch (input.command) {
-      case "message":
-      case "skill": {
-        const text =
-          input.command === "skill"
-            ? await client().skillInput(input.name, input.text)
-            : input.text;
-        if (name === undefined) await root().submit(text, crypto.randomUUID(), mode.value);
-        else await root().messageWorker(name, text, crypto.randomUUID(), mode.value);
-        return notice(`received · ${name ?? "root"}`);
-      }
-      case "/roots":
-        return await runRoots(parseRootsCommand(input.text));
-      case "/help":
-        return notice(help);
-      case "/quit":
-        return notice("close the tab to quit; Monchu keeps running");
-      case "/agents":
-        if (input.text) return await show(input.text === "root" ? undefined : input.text);
-        {
-          await refreshWorkers();
-          const picked = await pick("Show", [
-            { id: "", label: "root" },
-            ...workers.value.map((worker) => ({
-              id: worker.name,
-              label: worker.name,
-              detail: `${worker.busy ? "working" : "idle"}${worker.model === undefined ? "" : ` · ${worker.model}`}`,
-            })),
-          ]);
-          if (picked !== undefined) await show(picked.id || undefined);
-        }
-        return;
-      case "/stop":
-        if (input.text || name !== undefined) {
-          const worker = input.text || name || "";
-          await root().stopWorker(worker);
-          return notice(`stopped · ${worker}`);
-        }
-        return await interrupt();
-      case "/new":
-        await root().reset(input.text || undefined);
-        return notice("new context · root");
-      case "/compact":
-        await root().compact(input.text || undefined);
-        return notice("compacting · root");
-      case "/cd":
-        return notice(`cwd · ${await root().changeDirectory(input.text, name)}`);
-      case "/reload":
-        return notice(`reloaded · ${(await client().reload()).join(", ")}`);
-      case "/clef":
-        return notice(
-          routingText(await root().routing(input.text === "" ? undefined : input.text === "off")),
-        );
-      case "/restart":
-        await client().restart();
-        return notice("restart requested · reconnects when Monchu is back");
-      case "/update":
-        await client().update(input.text);
-        return notice(
-          `installing ${input.text} · reconnects when Monchu is back, on it or on this version if npm fails`,
-        );
-      case "/jobs": {
-        const { jobs, events, listing } = await client().jobs();
-        return notice(
-          [
-            `jobs · ${jobs.length}`,
-            listing,
-            ...(events.length === 0 ? [] : ["recent:", ...events.slice(-8).map(formatJobEvent)]),
-          ].join("\n"),
-        );
-      }
-      case "/goals": {
-        const goals = await root().goals();
-        const open = goals.filter((goal) => goal.status === "active" || goal.status === "waiting");
-        return notice(
-          open.length === 0
-            ? "goals · none open"
-            : [
-                `goals · ${open.length}`,
-                ...open.map(
-                  (goal) =>
-                    `${goal.changed ? "• " : "  "}${goal.status} ${goal.id} · ${goal.title}\n    now: ${goal.workstream}\n    next: ${goal.next}`,
-                ),
-              ].join("\n"),
-        );
-      }
-      case "/queue": {
-        const state = view(name)?.value;
-        const queue = state === undefined ? [] : presentation(state).queue;
-        return notice(
-          queue.length === 0
-            ? "queue · empty"
-            : [
-                `queue · ${queue.length}`,
-                ...queue.map((item) => `${item.mode} · ${item.text.split("\n")[0] ?? ""}`),
-              ].join("\n"),
-        );
-      }
-      case "/logs": {
-        const records = await client().logs(logQuery(input.text));
-        return notice(
-          records.length === 0
-            ? "logs · nothing yet"
-            : [`logs · ${records.length}`, ...records.map(formatRecord)].join("\n"),
-        );
-      }
-      case "/login":
-        return await runLogin();
-      case "/mcp":
-        return await runMcp(input.text);
-      case "/model":
-        return await runModel(false, input.text);
-      case "/thinking":
-        return await runModel(true, "");
-    }
+    input =
+      raw.trim() || attachments.length === 0
+        ? parseInput(raw)
+        : { command: "message" as const, text: "" };
   } catch (error) {
     notice(error instanceof Error ? error.message : String(error), "warning");
+    return false;
+  }
+  if (input === undefined) return false;
+  try {
+    return (await runInput(input, attachments)) === true;
+  } catch (error) {
+    notice(error instanceof Error ? error.message : String(error), "warning");
+    return false;
+  }
+}
+
+/** Runs one parsed submission; true when a message went. */
+async function runInput(
+  input: NonNullable<ReturnType<typeof parseInput>>,
+  attachments: readonly Attachment[],
+): Promise<boolean | void> {
+  const name = shown.value;
+  switch (input.command) {
+    case "message":
+    case "skill": {
+      const text =
+        input.command === "skill" ? await client().skillInput(input.name, input.text) : input.text;
+      if (name === undefined)
+        await root().submit(text, crypto.randomUUID(), mode.value, attachments);
+      else await root().messageWorker(name, text, crypto.randomUUID(), mode.value, attachments);
+      notice(`received · ${name ?? "root"}`);
+      return true;
+    }
+    case "/attach":
+      openPicker();
+      break;
+    case "/detach": {
+      const count = clearPending();
+      notice(count ? `dropped ${count} attachment${count === 1 ? "" : "s"}` : "nothing attached");
+      break;
+    }
+    case "/roots":
+      return await runRoots(parseRootsCommand(input.text));
+    case "/help":
+      return notice(help);
+    case "/quit":
+      return notice("close the tab to quit; Monchu keeps running");
+    case "/agents":
+      if (input.text) return await show(input.text === "root" ? undefined : input.text);
+      {
+        await refreshWorkers();
+        const picked = await pick("Show", [
+          { id: "", label: "root" },
+          ...workers.value.map((worker) => ({
+            id: worker.name,
+            label: worker.name,
+            detail: `${worker.busy ? "working" : "idle"}${worker.model === undefined ? "" : ` · ${worker.model}`}`,
+          })),
+        ]);
+        if (picked !== undefined) await show(picked.id || undefined);
+      }
+      return;
+    case "/stop":
+      if (input.text || name !== undefined) {
+        const worker = input.text || name || "";
+        await root().stopWorker(worker);
+        return notice(`stopped · ${worker}`);
+      }
+      return await interrupt();
+    case "/new":
+      await root().reset(input.text || undefined);
+      return notice("new context · root");
+    case "/compact":
+      await root().compact(input.text || undefined);
+      return notice("compacting · root");
+    case "/cd":
+      return notice(`cwd · ${await root().changeDirectory(input.text, name)}`);
+    case "/reload":
+      return notice(`reloaded · ${(await client().reload()).join(", ")}`);
+    case "/clef":
+      return notice(
+        routingText(await root().routing(input.text === "" ? undefined : input.text === "off")),
+      );
+    case "/restart":
+      await client().restart();
+      return notice("restart requested · reconnects when Monchu is back");
+    case "/update":
+      await client().update(input.text);
+      return notice(
+        `installing ${input.text} · reconnects when Monchu is back, on it or on this version if npm fails`,
+      );
+    case "/jobs": {
+      const { jobs, events, listing } = await client().jobs();
+      return notice(
+        [
+          `jobs · ${jobs.length}`,
+          listing,
+          ...(events.length === 0 ? [] : ["recent:", ...events.slice(-8).map(formatJobEvent)]),
+        ].join("\n"),
+      );
+    }
+    case "/goals": {
+      const goals = await root().goals();
+      const open = goals.filter((goal) => goal.status === "active" || goal.status === "waiting");
+      return notice(
+        open.length === 0
+          ? "goals · none open"
+          : [
+              `goals · ${open.length}`,
+              ...open.map(
+                (goal) =>
+                  `${goal.changed ? "• " : "  "}${goal.status} ${goal.id} · ${goal.title}\n    now: ${goal.workstream}\n    next: ${goal.next}`,
+              ),
+            ].join("\n"),
+      );
+    }
+    case "/queue": {
+      const state = view(name)?.value;
+      const queue = state === undefined ? [] : presentation(state).queue;
+      return notice(
+        queue.length === 0
+          ? "queue · empty"
+          : [
+              `queue · ${queue.length}`,
+              ...queue.map((item) => `${item.mode} · ${item.text.split("\n")[0] ?? ""}`),
+            ].join("\n"),
+      );
+    }
+    case "/logs": {
+      const records = await client().logs(logQuery(input.text));
+      return notice(
+        records.length === 0
+          ? "logs · nothing yet"
+          : [`logs · ${records.length}`, ...records.map(formatRecord)].join("\n"),
+      );
+    }
+    case "/login":
+      return await runLogin();
+    case "/mcp":
+      return await runMcp(input.text);
+    case "/model":
+      return await runModel(false, input.text);
+    case "/thinking":
+      return await runModel(true, "");
   }
 }
 

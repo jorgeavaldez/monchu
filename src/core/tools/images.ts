@@ -14,7 +14,7 @@ import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
  * Base64 bytes of images one conversation may hold. Anthropic rejects requests over 32 MB, and Durable keeps tool
  * results for good, so a conversation past that would fail every later request. This leaves room for text.
  */
-const IMAGE_BUDGET_BYTES = 20 * 1024 * 1024;
+export const IMAGE_BUDGET_BYTES = 20 * 1024 * 1024;
 
 /**
  * `read`'s image processor: Photon in a worker thread that exits when idle. Host code, loaded once, so reloads share
@@ -26,7 +26,7 @@ export const images: ImageProcessor = {
     (await (photon ??= createNodePhotonImages())).prepare(bytes, mimeType, limits),
 };
 
-function imageBytes(messages: readonly Message[]): number {
+export function imageBytes(messages: readonly Message[]): number {
   let bytes = 0;
   for (const message of messages) {
     if (typeof message.content === "string") continue;

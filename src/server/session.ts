@@ -387,9 +387,11 @@ export default defineFacet<Principal>(
       return {
         variant: "owner",
         assessments,
-        submit: ({ message, requestId, whenBusy }) => front().submit(message, requestId, whenBusy),
-        messageWorker: ({ worker, message, requestId, whenBusy }) =>
-          front().messageWorker(worker, message, requestId, whenBusy),
+        submit: ({ message, requestId, whenBusy, attachments }) =>
+          front().submit(message, requestId, whenBusy, attachments),
+        messageWorker: ({ worker, message, requestId, whenBusy, attachments }) =>
+          front().messageWorker(worker, message, requestId, whenBusy, attachments),
+        upload: (chunk) => front().upload(chunk),
         editQueued: ({ worker, id, change }) => front().editQueued(worker, id, change),
         abort: () => front().abort(),
         stopWorker: ({ worker }) => front().stopWorker(worker),
