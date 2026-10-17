@@ -219,7 +219,7 @@ describe("Monchu home context", () => {
       await loadConfig(value.directory),
       value.directory,
       () => {},
-      (levels) => observed.push(levels),
+      { observeBudget: (levels) => void observed.push(levels) },
     );
     const front = "f".repeat(12500);
     await writeFile(join(value.directory, "FRONT.md"), front);

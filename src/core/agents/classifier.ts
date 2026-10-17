@@ -218,7 +218,6 @@ type AssessState = { phase: "classify" } | { phase: "escalate"; result: Assessme
  * work. The front's first request for the input waits briefly for that advice. When Clef is sure a worker is needed and
  * the front reaches for other tools instead, the tool result carries a nudge; when the front finishes without routing,
  * one follow-up asks it to. It never grants permission.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createEffortAssessment(
   models: Models,

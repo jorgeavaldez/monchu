@@ -51,7 +51,6 @@ function tool(
  * tools in every conversation, `deferred` ones in an `mcp-<server>` group that `tool_search` loads, `codemode` ones (the
  * default) in a group only codemode scripts reach, and `hidden` ones not at all. A server that cannot be listed on this
  * device is left out with a warning.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export async function createMcpTools(
   servers: Readonly<Record<string, McpServerConfig>>,

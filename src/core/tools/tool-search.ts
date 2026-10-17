@@ -261,7 +261,6 @@ const DEFAULT_LIMIT = 8;
  * left out of the host default selection; `tool_search` adds the matching ones to the calling conversation's agent.
  * The section and the tool description list only what is configured, never what one conversation loaded, so the
  * prompt stays the same while groups load.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createToolSearch(all: readonly ToolGroup[]) {
   const groups = all.filter((group) => group.codemode !== true);

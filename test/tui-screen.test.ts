@@ -128,7 +128,7 @@ it("shows reload errors, retains settings on failure, and recovers on the next r
     expect(backend.settings.theme).toBe("dark");
     await writeFile(path, original);
     send(screen, "/reload");
-    await visible(screen, "reloaded · context");
+    await visible(screen, "reloaded · extensions");
     send(screen, "hello");
     await visible(screen, "DONE");
   });
@@ -763,7 +763,7 @@ describe.each([
         ),
       );
       send(screen, "/reload");
-      await visible(screen, "reloaded · context");
+      await visible(screen, "reloaded · extensions");
       expect(screen.stopped).toBe(false);
     });
   }, 30_000);

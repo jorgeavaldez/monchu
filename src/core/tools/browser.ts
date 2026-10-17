@@ -65,7 +65,6 @@ async function capture(api: ToolExecutionApi, args: readonly string[], context: 
 /**
  * `agent_browser`: the agent-browser CLI as a deferred group. Every conversation under one root shares a named browser
  * session, so workers see the pages their root opened. Loading the group returns the CLI's own version-matched guide.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Browser: ToolGroup = {
   name: "browser",

@@ -211,7 +211,6 @@ const text = (value: string) => ({ output: [{ type: "text" as const, text: value
 /**
  * Roots' fronts see each other, message each other, and hand workers over. Workers inherit the tools with the root's
  * selection, but only a root's front can use them.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Roots = defineExtension({
   name: "monchu.roots",

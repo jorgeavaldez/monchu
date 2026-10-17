@@ -63,7 +63,6 @@ function warning(diagnostic: ResourceDiagnostic): string {
 
 /**
  * Skills are read in place from the home and bundled directories, never from Pi or execution cwd.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createContext(home: string, runSettings: RunSettings) {
   home = resolve(home);

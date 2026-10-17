@@ -1,3 +1,5 @@
+import { createHost, type FacetLoader, type Host } from "@earendil-works/chord";
+import { nodeLoader } from "@earendil-works/chord/node";
 import { Type, type Models } from "@earendil-works/pi-ai";
 import type { Skill } from "./skills/index.ts";
 import {
@@ -12,12 +14,12 @@ import {
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { principalKey, type Principal } from "../api/contract.ts";
+import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.ts";
 import { FffFinders } from "./tools/fff.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
-import { loadMcpConfig } from "./mcp/config.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
@@ -31,143 +33,6 @@ import {
   type Settings,
 } from "./config.ts";
 import { configuredRoles } from "./models/index.ts";
-
-/** Reloadable modules. Static imports inside them stay cached. */
-type Reloadable = {
-  context: typeof import("./context.ts");
-  "pi-tools": typeof import("./tools/pi-tools.ts");
-  workers: typeof import("./agents/workers.ts");
-  codemode: typeof import("./tools/codemode.ts");
-  goals: typeof import("./agents/goals.ts");
-  memory: typeof import("./agents/memory.ts");
-  identity: typeof import("./identity.ts");
-  classifier: typeof import("./agents/classifier.ts");
-  jj: typeof import("./tools/jj.ts");
-  herdr: typeof import("./tools/herdr.ts");
-  "tool-search": typeof import("./tools/tool-search.ts");
-  "mcp-tools": typeof import("./mcp/tools.ts");
-  browser: typeof import("./tools/browser.ts");
-  jobs: typeof import("./jobs.ts");
-  roots: typeof import("./agents/roots.ts");
-};
-
-/** Each reloadable module's path from this one, without its extension. */
-const reloadablePaths: Record<keyof Reloadable, string> = {
-  context: "./context",
-  "pi-tools": "./tools/pi-tools",
-  workers: "./agents/workers",
-  codemode: "./tools/codemode",
-  goals: "./agents/goals",
-  memory: "./agents/memory",
-  identity: "./identity",
-  classifier: "./agents/classifier",
-  jj: "./tools/jj",
-  herdr: "./tools/herdr",
-  "tool-search": "./tools/tool-search",
-  "mcp-tools": "./mcp/tools",
-  browser: "./tools/browser",
-  jobs: "./jobs",
-  roots: "./agents/roots",
-};
-
-async function freshImport<Name extends keyof Reloadable>(
-  name: Name,
-  version: string,
-): Promise<Reloadable[Name]> {
-  const suffix = import.meta.url.endsWith(".ts") ? "ts" : "js";
-  // oxlint-disable-next-line typescript/no-unsafe-return -- A computed specifier imports as `any`; `Reloadable` names each module's own type.
-  return import(new URL(`${reloadablePaths[name]}.${suffix}?v=${version}`, import.meta.url).href);
-}
-
-type Build = {
-  /** Imported modules in installation order. */
-  modules: (keyof Reloadable)[];
-  extensions: Extension[];
-  /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */
-  root: Extension[];
-  /** Deferred tool groups: installed, left out of the host default selection, and loaded by `tool_search`. */
-  groups: Extension[];
-  /** Group extension names that conversations on the Claude Code bridge load from the start. */
-  preload: string[];
-  settings: Settings;
-  /** Home and bundled skills, which the editor offers as `/skill:name`. */
-  skills: Skill[];
-  config: MonchuConfig;
-  assessment: EffortAssessment | undefined;
-  warnings: string[];
-};
-
-/** Import fresh copies of the reloadable modules and build their extensions. Nothing is installed. */
-async function build(
-  models: Models,
-  config: MonchuConfig,
-  home: string,
-  reportSkipped: (warning: string) => void,
-  observeBudget: (levels: BudgetLevel[]) => void,
-  finders: FffFinders,
-  clients: McpClients,
-  workerRole: () => ModelRole,
-): Promise<Build> {
-  const version = randomUUID();
-  const modules: (keyof Reloadable)[] = [];
-  const load = <Name extends keyof Reloadable>(name: Name) => {
-    modules.push(name);
-    return freshImport(name, version);
-  };
-  const context = (await load("context")).createContext(home, config.settings);
-  const tools = (await load("pi-tools")).createPiTools(context.settings, finders);
-  const workersModule = await load("workers");
-  const { Codemode } = await load("codemode");
-  const { Goals } = await load("goals");
-  const memory = (await load("memory")).createMemory(home);
-  const identity = (await load("identity")).createIdentity(home, reportSkipped, observeBudget);
-  const { Jj } = await load("jj");
-  const mcpConfig = await loadMcpConfig(home);
-  const mcp = await (await load("mcp-tools")).createMcpTools(mcpConfig.servers, clients);
-  const { Browser } = await load("browser");
-  const search = (await load("tool-search")).createToolSearch([...mcp.groups, Browser]);
-  const workers = workersModule.createWorkerTools(workerRole, config.profiles, search.preload);
-  const jobs = (await load("jobs")).createJobs(workerRole, home, config.profiles, search.preload);
-  const { Roots } = await load("roots");
-  const herdr = (await load("herdr")).createHerdr({
-    command: { executable: "herdr", args: [] },
-    env: process.env,
-  });
-  const assessment =
-    config.classifier === null
-      ? undefined
-      : (await load("classifier")).createEffortAssessment(models, config.classifier, {
-          profiles: config.profiles,
-        });
-  return {
-    modules,
-    extensions: [
-      context.extension,
-      tools.extension,
-      workers,
-      jobs,
-      Roots,
-      Codemode,
-      Goals,
-      memory,
-      identity,
-      Jj,
-      herdr,
-      mcp.extension,
-      search.extension,
-      ...search.groups,
-      ...(assessment === undefined ? [] : [assessment.extension]),
-    ],
-    root: [Goals, memory, Roots],
-    groups: search.groups,
-    preload: search.preload,
-    settings: context.settings,
-    skills: context.skills,
-    config,
-    assessment,
-    warnings: [...context.warnings, ...tools.warnings, ...mcpConfig.errors, ...mcp.warnings],
-  };
-}
 
 /** Validate the entire replacement against the installed registry, then publish it in one synchronous step. */
 function validateExtensions(registry: Registry, extensions: readonly Extension[]): void {
@@ -186,19 +51,47 @@ export function installExtensions(registry: Registry, extensions: readonly Exten
 }
 
 /**
- * The extension registry and settings of its last successful build. Every `Reloadable` module reloads in
- * process; the backend and this loader need /restart. Config is re-read on each reload.
+ * Chord's loader, saying where a module failed to parse: Node keeps that only in the first line of the stack, which a
+ * reload's error drops.
+ */
+const loader: FacetLoader = async (modules) => {
+  try {
+    return await nodeLoader(modules);
+  } catch (error) {
+    const where = error instanceof SyntaxError ? error.stack?.split("\n", 1)[0] : undefined;
+    if (!(error instanceof SyntaxError) || where === undefined || where.startsWith("SyntaxError"))
+      throw error;
+    throw new SyntaxError(`${where}: ${error.message}`, { cause: error });
+  }
+};
+
+/** Runs a reload of `modules` (facet module URLs) across the core and the server it runs under. */
+export type ReloadCoordinator = (modules: readonly string[], signal: AbortSignal) => Promise<void>;
+
+/**
+ * The core's Chord host and the extension registry of its last build. The extensions are a facet (`extensions.ts`), and
+ * `/reload` is one Chord reload of every facet the host loaded: fresh copies of their modules and of what they import
+ * from their own directories. The backend, this module and what it imports need /restart. Config is re-read on each
+ * reload.
  */
 export class Extensions {
   readonly registry: Registry;
+  /** The core's host: it serves the facets `/reload` swaps (this module's extensions, and any added by `loadFacets`). */
+  readonly host: Host<Principal>;
   private readonly models: Models;
   private readonly home: string;
   private readonly finders: FffFinders;
   private readonly clients: McpClients;
   private readonly report: (warning: string) => void;
-  private readonly reportSkipped: (warning: string) => void;
-  private readonly observeBudget: (levels: BudgetLevel[]) => void;
+  private readonly facets: string[];
   private current: Build;
+  /** The config a running reload read, which its build applies. */
+  private pending: MonchuConfig | undefined;
+  /** A running reload waiting for its commit to publish the build. */
+  private published: PromiseWithResolvers<void> | undefined;
+  private coordinator: ReloadCoordinator | undefined;
+  private readonly stopping = new AbortController();
+  private hostClosed: Promise<void> | undefined;
   private reloading: Promise<readonly string[]> | undefined;
   private saving: Promise<ModelRole> | undefined;
 
@@ -206,30 +99,37 @@ export class Extensions {
     models: Models,
     home: string,
     report: (warning: string) => void,
-    reportSkipped: (warning: string) => void,
-    observeBudget: (levels: BudgetLevel[]) => void,
     current: Build,
     finders: FffFinders,
     clients: McpClients,
+    registry: Registry,
+    host: Host<Principal>,
+    facets: string[],
   ) {
-    this.registry = createRegistry();
+    this.registry = registry;
+    this.host = host;
+    this.facets = facets;
     this.clients = clients;
     this.models = models;
     this.home = home;
     this.finders = finders;
     this.report = report;
-    this.reportSkipped = reportSkipped;
-    this.observeBudget = observeBudget;
     this.current = current;
   }
 
-  /** Build and install every extension. `report` receives configuration warnings now and after each reload. */
+  /**
+   * Open the core's host and build and install every extension. `report` receives configuration warnings now and after
+   * each reload; `onError` the host's background failures.
+   */
   static async load(
     models: Models,
     config: MonchuConfig,
     home: string,
     report: (warning: string) => void,
-    observeBudget: (levels: BudgetLevel[]) => void = () => {},
+    options: {
+      observeBudget?: (levels: BudgetLevel[]) => void;
+      onError?: (error: unknown) => void;
+    } = {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
     const reportSkipped = (warning: string) => {
@@ -245,31 +145,99 @@ export class Extensions {
       report,
       async (provider) => (await models.getAuth(provider))?.auth.apiKey,
     );
-    // Worker tools run only after construction; until then nothing can call the role getter.
+    const registry = createRegistry();
+    const host = createHost<Principal>({
+      name: "core",
+      self: { kind: "core" },
+      principalKey,
+      loader,
+      ...(options.onError === undefined ? {} : { onError: options.onError }),
+    });
+    // Builds only run once their inputs are served; until construction they apply the startup config.
     let extensions: Extensions | undefined;
-    const current = await build(
+    const first = Promise.withResolvers<Build>();
+    host.registry(Builds).subscribe((table) => {
+      const build = table.get(BUILD)?.value;
+      if (build === undefined) return;
+      if (extensions === undefined) first.resolve(build);
+      else extensions.publish(build);
+    });
+    const inputs: BuildInputs = {
       models,
-      config,
       home,
+      config: () => extensions?.pending ?? extensions?.config ?? config,
+      workerRole: () => extensions?.config.worker ?? config.worker,
       reportSkipped,
-      observeBudget,
+      observeBudget: (levels) => options.observeBudget?.(levels),
       finders,
       clients,
-      () => extensions?.config.worker ?? config.worker,
+      validate: (list) => validateExtensions(registry, list),
+    };
+    host.serve(
+      BuildHost,
+      (_input, _principal, self) => ({
+        inputs: self.expose(self.resource("inputs", { version: 1, open: () => inputs })),
+      }),
+      { lifetime: "host" },
     );
+    // By URL, so Chord's loader can import a fresh copy at each reload: TypeScript from source, JavaScript once built.
+    const facets = [
+      new URL(`./extensions.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url)
+        .href,
+    ];
+    let build: Build;
+    try {
+      await host.load(facets);
+      build = await first.promise;
+      installExtensions(registry, build.extensions);
+    } catch (error) {
+      await host.close();
+      await finders.close();
+      await clients.close();
+      throw error;
+    }
     extensions = new Extensions(
       models,
       home,
       report,
-      reportSkipped,
-      observeBudget,
-      current,
+      build,
       finders,
       clients,
+      registry,
+      host,
+      facets,
     );
-    installExtensions(extensions.registry, current.extensions);
-    for (const warning of current.warnings) report(warning);
+    for (const warning of build.warnings) report(warning);
     return extensions;
+  }
+
+  /** Load more facets on the core's host, such as the wire's; every later reload swaps them too. */
+  async loadFacets(modules: readonly string[]): Promise<void> {
+    await this.host.load(modules);
+    this.facets.push(...modules);
+  }
+
+  /**
+   * Run reloads through `coordinator` from now on, as a core under a server must: a child host that reloads alone runs
+   * ahead of its parent. Returns a function that goes back to reloading this host alone.
+   */
+  coordinate(coordinator: ReloadCoordinator): () => void {
+    this.coordinator = coordinator;
+    return () => {
+      if (this.coordinator === coordinator) this.coordinator = undefined;
+    };
+  }
+
+  /** A committed reload's build: install it; the build validated it while the reload prepared. */
+  private publish(build: Build): void {
+    try {
+      for (const extension of build.extensions) this.registry.install(extension);
+    } catch (error) {
+      this.published?.reject(error);
+      throw error;
+    }
+    this.current = build;
+    this.published?.resolve();
   }
 
   get config(): MonchuConfig {
@@ -345,12 +313,13 @@ export class Extensions {
   }
 
   /**
-   * Concurrent requests share one reload, which resolves to the reloaded modules. A failed build, import, or validation
-   * leaves installed definitions and settings unchanged.
+   * Concurrent requests share one reload, which resolves to the facets it swapped. A failed build, import, validation or
+   * prepare leaves the running code, installed definitions and settings unchanged.
    */
   reload(applyConfig?: (config: MonchuConfig) => Promise<void>): Promise<readonly string[]> {
     this.reloading ??= (async () => {
       await this.saving?.catch(() => {});
+      if (this.stopping.signal.aborted) throw new Error("Monchu is closing");
       await buildForReload();
       // A bad role keeps the one running, with a warning, as startup falls back to the defaults.
       const roles = await configuredRoles(this.models, await loadConfig(this.home), this.config);
@@ -361,22 +330,23 @@ export class Extensions {
         config.claude.longContextExtraUsage !== this.current.config.claude.longContextExtraUsage
       )
         throw new Error("Claude Code host settings changed; use /restart to apply them");
-      const next = await build(
-        this.models,
-        config,
-        this.home,
-        this.reportSkipped,
-        this.observeBudget,
-        this.finders,
-        this.clients,
-        () => this.config.worker,
-      );
-      validateExtensions(this.registry, next.extensions);
+      const published = Promise.withResolvers<void>();
+      this.pending = config;
+      this.published = published;
+      try {
+        const signal = this.stopping.signal;
+        await (this.coordinator === undefined
+          ? this.host.reload(this.facets)
+          : this.coordinator(this.facets, signal));
+        // The commit publishes the build: at once here, and as soon as the server's commit arrives under one.
+        await until(published.promise, signal);
+      } finally {
+        this.pending = undefined;
+        this.published = undefined;
+      }
       await applyConfig?.(config);
-      for (const extension of next.extensions) this.registry.install(extension);
-      this.current = next;
-      for (const warning of [...roles.warnings, ...next.warnings]) this.report(warning);
-      return next.modules;
+      for (const warning of [...roles.warnings, ...this.current.warnings]) this.report(warning);
+      return this.facets.map((url) => basename(fileURLToPath(url)).replace(/\.[^.]+$/, ""));
     })().finally(() => {
       this.reloading = undefined;
     });
@@ -397,8 +367,22 @@ export class Extensions {
     return mcpLogout(this.home, this.clients, name);
   }
 
-  /** Release host-owned search indexes and MCP servers after Durable stops its calls. */
+  /**
+   * Stop reloading and close the core's host, before the store closes: what clients opened and the build object go
+   * first. A reload waiting on a server that is gone gives up.
+   */
+  closeHost(): Promise<void> {
+    this.hostClosed ??= (async () => {
+      this.stopping.abort(new Error("Monchu is closing"));
+      await this.settled();
+      await this.host.close();
+    })();
+    return this.hostClosed;
+  }
+
+  /** Close the host, then release search indexes and MCP servers after Durable stops its calls. */
   async close(): Promise<void> {
+    await this.closeHost();
     await this.finders.close();
     await this.clients.close();
   }
@@ -408,6 +392,16 @@ export class Extensions {
     while (this.reloading !== undefined || this.saving !== undefined)
       await Promise.allSettled([this.reloading, this.saving]);
   }
+}
+
+/** `promise`, or a rejection once `signal` aborts. */
+function until<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 /** Whether any source is newer than the build; every build rewrites `dist/main.js`. */

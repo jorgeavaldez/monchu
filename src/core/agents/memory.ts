@@ -92,7 +92,6 @@ function failure(error: unknown): string {
 }
 
 /** Memory edits for every role, always under the host's home, never the conversation's cwd.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createMemory(home: string) {
   // Codemode can call tools concurrently even when their direct execution mode is sequential.

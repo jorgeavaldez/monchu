@@ -120,7 +120,6 @@ function discovery(tools: readonly ToolRegistration[]): CodemodeTool[] {
  * committed result, and are not separate tool tasks. Scripts also reach the tools of deferred groups the conversation has
  * not loaded, without declaring them to the model. A failed script does not undo earlier calls, so this tool is not
  * replayed after a crash.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Codemode = defineExtension({
   name: "monchu.codemode",

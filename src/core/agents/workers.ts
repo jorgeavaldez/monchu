@@ -742,7 +742,6 @@ function profileList(profiles: Record<string, WorkerProfile>): string {
 
 /**
  * Request IDs include the call ID so several calls inside one codemode script stay distinct.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createWorkerTools(
   role: () => ModelRole,

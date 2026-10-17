@@ -415,7 +415,6 @@ const WRITE_DESCRIPTION =
 
 /**
  * jj for every role: `jj` reads and is replay-safe; `jj_write` changes repositories and is never replayed.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export const Jj = defineExtension({
   name: "monchu.jj",

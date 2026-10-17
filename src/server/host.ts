@@ -5,7 +5,11 @@
  * principal and hand its socket to an `Ingress`.
  */
 import {
+  ChordError,
   createHost,
+  hostNamed,
+  method,
+  remote,
   webSocketLink,
   type Host,
   type Link,
@@ -16,9 +20,28 @@ import { principalKey, Server, type Principal, type ServerStatus } from "../api/
 import type { Monchu } from "../core/backend.ts";
 import type { UpdatePlan } from "../core/update.ts";
 import type { Log } from "../telemetry/log.ts";
-import session, { Core } from "./session.ts";
+import { Core } from "./session.ts";
 
 export type CoreHost = Host<Principal>;
+
+/**
+ * Reloads of the core's code, which only the core asks for: the server runs them, so the core and the server move to
+ * the new code version together (a child that reloads alone runs ahead of its parent). Not part of `Server`, so a core
+ * newer than its server still restarts.
+ */
+export const Reloads = remote("monchu.reloads", {
+  version: 1,
+  input: Type.Object({}),
+  host: hostNamed("server"),
+  variants: {
+    core: {
+      methods: {
+        /** Reload these facet modules on the core. */
+        reload: method(Type.Object({ modules: Type.Array(Type.String({ minLength: 1 })) })),
+      },
+    },
+  },
+});
 
 const failures = (log: Log) => (error: unknown) =>
   log.write("warn", "server.chord", "background failure", {
@@ -26,19 +49,12 @@ const failures = (log: Log) => (error: unknown) =>
   });
 
 /**
- * Open the core's host over a running backend; the caller closes the host, then the backend. `upstream` is the link to
- * the server when the core runs as its child.
+ * Serve a running backend on its core host: the wire's facet, and `Core` for it. The backend closes the host when it
+ * closes. `upstream` is the link to the server when the core runs as its child.
  */
 export async function openCoreHost(backend: Monchu, upstream?: Link): Promise<CoreHost> {
-  const host = createHost<Principal>({
-    name: "core",
-    self: { kind: "core" },
-    principalKey,
-    onError: failures(backend.log),
-    ...(upstream === undefined
-      ? {}
-      : { upstream: { link: upstream, principal: { kind: "server" } } }),
-  });
+  const host = backend.host;
+  if (upstream !== undefined) host.connect(upstream, { principal: { kind: "server" } });
   host.serve(
     Core,
     (_input, _principal, self) => ({
@@ -46,7 +62,10 @@ export async function openCoreHost(backend: Monchu, upstream?: Link): Promise<Co
     }),
     { lifetime: "host" },
   );
-  await host.load([{ name: "monchu.session", ...session }]);
+  // By URL, so Chord's loader can import a fresh copy at each reload: TypeScript from source, JavaScript once built.
+  await backend.loadFacets([
+    new URL(`./session.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href,
+  ]);
   return host;
 }
 
@@ -184,6 +203,16 @@ export function openServerHost(
       variant: "owner",
       state,
       stop: () => void setTimeout(() => options.stop(), 0),
+    };
+  });
+  host.serve(Reloads, (_input, principal) => {
+    if (principal.kind !== "core")
+      throw new ChordError("forbidden", "Only the core reloads its code");
+    return {
+      variant: "core",
+      reload: async ({ modules }) => {
+        await host.reload([], { remote: { core: modules } });
+      },
     };
   });
   return {

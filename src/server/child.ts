@@ -3,11 +3,11 @@
  * the server, and says it is ready. It closes the way Monchu always closes (Durable's `close`) when the server asks it
  * to, and also when the server is gone without asking (killed, crashed), so it never runs on as an orphan.
  */
-import { ipcLink, type IpcChannel, type Link } from "@earendil-works/chord";
+import { ChordError, ipcLink, type IpcChannel, type Link } from "@earendil-works/chord";
 import { childControl } from "@earendil-works/chord/node";
 import { Server } from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
-import { openCoreHost, type CoreHost } from "./host.ts";
+import { openCoreHost, Reloads, type CoreHost } from "./host.ts";
 
 /** The IPC channel to the server: a forked child always has one. */
 function channel(): IpcChannel {
@@ -56,7 +56,8 @@ export async function runCore(open: () => Promise<Monchu>): Promise<void> {
 
 /**
  * Serve a backend to the server over `link`: the core's host, and `/restart` and `/update` from any client handed to
- * the server, which replaces this core while every client keeps its socket. `close` closes the host, then the backend.
+ * the server, which replaces this core while every client keeps its socket, and `/reload` through the server. `close`
+ * closes the backend, which closes the host first.
  */
 export async function serveUpstream(
   backend: Monchu,
@@ -80,18 +81,38 @@ export async function serveUpstream(
       }),
     );
   });
+  // A reload runs across the server and this core, so both move to the new code version together.
+  const solo = backend.coordinateReloads(async (modules, signal) => {
+    let reloads;
+    try {
+      reloads = await host.get(Reloads, {}, { signal });
+    } catch (error) {
+      // A server started before hot reload doesn't serve it: it has to start again with the new code.
+      if (error instanceof ChordError && error.code !== "aborted")
+        throw new Error(
+          "This server predates hot reload: quit every client, then start Monchu again",
+          {
+            cause: error,
+          },
+        );
+      throw error;
+    }
+    try {
+      await host.root((ctx) => reloads.reload({ modules: [...modules] }, ctx), { signal });
+    } finally {
+      reloads.release();
+    }
+  });
   let closing: Promise<void> | undefined;
   return {
     host,
     close: () => {
       closing ??= (async () => {
         stop();
+        solo();
         server.release();
-        try {
-          await host.close();
-        } finally {
-          await (restarting ? backend.restart() : backend.close());
-        }
+        // The backend closes the host first, then its store.
+        await (restarting ? backend.restart() : backend.close());
       })();
       return closing;
     },

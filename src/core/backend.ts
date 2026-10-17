@@ -1,3 +1,4 @@
+import type { Host } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   cleanupSessionResources,
@@ -22,6 +23,7 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Client, ModelChoice, ModelPick, RootSummary } from "../api/client.ts";
+import type { Principal } from "../api/contract.ts";
 import { shortId } from "../api/ids.ts";
 import { parseRelease, type Release } from "../api/release.ts";
 import { systemNoticeText } from "../api/notices.ts";
@@ -53,7 +55,12 @@ import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
-import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
+import {
+  createReloadControls,
+  Extensions,
+  RestartRequest,
+  type ReloadCoordinator,
+} from "./reload.ts";
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 
@@ -186,7 +193,13 @@ export class Monchu implements Client {
         config,
         home,
         (warning) => reports.report(warning),
-        (levels) => observeBudget(levels),
+        {
+          observeBudget: (levels) => observeBudget(levels),
+          onError: (error) =>
+            log.write("warn", "core.chord", "background failure", {
+              reason: error instanceof Error ? error.message : String(error),
+            }),
+        },
       );
       extensions = loaded;
       phase("extensions");
@@ -332,6 +345,21 @@ export class Monchu implements Client {
     const report = await this.extensions.mcpServers();
     await this.reload();
     return report;
+  }
+
+  /** The core's Chord host, which loads the facets `/reload` swaps. */
+  get host(): Host<Principal> {
+    return this.extensions.host;
+  }
+
+  /** Load facets on the core's host, such as the wire's; every later reload swaps them too. */
+  loadFacets(modules: readonly string[]): Promise<void> {
+    return this.extensions.loadFacets(modules);
+  }
+
+  /** Reload through the server this core runs under; see `Extensions.coordinate`. */
+  coordinateReloads(coordinator: ReloadCoordinator): () => void {
+    return this.extensions.coordinate(coordinator);
   }
 
   /** Successful reload notifications; callers re-read the single settings owner. */
@@ -833,9 +861,9 @@ export class Monchu implements Client {
     clearTimeout(this.rootsTimer);
     this.rootListeners.clear();
     try {
-      // A failed reload must not prevent storage from closing.
+      // Clients' views and the build go first; a failed reload must not prevent storage from closing.
+      await this.extensions.closeHost();
       await this.reloading?.catch(() => {});
-      await this.extensions.settled();
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
       await this.extensions.close();

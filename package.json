@@ -84,6 +84,8 @@
       "agent-browser"
     ],
     "entry": [
+      "src/core/extensions.ts",
+      "src/server/session.ts",
       "src/web/main.tsx",
       "src/web/worker/sw.ts"
     ]

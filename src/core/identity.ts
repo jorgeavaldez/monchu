@@ -145,7 +145,6 @@ async function projectContextFiles(
  * Home files are reread for every request. Every agent gets the shared manual (`AGENTS.md`); only the front gets
  * the soul and its front-only manual (`FRONT.md`). Workers also get the context files of their execution directory.
  * Every render measures all budgeted files and passes their levels to `observeBudget`.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createIdentity(
   home: string,

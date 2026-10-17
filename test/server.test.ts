@@ -23,7 +23,7 @@ import {
 
 afterEach(cleanup);
 
-async function openServer() {
+async function openServer(opened: (backend: Monchu) => void = () => {}) {
   const value = await setup();
   const home = join(value.directory, "home");
   await mkdir(home);
@@ -33,7 +33,11 @@ async function openServer() {
   );
   prepareHome(home);
   route(value.faux, (request) => fauxAssistantMessage(`echo: ${textOf(request.messages.at(-1))}`));
-  const core = memoryCore(() => Monchu.open(home, value.faux.provider));
+  const core = memoryCore(async () => {
+    const backend = await Monchu.open(home, value.faux.provider);
+    opened(backend);
+    return backend;
+  });
   let stops = 0;
   const server = openServerHost(core, {
     mode: "background",
@@ -98,6 +102,55 @@ describe("server", () => {
       expect(said("before")).toBe(true);
       await root.submit("after", "server:2", "followUp");
       await waitFor(() => said("after"));
+      view.dispose();
+      await detach();
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  it("reloads the core through the server, keeping clients' views, and catches a restarted core up", async () => {
+    const cores: Monchu[] = [];
+    const { server, attach, close } = await openServer((backend) => cores.push(backend));
+    try {
+      const {
+        client,
+        links,
+        close: detach,
+      } = await attach({
+        kind: "client",
+        connection: "a",
+        person: true,
+      });
+      const notices: string[] = [];
+      client.onReport((message) => notices.push(message));
+      const root = await front(client);
+      const view = await root.viewState();
+      const said = (text: string) =>
+        view.value.entries.some((entry) =>
+          (entry.model ?? []).some((message) => textOf(message) === `echo: ${text}`),
+        );
+      await root.submit("before", "server:1", "followUp");
+      await waitFor(() => said("before") && !presentation(view.value).busy);
+      const first = server.host.codeVersion;
+
+      // One reload moves the server and the core to the next code version; the client's socket and view stay.
+      expect(await client.reload()).toEqual(["extensions", "session"]);
+      expect(server.host.codeVersion).toBeGreaterThan(first);
+      expect(cores[0]?.host.codeVersion).toBe(server.host.codeVersion);
+      await root.submit("reloaded", "server:2", "followUp");
+      await waitFor(() => said("reloaded") && !presentation(view.value).busy);
+      expect(links.map((link) => link.closed)).toEqual([false]);
+      expect(
+        notices.filter((notice) => /Monchu/.test(notice) && !notice.includes("home file")),
+      ).toEqual([]);
+
+      // A new core starts behind the server; the server brings it to its code version before anything reaches it.
+      await client.restart();
+      await waitFor(() => notices.includes("reconnected to Monchu"));
+      await root.submit("restarted", "server:3", "followUp");
+      await waitFor(() => said("restarted"));
+      expect(cores[1]?.host.codeVersion).toBe(server.host.codeVersion);
       view.dispose();
       await detach();
     } finally {

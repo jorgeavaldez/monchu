@@ -342,7 +342,6 @@ const ACTIONS = [
  * what it changes (the command's cursor, its event, the worker it wakes) atomically with the runner's next checkpoint,
  * so a restart never wakes anyone twice for one slot or change. A `bg` command runs as Durable runs a tool, inside its
  * runner's invocation, so quitting Monchu kills it; its replay reports it interrupted, once.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createJobs(
   workerRole: () => ModelRole,

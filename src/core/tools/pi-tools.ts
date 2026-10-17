@@ -40,7 +40,6 @@ const FFF_PROMPT = {
 /**
  * Config resolves defaultTools additions/removals; Monchu's own tools are separate.
  * Returns warnings for selections that would silently leave Monchu without built-ins.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createPiTools(settings: Settings, finders: FffFinders) {
   const commandPrefix = settings.shellCommandPrefix;

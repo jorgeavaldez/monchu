@@ -5,7 +5,8 @@ import {
   type Extension,
   type Task,
 } from "@earendil-works/pi-durable";
-import { writeFile, mkdir } from "node:fs/promises";
+import { defineRegistry } from "@earendil-works/chord";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -258,23 +259,7 @@ describe("in-process reload", () => {
     // Concurrent requests share one reload.
     const reloading = extensions.reload();
     expect(extensions.reload()).toBe(reloading);
-    expect(await reloading).toEqual([
-      "context",
-      "pi-tools",
-      "workers",
-      "codemode",
-      "goals",
-      "memory",
-      "identity",
-      "jj",
-      "mcp-tools",
-      "browser",
-      "tool-search",
-      "jobs",
-      "roots",
-      "herdr",
-      "classifier",
-    ]);
+    expect(await reloading).toEqual(["extensions"]);
     const sections: string[] = [];
     route(value.faux, (request) => {
       sections.push(...sectionTexts(request.messages));
@@ -305,6 +290,66 @@ describe("in-process reload", () => {
       ).toContain("monchu.classifier");
     } finally {
       await harness.close(context);
+    }
+  });
+
+  it("reloads every facet in one step with the modules they import, and a failing one changes nothing", async () => {
+    const value = await setup();
+    scriptedClassifier(value.models);
+    const extensions = await Extensions.load(value.models, config, value.directory, () => {});
+    const directory = join(value.directory, "probe");
+    await mkdir(directory);
+    const flag = join(directory, "broken");
+    const version = (text: string) =>
+      writeFile(
+        join(directory, "value.ts"),
+        `export const value: string = ${JSON.stringify(text)};`,
+      );
+    await version("v1");
+    // A facet beside the extensions: its object fails to build once `broken` exists.
+    await writeFile(
+      join(directory, "facet.mjs"),
+      `
+      import { defineFacet, defineRegistry, local } from ${JSON.stringify(import.meta.resolve("@earendil-works/chord"))};
+      import { Type } from ${JSON.stringify(import.meta.resolve("typebox"))};
+      import { existsSync } from "node:fs";
+      import { value } from "./value.ts";
+      const Probe = local("test.probe", { version: 1, input: Type.Object({}), members: {} });
+      const Values = defineRegistry("test.values");
+      export default defineFacet((api) => api.serve(Probe, (_input, _principal, self) => {
+        if (existsSync(${JSON.stringify(flag)})) throw new Error("broken probe");
+        self.register(Values, { value });
+        return {};
+      }, { lifetime: "host" }));
+      `,
+    );
+    const values = extensions.host.registry(defineRegistry<string>("test.values"));
+    try {
+      await extensions.loadFacets([pathToFileURL(join(directory, "facet.mjs")).href]);
+      expect(values.get("value")).toBe("v1");
+      await version("v2");
+      expect(await extensions.reload()).toEqual(["extensions", "facet"]);
+      expect(values.get("value")).toBe("v2");
+
+      const installed = extensions.registry.snapshot();
+      const skills = extensions.skills;
+      // A typo fails the reload and says where.
+      await writeFile(join(directory, "value.ts"), "export const value: string = ;");
+      await expect(extensions.reload()).rejects.toThrow(/value\.ts:1: Expression expected/);
+      expect(values.get("value")).toBe("v2");
+      await version("v3");
+      await writeFile(flag, "");
+      await expect(extensions.reload()).rejects.toThrow("broken probe");
+      expect(values.get("value")).toBe("v2");
+      expect(extensions.registry.snapshot()).toBe(installed);
+      expect(extensions.skills).toBe(skills);
+
+      await rm(flag);
+      await extensions.reload();
+      expect(values.get("value")).toBe("v3");
+      expect(extensions.skills).not.toBe(skills);
+    } finally {
+      await extensions.close();
     }
   });
 

@@ -477,7 +477,6 @@ export type HerdrHost = {
 /**
  * Herdr workspace, pane and agent control for every role. Launch, prompt and retire change Herdr, so calls are never
  * replayed.
- * @public Loaded by the reload manifest (src/reload.ts).
  */
 export function createHerdr(host: HerdrHost) {
   const { env } = host;
