@@ -887,13 +887,13 @@ export class Monchu implements Client {
   async update(text: string): Promise<void> {
     const release = parseRelease(text);
     if (release === undefined) throw new Error(`Not a release: ${text}. Use edge or a version`);
+    if (this.closing !== undefined || this.planned !== undefined)
+      throw new Error("Monchu is already closing");
+    if (this.restartListeners.size === 0) throw new Error("Nothing here can restart this Monchu");
     if (process.platform === "win32")
       throw new Error(
         "Windows keeps a running Monchu's files locked: /quit, then run monchu update",
       );
-    if (this.closing !== undefined || this.planned !== undefined)
-      throw new Error("Monchu is already closing");
-    if (this.restartListeners.size === 0) throw new Error("Nothing here can restart this Monchu");
     const plan = await planUpdate(release);
     this.planned = plan;
     this.setRelease({ updating: release });

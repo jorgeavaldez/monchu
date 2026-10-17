@@ -110,8 +110,9 @@ describe("local socket", () => {
       // /update checks before anything closes: a checkout is updated by hand, so the core refuses and keeps running.
       expect(client.release).toMatchObject({ version: backend.release.version, updating: null });
       await expect(client.update("v1.x")).rejects.toThrow("Not a release: v1.x");
-      if (process.platform !== "win32")
-        await expect(client.update("edge")).rejects.toThrow(/^monchu runs the checkout at/);
+      await expect(client.update("edge")).rejects.toThrow(
+        process.platform === "win32" ? "Windows keeps" : /^monchu runs the checkout at/,
+      );
       expect(requested).toBe(1);
       expect(backend.plannedUpdate).toBeUndefined();
       // The outcome of the update the core came back from reaches clients with its release.
