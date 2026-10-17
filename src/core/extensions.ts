@@ -19,23 +19,24 @@ import { createIdentity } from "./identity.ts";
 import { createJobs } from "./jobs.ts";
 import { loadMcpConfig } from "./mcp/config.ts";
 import { createMcpTools } from "./mcp/tools.ts";
-import { Browser } from "./tools/browser.ts";
+import { createBrowser } from "./tools/browser.ts";
 import { Codemode } from "./tools/codemode.ts";
 import { createHerdr } from "./tools/herdr.ts";
 import { Jj } from "./tools/jj.ts";
 import { createPiTools } from "./tools/pi-tools.ts";
+import { createSecrets } from "./secrets/tool.ts";
 import { createToolSearch } from "./tools/tool-search.ts";
 
 /** Build every extension from this copy of the code, reading config, skills and MCP listings anew. */
 async function build(inputs: BuildInputs): Promise<Build> {
   const config = inputs.config();
   const context = createContext(inputs.home, config.settings);
-  const tools = createPiTools(context.settings, inputs.finders);
+  const tools = createPiTools(context.settings, inputs.finders, inputs.vault);
   const memory = createMemory(inputs.home);
   const identity = createIdentity(inputs.home, inputs.reportSkipped, inputs.observeBudget);
   const mcpConfig = await loadMcpConfig(inputs.home);
   const mcp = await createMcpTools(mcpConfig.servers, inputs.clients);
-  const search = createToolSearch([...mcp.groups, Browser]);
+  const search = createToolSearch([...mcp.groups, createBrowser(inputs.vault)]);
   const workers = createWorkerTools(inputs.workerRole, config.profiles, search.preload);
   const jobs = createJobs(inputs.workerRole, inputs.home, config.profiles, search.preload);
   const herdr = createHerdr({ command: { executable: "herdr", args: [] }, env: process.env });
@@ -57,6 +58,8 @@ async function build(inputs: BuildInputs): Promise<Build> {
     herdr,
     mcp.extension,
     search.extension,
+    // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.
+    createSecrets(inputs.vault),
     ...search.groups,
     ...(assessment === undefined ? [] : [assessment.extension]),
   ];

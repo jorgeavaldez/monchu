@@ -7,6 +7,8 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
 import type { Settings } from "../config.ts";
+import { injectSecrets, redacting } from "../secrets/tool.ts";
+import type { Vault } from "../secrets/vault.ts";
 import { createFffTools, type FffFinders } from "./fff.ts";
 import { imageBudget, images } from "./images.ts";
 
@@ -41,16 +43,22 @@ const FFF_PROMPT = {
  * Config resolves defaultTools additions/removals; Monchu's own tools are separate.
  * Returns warnings for selections that would silently leave Monchu without built-ins.
  */
-export function createPiTools(settings: Settings, finders: FffFinders) {
+export function createPiTools(settings: Settings, finders: FffFinders, vault: Vault) {
   const commandPrefix = settings.shellCommandPrefix;
+  const prefix = commandPrefix === undefined ? {} : { commandPrefix };
+  // Shells get the secrets a command names in its environment, and their live output is redacted.
   const codingTools = [
     createReadTool({ images }),
     createWriteTool(),
     createEditTool(),
-    createBashTool(commandPrefix === undefined ? {} : { commandPrefix }),
+    redacting(createBashTool({ ...prefix, prepare: injectSecrets(vault, "bash") }), vault),
   ];
   const searchTools = createFffTools(finders);
-  const tools = [...codingTools, ...searchTools, createPowerShellTool()];
+  const tools = [
+    ...codingTools,
+    ...searchTools,
+    redacting(createPowerShellTool({ prepare: injectSecrets(vault, "powershell") }), vault),
+  ];
   const defaults =
     settings.defaultTools ?? [...codingTools, ...searchTools].map(({ name }) => name);
   const warnings: string[] = [];

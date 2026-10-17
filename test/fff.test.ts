@@ -290,7 +290,9 @@ describe("fff tools on real native indexes", () => {
         expect(page.isError).toBe(false);
         expect(textOf(page)).toContain(" 1: needle first\n 2: needle second\n 3: needle third");
       }
-      value.registry.install(createPiTools(resolveSettings({}), value.finders).extension);
+      value.registry.install(
+        createPiTools(resolveSettings({}), value.finders, value.vault).extension,
+      );
       route(
         value.faux,
         callTools({

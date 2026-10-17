@@ -12,6 +12,7 @@ import type { Assessment } from "../core/agents/classifier.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
+import type { SecretsState } from "../core/secrets/requests.ts";
 import {
   ATTACHMENTS_PER_MESSAGE,
   UPLOAD_CHUNK_BYTES,
@@ -130,6 +131,23 @@ const sessionState = {
   jobsState: trusted<JobsState>(),
   /** This connection's own logins by id: no other connection sees them. */
   logins: trusted<Record<string, LoginState>>(),
+  /** Stored secrets by name and the pending requests: never values. */
+  secrets: trusted<SecretsState>(),
+};
+
+/** A secret as a person enters it. Values are plain strings, so a refusal never quotes one; the core checks the rest. */
+const secretFields = { name: text, site: Type.Optional(text), description: Type.Optional(text) };
+const secretInput = Type.Union([
+  Type.Object({ ...secretFields, kind: Type.Literal("value"), value: text }),
+  Type.Object({ ...secretFields, kind: Type.Literal("login"), username: text, password: text }),
+]);
+
+/** Only a person's login enters, replaces or deletes a secret: a service login has none of these. */
+const secretMethods = {
+  /** The value goes in and nothing comes back. */
+  setSecret: method(Type.Object({ input: secretInput })),
+  deleteSecret: method(Type.Object({ name: text })),
+  declineSecret: method(Type.Object({ name: text })),
 };
 
 const sessionMethods = {
@@ -178,7 +196,7 @@ const sessionMethods = {
 
 /**
  * The home: what every client shows from its first screen, and what is not one root's. A person's login gets `owner`;
- * a service login gets `service`, which can't `update`.
+ * a service login gets `service`, which can't `update` or touch secrets.
  */
 export const Session = remote("monchu.session", {
   version: 1,
@@ -187,7 +205,11 @@ export const Session = remote("monchu.session", {
   variants: {
     owner: {
       state: sessionState,
-      methods: { ...sessionMethods, update: method(Type.Object({ release: text })) },
+      methods: {
+        ...sessionMethods,
+        ...secretMethods,
+        update: method(Type.Object({ release: text })),
+      },
     },
     service: { state: sessionState, methods: sessionMethods },
   },

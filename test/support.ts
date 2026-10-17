@@ -64,6 +64,7 @@ import { createClaudeCodeProvider, type ClaudeQuery } from "../src/core/models/c
 import { openModels } from "../src/core/models/index.ts";
 import { FffFinders } from "../src/core/tools/fff.ts";
 import { createPiTools } from "../src/core/tools/pi-tools.ts";
+import { MemoryStore, Vault } from "../src/core/secrets/vault.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
 import type { Client, RootClient } from "../src/api/client.ts";
 import type { Principal } from "../src/api/contract.ts";
@@ -222,6 +223,9 @@ export type Setup = {
   /** Decoy Pi directory inside this test home; not created. */
   readonly agentDir: string;
   readonly finders: FffFinders;
+  /** This home's secrets, kept in memory: tests never need fnox. */
+  readonly vault: Vault;
+  readonly secretStore: MemoryStore;
 };
 
 const directories = new Set<string>();
@@ -281,8 +285,10 @@ export async function setup(
   const reports: unknown[] = [];
   const finders = new FffFinders(directory, (warning) => reports.push(warning));
   findersToClose.add(finders);
-  registry.install(createPiTools(resolveSettings({}), finders).extension);
-  return { faux, models, registry, reports, directory, agentDir, finders };
+  const secretStore = new MemoryStore();
+  const vault = new Vault(join(directory, "secrets"), { store: secretStore });
+  registry.install(createPiTools(resolveSettings({}), finders, vault).extension);
+  return { faux, models, registry, reports, directory, agentDir, finders, vault, secretStore };
 }
 
 export async function open(

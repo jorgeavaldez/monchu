@@ -406,6 +406,25 @@ export class RemoteClient implements Client {
       },
     );
   }
+  async watchSecrets(listener: Parameters<Client["watchSecrets"]>[0]) {
+    return this.followState((ref) => ref.secrets, listener);
+  }
+  /** The owner's session, or a refusal for a service login, which has no secret methods. */
+  private owner() {
+    const session = this.session.ref;
+    if (session.variant !== "owner")
+      throw new Error("Only a person's login can change secrets, not a service token");
+    return session;
+  }
+  setSecret(input: Parameters<Client["setSecret"]>[0]) {
+    return this.run(() => this.owner().setSecret({ input }));
+  }
+  deleteSecret(name: string) {
+    return this.run(() => this.owner().deleteSecret({ name }));
+  }
+  declineSecret(name: string) {
+    return this.run(() => this.owner().declineSecret({ name }));
+  }
   roleChoice(role: "front" | "worker") {
     return this.run(() => this.session.ref.roleChoice({ role }));
   }

@@ -30,6 +30,7 @@ import type { Monchu } from "../core/backend.ts";
 import { Front } from "../core/front.ts";
 import { Core } from "./core.ts";
 import type { JobsState } from "../core/jobs.ts";
+import type { SecretsState } from "../core/secrets/requests.ts";
 
 /** A value of the core's, typed and not checked. */
 const any = <T>(): TUnsafe<T> => Type.Unsafe<T>(Type.Unknown());
@@ -304,6 +305,17 @@ export default defineFacet<Principal>(
               .then((next) => set(jobState(next)));
           }),
       );
+      const secrets = fed<SecretsState>(
+        self,
+        "secrets",
+        async () => ({ secrets: [], requests: [] }),
+        (set) => monchu().watchSecrets(set),
+      );
+      // A leaked service token must never enter, read back or remove a secret: its variant has none of these either.
+      const person = () => {
+        if (principal.kind === "client" && !principal.person)
+          throw new Error("Only a person's login can change secrets, not a service token");
+      };
       const runs = self.resource("logins", {
         version: 1,
         open: () => new Logins(),
@@ -321,6 +333,19 @@ export default defineFacet<Principal>(
         roots,
         jobsState,
         logins,
+        secrets,
+        setSecret: async ({ input }) => {
+          person();
+          await monchu().setSecret(input);
+        },
+        deleteSecret: async ({ name }) => {
+          person();
+          await monchu().deleteSecret(name);
+        },
+        declineSecret: async ({ name }) => {
+          person();
+          await monchu().declineSecret(name);
+        },
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
         findRoot: ({ prefix }) => monchu().findRoot(prefix),
         currentRoot: () => monchu().currentRoot(),
@@ -384,7 +409,14 @@ export default defineFacet<Principal>(
         loginCancel: ({ login }) => runs.value.cancel(login),
       };
       if (principal.kind !== "client" || principal.person) return owner;
-      const { update: _update, variant: _variant, ...service } = owner;
+      const {
+        update: _update,
+        setSecret: _setSecret,
+        deleteSecret: _deleteSecret,
+        declineSecret: _declineSecret,
+        variant: _variant,
+        ...service
+      } = owner;
       return { ...service, variant: "service" };
     });
 

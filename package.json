@@ -81,7 +81,9 @@
   "knip": {
     "ignoreBinaries": [
       "jj",
-      "agent-browser"
+      "agent-browser",
+      "fnox",
+      "age-keygen"
     ],
     "entry": [
       "src/core/extensions.ts",

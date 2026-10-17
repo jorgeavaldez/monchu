@@ -12,6 +12,7 @@ import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
 import type { BudgetLevel } from "./identity.ts";
 import type { McpClients } from "./mcp/index.ts";
 import type { Skill } from "./skills/index.ts";
+import type { Vault } from "./secrets/vault.ts";
 import type { FffFinders } from "./tools/fff.ts";
 
 /** What a build reads and keeps using: it lives as long as the core, across reloads. */
@@ -26,6 +27,8 @@ export type BuildInputs = {
   observeBudget: (levels: BudgetLevel[]) => void;
   finders: FffFinders;
   clients: McpClients;
+  /** The home's secrets: shells, the browser and the `secret` tool use them by name. */
+  vault: Vault;
   /** Throws when `extensions` could not replace the installed ones, so a failing build changes nothing. */
   validate: (extensions: readonly Extension[]) => void;
 };

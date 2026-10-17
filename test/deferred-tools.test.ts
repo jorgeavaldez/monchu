@@ -11,7 +11,7 @@ import { once } from "node:events";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Browser } from "../src/core/tools/browser.ts";
+import { createBrowser } from "../src/core/tools/browser.ts";
 import { loadMcpConfig } from "../src/core/mcp/config.ts";
 import { createMcpTools } from "../src/core/mcp/tools.ts";
 import { runMcpCommand } from "../src/core/mcp/cli.ts";
@@ -589,7 +589,7 @@ text(await tools[found.name]({ city: "Testville" }));`,
       const path = process.env.PATH;
       process.env.PATH = `${bin}${delimiter}${path ?? ""}`;
       try {
-        const settings = install(value, [Browser]);
+        const settings = install(value, [createBrowser(value.vault)]);
         route(value.faux, (request) => {
           const last = lastMessage(request.messages);
           if (last?.role === "user" && textOf(last).includes("BROWSE"))

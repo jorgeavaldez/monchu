@@ -18,12 +18,14 @@ import type { listWorkers } from "../core/agents/workers.ts";
 import type { ModelRole, Settings } from "../core/config.ts";
 import type { JobEvent, JobsState } from "../core/jobs.ts";
 import type { McpSignInPrompt } from "../core/mcp/auth.ts";
+import type { SecretsState } from "../core/secrets/requests.ts";
+import type { SecretInput } from "../core/secrets/vault.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
-export type { Goal, JobEvent };
+export type { Goal, JobEvent, SecretInput, SecretsState };
 
 /** A value kept current from the core: the shape clients render from, the same as Durable's attached states. */
 export interface Watched<T> {
@@ -174,6 +176,17 @@ export interface Client {
     after: number,
     listener: (events: readonly JobEvent[]) => void,
   ): Promise<() => void>;
+
+  /** Stored secrets by name and the agents' pending requests, as they change; returns a stop function. Never values. */
+  watchSecrets(listener: (state: SecretsState) => void): Promise<() => void>;
+  /**
+   * The user's entry of a secret, which answers every request for its name. Nothing comes back, and no error names the
+   * value. A core refuses it, and deleting or declining, from a service login.
+   */
+  setSecret(input: SecretInput): Promise<void>;
+  deleteSecret(name: string): Promise<void>;
+  /** Declines the pending requests for a name: whoever asked is told. */
+  declineSecret(name: string): Promise<void>;
 
   roleChoice(role: "front" | "worker"): Promise<ModelChoice>;
   saveDefault(role: "front" | "worker", pick: ModelPick): Promise<void>;

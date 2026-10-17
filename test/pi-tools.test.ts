@@ -22,7 +22,9 @@ import {
 afterEach(cleanup);
 
 function toolNames(settings: Settings, value: Setup): string[] {
-  return (createPiTools(settings, value.finders).extension.tools ?? []).map((tool) => tool.name);
+  return (createPiTools(settings, value.finders, value.vault).extension.tools ?? []).map(
+    (tool) => tool.name,
+  );
 }
 
 /** The front makes `calls` in order, one per message, and records each tool result's text. */
@@ -67,7 +69,8 @@ describe("Pi built-ins", () => {
   it("tells the model to search with the selected fff tools, as pi-fff does", async () => {
     const value = await setup();
     value.registry.install(
-      createPiTools(resolveSettings({ defaultTools: ["-fffind"] }), value.finders).extension,
+      createPiTools(resolveSettings({ defaultTools: ["-fffind"] }), value.finders, value.vault)
+        .extension,
     );
     const prompts: string[] = [];
     route(value.faux, (request) => {
@@ -102,7 +105,7 @@ describe("Pi built-ins", () => {
       JSON.stringify({ settings: { defaultTools } }),
     );
     const config = await loadConfig(value.directory);
-    const tools = createPiTools(resolveSettings(config.settings), value.finders);
+    const tools = createPiTools(resolveSettings(config.settings), value.finders, value.vault);
     expect(tools.warnings).toEqual(warnings);
   });
 
@@ -123,6 +126,7 @@ describe("Pi built-ins", () => {
       createPiTools(
         resolveSettings(prefix === undefined ? {} : { shellCommandPrefix: prefix }),
         value.finders,
+        value.vault,
       ).extension,
     );
     // A marker read by relative path shows the command ran in the execution directory on any platform.
@@ -154,6 +158,7 @@ describe("Pi built-ins", () => {
             "printf 'prefix\\n' >> prefix-calls.txt; export MONCHU_TEST_PREFIX=prefix",
         }),
         value.finders,
+        value.vault,
       ).extension,
     );
     const cwd = join(value.directory, "execution");
@@ -199,8 +204,11 @@ describe("Pi built-ins", () => {
       );
       await chmod(shellPath, 0o700);
       value.registry.install(
-        createPiTools(resolveSettings({ defaultTools: ["bash"], shellPath }), value.finders)
-          .extension,
+        createPiTools(
+          resolveSettings({ defaultTools: ["bash"], shellPath }),
+          value.finders,
+          value.vault,
+        ).extension,
       );
       const outputs = callInOrder(value, [
         fauxToolCall("bash", { command: "printf direct" }),

@@ -62,6 +62,8 @@ import {
 } from "./reload.ts";
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
+import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
+import { Vault, type SecretInput, type SecretStore } from "./secrets/vault.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -104,6 +106,8 @@ export class Monchu implements Client {
   private budgetSeen = "";
   private budgetWork: Promise<void> = Promise.resolve();
   private readonly envs: ExecutionEnvs;
+  /** The home's secrets: values in fnox, names here. */
+  private readonly vault: Vault;
   /** The structured log: warnings, timings, model replies and client events. */
   readonly log: Log;
   private readonly stopTelemetry: () => void;
@@ -117,6 +121,7 @@ export class Monchu implements Client {
     extensions: Extensions,
     envs: ExecutionEnvs,
     log: Log,
+    vault: Vault,
   ) {
     this.home = home;
     this.owner = owner;
@@ -126,6 +131,7 @@ export class Monchu implements Client {
     this.extensions = extensions;
     this.envs = envs;
     this.log = log;
+    this.vault = vault;
     this.frontHost = {
       home,
       harness,
@@ -144,7 +150,12 @@ export class Monchu implements Client {
     });
   }
 
-  static async open(home: string, devProvider?: Provider): Promise<Monchu> {
+  /** `secretStore` replaces fnox, for tests and the offline smoke home only. */
+  static async open(
+    home: string,
+    devProvider?: Provider,
+    options: { secretStore?: SecretStore } = {},
+  ): Promise<Monchu> {
     home = resolve(home);
     await mkdir(home, { recursive: true, mode: 0o700 });
     // A separate SQLite transaction holds a crash-released process lock without blocking Durable's writes.
@@ -163,6 +174,11 @@ export class Monchu implements Client {
       }
       const log = new Log(home);
       const reports = new Reports(log);
+      // Each use is audited by name, never value.
+      const vault = new Vault(join(home, "secrets"), {
+        ...(options.secretStore === undefined ? {} : { store: options.secretStore }),
+        audit: (body, attributes) => log.write("info", "core.secrets", body, attributes),
+      });
       // Each phase's time goes to the log with the open: the startup budget, measured on every device.
       const phases: LogAttributes = {};
       let phaseStart = performance.now();
@@ -198,6 +214,7 @@ export class Monchu implements Client {
             log.write("warn", "core.chord", "background failure", {
               reason: error instanceof Error ? error.message : String(error),
             }),
+          vault,
         },
       );
       extensions = loaded;
@@ -226,7 +243,17 @@ export class Monchu implements Client {
       }, context);
       for (const id of roots) await preloadAll(harness, id, loaded.preload);
       phase("root");
-      const backend = new Monchu(home, owner, harness, models, reports, extensions, envs, log);
+      const backend = new Monchu(
+        home,
+        owner,
+        harness,
+        models,
+        reports,
+        extensions,
+        envs,
+        log,
+        vault,
+      );
       log.write("info", "core.open", "opened", phases);
       observeBudget = (levels) => backend.observeBudget(levels);
       // A failed storage call closes the Session for good, and every later call rejects: say why, once.
@@ -547,6 +574,53 @@ export class Monchu implements Client {
   }
 
   /** Every background job and the recent job events, store-wide, with the jobs as the job tool lists them. */
+  /** Stored secrets by name and the pending requests, now and after each change; returns a stop function. */
+  async watchSecrets(listener: (state: SecretsState) => void): Promise<() => void> {
+    // Observation needs a stored document; reading it in a commit creates it on a fresh home.
+    await this.harness.commit(async (tx) => {
+      await tx.doc(SecretsDoc);
+    }, context);
+    const doc = await this.harness.documentState(SecretsDoc, context);
+    if (doc === undefined) throw new Error("Secrets document is missing");
+    let secrets = await this.vault.list();
+    let requests: SecretsState["requests"] = [];
+    const emit = () => listener({ secrets, requests });
+    const stopDoc = doc.subscribe((value) => {
+      requests = (value?.requests ?? []).map(({ waiting: _waiting, ...request }) => ({
+        ...request,
+      }));
+      emit();
+    });
+    const stopVault = this.vault.onChange((next) => {
+      secrets = [...next];
+      emit();
+    });
+    return () => {
+      stopVault();
+      stopDoc();
+      doc.dispose();
+    };
+  }
+
+  /**
+   * Stores a secret the user entered and answers every request for its name. Only a person's client calls it; the value
+   * never leaves the vault and no error names it.
+   */
+  async setSecret(input: SecretInput): Promise<void> {
+    const info = await this.vault.set(input);
+    await answerRequests(this.harness, info.name, info, context);
+  }
+
+  async deleteSecret(name: string): Promise<void> {
+    await this.vault.delete(name);
+  }
+
+  /** Declines every pending request for a name: whoever asked is told. */
+  async declineSecret(name: string): Promise<void> {
+    if ((await answerRequests(this.harness, name, undefined, context)) === 0)
+      throw new Error(`No pending request for ${name}`);
+  }
+
   async jobs(): Promise<Readonly<JobsState> & { listing: string }> {
     const state = (await this.harness.snapshot(JobsDoc, context)) ?? {
       jobs: [],

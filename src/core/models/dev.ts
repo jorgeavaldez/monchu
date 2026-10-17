@@ -83,6 +83,18 @@ export function createDevProvider(): Provider {
           stopReason: "toolUse",
         });
       }
+      // `secret <NAME>` asks the user for a secret, as an agent that needs a token does.
+      if (/^secret [A-Z][A-Z0-9_]*$/.test(text))
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("secret", {
+              action: "request",
+              name: text.slice(7),
+              reason: "the smoke check needs a token",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
       if (text.startsWith("close "))
         return fauxAssistantMessage([fauxToolCall("close_worker", { name: text.slice(6) })], {
           stopReason: "toolUse",

@@ -7,6 +7,7 @@ import { UPLOAD_CHUNK_BYTES } from "../src/api/attachments.ts";
 import { connectRemote, OUTDATED_CORE } from "../src/api/connect.ts";
 import type { Principal } from "../src/api/contract.ts";
 import { Monchu } from "../src/core/backend.ts";
+import { MemoryStore } from "../src/core/secrets/vault.ts";
 import { openCoreHost, type CoreHost } from "../src/server/host.ts";
 import { presentation } from "../src/ui/state.ts";
 import {
@@ -52,7 +53,7 @@ async function openCore() {
     },
   });
   route(value.faux, (request) => fauxAssistantMessage(`echo: ${textOf(request.messages.at(-1))}`));
-  const backend = await Monchu.open(home, provider);
+  const backend = await Monchu.open(home, provider, { secretStore: new MemoryStore() });
   const host = await openCoreHost(backend);
   return {
     backend,
@@ -328,6 +329,59 @@ describe("wire", () => {
     } finally {
       await owner.close();
       await stranger.close();
+      await service.close();
+      await core.close();
+    }
+  });
+
+  it("takes a secret from a person only, never echoing its value", async () => {
+    const core = await openCore();
+    const owner = await attach(core.host, person("owner"));
+    let rewrite: (frame: Frame) => Frame = (frame) => frame;
+    const ownerByHand = await attach(core.host, person("by-hand"), {
+      send: (frame) => rewrite(frame),
+    });
+    const service = await attach(
+      core.host,
+      { kind: "client", connection: "service", person: false },
+      { send: (frame) => rewrite(frame) },
+    );
+    const value = "wire-secret-value-123";
+    try {
+      const states: string[] = [];
+      const stop = await owner.client.watchSecrets((state) => states.push(JSON.stringify(state)));
+      await expect(
+        owner.client.setSecret({ name: "WIRE_TOKEN", kind: "value", value }),
+      ).resolves.toBeUndefined();
+      await waitFor(() => states.some((state) => state.includes("WIRE_TOKEN")));
+      expect(states.join("\n")).not.toContain(value);
+      stop();
+
+      await expect(
+        service.client.setSecret({ name: "STOLEN", kind: "value", value }),
+      ).rejects.toThrow("Only a person's login can change secrets, not a service token");
+      // Even sent by hand, the service's session has no secret methods.
+      rewrite = calling("restart", {
+        member: "setSecret",
+        args: { input: { name: "STOLEN", kind: "value", value } },
+      });
+      await expect(service.client.restart()).rejects.toThrow(/^not_in_variant/);
+      rewrite = calling("restart", { member: "deleteSecret", args: { name: "WIRE_TOKEN" } });
+      await expect(service.client.restart()).rejects.toThrow(/^not_in_variant/);
+      // A malformed entry is refused without quoting the value back.
+      rewrite = calling("restart", {
+        member: "setSecret",
+        args: { input: { name: "BAD", kind: "other", value } },
+      });
+      const refused = await ownerByHand.client.restart().then(
+        () => "",
+        (error: unknown) => String(error),
+      );
+      expect(refused).toMatch(/invalid\/args/);
+      expect(refused).not.toContain(value);
+    } finally {
+      await owner.close();
+      await ownerByHand.close();
       await service.close();
       await core.close();
     }

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { principalKey, type Principal } from "../api/contract.ts";
 import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.ts";
 import { FffFinders } from "./tools/fff.ts";
+import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
@@ -129,6 +130,8 @@ export class Extensions {
     options: {
       observeBudget?: (levels: BudgetLevel[]) => void;
       onError?: (error: unknown) => void;
+      /** The home's secrets; by default fnox under `<home>/secrets`. */
+      vault?: Vault;
     } = {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
@@ -171,6 +174,7 @@ export class Extensions {
       observeBudget: (levels) => options.observeBudget?.(levels),
       finders,
       clients,
+      vault: options.vault ?? new Vault(join(home, "secrets")),
       validate: (list) => validateExtensions(registry, list),
     };
     host.serve(

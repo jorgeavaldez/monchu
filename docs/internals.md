@@ -53,6 +53,7 @@ Home paths owned by Monchu (all relative to `<home>`: `MONCHU_HOME`, default `~/
 - `web.json`: this device's web server settings (see [Web](#web)).
 - `web-client.json`: this device's web client settings, such as the installed app's name (`/client`).
 - `web-sessions.json`: web sign-in sessions, by token hash.
+- `secrets/`: secrets the user gave Monchu on this device (see [Secrets](#secrets)): fnox's config, its age key and the names index.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
@@ -211,6 +212,19 @@ The rules every web surface follows; the tokens live at the top of `src/web/styl
 - **Focus and contrast:** `:focus-visible` draws a 2 px accent outline; text keeps WCAG AA contrast on both schemes, inverted rows included. Buttons in the key bar keep the editor's focus so the on-screen keyboard stays up.
 - **Checks:** `mise run web:check` at 412 px and on an emulated touch screen; read its screenshots before calling a visual change done.
 
+## Secrets
+
+Agents use credentials by name and never see their values. Each device keeps its own in `<home>/secrets/` (0700, gitignored): `fnox.toml`, an age identity `age.txt` that Monchu makes on first use (X25519 in Node, so no `age-keygen` is needed), and `index.json`, which holds what may be shown: names, kinds, a login's site, descriptions, and when each was set and last used. Values live in [fnox](https://fnox.jdx.dev), which must be on PATH. Monchu runs it with `FNOX_CONFIG_DIR` set to that folder and its working directory there, so fnox never reads the user's own config, and Monchu's secrets never reach the user's shells. Another provider in `fnox.toml` (1Password, a keychain) works too: Monchu stores with the provider named `monchu`. Values are read with one `fnox export` and kept in the core's memory until the next set or delete.
+
+- Names are environment-variable shaped (`GITHUB_TOKEN`), one namespace per device. A login `NAME` is one entry with two keys, `NAME_USERNAME` and `NAME_PASSWORD`, and an optional site (an origin).
+- `secret` (every role, replay-safe): `request {name, reason, kind, site?}` records a request in the store-wide `monchu.secrets` document and returns at once; `list` shows names, kinds, sites, last use and pending requests, never values. Asking adds nothing to the system prompt or the tool list.
+- When the user sets or declines it, every conversation that asked gets a system notice as follow-up input: a front directly, a worker as a message from its parent, so its answer is reported as usual.
+- `bash` and `powershell`: each stored key a command names (`$NAME` or `${NAME}`; `$env:NAME` in PowerShell) joins that command's environment only, never its text. `agent_browser`: `{{secret:NAME}}` in an argument becomes the value when the command runs; a login with a site is filled only when the session's page is on that origin, and not inside `batch`, which may navigate first. The value then sits in agent-browser's argv while it runs.
+- Redaction: every tool result (its text, diagnostics, details and structured output) has each stored value of four characters or more replaced with `[secret KEY]`, and the shells' and the browser's live output is redacted as it streams, holding back text that might start a value until the next chunk. A store that can't be read leaves the output as it is with a warning on the call.
+- Each use is audited in the log (`core.secrets`, `secret used`: name, tool, conversation), as are sets and deletes; never a value.
+- The user enters values in the web client: a line over the editor per pending request opens a masked form in the editor's place (a value, or a username and password), and `/secrets` lists them with replace and delete. The value goes once, in `Session.setSecret`, which returns nothing; it is not conversation input, so it never enters Durable or a prompt. Only a person's login has `setSecret`, `deleteSecret` and `declineSecret`: a service login's session lacks them, and the core checks again. A malformed entry is refused by its schema without quoting the value. The terminal has no secret form yet.
+- The offline smoke home keeps secrets in memory, so `web:check` needs no fnox.
+
 ## Offline TUI smoke mode
 
 Start the real source entry point in an interactive terminal with scripted faux models:
@@ -292,6 +306,7 @@ Folders follow systems. Lint enforces the arrows: only `src/main.ts` imports `sr
   - `front.ts`: one root's front and crew in process (`Front implements RootClient`): admission, queue edits, goals, picks, `/new`, hand-off.
   - `agents/`: `roots.ts` (the roots registry, prefixes, summaries, hand-off and the tools between fronts), `workers.ts` (durable worker ownership/delivery state machines, logical parents, lookup/stop/pending checks, and model tools), `goals.ts` (the root's goals document, `update_goal`/`list_goals`, and the `goals` section), `memory.ts` (bounded, atomic home-memory edits for every role), `classifier.ts` (non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up; it never grants permission).
   - `models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.
+  - `secrets/`: `vault.ts` (fnox under the home's own config, the names index, redaction; host code), `requests.ts` (the `monchu.secrets` requests document and the notices that answer them), `tool.ts` (the `secret` tool, shell injection, placeholders and the redaction hook).
   - `tools/`: `pi-tools.ts` (built-in selection and shell configuration inside Durable tool invocations), `jj.ts`, `herdr.ts` (local Herdr CLI or SSH), `fff.ts` (Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases), `codemode.ts` (over `@earendil-works/pi-codemode`, with its per-conversation store), `tool-search.ts`, `browser.ts`.
   - `mcp/`: MCP config, clients, OAuth sign-in, tools, and the `monchu mcp` command.
   - `skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
