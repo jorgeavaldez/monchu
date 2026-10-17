@@ -9,6 +9,10 @@
   --red: #b00020;
   --green: #1b7a2e;
   --card: #f2f2f2;
+  /* Spacing on an 8 px scale; a tap target is five steps tall on a touch screen. */
+  --s1: 8px;
+  --s2: 16px;
+  --tap: 40px;
   font:
     14px/1.4 ui-monospace,
     SFMono-Regular,
@@ -62,7 +66,7 @@ textarea {
 }
 button {
   cursor: pointer;
-  padding: 0 0.6ch;
+  padding: 0 var(--s1);
 }
 pre {
   margin: 0;
@@ -72,9 +76,13 @@ pre {
 }
 .agents {
   display: flex;
-  gap: 0;
-  overflow-x: auto;
   border-bottom: 1px solid var(--line);
+}
+.agents .tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
 }
 .agents button {
   border: none;
@@ -158,11 +166,76 @@ pre {
   border-top: 1px solid var(--line);
 }
 .queue li {
+  display: flex;
+  align-items: center;
   border-left: 3px solid var(--yellow);
-  padding-left: 1ch;
+  padding-left: var(--s1);
   white-space: nowrap;
+}
+.queue li.here {
+  border-left-color: var(--accent);
+}
+.queue .text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+.queue li button:not(.text) {
+  border-width: 0 0 0 1px;
+  padding: 0 var(--s1);
+}
+button:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+.keys {
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+.keys button {
+  border: none;
+  border-right: 1px solid var(--line);
+  padding: 0 var(--s2);
+  white-space: nowrap;
+}
+.keys button[aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+.keys .wide {
+  margin-left: auto;
+  border-left: 1px solid var(--line);
+  border-right: none;
+  font-weight: bold;
+}
+.close,
+.enter {
+  min-width: var(--tap);
+}
+@media (pointer: coarse) {
+  .keys button,
+  .queue li button,
+  .pick button,
+  .ask button,
+  .rootsPanel button,
+  .agents button,
+  .typeahead li {
+    min-height: var(--tap);
+  }
+  .typeahead li {
+    line-height: var(--tap);
+  }
+  .keys .wide {
+    min-width: calc(var(--tap) * 2);
+  }
+  .pick .hint {
+    display: none;
+  }
 }
 .editor {
   position: relative;
@@ -193,17 +266,17 @@ pre {
   overflow-y: auto;
 }
 .typeahead li {
-  padding: 0 1ch;
+  padding: 0 var(--s1);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .typeahead .help {
-  margin-left: 2ch;
+  margin-left: var(--s2);
 }
 .typeahead .selected,
-.pick .selected button:first-child {
+.pick .selected .enter {
   background: var(--fg);
   color: var(--bg);
 }
@@ -211,29 +284,60 @@ pre {
 .ask,
 .login {
   border-top: 1px solid var(--line);
-  padding: 1ch;
+  padding: var(--s1);
   outline: none;
+}
+.pick header {
+  display: flex;
+  gap: var(--s1);
+  align-items: center;
+}
+.pick .title {
+  flex: 1;
 }
 .pick ul {
   list-style: none;
-  margin: 0.5em 0 0;
+  margin: var(--s1) 0 0;
   padding: 0;
   max-height: 40vh;
   overflow-y: auto;
+  border-top: 1px solid var(--line);
 }
 .pick li {
   display: flex;
+  border-bottom: 1px solid var(--line);
 }
-.pick li button:first-child {
+.pick li .enter {
   flex: 1;
+  display: flex;
+  gap: var(--s1);
+  justify-content: space-between;
+  align-items: center;
   text-align: left;
   border: none;
+  padding: 0 var(--s1);
+}
+.pick .alternate {
+  border-width: 0 0 0 1px;
+  padding: 0 var(--s1);
+}
+.ask {
+  display: flex;
+  gap: var(--s1);
+  align-items: flex-end;
+}
+.ask label {
+  flex: 1;
 }
 .ask input {
   display: block;
   width: 100%;
-  margin-top: 0.5em;
-  padding: 0.3em 1ch;
+  margin-top: var(--s1);
+  padding: 0 var(--s1);
+  min-height: var(--tap);
+}
+.ask button {
+  min-height: var(--tap);
 }
 .login {
   display: flex;
@@ -267,22 +371,35 @@ pre {
   color: var(--green);
 }
 .agents .roots {
-  padding: 0 1ch;
+  flex: none;
+  max-width: 45%;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s1);
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+.agents .roots .dots {
   letter-spacing: 0.3ch;
 }
 .agents .roots .here {
   text-decoration: underline;
 }
+.agents .roots .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .rootsPanel {
   flex: 1;
   overflow-y: auto;
-  padding: 1ch;
+  padding: var(--s1);
   outline: none;
 }
 .rootsPanel header {
   display: flex;
-  gap: 1ch;
-  align-items: baseline;
+  gap: var(--s1);
+  align-items: center;
 }
 .rootsPanel h1 {
   font-size: inherit;
@@ -291,15 +408,13 @@ pre {
 }
 .rootsPanel ul {
   list-style: none;
-  margin: 0.5em 0;
+  margin: var(--s1) 0;
   padding: 0;
   border-top: 1px solid var(--line);
 }
 .rootsPanel li {
   display: flex;
-  align-items: center;
-  gap: 0.5ch;
-  padding: 0.3em 0;
+  align-items: stretch;
   border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;
 }
@@ -310,12 +425,20 @@ pre {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  gap: var(--s1);
+  align-items: center;
+  padding: var(--s1);
   text-align: left;
   border: none;
   background: transparent;
 }
-.rootsPanel .open > span {
+.rootsPanel .lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rootsPanel .lines > span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -325,9 +448,18 @@ pre {
 }
 .rootsPanel .actions {
   display: flex;
-  gap: 0.5ch;
-  margin-left: auto;
+}
+.rootsPanel .actions button {
+  border-width: 0 0 0 1px;
+  padding: 0 var(--s1);
 }
 .rootsPanel p {
-  margin: 0.5em 0;
+  margin: var(--s1) 0;
+}
+@media (pointer: coarse) {
+  /* No arrow keys to move a selection on a touch screen: every row is just a tap. */
+  .pick .selected .enter {
+    background: transparent;
+    color: inherit;
+  }
 }

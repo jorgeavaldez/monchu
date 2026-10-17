@@ -1,12 +1,24 @@
 /**
- * The editor: Enter sends, Shift-Enter adds a line, Esc stops a running front (or closes the typeahead), Alt+S toggles
- * steer and follow-up, Ctrl-O expands every card. Typeahead lists the terminal's commands with their help, then skills
+ * The editor: Enter sends (adds a line on a touch screen), Shift-Enter adds a line, Esc stops a running front (or closes the typeahead, or leaves a
+ * queued message's edit), Alt+S toggles steer and follow-up, Ctrl-O expands every card; the key bar under it taps the
+ * same. Typeahead lists the terminal's commands with their help, then skills
  * as `/skill:<name>`, from the same command table.
  */
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { commands } from "../ui/commands.ts";
-import { client, draft, expandAll, interrupt, mode, submit } from "./state.ts";
+import { Keys } from "./keys.tsx";
+import {
+  client,
+  draft,
+  editing,
+  endEdit,
+  expandAll,
+  interrupt,
+  mode,
+  submit,
+  toggleMode,
+} from "./state.ts";
 
 type Suggestion = { value: string; usage: string; help: string };
 
@@ -39,8 +51,9 @@ export function Editor() {
 
   const send = () => {
     const text = draft.value;
-    draft.value = "";
     closed.value = false;
+    if (editing.value !== undefined) return endEdit(text);
+    draft.value = "";
     void submit(text);
   };
   const accept = (item: Suggestion) => {
@@ -75,7 +88,11 @@ export function Editor() {
         class={mode.value === "steer" ? "steer" : ""}
         rows={Math.min(8, draft.value.split("\n").length)}
         value={draft.value}
-        placeholder={`message · ${mode.value === "steer" ? "steer" : "follow-up"} (Alt+S) · / for commands`}
+        placeholder={
+          editing.value === undefined
+            ? `message · ${mode.value === "steer" ? "steer" : "follow-up"} · / for commands`
+            : "queued message · Enter saves · Esc leaves"
+        }
         autofocus
         onInput={(event) => {
           draft.value = event.currentTarget.value;
@@ -86,7 +103,7 @@ export function Editor() {
           const items = list.value;
           if (event.altKey && event.key.toLowerCase() === "s") {
             event.preventDefault();
-            mode.value = mode.value === "steer" ? "followUp" : "steer";
+            toggleMode();
             return;
           }
           if (event.ctrlKey && event.key.toLowerCase() === "o") {
@@ -109,18 +126,22 @@ export function Editor() {
           if (event.key === "Escape") {
             event.preventDefault();
             if (items.length > 0) closed.value = true;
+            else if (editing.value !== undefined) endEdit();
             else void interrupt();
             return;
           }
           if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-            event.preventDefault();
             const item = items[selected.value];
+            // A touch keyboard has no Shift: its Enter adds a line, and the key bar sends.
+            if (item === undefined && matchMedia("(pointer: coarse)").matches) return;
+            event.preventDefault();
             // A half-typed command takes the suggestion; an exact one, or one with arguments, is sent as typed.
             if (item !== undefined && item.value !== draft.value.trim()) accept(item);
             else send();
           }
         }}
       />
+      <Keys area={area} send={send} />
     </div>
   );
 }

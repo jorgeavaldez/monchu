@@ -2,6 +2,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { RootSummary } from "../api/client.ts";
+import { escalationSummary, systemNoticeSummary } from "../api/notices.ts";
 import {
   ARCHIVE_HELP,
   activeRoots,
@@ -10,15 +11,18 @@ import {
   rootIds,
   rootLabel,
 } from "../ui/roots.ts";
-import { contextUsage, presentation } from "../ui/state.ts";
+import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
 import { Editor } from "./editor.tsx";
 import {
   archiveRoot,
   ask,
+  beginEdit,
   cancelLogin,
   choice,
   client,
   connection,
+  editing,
+  editQueued,
   loginStatus,
   mode,
   newRoot,
@@ -39,12 +43,14 @@ import { Transcript } from "./transcript.tsx";
 const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idle" };
 
 /**
- * The root indicator: one dot per active root (working, or done and not seen yet), the shown one underlined, and none
- * at all while every root is idle. Its detail is the roots panel, which a tap opens.
+ * The root indicator, right of the agent tabs: the shown root's name, after one dot per active root (working, or done
+ * and not seen yet) with the shown one underlined. Its detail is the roots panel, which a tap opens.
  */
-function RootDots() {
+function RootTab() {
   const active = activeRoots(roots.value);
-  if (active.length === 0) return null;
+  const here = roots.value.find((root) => root.id === rootId.value);
+  if (here === undefined) return null;
+  const name = rootLabel(here);
   const summary = active
     .map(
       (root) => `${root.id === rootId.value ? "this root" : root.id} ${STATUS_TEXT[root.status]}`,
@@ -53,20 +59,25 @@ function RootDots() {
   return (
     <button
       class={`roots${rootsOpen.value ? " on" : ""}`}
-      aria-label={`roots: ${summary}`}
+      aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
       aria-expanded={rootsOpen.value}
-      title={summary}
+      title={summary || name}
       onClick={() => toggleRoots()}
     >
-      {active.map((root) => (
-        <span
-          key={root.id}
-          aria-hidden="true"
-          class={`dot ${root.status}${root.id === rootId.value ? " here" : ""}`}
-        >
-          ●
+      {active.length === 0 ? null : (
+        <span class="dots">
+          {active.map((root) => (
+            <span
+              key={root.id}
+              aria-hidden="true"
+              class={`dot ${root.status}${root.id === rootId.value ? " here" : ""}`}
+            >
+              ●
+            </span>
+          ))}
         </span>
-      ))}
+      )}
+      <span class="name">{name}</span>
     </button>
   );
 }
@@ -77,26 +88,29 @@ function RootRow({ root, ids }: { root: RootSummary; ids: ReturnType<typeof root
   return (
     <li class={here ? "here" : ""}>
       <button class="open" onClick={() => void switchRoot(root.id)} aria-current={here}>
-        <span class="name">
-          <span aria-hidden="true" class={`dot ${root.status}`}>
-            {root.status === "idle" ? "○" : "●"}
-          </span>{" "}
-          <span class="id">
-            <b>{unique}</b>
-            {rest}
-          </span>{" "}
-          {rootLabel(root)}
+        <span class="lines">
+          <span class="name">
+            <span aria-hidden="true" class={`dot ${root.status}`}>
+              {root.status === "idle" ? "○" : "●"}
+            </span>{" "}
+            <span class="id">
+              <b>{unique}</b>
+              {rest}
+            </span>{" "}
+            {rootLabel(root)}
+          </span>
+          <span class="help">
+            {[
+              STATUS_TEXT[root.status],
+              rootCounts(root),
+              root.archived ? "archived" : "",
+              here ? "shown" : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
         </span>
-        <span class="help">
-          {[
-            STATUS_TEXT[root.status],
-            rootCounts(root),
-            root.archived ? "archived" : "",
-            here ? "shown" : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
+        <span aria-hidden="true">›</span>
       </button>
       <span class="actions">
         <button onClick={() => void renameRoot(root.id)} aria-label={`rename ${root.id}`}>
@@ -136,7 +150,7 @@ function RootsPanel() {
       <header>
         <h1>roots</h1>
         <button onClick={() => void newRoot()}>new root</button>
-        <button onClick={() => toggleRoots(false)}>close</button>
+        <Close label="close" onClose={() => toggleRoots(false)} />
       </header>
       {message === undefined ? null : (
         <p role="status" class={message.failed ? "warning" : "help"}>
@@ -170,20 +184,37 @@ function Agents() {
   const rootBusy = root === undefined ? false : presentation(root).busy;
   return (
     <nav class="agents">
-      <RootDots />
-      <button class={shown.value === undefined ? "on" : ""} onClick={() => void show(undefined)}>
-        {rootBusy ? "●" : "○"} root
-      </button>
-      {workers.value.map((worker) => (
-        <button
-          key={worker.name}
-          class={shown.value === worker.name ? "on" : ""}
-          onClick={() => void show(worker.name)}
-        >
-          {worker.busy ? "●" : "○"} {worker.name}
+      <div class="tabs">
+        <button class={shown.value === undefined ? "on" : ""} onClick={() => void show(undefined)}>
+          {rootBusy ? "●" : "○"} root
         </button>
-      ))}
+        {workers.value.map((worker) => (
+          <button
+            key={worker.name}
+            class={shown.value === worker.name ? "on" : ""}
+            onClick={() => void show(worker.name)}
+          >
+            {worker.busy ? "●" : "○"} {worker.name}
+          </button>
+        ))}
+      </div>
+      <RootTab />
     </nav>
+  );
+}
+
+/** A menu's way out, the touch Esc. */
+function Close({ label, onClose }: { label: string; onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      class="close"
+      aria-label={label}
+      title={`${label} (Esc)`}
+      onClick={onClose}
+    >
+      ✕
+    </button>
   );
 }
 
@@ -215,15 +246,23 @@ function Pick() {
       }}
     >
       <header>
-        {current.title}
-        {current.alternate === undefined ? "" : ` · Ctrl+S ${current.alternate}`} · Esc cancels
+        <span class="title">
+          {current.title}
+          <span class="hint">
+            {current.alternate === undefined ? "" : ` · Ctrl+S ${current.alternate}`} · Esc cancels
+          </span>
+        </span>
+        <Close label="cancel" onClose={() => current.cancel()} />
       </header>
       <ul>
         {current.options.map((option, index) => (
           <li key={option.id} class={index === selected.value ? "selected" : ""}>
-            <button onClick={() => current.choose(option.id, false)}>
-              {option.label}
-              {option.detail === undefined ? null : <span class="help"> {option.detail}</span>}
+            <button class="enter" onClick={() => current.choose(option.id, false)}>
+              <span>
+                {option.label}
+                {option.detail === undefined ? null : <span class="help"> {option.detail}</span>}
+              </span>
+              <span aria-hidden="true">›</span>
             </button>
             {current.alternate === undefined ? null : (
               <button class="alternate" onClick={() => current.choose(option.id, true)}>
@@ -268,6 +307,10 @@ function Ask() {
         {current.title}
         {current.secret ? <input type="password" {...input} /> : <input type="text" {...input} />}
       </label>
+      <button type="submit" class="enter" aria-label="ok">
+        ›
+      </button>
+      <Close label="cancel" onClose={() => current.cancel()} />
     </form>
   );
 }
@@ -337,17 +380,66 @@ function Footer() {
   );
 }
 
+const MODE_TEXT = { steer: "steer", followUp: "follow-up", write: "write" };
+
+/**
+ * One queued message. The terminal's Alt+Q panel, in place: a tap opens it in the editor, and its buttons switch its
+ * mode or delete it. Writes and notices that aren't the user's words stay as they are.
+ */
+function QueueRow({ item }: { item: QueuedItem }) {
+  const open = editing.value?.id === item.id;
+  const editable =
+    item.mode !== "write" &&
+    escalationSummary(item.text) === undefined &&
+    systemNoticeSummary(item.text) === undefined;
+  const line = `${MODE_TEXT[item.mode]} · ${item.text.split("\n")[0]}`;
+  if (item.mode === "write") return <li class={item.mode}>{line}</li>;
+  return (
+    <li class={`${item.mode}${open ? " here" : ""}`}>
+      {editable ? (
+        <button
+          class="text"
+          aria-label={`edit: ${line}`}
+          disabled={editing.value !== undefined}
+          onClick={() => beginEdit(item)}
+        >
+          {line}
+        </button>
+      ) : (
+        <span class="text">{line}</span>
+      )}
+      <button
+        aria-label={`make it ${item.mode === "steer" ? "follow-up" : "steer"}`}
+        title="Alt+S in the terminal's queue"
+        onClick={() =>
+          void editQueued(item.id, {
+            kind: "mode",
+            mode: item.mode === "steer" ? "followUp" : "steer",
+          })
+        }
+      >
+        {item.mode === "steer" ? "follow" : "steer"}
+      </button>
+      <button
+        aria-label="delete it"
+        title="Del in the terminal's queue"
+        disabled={open}
+        onClick={() => void editQueued(item.id, { kind: "delete" })}
+      >
+        ✕
+      </button>
+    </li>
+  );
+}
+
 function Queue() {
   const state = view(shown.value)?.value;
   const queue = state === undefined ? [] : presentation(state).queue;
   if (queue.length === 0) return null;
   return (
-    <ul class="queue">
+    <ul class="queue" aria-label="queued">
       {queue.map((item) => (
-        <li key={item.id} class={item.mode}>
-          {item.mode === "steer" ? "steer" : item.mode === "followUp" ? "follow-up" : "write"} ·{" "}
-          {item.text.split("\n")[0]}
-        </li>
+        <QueueRow key={item.id} item={item} />
       ))}
     </ul>
   );

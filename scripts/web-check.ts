@@ -71,6 +71,56 @@ async function page(expression: string): Promise<unknown> {
   return (await browser("eval", expression)).result;
 }
 
+/**
+ * Makes the page a touch screen (a coarse pointer, touch points) through the browser's DevTools socket, which
+ * agent-browser's device presets don't. The emulation lasts while the returned socket stays open; close it to end it.
+ */
+async function touchScreen(): Promise<WebSocket> {
+  const socket = new WebSocket(text((await browser("get", "cdp-url")).cdpUrl));
+  let next = 0;
+  const waiting = new Map<number, (reply: Data) => void>();
+  socket.addEventListener("message", (event) => {
+    const reply: unknown = JSON.parse(String(event.data));
+    const id = isData(reply) ? number(reply.id) : undefined;
+    if (id !== undefined && isData(reply)) waiting.get(id)?.(reply);
+  });
+  const send = (method: string, params: Data, sessionId?: string) =>
+    new Promise<Data>((done, fail) => {
+      next += 1;
+      waiting.set(next, (reply) =>
+        isData(reply.error)
+          ? fail(new Error(`${method}: ${text(reply.error.message)}`))
+          : done(isData(reply.result) ? reply.result : {}),
+      );
+      socket.send(
+        JSON.stringify({ id: next, method, params, ...(sessionId ? { sessionId } : {}) }),
+      );
+    });
+  await new Promise((done, fail) => {
+    socket.addEventListener("open", done, { once: true });
+    socket.addEventListener("error", () => fail(new Error("no DevTools socket")), { once: true });
+  });
+  const target = list((await send("Target.getTargets", {})).targetInfos).find(
+    (item) => isData(item) && item.type === "page",
+  );
+  if (!isData(target)) throw new Error("no page target");
+  const session = text(
+    (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId,
+  );
+  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }, session);
+  await send(
+    "Emulation.setEmulatedMedia",
+    {
+      features: [
+        { name: "pointer", value: "coarse" },
+        { name: "any-pointer", value: "coarse" },
+      ],
+    },
+    session,
+  );
+  return socket;
+}
+
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
@@ -544,6 +594,104 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
     return "started a root, saw it working then done, switched, reloaded into it, archived the other";
   });
+
+  await journey(
+    "touch: a phone with no Esc, Alt or Ctrl reaches every key by tapping",
+    async () => {
+      const touch = await touchScreen();
+      try {
+        await browser("reload");
+        await browser("wait", ".keys");
+        check(
+          (await page(`matchMedia("(pointer: coarse)").matches`)) === true,
+          "no coarse pointer",
+        );
+
+        const value = () => page(`document.querySelector("textarea").value`);
+        const key = (label: string) =>
+          `[...document.querySelectorAll(".keys button")].find((item) => item.textContent === ${JSON.stringify(label)})`;
+        const tap = async (expression: string) => {
+          check((await page(`!!(${expression})`)) === true, `nothing to tap at ${expression}`);
+          await page(`(${expression}).click()`);
+        };
+        check(
+          (await page(
+            `(() => { const nav = document.querySelector(".agents"), tab = nav.lastElementChild; return tab.matches(".roots") && Math.abs(tab.getBoundingClientRect().right - nav.getBoundingClientRect().right) < 2 && tab.querySelector(".name")?.textContent.startsWith("second root"); })()`,
+          )) === true,
+          "the root tab isn't on the right with the root's name",
+        );
+
+        await browser("fill", "textarea", "a");
+        await browser("press", "Enter");
+        check((await value()) === "a\n", "Enter on a touch screen didn't add a line");
+        await browser("fill", "textarea", "");
+        await tap(key("/"));
+        check((await value()) === "/", "the / key didn't start a command");
+        await browser("fill", "textarea", "/mod");
+        await browser("click", "[role=option]");
+        check((await value()) === "/model ", "tapping the suggestion didn't take it");
+        await tap(key("send"));
+        await browser("wait", ".pick li");
+        check(
+          (await page(`getComputedStyle(document.querySelector(".pick .hint")).display`)) ===
+            "none",
+          "the picker shows desktop key hints",
+        );
+        await capture("touch-pick", home, origin);
+        await tap(`document.querySelector(".pick .close")`);
+        await browser("wait", "--fn", `!document.querySelector(".pick")`);
+
+        await tap(key("steer"));
+        check(
+          (await page(`${key("steer")}.getAttribute("aria-pressed")`)) === "true" &&
+            (await page(`document.querySelector("textarea").classList.contains("steer")`)) === true,
+          "the steer key didn't switch to steer",
+        );
+        await tap(key("steer"));
+        await tap(key("expand"));
+        check(
+          (await page(`${key("expand")}.getAttribute("aria-pressed")`)) === "true",
+          "the expand key didn't expand",
+        );
+        await tap(key("expand"));
+
+        // A long reply keeps the root busy while the queue fills.
+        await browser("fill", "textarea", `busy ${"x".repeat(1600)}`);
+        await tap(key("send"));
+        await browser("wait", "--fn", `!!(${key("stop")})`);
+        await browser("fill", "textarea", "queued one");
+        await tap(key("send"));
+        await browser("wait", ".queue li .text");
+        await tap(`document.querySelector(".queue li .text")`);
+        check((await value()) === "queued one", "tapping the queued message didn't open it");
+        check((await page(`!!(${key("✕ edit")}) && !!(${key("save")})`)) === true, "no edit keys");
+        await capture("touch-edit", home, origin);
+        await browser("fill", "textarea", "queued two");
+        await tap(key("save"));
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelector(".queue li")?.textContent.includes("queued two")`,
+        );
+        check((await value()) === "", "saving the edit didn't bring the draft back");
+        await tap(`document.querySelector(".queue li button[aria-label^='make it']")`);
+        await browser("wait", ".queue li.steer");
+        await tap(`document.querySelector(".queue li button[aria-label='delete it']")`);
+        await browser("wait", "--fn", `!document.querySelector(".queue")`);
+        await browser("fill", "textarea", "queued three");
+        await tap(key("send"));
+        await browser("wait", ".queue li");
+        await tap(key("stop"));
+        await browser("wait", "--fn", `!(${key("stop")}) && !document.querySelector(".queue")`);
+        check((await value()) === "queued three", "stopping didn't put the queued message back");
+        await browser("fill", "textarea", "");
+        await capture("touch-keys", home, origin);
+        return "Enter adds a line; / starts a command; send, the picker's close, steer, expand, queue edit, mode, delete and stop all by tap";
+      } finally {
+        touch.close();
+      }
+    },
+  );
 
   const errors = list((await browser("errors")).errors);
   const logged = list((await browser("console")).messages).filter(

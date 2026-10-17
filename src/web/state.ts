@@ -5,8 +5,15 @@
 import { batch, signal, type Signal } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import type { Client, ModelPick, RootClient, RootSummary, WorkerSummary } from "../api/client.ts";
-import type { WhenBusy } from "../api/notices.ts";
+import type {
+  Client,
+  ModelPick,
+  QueueChange,
+  RootClient,
+  RootSummary,
+  WorkerSummary,
+} from "../api/client.ts";
+import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { shortId } from "../api/ids.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
@@ -15,7 +22,7 @@ import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
-import { presentation } from "../ui/state.ts";
+import { presentation, type QueuedItem } from "../ui/state.ts";
 
 /** A line under the transcript; one with a `root` shows only while that root is shown. */
 export type Notice = {
@@ -596,6 +603,50 @@ export function toggleRoots(open = !rootsOpen.value): void {
     rootsOpen.value = open;
     rootsMessage.value = undefined;
   });
+}
+
+/** A queued message open in the editor: whose queue, its id, and the draft set aside for it. */
+export const editing = signal<{ name: string | undefined; id: number; draft: string } | undefined>(
+  undefined,
+);
+
+/** Changes a still-queued message of the shown conversation; one that already left comes back as a draft. */
+export async function editQueued(
+  id: number,
+  change: QueueChange,
+  name = shown.value,
+): Promise<void> {
+  try {
+    if (await root().editQueued(name, id, change)) return;
+    notice("that message already left the queue");
+    if (change.kind === "text") draft.value = [change.text, draft.value].filter(Boolean).join("\n");
+  } catch (error) {
+    notice(error instanceof Error ? error.message : String(error), "warning");
+  }
+}
+
+/** Opens a queued message in the editor, setting the draft aside; a worker notice opens only its body. */
+export function beginEdit(item: QueuedItem): void {
+  batch(() => {
+    editing.value = { name: shown.value, id: item.id, draft: draft.value };
+    draft.value = parseWorkerNotice(item.text)?.text ?? item.text;
+  });
+}
+
+/** Leaves a queued message's edit, saving `text` when given; the set-aside draft comes back either way. */
+export function endEdit(text?: string): void {
+  const current = editing.value;
+  if (current === undefined) return;
+  batch(() => {
+    editing.value = undefined;
+    draft.value = current.draft;
+  });
+  if (text !== undefined) void editQueued(current.id, { kind: "text", text }, current.name);
+}
+
+/** Alt+S: the busy mode new messages take. */
+export function toggleMode(): void {
+  mode.value = mode.value === "steer" ? "followUp" : "steer";
 }
 
 /** Esc: cancel a login in progress, else stop the shown front's run, putting the user's queued messages back in the editor. */
