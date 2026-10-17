@@ -6,7 +6,13 @@
  */
 import { processLock } from "@earendil-works/chord/node";
 import { loadWebConfig } from "../core/config.ts";
-import { install, installedVersion, VERSION, type UpdatePlan } from "../core/update.ts";
+import {
+  install,
+  installedVersion,
+  installOutcome,
+  VERSION,
+  type UpdatePlan,
+} from "../core/update.ts";
 import { Log } from "../telemetry/log.ts";
 import { openServerHost } from "./host.ts";
 import { forkedCore, lockName } from "./process.ts";
@@ -60,7 +66,7 @@ export async function runServer(options: {
       kind: "updated",
       outcome:
         code === 0
-          ? `updated · ${VERSION} → ${installedVersion()}`
+          ? installOutcome(VERSION, installedVersion())
           : `warning · update failed: npm exited ${code}; still on ${VERSION}\n${tail.join("\n")}`,
     });
   };

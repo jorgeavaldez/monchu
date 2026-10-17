@@ -4,7 +4,14 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { install, installedVersion, newerEdge, planUpdate, runUpdate } from "../src/core/update.ts";
+import {
+  install,
+  installedVersion,
+  installOutcome,
+  newerEdge,
+  planUpdate,
+  runUpdate,
+} from "../src/core/update.ts";
 import { cleanup, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -114,7 +121,13 @@ describe("/update's install", () => {
       const result = await install(plan, () => {});
       expect(result.code, result.tail.join("\n")).toBe(0);
       expect(installedVersion(running)).toBe("9.9.9");
+      expect(installOutcome("1.0.0", installedVersion(running))).toBe("updated · 1.0.0 → 9.9.9");
       expect(await readdir(join(running, ".."))).toEqual(["monchu"]);
+
+      // The release still serving the running build, as when its new tarball is not up yet, is no update.
+      expect(installOutcome("9.9.9", installedVersion(running))).toBe(
+        "warning · no change: the release still served 9.9.9; try again in a few minutes",
+      );
     } finally {
       server.close();
     }

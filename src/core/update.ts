@@ -155,6 +155,16 @@ export function installedVersion(root: string = PACKAGE): string {
 }
 
 /**
+ * What a successful install changed. It can land on the running build when the release's new tarball was not up yet;
+ * saying "updated" there would hide why the update hint stays.
+ */
+export function installOutcome(before: string, after: string): string {
+  return before === after
+    ? `warning · no change: the release still served ${after}; try again in a few minutes`
+    : `updated · ${before} → ${after}`;
+}
+
+/**
  * The commit the `edge` release was built from, when this is an edge build whose commit differs; `undefined` when it is
  * current or not an edge build. A hint only: nothing installs it.
  */
@@ -215,6 +225,8 @@ export async function runUpdate(args: readonly string[], io: UpdateIo): Promise<
     io.error(`npm install failed (${code}); the installed version is unchanged.`);
     return code;
   }
-  io.log(`monchu ${VERSION} → ${installedVersion()}. Start monchu again.`);
+  const after = installedVersion();
+  io.log(installOutcome(VERSION, after));
+  if (after !== VERSION) io.log("Start monchu again.");
   return 0;
 }
