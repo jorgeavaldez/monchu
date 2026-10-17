@@ -1139,6 +1139,62 @@ async function journeys(url: string, home: string, origin: string): Promise<void
   });
 
   await journey(
+    "secrets: an agent asks, the masked form answers, /secrets lists it by name only",
+    async () => {
+      const value = "smoke-secret-value-42";
+      const inPage = () =>
+        page(`document.documentElement.outerHTML.includes(${JSON.stringify(value)})`);
+      await browser("fill", "textarea", "secret SMOKE_TOKEN");
+      await browser("press", "Enter");
+      await browser("wait", ".secretRequest");
+      check(
+        (await page(
+          `document.querySelector(".secretRequest").textContent.includes("SMOKE_TOKEN")`,
+        )) === true,
+        "the request line doesn't name the secret",
+      );
+      await capture("secret-request", home, origin);
+      await page(`document.querySelector(".secretRequest button").click()`);
+      await browser("wait", ".secretForm input[type=password]");
+      check(
+        (await page(`document.activeElement?.type === "password"`)) === true,
+        "the form didn't focus its masked field",
+      );
+      await browser("fill", ".secretForm input[type=password]", value);
+      await capture("secret-form", home, origin);
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".secretForm") && !document.querySelector(".secretRequest")`,
+      );
+      check((await inPage()) === false, "the value stayed in the page after saving");
+      // The agent that asked hears it is set, by name.
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("SMOKE_TOKEN is set")`,
+      );
+      await browser("fill", "textarea", "/secrets");
+      await browser("press", "Enter");
+      if ((await page(`!!document.querySelector(".secretsPanel")`)) !== true)
+        await browser("press", "Enter");
+      await browser("wait", ".secretsPanel li");
+      check(
+        (await page(
+          `document.querySelector(".secretsPanel ul").textContent.includes("SMOKE_TOKEN")`,
+        )) === true,
+        "/secrets doesn't list the secret",
+      );
+      await capture("secrets-panel", home, origin);
+      check((await inPage()) === false, "the value is in the page");
+      await page(`document.querySelector(".secretsPanel header [aria-label=close]").click()`);
+      await browser("wait", "--fn", `!document.querySelector(".secretsPanel")`);
+      return "a request line, its masked form, the notice to the asker, and /secrets by name; the value never stays in the page";
+    },
+  );
+
+  await journey(
     "touch: a phone with no Esc, Alt or Ctrl reaches every key by tapping",
     async () => {
       const touch = await touchScreen();

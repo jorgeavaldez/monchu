@@ -5,6 +5,7 @@ import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
 import { startClient } from "./client.tsx";
+import { startSecrets } from "./secrets.tsx";
 import { cancelLogin, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
 
@@ -91,6 +92,7 @@ async function boot(): Promise<void> {
     connection.value = state;
   });
   await start(client);
+  await startSecrets(client);
   connection.value = client.connected ? "live" : "lost";
   // A phone that put the page away may come back to a core that's back too: a reload finds it, through the login if
   // need be.

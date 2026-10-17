@@ -14,6 +14,7 @@ import {
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
 import { ClientPanel, clientOpen, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
+import { entering, SecretForm, SecretRequests, SecretsPanel, secretsOpen } from "./secrets.tsx";
 import {
   archiveRoot,
   ask,
@@ -501,6 +502,8 @@ export function App() {
         <RootsPanel />
       ) : clientOpen.value ? (
         <ClientPanel />
+      ) : secretsOpen.value ? (
+        <SecretsPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…</main>
       ) : (
@@ -509,7 +512,16 @@ export function App() {
       <Queue />
       <Login />
       <InstallOffer />
-      {choice.value !== undefined ? <Pick /> : ask.value !== undefined ? <Ask /> : <Editor />}
+      <SecretRequests />
+      {choice.value !== undefined ? (
+        <Pick />
+      ) : ask.value !== undefined ? (
+        <Ask />
+      ) : entering.value !== undefined ? (
+        <SecretForm />
+      ) : (
+        <Editor />
+      )}
       <Footer />
     </>
   );

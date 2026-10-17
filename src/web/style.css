@@ -628,7 +628,8 @@ pre {
 .panel .actions {
   display: flex;
 }
-.clientPanel .lines {
+.clientPanel .lines,
+.secretsPanel .lines {
   padding: var(--s0) var(--s1);
 }
 .clientPanel .lines input {
@@ -636,7 +637,8 @@ pre {
   margin: var(--s0) 0;
   padding: 0 var(--s1);
 }
-.clientPanel .lines .name {
+.clientPanel .lines .name,
+.secretsPanel .lines .name {
   font-weight: bold;
 }
 .panel .actions [aria-pressed="true"] {
@@ -658,6 +660,35 @@ pre {
   min-width: var(--tap);
   min-height: var(--tap);
   border-width: 0 0 0 1px;
+}
+/* An agent's request for a secret, and the masked form that answers it in the editor's place. */
+.secretRequest {
+  border-left: 3px solid var(--yellow);
+}
+.secretRequest span,
+p.offer span {
+  overflow-wrap: anywhere;
+}
+p.offer {
+  margin: 0;
+}
+.secretForm .fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s0);
+}
+.secretForm .kinds {
+  display: flex;
+}
+.secretForm .kinds button {
+  min-height: var(--tap);
+  padding: 0 var(--s1);
+}
+.secretForm .kinds [aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
 }
 .panel > p,
 .panel > label {
