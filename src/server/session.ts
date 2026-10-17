@@ -6,8 +6,6 @@
 import {
   copyJson,
   defineFacet,
-  local,
-  opaque,
   type Cell,
   type ImplementationOf,
   type Self,
@@ -29,14 +27,9 @@ import {
   type Reports,
 } from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
+import { Front } from "../core/front.ts";
+import { Core } from "./core.ts";
 import type { JobsState } from "../core/jobs.ts";
-
-/** The running backend, for the facets: the host that serves it owns and closes it. */
-export const Core = local("monchu.core", {
-  version: 1,
-  input: Type.Object({}),
-  members: { monchu: opaque<Monchu>("monchu.core@1") },
-});
 
 /** A value of the core's, typed and not checked. */
 const any = <T>(): TUnsafe<T> => Type.Unsafe<T>(Type.Unknown());
@@ -229,6 +222,26 @@ function backendOf(core: { monchu: Monchu | undefined }): Monchu {
   return backend;
 }
 
+/**
+ * Each root's front, from this copy of the code: a reload's new copy builds new ones, so edits to `front.ts` and what
+ * it imports from `src/core/` reach clients without a restart. A front keeps nothing but a lookup.
+ */
+const fronts = new WeakMap<Monchu, Map<string, Front>>();
+
+function frontOf(backend: Monchu, root: string): Front {
+  let roots = fronts.get(backend);
+  if (roots === undefined) {
+    roots = new Map();
+    fronts.set(backend, roots);
+  }
+  let front = roots.get(root);
+  if (front === undefined) {
+    front = new Front(backend.frontHost, root);
+    roots.set(root, front);
+  }
+  return front;
+}
+
 /** A Durable watch as the event source of its frames' values. */
 const frames = <T>(handle: WatchHandle<T>) => ({
   subscribe(listener: (value: T) => void): () => void {
@@ -377,7 +390,7 @@ export default defineFacet<Principal>(
 
     api.serve(Root, ({ root }, _principal, self) => {
       const core = self.get(Core, {});
-      const front = () => backendOf(core).root(root);
+      const front = () => frontOf(backendOf(core), root);
       const assessments = fed<Assessment[]>(
         self,
         "assessments",
@@ -412,7 +425,7 @@ export default defineFacet<Principal>(
       const core = self.get(Core, {});
       const watch = self.resource("watch", {
         version: 1,
-        open: () => backendOf(core).root(root).viewWatch(worker),
+        open: () => frontOf(backendOf(core), root).viewWatch(worker),
         close: async (handle) => {
           await handle.stop();
         },

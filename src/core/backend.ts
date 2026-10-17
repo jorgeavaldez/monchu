@@ -81,8 +81,8 @@ export class Monchu implements Client {
   private rootsTimer: ReturnType<typeof setTimeout> | undefined;
   private rootsRun: Promise<void> | undefined;
   private rootsDirty = false;
-  /** What every root's front needs from this core. */
-  private readonly frontHost: FrontHost;
+  /** What every root's front needs from this core, wherever its code was loaded: the wire's facet builds its own. */
+  readonly frontHost: FrontHost;
   private readonly reloadListeners = new Set<() => void>();
   private readonly restartListeners = new Set<() => void>();
   private readonly releaseListeners = new Set<(release: Release) => void>();

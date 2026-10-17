@@ -12,6 +12,6 @@ description: Edit and reload Monchu's own extensions, skills, and instructions; 
   - Linked or source checkout: that checkout is the running checkout. Apply approved changes there; never run `npm ci` or `mise run install` in it while Monchu runs (dependency changes need a quit first).
 - Once approved source changes are in the running checkout, call `reload_extensions` to reload extensions and home/bundled skills without a restart; it builds first when sources are newer than the build. Read skills on demand; preserve the user's edits.
 - Home files are read on every request; their edits need no reload.
-- A reload covers the extensions and everything under `src/core/` they import, and the wire's `src/server/session.ts`. The backend (`backend.ts`, `front.ts`, `reload.ts`, models), `src/api/` and dependency changes require a restart.
+- A reload covers the extensions, each root's front (`front.ts`), everything under `src/core/` they import, and the wire's `src/server/session.ts`. The backend (`backend.ts`, `reload.ts`, models, MCP clients), `src/api/` and dependency changes require a restart.
 - For host changes, call `request_restart` with a concise reason and ask the user to use `/restart`. The tool only records a request. Never execute a restart yourself or treat your own request as approval.
 - Reload failures leave installed definitions and settings unchanged. Report the error and stop rather than claiming the new code is running.

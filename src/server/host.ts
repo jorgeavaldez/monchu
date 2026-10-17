@@ -20,7 +20,7 @@ import { principalKey, Server, type Principal, type ServerStatus } from "../api/
 import type { Monchu } from "../core/backend.ts";
 import type { UpdatePlan } from "../core/update.ts";
 import type { Log } from "../telemetry/log.ts";
-import { Core } from "./session.ts";
+import { Core } from "./core.ts";
 
 export type CoreHost = Host<Principal>;
 
