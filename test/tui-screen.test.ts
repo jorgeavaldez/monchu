@@ -30,7 +30,7 @@ async function withTerminal(
   prepareHome(home);
   const screen = new VirtualTerminal(columns, 40);
   let backend: Monchu | undefined;
-  let running: Promise<void> | undefined;
+  let running: Promise<"quit" | "restart"> | undefined;
   try {
     process.env.MONCHU_DEV_HOME = home;
     await mkdir(join(home, "memories"));
@@ -693,10 +693,10 @@ describe.each([
   it("rules worker updates/reports by kind, selects and messages a worker, and shows reload success", async () => {
     await withTerminal(columns, theme, async (screen, backend) => {
       await backend.startWorker("reader", "inspect", "start:reader");
-      // The worker's name is the only label: the rule's style tells an update from a report.
+      // The worker's name and the message's short id are the only label: the rule's style tells an update from a report.
       const update = await visible(screen, "│ Faux worker progress: checking.");
       expect(update[update.findIndex((line) => line.includes("worker progress")) - 1]).toMatch(
-        /^│ reader\s*$/,
+        /^│ reader · [k-z]{4}\s*$/,
       );
       await visible(screen, "Faux front: result received.");
       const shown = (await screen.flushAndGetViewport()).join("\n");

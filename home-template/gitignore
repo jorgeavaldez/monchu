@@ -9,6 +9,9 @@
 run/
 tmp/
 
+# Structured logs: one JSON Lines file per day, kept 14 days.
+logs/
+
 # Background process job output logs.
 jobs/
 
@@ -17,6 +20,9 @@ auth.json
 auth.json*
 mcp-auth.json
 mcp-auth.json*
+# Web sign-in sessions, by token hash.
+web-sessions.json
+web-sessions.json*
 .env
 *.env
 

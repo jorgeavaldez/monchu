@@ -71,7 +71,7 @@ describe("terminal input boundary", () => {
     expect(help).toContain("/skill:<name>");
   });
 
-  it("restores the terminal and stops input before /restart re-executes in place, reopens storage, and propagates the code", async () => {
+  it("restores the terminal and stops input before /restart closes the core and the entry re-executes in place, reopens storage, and propagates the code", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home);
@@ -84,6 +84,7 @@ describe("terminal input boundary", () => {
       `
       import { Monchu } from ${JSON.stringify(new URL("../src/core/backend.ts", import.meta.url).href)};
       import { runTerminal } from ${JSON.stringify(new URL("../src/tui/app.ts", import.meta.url).href)};
+      import { reexecute } from ${JSON.stringify(new URL("../src/reexec.ts", import.meta.url).href)};
       import { appendFileSync, existsSync, readFileSync } from "node:fs";
       const home = ${JSON.stringify(home)};
       const events = ${JSON.stringify(eventsPath)};
@@ -110,9 +111,13 @@ describe("terminal input boundary", () => {
         },
         moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
       };
+      // As the entry point does: the terminal resolves after the core closed for the restart, then the process re-executes.
       const backend = await Monchu.open(home);
-      try { await runTerminal(backend, screen); throw new Error("Restart returned"); }
+      let outcome;
+      try { outcome = await runTerminal(backend, screen); }
       finally { await backend.close(); }
+      if (outcome !== "restart") throw new Error("Restart returned " + outcome);
+      await reexecute();
     `,
     );
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
@@ -511,7 +516,7 @@ describe("committed Durable presentation", () => {
       await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
       await root.waitForIdle(context);
       const collapsed = await viewport();
-      expect(collapsed).toMatch(/│ ▸ w\s*\n/);
+      expect(collapsed).toMatch(/│ ▸ w · [k-z]{4}\s*\n/);
       expect(collapsed).toContain("report line 1");
       expect(collapsed).not.toContain("report line 3");
       expect(collapsed).toMatch(/more lines · click or Ctrl-O to expand/);
@@ -521,11 +526,11 @@ describe("committed Durable presentation", () => {
       expect(lines.findIndex((line) => line.includes("front reply line 1"))).toBeGreaterThan(-1);
       expect(lines[last + 1]).toContain(String(new Date().getFullYear()));
       // A click on the report toggles only that message, from the keyboard-free pointer path.
-      const row = lines.findIndex((line) => /^│ ▸ w\s*$/.test(line));
+      const row = lines.findIndex((line) => /^│ ▸ w · [k-z]{4}\s*$/.test(line));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
       screen.sendInput(`\x1b[<0;5;${row + 1}m`);
       await waitFor(async () => (await viewport()).includes("report line 8"));
-      expect(await viewport()).toMatch(/│ ▾ w\s*\n/);
+      expect(await viewport()).toMatch(/│ ▾ w · [k-z]{4}\s*\n/);
       // A second press within 500 ms would be a double click.
       await new Promise((resolve) => setTimeout(resolve, 600));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
@@ -656,13 +661,13 @@ describe("committed Durable presentation", () => {
         expect(chat).not.toMatch(/not a new user instruction|Tell the user|worker · |\[Worker /);
         // A report: the worker's name behind a purple rule, every body line on its own ruled row.
         const report = lines.findIndex((line) => line.startsWith("│ report line one"));
-        expect(lines[report - 1]).toMatch(/^│ reader\s*$/);
+        expect(lines[report - 1]).toMatch(/^│ reader · [k-z]{4}\s*$/);
         expect(lines[report + 1]).toMatch(/^│ report line two\s*$/);
         for (const row of [report - 1, report, report + 1])
           expect(await screen.foreground(row, 0)).toBe(purple);
         // An update: a gray rule and muted text, its lines kept.
         const update = lines.findIndex((line) => line.startsWith("│ checking files"));
-        expect(lines[update - 1]).toMatch(/^│ reader\s*$/);
+        expect(lines[update - 1]).toMatch(/^│ reader · [k-z]{4}\s*$/);
         expect(lines[update + 1]).toMatch(/^│ halfway there\s*$/);
         for (const row of [update - 1, update, update + 1])
           expect(await screen.foreground(row, 0)).toBe(gray);
@@ -898,13 +903,13 @@ describe("committed Durable presentation", () => {
       );
       const update = lines.findIndex((line) => line.startsWith("│ checking files"));
       expect(update, `${refresh}\n${shown}`).toBeGreaterThan(0);
-      expect(lines[update - 1], refresh).toMatch(/^│ reader\s*$/);
+      expect(lines[update - 1], refresh).toMatch(/^│ reader · [k-z]{4}\s*$/);
       expect(lines[update + 1], refresh).toMatch(/^│ halfway there\s*$/);
       for (const row of [update - 1, update, update + 1])
         expect(await screen.foreground(row, 0), refresh).toBe(gray);
       expect(await screen.foreground(update, 2), refresh).toBe(muted);
       const report = lines.findIndex((line) => line.startsWith("│ report body"));
-      expect(lines[report - 1], refresh).toMatch(/^│ reader\s*$/);
+      expect(lines[report - 1], refresh).toMatch(/^│ reader · [k-z]{4}\s*$/);
       expect(await screen.foreground(report, 0), refresh).toBe(purple);
     };
 
@@ -971,7 +976,7 @@ describe("committed Durable presentation", () => {
         return [blank.indexOf(false), blank.length - 1 - blank.lastIndexOf(false)];
       };
       for (const status of ["completed", "failed"] as const) {
-        const message = new WorkerMessageComponent({ name: "w", status, text }, () => {});
+        const message = new WorkerMessageComponent({ name: "w", status, text }, "srpx", () => {});
         for (const expanded of [false, true]) {
           message.setExpanded(expanded);
           const lines = message.render(40);
@@ -984,21 +989,23 @@ describe("committed Durable presentation", () => {
           }
           // Exactly one padded row above and below, matching the user input box, short or long.
           expect(padding(lines)).toEqual([1, 1]);
-          // Only the name, and a failure in the error color: no status prose.
+          // Only the name, a failure in the error color, and the muted short id: no status prose.
           const header = stripTerminalSequences(lines[1] ?? "").trim();
           expect(header).toBe(
-            `│ ${expanded ? "▾" : "▸"} w${status === "failed" ? " · failed" : ""}`,
+            `│ ${expanded ? "▾" : "▸"} w${status === "failed" ? " · failed" : ""} · srpx`,
           );
           if (status === "failed") expect(lines[1]).toContain(theme.fg("error", " · failed"));
+          expect(lines[1]).toContain(theme.fg("dim", " · srpx"));
         }
       }
       const update = new WorkerMessageComponent(
         { name: "w", status: "update", text: "checking\nhalfway" },
+        "oukx",
         () => {},
       ).render(40);
       // An update has no card: a muted rule and muted text on every row, and no padding rows.
       expect(update.map((line) => stripTerminalSequences(line).trimEnd())).toEqual([
-        "│ w",
+        "│ w · oukx",
         "│ checking",
         "│ halfway",
       ]);

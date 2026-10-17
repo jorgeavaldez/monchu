@@ -11,9 +11,9 @@ import {
   messageWorker,
   reopenWorker,
   startWorker,
-  workerNotice,
   WorkersDoc,
 } from "../src/core/agents/workers.ts";
+import { workerNotice } from "../src/api/notices.ts";
 import {
   allEntries,
   callTools,

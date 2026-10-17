@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { McpOAuth, McpSignInRequired, type McpSignInPrompt } from "./auth.ts";
 import { usesOAuth, type McpServerConfig } from "./config.ts";
+import type { McpState } from "../../api/reports.ts";
 
 /** A tool as a server lists it, kept in the cache file. */
 export type McpTool = {
@@ -34,7 +35,6 @@ const DEFAULT_TIMEOUT_SECONDS = 60;
 const CONNECT_TIMEOUT_MS = 20_000;
 
 /** Why a server offers no tools on this device, as `mcp list` and `/mcp` report it. */
-export type McpState = "connected" | "needs-auth" | "missing" | "failed";
 
 /** A listing failure with the server's state. */
 class McpUnavailable extends Error {

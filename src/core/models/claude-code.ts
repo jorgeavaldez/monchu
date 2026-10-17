@@ -20,11 +20,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-import {
+import type {
   query,
-  type SDKMessage,
-  type SDKPartialAssistantMessage,
-  type EffortLevel,
+  SDKMessage,
+  SDKPartialAssistantMessage,
+  EffortLevel,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   createAssistantMessageEventStream,
@@ -68,6 +68,21 @@ import {
 export type ClaudeQuery = (
   input: Parameters<typeof query>[0],
 ) => AsyncIterable<SDKMessage> & { interrupt(): Promise<unknown>; close(): void };
+
+/**
+ * The SDK's `query`, loaded on the first request: it is the heaviest module Monchu imports, and startup should not
+ * wait for a provider nothing has used yet.
+ */
+const lazyQuery: ClaudeQuery = (input) => {
+  const started = import("@anthropic-ai/claude-agent-sdk").then((sdk) => sdk.query(input));
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield* await started;
+    },
+    interrupt: async () => (await started).interrupt(),
+    close: () => void started.then((running) => running.close()).catch(() => {}),
+  };
+};
 
 const oneMillion = new Set([
   "claude-opus-5-5",
@@ -193,7 +208,7 @@ type SessionState = {
 export function createClaudeCodeProvider(
   home: string,
   config: ClaudeConfig,
-  queryImpl: ClaudeQuery = query,
+  queryImpl: ClaudeQuery = lazyQuery,
 ): Provider {
   const models = anthropicProvider()
     .getModels()

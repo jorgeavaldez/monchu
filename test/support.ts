@@ -48,7 +48,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSync, Visitor, type Node } from "oxc-parser";
@@ -694,4 +694,25 @@ export async function waitFor(
     if (Date.now() > deadline) throw new Error("Condition was not reached");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+/**
+ * What a home's structured log says, one record body per line, for checks on what was logged. Decoded, not raw: JSON
+ * escapes the backslashes of Windows paths.
+ */
+export async function logText(home: string): Promise<string> {
+  const directory = join(home, "logs");
+  const files = (await readdir(directory).catch(() => [])).toSorted((a, b) => a.localeCompare(b));
+  const lines = (await Promise.all(files.map((name) => readFile(join(directory, name), "utf8"))))
+    .join("")
+    .split("\n");
+  return lines
+    .flatMap((line) => {
+      if (!line) return [];
+      const record: unknown = JSON.parse(line);
+      return typeof record === "object" && record !== null && "body" in record
+        ? [String(record.body)]
+        : [];
+    })
+    .join("\n");
 }

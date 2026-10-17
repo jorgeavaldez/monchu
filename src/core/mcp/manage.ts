@@ -1,19 +1,7 @@
 import type { McpSignInPrompt } from "./auth.ts";
 import { loadMcpConfig, usesOAuth, type McpServerConfig } from "./config.ts";
-import type { McpClients, McpState } from "./index.ts";
-
-/** One server as `/mcp` and `monchu mcp list` show it. */
-export type McpServerReport = {
-  name: string;
-  enabled: boolean;
-  exposure: string;
-  transport: string;
-  /** How it signs in: `oauth` (a 401 asks for a browser sign-in), `provider`, `headers`, or `none`. */
-  auth: "oauth" | "provider" | "headers" | "none";
-  state: McpState | "disabled";
-  tools: string[];
-  error?: string;
-};
+import type { McpServerReport } from "../../api/reports.ts";
+import type { McpClients } from "./index.ts";
 
 function describeTransport(config: McpServerConfig): string {
   return "url" in config ? config.url : [config.command, ...(config.args ?? [])].join(" ");
@@ -47,34 +35,6 @@ export async function mcpReports(
     }),
   );
   return { servers: reports, errors };
-}
-
-/** Lines for a terminal: each server's state, transport, sign-in hint, tools, and error. */
-export function formatReports(
-  { servers, errors }: { servers: McpServerReport[]; errors: string[] },
-  login: (name: string) => string,
-): string[] {
-  const lines: string[] = [];
-  if (servers.length === 0 && errors.length === 0)
-    lines.push("No MCP servers configured. Add one with monchu mcp add.");
-  for (const server of servers) {
-    const state =
-      server.state === "connected"
-        ? `connected, ${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
-        : server.state === "needs-auth"
-          ? "needs sign-in"
-          : server.state === "missing"
-            ? "not installed here"
-            : server.state;
-    lines.push(`${server.name}: ${state} (${server.exposure}, sign-in: ${server.auth})`);
-    lines.push(`  ${server.transport}`);
-    if (server.state === "needs-auth") lines.push(`  sign in with: ${login(server.name)}`);
-    if (server.tools.length) lines.push(`  tools: ${server.tools.join(", ")}`);
-    if (server.error !== undefined && server.state !== "needs-auth")
-      lines.push(`  ${server.error.split("\n").join("\n  ")}`);
-  }
-  for (const error of errors) lines.push(`config error: ${error}`);
-  return lines;
 }
 
 async function configured(home: string, name: string): Promise<McpServerConfig> {

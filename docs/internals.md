@@ -42,7 +42,10 @@ Home paths owned by Monchu (all relative to `<home>`: `MONCHU_HOME`, default `~/
 - `auth.json`: Monchu-owned credential storage, including OAuth refresh tokens and Cloudflare keys/account IDs. Locked read-modify-write operations publish atomically with mode 0600 (Windows uses its filesystem ACLs).
 - `fff/`: frecency and query-history databases for native file/content search; no Pi or editor databases are reused.
 - `claude/`: isolated Claude Code config/execution directory and persisted Claude session mirrors; not the durable conversation store.
-- `monchu.sqlite`, `owner.sqlite`, their SQLite sidecars, and `monchu.log`: runtime state, ownership lock, and warnings.
+- `monchu.sqlite`, `owner.sqlite` and their SQLite sidecars: runtime state and the ownership lock.
+- `logs/`: the structured log, one JSON Lines file per day (`monchu-<date>.jsonl`, rolled at 10 MB, kept 14 days), in the OpenTelemetry log data model: `time`, `severity`, `scope` (`core…`, `server…`, `tui`, `web`), `body` and `attributes`. It holds warnings, the core's open phases, reload and close times, one record per model reply (model, tokens, time, stop reason), client attaches, and clients' own timings such as the terminal's `ready`; ids, sizes and timings only, never prompts, outputs or secrets. `/logs [severity|scope]` shows the newest; in Nushell, `open --raw <file> | from json --objects | where severity == warn`.
+- `run/`: the core's local socket.
+- `web-sessions.json`: web sign-in sessions, by token hash.
 - Home context files, `memories/`, `skills/`, and `souls/`: editable human/agent content, separate from runtime state.
 
 Chat history and task checkpoints live in `<home>/monchu.sqlite`.
@@ -86,7 +89,7 @@ Ctrl+S also saves the pick as its role's default (`front` for the root, `worker`
 Alt+Q (or `/queue`) lists the shown conversation's queue, root or worker, in the editor's place. Enter opens a queued message in the editor, Enter there saves it in place and Esc cancels, keeping your draft aside meanwhile; a worker report opens only its body, and an effort assessment is not editable. Alt+S toggles the selected message between steer and follow-up, and Delete removes it. Edits keep the message's place in the queue. A deleted worker report is dropped rather than posted again; deleting a message sent to a worker reports `failed · deleted` to the front. An edit that arrives after the message left the queue stays in the editor.
 `/login` opens private provider selection even on a fresh home without model credentials. Codex always uses device-code OAuth: open the displayed URL on any browser and approve its code, with no local callback server. Cloudflare uses API-key and account-ID prompts. Esc/Ctrl-C cancels. Prompts, codes and keys stay outside chat/editor history and logs; keys are masked. Only completion/cancellation or a credential-free failure notice goes into the TUI transcript.
 `/reload` re-reads config, extensions and home/bundled skills, showing the reloaded modules or an error in the TUI. Model roles and stream options apply from subsequent model-request boundaries; already prepared requests keep those values. Retry/compaction policy resolves at later scheduler boundaries, following Durable's runtime contract. TUI settings refresh on success; already running shell calls keep their environment. Home-file edits need no reload.
-`/restart` is your explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the backend closes storage/resources and re-executes Monchu. Model output and `request_restart` cannot execute this command.
+`/restart` is your explicit restart approval, even while a worker is shown. It stops input/rendering, disposes view attachments, and restores the terminal before the core closes storage/resources; then the entry point re-executes Monchu. Model output and `request_restart` cannot execute this command.
 
 Workers can also be started, messaged, inspected, and stopped through model tools.
 All roles receive the same installed tools: read, write, edit, bash, `fffind`, `ffgrep`, `jj`, `jj_write`, `herdr`, worker management, and `codemode`. File/shell tools come from Durable, including optional `powershell`. The search tools port @ff-labs/pi-fff 0.11.0's tool logic (MIT) on @ff-labs/fff-node 0.11.0: git-aware fuzzy/glob path search and smart-case content search, with filters, context, fuzzy fallback, and pagination. Native indexes follow each conversation's execution directory and support paths outside it; Monchu owns and closes their handles across reloads. fff ships android-arm64, so searches are not skipped on Termux. Tool selection comes from `config.json` settings; `grep`, `find`, and `ls` are no longer built-ins.
@@ -132,13 +135,46 @@ A worker's result reaches the parent as a labelled follow-up input, so the front
 While the front is busy, the report queues until its current answer, then starts one turn; it never lands between a tool call and its result.
 Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
 Stopping the front withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
-Non-fatal runtime failures appear as `system · warning` and are appended to `~/.monchu/monchu.log`.
+Non-fatal runtime failures appear as `system · warning` and are logged under `logs/`.
 Reports do not authorize new actions.
 
 `~/.monchu` is the default home and execution directory, independent of launch cwd.
 Each conversation stores its own cwd.
 Persistent directory changes require an idle conversation with no pending worker deliveries, so running calls do not silently change environments.
 Tools can use explicit paths or shell `cd` for work elsewhere during a run.
+
+## One core, many terminals
+
+One process owns a home's store: the core. It serves its own local socket, `<home>/run/monchu.sock` (0600 in a 0700 directory; a per-home named pipe on Windows), and a plain `monchu` that finds one answering attaches its terminal there instead of opening the store. So the phone keeps one process with its terminal, and a server can run the core headless with `monchu serve` and attach terminals over ssh with plain `monchu`.
+Attached terminals use the same `Client` contract over Chord remote services: views stream as delta ops, calls carry the client's request IDs, and a login's prompts reach only the terminal that started it. `/restart` from an attached terminal asks the core to restart (its own terminal lets go of the screen first, or `serve` re-executes); attached terminals say the connection was lost, reconnect within 30 seconds, and pick their views up again from a fresh snapshot. When the core quits for good they say so, and `/quit` closes them. `serve` stops on SIGINT, SIGTERM or SIGHUP.
+
+## Web
+
+`monchu --web` or `monchu serve --web` also serves the web client, from the process that becomes the core. It listens on `127.0.0.1` only; a tunnel on the same host (such as `cloudflared` behind an identity-aware proxy) publishes it. Any local process could reach that port, so nothing is trusted for being local:
+
+- Every request, and the WebSocket at `/api`, needs an identity on `web.allow`. Without `web.access` or `web.oidc`, or with nobody allowed, the web stays off and says why.
+- The `Host` must be `web.host` or this port's localhost (421 otherwise); the WebSocket's and sign-out's `Origin` must be `https://<web.host>` or the local one.
+- Responses carry a strict content security policy, `nosniff`, no referrer and no framing.
+
+Identities come from either source:
+
+- `web.access`: an identity-aware proxy signs every request (`Cf-Access-Jwt-Assertion`). The server checks the RS256 signature against `<teamDomain>/cdn-cgi/access/certs`, the issuer, the audience and expiry, and refuses tokens without a key id. A service token's identity is `service:<common_name>`; a user's is `sub:<subjectClaim>` (a dotted path, such as `custom.sub` for the upstream provider's subject) and `email:<email>`. A bad token is refused, never ignored.
+- `web.oidc`: the server's own login, OpenID Connect authorization code with PKCE (S256), state and nonce, configured from the issuer's discovery document. The ID token's signature, issuer, audience and nonce are checked; `sub:` and a verified `email:` are the identities. A session cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, 7 days) follows; `web-sessions.json` (0600, never synced) keeps only token hashes. A client secret, when the provider needs one, comes from the environment variable `clientSecretEnv` names.
+
+```json
+"web": {
+  "port": 7420,
+  "host": "monchu.example.com",
+  "access": { "teamDomain": "https://<team>.cloudflareaccess.com", "audience": "<aud tag>", "subjectClaim": "custom.sub" },
+  "oidc": { "issuer": "https://id.example.com", "clientId": "<client id>" },
+  "allow": ["sub:<subject>", "email:<address>", "service:<client id>"]
+}
+```
+
+URLs must be https, except a provider on this machine. The server serves the built client from `dist/web`, with hashed assets cached for good and the shell and service worker revalidated. The WebSocket carries the same Chord services as the local socket, one provider per connection.
+
+The client (`src/web`) is Preact with signals, bundled by esbuild into one hashed script and stylesheet (`mise run build` runs `scripts/build-web.ts`; the script fails over 50 KB gzipped). It is a `Client` like the terminal, over `RemoteClient`, with the same command table, typeahead (commands with their help, then `/skill:<name>`), worker reports and updates with their short ids, tool cards collapsed to a header and a few lines (a click or Ctrl-O opens them), the agents strip, the queue, Alt+S steer mode, Esc to stop the front, `/login` and `/mcp login` prompts answered in the page (secrets in password fields), `/model` and `/thinking` with Ctrl+S to save a default, `/goals`, `/jobs` and `/logs`. Committed entries render once and are reused while their Durable record is unchanged; only the live reply re-renders.
+It is a PWA: a manifest fetched with credentials (so a proxy's cookie reaches it) and a service worker that keeps the shell and hashed assets, while navigation goes to the network first so an expired sign-in reaches the login. After a restart the page probes with a plain request before reopening its WebSocket, since browsers delay a WebSocket to an endpoint that just refused one, then rehydrates. It records its ready time, reconnect time, long tasks, update-to-paint latency and errors (by kind and place, never their messages) through `Client.record`.
 
 ## Offline TUI smoke mode
 
@@ -163,19 +199,19 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 ## Self reload
 
-`reload_extensions` is available to all roles, as is your `/reload` command. The backend exposes `reload()` and `restart()`; only your `/restart` command calls the latter after restoring the terminal.
+`reload_extensions` is available to all roles, as is your `/reload` command. The core exposes `reload()` and `restart()`; only your `/restart` command calls the latter, after restoring the terminal, and `restart()` only closes the core: the entry point re-executes the process.
 
 Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode (including a checkout `npm link`ed as the global command) builds that checkout first, when a file under `src/` is newer than `dist/main.js`, by spawning the installed `typescript/bin/tsc` with the running Node executable and `-p tsconfig.build.json`, without a shell, npm, or mise. An installed package (`npm install -g` of a release tarball) ships no sources or `tsconfig.build.json`, so it skips the build and re-imports its fixed modules; only home skills and config change there. Each module in the manifest (`Reloadable` in `src/core/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
 Config and all modules are prepared, and the complete registry and installation order validated before applying anything. A build/import/config/validation error leaves installed code, model roles and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
-`request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Your `/restart` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources, re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
+`request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Your `/restart` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources; the entry point (`src/reexec.ts`) then re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
 
 `skills/monchu/SKILL.md` is read from this checkout in place, without a startup copy. It tells Monchu to edit source in a jj workspace, check and build it, apply authorized changes to the running checkout, and reload; host changes need the user's restart approval.
 
 ## Code layout
 
-Folders follow systems. Lint enforces the arrows: `src/core` imports no client and no `src/ui`; `src/ui` imports no Node module, no core and no client; only `src/main.ts` composes a client.
+Folders follow systems. Lint enforces the arrows: only `src/main.ts` imports `src/server`; clients (`src/tui`) reach the core only through `src/api`, never importing it, not even its types; `src/api` takes core types but no core code and no Node module; `src/ui` imports only `src/api`, and no Node module; the core imports `src/api` but no client and no `src/ui`; only `src/main.ts` composes a client and re-executes the process (`src/reexec.ts`).
 
 - `src/main.ts`: entry and lifecycle wiring; the only module that touches process state.
 - `src/core/`: the store owner, with no terminal, transport, or rendering dependencies.
@@ -193,13 +229,17 @@ Folders follow systems. Lint enforces the arrows: `src/core` imports no client a
   - `tools/`: `pi-tools.ts` (built-in selection and shell configuration inside Durable tool invocations), `jj.ts`, `herdr.ts` (local Herdr CLI or SSH), `fff.ts` (Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases), `codemode.ts` (over `@earendil-works/pi-codemode`, with its per-conversation store), `tool-search.ts`, `browser.ts`.
   - `mcp/`: MCP config, clients, OAuth sign-in, tools, and the `monchu mcp` command.
   - `skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
-- `src/ui/`: presentation shared by clients and safe for a browser: the command table and input parsing, and the Durable presentation mapping with context meters.
+- `src/api/`: the client contract, safe for a browser: `client.ts` is the `Client` interface every client uses and the core implements in process (`Monchu implements Client`), with the core types it carries; `notices.ts` (worker notice and escalation labels) and `reports.ts` (routing assessment and MCP report formatting) are helpers the core and clients share. `ids.ts` writes short ids, jj style: a Durable record's store-wide integer id, bit-mixed and spelled in `k`-`z` (4 letters below 65,536 ids, then 5), unique and stable with no index, so every client derives the same id; worker reports and updates show theirs after the name.
+- `src/ui/`: presentation shared by clients and safe for a browser: the command table and input parsing, and the Durable presentation mapping with context meters, and job event lines.
+- `src/api/` also holds the remote side of the contract: `services.ts` (the core's Chord services: a session with the calls and replicated hello, assessments, jobs and reports, a keyed instance per opened conversation, and a keyed login per sign-in, all per connection), `wire.ts` (Chord calls, snapshots and updates as JSON messages with per-subscription path codecs) and `remote.ts` (`RemoteClient implements Client` over them, reconnect-aware).
+- `src/server/`: the core's transports, composed only by `src/main.ts`: `socket.ts` (the local socket, serving and attaching), `web.ts` (the web client's HTTP and WebSocket server), `auth.ts` (proxy JWTs, OIDC with PKCE, sessions), `session.ts` (the services one connection sees) and `wire.ts` (Chord's endpoint behind the envelope).
+- `src/web/`: the web client (Preact, browser-only; its own tsconfigs for the page and the service worker), built by `scripts/build-web.ts`.
 - `src/tui/`: the terminal client: lifecycle, command dispatch and read-only view attachments (`app.ts`), copied themes, message components and tool renderers, Pi-style viewport rendering, and Monchu's own agent state in its Herdr pane (`herdr-agent.ts`).
 
 The core imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
-The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
-This slice has no HTTP server, daemon transport, phone UI, or memory retrieval backend; scheduled jobs run only while Monchu is open.
+The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through `Client` methods.
+This slice has no HTTP server, phone UI, or memory retrieval backend; scheduled jobs run only while the core is open.
 
 Submission IDs prevent duplicate admission.
 Worker delivery bookkeeping retains all active requests and the latest 200 completed request IDs for retries; older completed IDs may be admitted again.

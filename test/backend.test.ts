@@ -14,11 +14,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { presentation } from "../src/ui/state.ts";
-import { parseWorkerNotice, workerNotice } from "../src/core/agents/workers.ts";
+import { parseWorkerNotice, workerNotice } from "../src/api/notices.ts";
 import {
   cleanup,
   fauxRole,
   lastMessage,
+  logText,
   route,
   prepareHome,
   setup,
@@ -386,7 +387,7 @@ describe("backend", () => {
     // Reports deliberately doesn't await logging; wait for the actual file contents, not a delay.
     await expect
       .poll(async () => {
-        const log = await readFile(join(home, "monchu.log"), "utf8");
+        const log = await logText(home);
         return [invalidPath, firstPath, secondPath].every((item) => log.includes(item));
       })
       .toBe(true);
@@ -433,7 +434,7 @@ describe("backend", () => {
       );
       await expect(backend.reload()).rejects.toThrow("unknown fields: bogus");
       // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
-      expect(await readFile(join(home, "monchu.log"), "utf8")).toContain("Reload failed: Invalid");
+      expect(await logText(home)).toContain("Reload failed: Invalid");
       expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);
       // A bad model reloads everything else and keeps the running front, with a warning.
       await writeFile(
@@ -469,9 +470,7 @@ describe("backend", () => {
         "Monchu defaultTools selects none of read, write, edit, bash; Monchu has no file or shell built-ins";
       expect(warnings).toContain(warning);
       // Reports deliberately doesn't await logging; wait for the actual file contents, not a delay.
-      await expect
-        .poll(async () => (await readFile(join(home, "monchu.log"), "utf8")).includes(warning))
-        .toBe(true);
+      await expect.poll(async () => (await logText(home)).includes(warning)).toBe(true);
     } finally {
       unsubscribe();
       state.dispose();

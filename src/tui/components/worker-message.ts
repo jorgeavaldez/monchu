@@ -5,7 +5,7 @@ import {
   type Component,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { WorkerNotice } from "../../core/agents/workers.ts";
+import type { WorkerNotice } from "../../api/notices.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const PREVIEW_LINES = 3;
@@ -18,6 +18,8 @@ const PREVIEW_LINES = 3;
  */
 export class WorkerMessageComponent implements Component {
   private readonly notice: WorkerNotice;
+  /** The message's short id, muted after the name, so it can be referred to. */
+  private readonly id: string;
   private readonly body: Markdown;
   // One row: the kind's rule, then content padded to the width, on the kind's background when it has one.
   private readonly row: (content: string, width: number) => string;
@@ -26,8 +28,13 @@ export class WorkerMessageComponent implements Component {
   // Clicks toggle only messages that have something hidden; resolved at the last rendered width.
   private long = false;
 
-  constructor(notice: WorkerNotice, changed: (message: WorkerMessageComponent) => void) {
+  constructor(
+    notice: WorkerNotice,
+    id: string,
+    changed: (message: WorkerMessageComponent) => void,
+  ) {
     this.notice = notice;
+    this.id = id;
     this.changed = changed;
     const update = notice.status === "update";
     const background = (text: string) => (update ? text : theme.bg("workerMessageBg", text));
@@ -54,11 +61,11 @@ export class WorkerMessageComponent implements Component {
     this.long = body.length > PREVIEW_LINES;
     const update = this.notice.status === "update";
     const marker = this.long ? (this.expanded ? "▾ " : "▸ ") : "";
-    // Only the worker's name: the rule's color says reply or update; a failure says so in the error color.
+    // The worker's name and the short id: the rule's color says reply or update; a failure says so in the error color.
     const header = line(
       ` ${theme.fg(update ? "muted" : "accent", `${marker}${this.notice.name}`)}${
         this.notice.status === "failed" ? theme.fg("error", " · failed") : ""
-      }`,
+      }${theme.fg("dim", ` · ${this.id}`)}`,
     );
     // A reply card pads one row above and below, as the user input and tool cards pad theirs; an update stays compact.
     const pad = update ? [] : [line("")];

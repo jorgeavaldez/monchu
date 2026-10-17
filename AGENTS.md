@@ -23,7 +23,7 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 
 `mise run check` enforces most of these. Never weaken a check to pass it.
 
-- **Layering.** `src/main.ts` composes the core (`src/core/`) and the TUI (`src/tui/`). The core imports no client and no `src/ui/` and never writes to stdout; `src/ui/` (shared with browser clients) imports no Node module, core, or client. Only the entry point touches process state (env, home, signals).
+- **Layering.** `src/main.ts` composes the core (`src/core/`) and the TUI (`src/tui/`). Clients reach the core only through the `Client` contract in `src/api/` (browser-safe: core types only, no core code or Node). `src/ui/` (shared presentation) imports only `src/api/`. The core imports no client and no `src/ui/`, and never writes to stdout. Only the entry point touches process state (env, home, signals, re-exec).
 - **Extensions.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory returning the extension, or `{ extension, ..., warnings }`. Register it in `Reloadable`, `reloadablePaths` and `build()` in `src/core/reload.ts`, and tag the export `@public`.
 - **Types.** No `any`, casts, non-null assertions, or `@ts-` comments. A lint disable needs a same-line reason.
 - **No compatibility shims.** When you change an API, update every caller and delete the old shape. Stored-shape changes get a migration only when the maintainer asks for one.

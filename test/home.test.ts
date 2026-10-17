@@ -67,6 +67,9 @@ describe("home", () => {
       "monchu.sqlite-wal",
       "owner.sqlite",
       "monchu.log",
+      "logs/monchu-2026-10-17.jsonl",
+      "web-sessions.json",
+      "run/monchu.sock",
       "skills/local/work/SKILL.md",
       ".env",
     ])

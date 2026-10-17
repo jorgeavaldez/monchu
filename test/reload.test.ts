@@ -41,6 +41,7 @@ const config = {
   settings: {},
   claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },
   chosen: { front: true, worker: true },
+  web: undefined,
 };
 
 type VersionedModule = {

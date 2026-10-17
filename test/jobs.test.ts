@@ -6,7 +6,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
-import { WorkersDoc, workerNotice } from "../src/core/agents/workers.ts";
+import { workerNotice } from "../src/api/notices.ts";
+import { WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   allEntries,
   callTools,

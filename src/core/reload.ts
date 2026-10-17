@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 import { FffFinders } from "./tools/fff.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import { loadMcpConfig } from "./mcp/config.ts";
-import { mcpLogin, mcpLogout, mcpReports, type McpServerReport } from "./mcp/manage.ts";
+import type { McpServerReport } from "../api/reports.ts";
+import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
 import type { EffortAssessment } from "./agents/classifier.ts";
 import {

@@ -33,23 +33,29 @@ depends = ['install']
 run = 'npm exec --no -- oxfmt'
 
 [tasks.typecheck]
-description = 'Typecheck source and tests'
+description = 'Typecheck source and tests, then the web client and its service worker for the browser'
 depends = ['install']
-run = 'npm exec --no -- tsc'
+run = [
+  'npm exec --no -- tsc',
+  'npm exec --no -- tsc -p src/web/tsconfig.json',
+  'npm exec --no -- tsc -p src/web/worker/tsconfig.json',
+]
 
 [tasks.build]
-description = 'Build the app'
+description = 'Build the app, and the web client into dist/web'
 depends = ['install']
-run = 'node node_modules/typescript/bin/tsc -p tsconfig.build.json'
+run = ['node node_modules/typescript/bin/tsc -p tsconfig.build.json', 'node scripts/build-web.ts']
 sources = [
   'src/**/*.ts',
+  'src/web/**',
+  'scripts/build-web.ts',
   'tsconfig.json',
   'tsconfig.build.json',
   'package.json',
   'package-lock.json',
   'mise.toml',
 ]
-outputs = ['dist/**/*.js']
+outputs = ['dist/**/*.js', 'dist/web/index.html']
 
 [tasks.start]
 description = 'Run the built app, building when needed'

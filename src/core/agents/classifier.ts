@@ -15,9 +15,11 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
+import { ESCALATION_PREFIX, ESCALATION_SUFFIX, type WhenBusy } from "../../api/notices.ts";
+import { describeAssessment, type AssessmentResult } from "../../api/reports.ts";
 import type { ClassifierRole, WorkerProfile } from "../config.ts";
 import { GoalsDoc } from "./goals.ts";
-import { WorkersDoc, type WhenBusy } from "./workers.ts";
+import { WorkersDoc } from "./workers.ts";
 
 /** Below this probability of its pick an answer informs the front but never nudges or escalates. */
 const SURE = 0.75;
@@ -36,18 +38,6 @@ const ROUTING_TOOLS = new Set([
   "list_goals",
   "update_goal",
 ]);
-
-/** Marks the follow-up input an escalation submits, so a client can label it as system context. */
-export const ESCALATION_PREFIX = "[Routing advice";
-const ESCALATION_SUFFIX = ". Not a new user instruction.]";
-
-/** The assessment an escalation input's text reports, for clients that label it; `undefined` for any other text. */
-export function escalationSummary(content: string): string | undefined {
-  const [label = ""] = content.split("\n", 1);
-  const start = `${ESCALATION_PREFIX}: `;
-  if (!label.startsWith(start) || !label.endsWith(ESCALATION_SUFFIX)) return undefined;
-  return label.slice(start.length, -ESCALATION_SUFFIX.length);
-}
 
 /** A worker as the routing helper sees it. */
 type RosterEntry = { name: string; open: boolean; about: string };
@@ -125,21 +115,6 @@ function questions(
   };
 }
 
-type Answer<T extends string> = { choice: T; probability: number };
-
-export type AssessmentResult =
-  | {
-      status: "routed";
-      route: Answer<"front" | "worker">;
-      /** `new` when no listed worker fits; `null` when there were no workers to choose from. */
-      worker: Answer<string> | null;
-      split: Answer<"one" | "several">;
-      /** The worker profile the work fits; `null` without two distinct profiles to choose from. */
-      profile: Answer<string> | null;
-      usage: { input: number; output: number; costUsd: number } | null;
-    }
-  | { status: "failed"; message: string };
-
 export type Assessment = {
   submissionId: SubmissionId;
   taskId: TaskId;
@@ -169,25 +144,6 @@ function needsWorker(result: AssessmentResult): boolean {
 }
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
-
-/** A short label of the answers, for escalations and clients. */
-export function describe(result: AssessmentResult): string {
-  if (result.status === "failed") return `unavailable (${result.message})`;
-  const parts = [
-    `${result.route.choice === "worker" ? "needs a worker" : "front can answer"} (${percent(result.route.probability)})`,
-  ];
-  if (result.worker !== null)
-    parts.push(
-      result.worker.choice === "new"
-        ? `new line of work (${percent(result.worker.probability)})`
-        : `continues ${result.worker.choice} (${percent(result.worker.probability)})`,
-    );
-  if (result.split.choice === "several")
-    parts.push(`several lines of work (${percent(result.split.probability)})`);
-  if (result.profile !== null)
-    parts.push(`fits ${result.profile.choice} (${percent(result.profile.probability)})`);
-  return parts.join(", ");
-}
 
 /**
  * What the front reads: only sure answers are stated as advice, the rest as uncertainty. The profile counts only for a
@@ -389,7 +345,7 @@ export function createEffortAssessment(
             await front.submit(
               {
                 type: "input",
-                content: `${ESCALATION_PREFIX}: ${describe(result)}${ESCALATION_SUFFIX}\nThe routing helper is sure the user's last message needs a worker, and nothing was routed for it. If it is authorized work, route it now to the worker whose line of context it continues, or start one, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
+                content: `${ESCALATION_PREFIX}: ${describeAssessment(result)}${ESCALATION_SUFFIX}\nThe routing helper is sure the user's last message needs a worker, and nothing was routed for it. If it is authorized work, route it now to the worker whose line of context it continues, or start one, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
                 whenBusy: "followUp",
                 requestId: `assessment:${task.id}`,
               },

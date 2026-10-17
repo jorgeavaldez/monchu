@@ -13,12 +13,8 @@ import {
   UserEntry,
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  AssessmentsDoc,
-  createEffortAssessment,
-  ESCALATION_PREFIX,
-  escalationSummary,
-} from "../src/core/agents/classifier.ts";
+import { ESCALATION_PREFIX, escalationSummary } from "../src/api/notices.ts";
+import { AssessmentsDoc, createEffortAssessment } from "../src/core/agents/classifier.ts";
 import type { WorkerProfile } from "../src/core/config.ts";
 import { GoalsDoc } from "../src/core/agents/goals.ts";
 import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";

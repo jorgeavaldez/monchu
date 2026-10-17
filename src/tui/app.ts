@@ -4,13 +4,14 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
-import type { ModelPick, Monchu } from "../core/backend.ts";
-import { formatReports } from "../core/mcp/manage.ts";
-import { describe as describeAssessment } from "../core/agents/classifier.ts";
-import { formatJobEvent, formatJobs } from "../core/jobs.ts";
+import type { Client, ModelPick } from "../api/client.ts";
+import type { WhenBusy } from "../api/notices.ts";
+import { describeAssessment, formatReports } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
-import type { WhenBusy } from "../core/agents/workers.ts";
-import { commands, help, parseInput } from "../ui/commands.ts";
+import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
+import { formatJobEvent } from "../ui/jobs.ts";
+import { formatRecord, logQuery } from "../ui/logs.ts";
+import { LOGIN_FAILED, loginHints, pickTargets, type PickTarget } from "../ui/login.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import type { AgentRow, AgentStatus } from "./components/agents-panel.ts";
 import type { Meter } from "./components/footer.ts";
@@ -19,29 +20,20 @@ import { contextUsage, lastActive, presentation } from "../ui/state.ts";
 import { browserHere } from "./system.ts";
 import { MonchuTui } from "./view.ts";
 
-/** Providers /login offers, in menu order. */
-const LOGIN_PROVIDERS = [
-  { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)" },
-  { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)" },
-  { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (optional routing advice)" },
-];
-
 /** What /model and /thinking change: a conversation, the root when unnamed, or a role default. */
-type PickTarget =
-  | { kind: "conversation"; name: string | undefined }
-  | { kind: "default"; role: "front" | "worker" };
 
 /**
- * Terminal adapter. Input admission and all side effects remain backend-owned. Inside Herdr, `herdr` reports what
+ * Terminal client of the core contract. Input admission and all side effects remain core-owned; resolves with whether
+ * the user asked for a restart, after the core closed for it. Inside Herdr, `herdr` reports what
  * Monchu is doing in its pane: working while the root or any worker runs.
  */
 export async function runTerminal(
-  backend: Monchu,
+  backend: Client,
   terminal: Terminal = new ProcessTerminal(),
   herdr?: HerdrAgent,
-  /** Startup notes shown below the header, such as a freshly seeded home. */
+  /** Notes of this terminal only, shown below the header after the core's own. */
   notes: readonly string[] = [],
-): Promise<void> {
+): Promise<"quit" | "restart"> {
   if (terminal instanceof ProcessTerminal && (!stdin.isTTY || !stdout.isTTY))
     throw new Error("Monchu's TUI needs an interactive terminal.");
   let scheme: "light" | "dark" = ["7", "9", "10", "11", "12", "13", "14", "15"].includes(
@@ -71,8 +63,9 @@ export async function runTerminal(
   let stopJobs: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
   let stopReload: (() => void) | undefined;
+  let stopRestarts: (() => void) | undefined;
   let login: AbortController | undefined;
-  type Worker = Awaited<ReturnType<Monchu["workers"]>>[number];
+  type Worker = Awaited<ReturnType<Client["workers"]>>[number];
   const workers = new Map<
     string,
     { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
@@ -318,20 +311,10 @@ export async function runTerminal(
   /** First-run guidance: which providers still need /login, and whether Clef is off for lack of one. */
   async function loginHint(
     startup: boolean,
-    needs?: Awaited<ReturnType<Monchu["loginNeeds"]>>,
+    needs?: Awaited<ReturnType<Client["loginNeeds"]>>,
   ): Promise<void> {
-    needs ??= await backend.loginNeeds();
-    const label = (id: string) => LOGIN_PROVIDERS.find((entry) => entry.id === id)?.label ?? id;
-    if (needs.chat.length > 0)
-      view.notice(
-        needs.anyOf
-          ? `login needed · ${needs.chat.map(label).join(" or ")}. Run /login and pick one; Monchu uses that provider's models. /model changes them, and Ctrl+S there saves the pick.`
-          : `login needed · ${needs.chat.map(label).join(", ")}. Run /login and pick it. To use another provider instead, log in to it, then pick its models with /model and press Ctrl+S to save them as the defaults.`,
-      );
-    if (needs.classifier !== undefined && (startup || needs.chat.length === 0))
-      view.notice(
-        `routing advice (Clef) is off · optional: /login → Cloudflare turns it on; "classifier": null in config.json hides this`,
-      );
+    for (const line of loginHints(needs ?? (await backend.loginNeeds()), startup))
+      view.notice(line);
   }
 
   async function handle(raw: string, whenBusy: WhenBusy): Promise<void> {
@@ -482,11 +465,7 @@ export async function runTerminal(
           loggedIn = true;
         } catch {
           // Provider failures can include entered credentials. Never echo raw login errors.
-          view.notice(
-            controller.signal.aborted
-              ? "login cancelled"
-              : "login failed; credentials may have been saved; retry /login",
-          );
+          view.notice(controller.signal.aborted ? "login cancelled" : LOGIN_FAILED);
         } finally {
           login = undefined;
           view.endLogin();
@@ -502,6 +481,12 @@ export async function runTerminal(
       }
       case "/restart":
         // Only editor input reaches this handler; model output never authorizes a restart.
+        if (!backend.restartsProcess) {
+          // Attached to a core elsewhere: it restarts, and this terminal reconnects when it is back.
+          await backend.restart();
+          view.notice("restart requested · reconnects when Monchu is back");
+          break;
+        }
         restarting = true;
         closing = true;
         exit();
@@ -517,12 +502,21 @@ export async function runTerminal(
         });
         break;
       }
+      case "/logs": {
+        const records = await backend.logs(logQuery(input.text));
+        view.notice(
+          records.length === 0
+            ? "logs · nothing yet"
+            : [`logs · ${records.length}`, ...records.map(formatRecord)].join("\n"),
+        );
+        break;
+      }
       case "/jobs": {
-        const { jobs, events } = await backend.jobs();
+        const { jobs, events, listing } = await backend.jobs();
         view.notice(
           [
             `jobs · ${jobs.length}`,
-            formatJobs(jobs),
+            listing,
             ...(events.length === 0 ? [] : ["recent:", ...events.slice(-8).map(formatJobEvent)]),
           ].join("\n"),
         );
@@ -537,28 +531,13 @@ export async function runTerminal(
       case "/thinking": {
         // First what to change, the shown conversation first, then the model or thinking level for it.
         await refreshWorkers();
-        const targets = new Map<string, PickTarget>([
-          [selected === undefined ? "root" : selected, { kind: "conversation", name: selected }],
-          ...[undefined, ...workers.keys()]
-            .filter((name) => name !== selected)
-            .map((name): [string, PickTarget] => [name ?? "root", { kind: "conversation", name }]),
-          ["front default", { kind: "default", role: "front" }],
-          ["worker default", { kind: "default", role: "worker" }],
-        ]);
+        const options = pickTargets(selected, [...workers.keys()]);
+        const targets = new Map(options.map(({ label, target }) => [label, target]));
         const command = input.command;
         const search = "text" in input ? input.text || undefined : undefined;
         view.choose(
           command === "/model" ? "Pick the model of" : "Pick the thinking level of",
-          [...targets].map(([label, target]) => ({
-            value: label,
-            label,
-            description:
-              target.kind === "default"
-                ? target.role === "front"
-                  ? "saved; the root follows it unless picked for the root"
-                  : "saved; new workers start with it"
-                : "this conversation; Ctrl+S also saves its role default",
-          })),
+          options.map(({ label, description }) => ({ value: label, label, description })),
           (label) => {
             const target = targets.get(label);
             if (target !== undefined)
@@ -602,7 +581,7 @@ export async function runTerminal(
         // Capture focus now: a later view switch must not redirect an already submitted input.
         const name = selected;
         const text =
-          input.command === "skill" ? backend.skillInput(input.name, input.text) : input.text;
+          input.command === "skill" ? await backend.skillInput(input.name, input.text) : input.text;
         if (name === undefined) await backend.submit(text, randomUUID(), whenBusy);
         else await backend.messageWorker(name, text, randomUUID(), whenBusy);
         if (name === undefined) view.notice("received · root");
@@ -638,6 +617,13 @@ export async function runTerminal(
       show(true);
     });
     stopReports = backend.onReport((message) => view.notice(`warning · ${message}`));
+    // Another client's user approved a restart: this terminal lets go of the screen first, as for its own /restart.
+    stopRestarts = backend.onRestartRequest(() => {
+      if (closing) return;
+      restarting = true;
+      closing = true;
+      exit();
+    });
     const shown = new Set<number>();
     let hydrated = false;
     stopAssessments = await backend.watchAssessments((items) => {
@@ -672,7 +658,9 @@ export async function runTerminal(
     }
     show(true);
     view.intro(backend.home);
-    for (const note of notes) view.notice(note);
+    for (const note of [...backend.notes, ...notes]) view.notice(note);
+    // Process start to an interactive terminal, the number restart parity is measured by.
+    backend.record("tui", "ready", { ms: Math.round(performance.now()) });
     await loginHint(true, needs);
     await exited;
   } finally {
@@ -683,6 +671,7 @@ export async function runTerminal(
     login?.abort();
     await inputs;
     stopReload?.();
+    stopRestarts?.();
     stopScheme?.();
     stopReports?.();
     stopAssessments?.();
@@ -697,6 +686,8 @@ export async function runTerminal(
     view.stop();
     await herdr?.release();
   }
-  // Never wait for restart inside handle(): cleanup waits for that input promise to settle.
-  if (restarting) await backend.restart();
+  // Never wait for restart inside handle(): cleanup waits for that input promise to settle. The entry point re-executes.
+  if (!restarting) return "quit";
+  await backend.restart();
+  return "restart";
 }

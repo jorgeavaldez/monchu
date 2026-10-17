@@ -13,7 +13,7 @@ type Input =
         | "/thinking";
     }
   | {
-      command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model" | "/mcp";
+      command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model" | "/mcp" | "/logs";
       text: string;
     }
   | { command: "skill"; name: string; text: string };
@@ -34,6 +34,10 @@ export const commands: Record<
   "/jobs": {
     usage: "",
     help: "every job (agent, command, bg) and recent job events",
+  },
+  "/logs": {
+    usage: "[severity|scope]",
+    help: "recent log records: warnings, timings, model replies, connections",
   },
   "/model": { usage: "[search]", help: "pick a model, for a conversation or a role default" },
   "/thinking": { usage: "", help: "pick a thinking level, for a conversation or a role default" },
@@ -61,6 +65,13 @@ export const commands: Record<
   "/help": { usage: "", help: "commands and keys" },
   "/quit": { usage: "", help: "save and close" },
 };
+
+/** Providers /login offers, in menu order, in every client; Cloudflare's takes an API key, the others OAuth. */
+export const LOGIN_PROVIDERS = [
+  { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)" },
+  { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)" },
+  { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (optional routing advice)" },
+];
 
 export const help = [
   "Commands:",
@@ -101,6 +112,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/model":
     case "/mcp":
     case "/stop":
+    case "/logs":
       return { command, text: rest };
     case "/cd":
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);

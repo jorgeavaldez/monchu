@@ -1,0 +1,256 @@
+/* Brutalist: system monospace, black and white with the terminal's few status colors, hard borders, no motion. */
+:root {
+  --fg: #000;
+  --bg: #fff;
+  --muted: #666;
+  --line: #000;
+  --accent: #6b2fb3;
+  --yellow: #8a6d00;
+  --red: #b00020;
+  --card: #f2f2f2;
+  font:
+    14px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  color: var(--fg);
+  background: var(--bg);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e6e6;
+    --bg: #000;
+    --muted: #8a8a8a;
+    --line: #e6e6e6;
+    --accent: #c79bff;
+    --yellow: #e0c040;
+    --red: #ff6b6b;
+    --card: #111;
+  }
+}
+* {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 120ch;
+  margin: 0 auto;
+  border-inline: 1px solid var(--line);
+}
+a {
+  color: inherit;
+}
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+button {
+  cursor: pointer;
+  padding: 0 0.6ch;
+}
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.agents {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.agents button {
+  border: none;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.agents .on {
+  background: var(--fg);
+  color: var(--bg);
+}
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+.transcript > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3em;
+}
+.user {
+  white-space: pre-wrap;
+  border-left: 3px solid var(--yellow);
+  padding-left: 1ch;
+}
+.assistant {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.card {
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.card header {
+  padding: 0 1ch;
+  border-bottom: 1px solid var(--line);
+}
+.card pre,
+.card footer {
+  padding: 0 1ch;
+}
+.card footer,
+.id,
+.time,
+.help,
+.usage,
+.system,
+.status,
+.notice.event {
+  color: var(--muted);
+}
+.card.report {
+  border-left: 3px solid var(--accent);
+}
+.card.update {
+  border-style: dashed;
+  background: transparent;
+}
+.card.error,
+.failed,
+.warning,
+.red {
+  color: var(--red);
+}
+.yellow {
+  color: var(--yellow);
+}
+.notice.warning {
+  color: var(--red);
+}
+.queue {
+  margin: 0;
+  padding: 0 1ch;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.queue li {
+  border-left: 3px solid var(--yellow);
+  padding-left: 1ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor {
+  position: relative;
+  border-top: 1px solid var(--line);
+}
+.editor textarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: none;
+  padding: 1ch;
+  outline: none;
+}
+.editor textarea.steer {
+  box-shadow: inset 3px 0 0 var(--yellow);
+}
+.typeahead {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.typeahead li {
+  padding: 0 1ch;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.typeahead .help {
+  margin-left: 2ch;
+}
+.typeahead .selected,
+.pick .selected button:first-child {
+  background: var(--fg);
+  color: var(--bg);
+}
+.pick,
+.ask,
+.login {
+  border-top: 1px solid var(--line);
+  padding: 1ch;
+  outline: none;
+}
+.pick ul {
+  list-style: none;
+  margin: 0.5em 0 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.pick li {
+  display: flex;
+}
+.pick li button:first-child {
+  flex: 1;
+  text-align: left;
+  border: none;
+}
+.ask input {
+  display: block;
+  width: 100%;
+  margin-top: 0.5em;
+  padding: 0.3em 1ch;
+}
+.login {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1ch;
+  align-items: baseline;
+}
+.login code {
+  font-weight: bold;
+  border: 1px solid var(--line);
+  padding: 0 1ch;
+}
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 1ch;
+  padding: 0 1ch;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.footer > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

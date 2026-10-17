@@ -155,6 +155,50 @@ describe("config", () => {
     expect(typeof result === "string" ? result : "valid").toContain(message);
   });
 
+  it("reads the web section with generic defaults and refuses anything unsafe or unknown", async () => {
+    expect((await loadConfig(await home({}))).web).toBeUndefined();
+    expect(
+      (
+        await loadConfig(
+          await home({
+            web: {
+              host: "monchu.example.test",
+              access: { teamDomain: "https://team.example.test/", audience: "aud" },
+              oidc: { issuer: "http://127.0.0.1:9000", clientId: "client" },
+              allow: ["sub:abc", "email:a@example.test", "service:id"],
+            },
+          }),
+        )
+      ).web,
+    ).toEqual({
+      port: 7420,
+      host: "monchu.example.test",
+      access: { teamDomain: "https://team.example.test", audience: "aud", subjectClaim: "sub" },
+      oidc: {
+        issuer: "http://127.0.0.1:9000",
+        clientId: "client",
+        clientSecretEnv: undefined,
+        scopes: ["openid", "profile", "email"],
+        subjectClaim: "sub",
+      },
+      allow: ["sub:abc", "email:a@example.test", "service:id"],
+    });
+    for (const [web, message] of [
+      [
+        { oidc: { issuer: "http://idp.example.test", clientId: "c" } },
+        "web.oidc.issuer must be an https URL",
+      ],
+      [
+        { oidc: { issuer: "https://idp.example.test", clientId: "c", scopes: ["email"] } },
+        "must include openid",
+      ],
+      [{ allow: ["anyone"] }, "web.allow must list"],
+      [{ host: "https://monchu.example.test/" }, "web.host must be a host name"],
+      [{ bind: "0.0.0.0" }, "web: unknown fields: bind"],
+    ] as const)
+      await expect(loadConfig(await home({ web }))).rejects.toThrow(message);
+  });
+
   it("reads roles and turns the classifier off with null", async () => {
     const config = await loadConfig(
       await home({

@@ -951,8 +951,3 @@ function formatJob(job: Job): string {
 export function formatJobs(jobs: readonly Job[]): string {
   return jobs.length === 0 ? "No jobs." : jobs.map((job) => `- ${formatJob(job)}`).join("\n");
 }
-
-/** One job event as a client line: `job · <name> · <kind>[ → worker] · <text>`. */
-export function formatJobEvent(event: JobEvent): string {
-  return `job · ${event.job} · ${event.kind}${event.worker === undefined ? "" : ` → ${event.worker}`} · ${event.text}`;
-}

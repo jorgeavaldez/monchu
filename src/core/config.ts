@@ -124,6 +124,40 @@ export type ClaudeConfig = {
 };
 
 /** Host config from `<home>/config.json`. Credentials live in `<home>/auth.json`. */
+/**
+ * The web client's server, used only when the core runs with `--web`. It listens on 127.0.0.1 alone; a tunnel on the
+ * same host publishes it. Every request needs an identity on `allow`, from an access proxy's signed JWT or this
+ * server's own OIDC login; with neither configured, `--web` refuses to start.
+ */
+export type WebConfig = {
+  port: number;
+  /** The public host a tunnel serves it on; requests for any other host than it and localhost are refused. */
+  host: string | undefined;
+  /** An identity-aware proxy that signs each request (`Cf-Access-Jwt-Assertion`), checked against its keys. */
+  access:
+    | {
+        /** Its issuer, such as `https://<team>.cloudflareaccess.com`; keys come from `/cdn-cgi/access/certs`. */
+        teamDomain: string;
+        audience: string;
+        /** The claim naming the user, as a dotted path (for example `custom.sub` for the upstream identity provider's). */
+        subjectClaim: string;
+      }
+    | undefined;
+  /** This server's own login: OpenID Connect authorization code with PKCE. */
+  oidc:
+    | {
+        issuer: string;
+        clientId: string;
+        /** The environment variable holding a client secret, for providers that require one. */
+        clientSecretEnv: string | undefined;
+        scopes: string[];
+        subjectClaim: string;
+      }
+    | undefined;
+  /** Who may use it: `sub:<subject>`, `email:<address>`, or `service:<client id>` for a proxy's service token. */
+  allow: string[];
+};
+
 export type MonchuConfig = {
   front: ModelRole;
   worker: ModelRole;
@@ -135,6 +169,7 @@ export type MonchuConfig = {
   classifier: ClassifierRole | null;
   /** Roles `config.json` sets. The others follow the provider the user has logged in to. */
   chosen: { front: boolean; worker: boolean };
+  web: WebConfig | undefined;
 };
 
 const defaults: MonchuConfig = {
@@ -145,6 +180,7 @@ const defaults: MonchuConfig = {
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
   chosen: { front: false, worker: false },
+  web: undefined,
 };
 
 /** The built-in defaults, used for any field `config.json` leaves out. */
@@ -243,6 +279,82 @@ function boolean(value: unknown, field: string): boolean {
 function queue(value: unknown, field: string): "all" | "one-at-a-time" | undefined {
   if (value === undefined || value === "all" || value === "one-at-a-time") return value;
   throw new Error(`${field} must be all or one-at-a-time`);
+}
+
+function url(value: unknown, field: string): string {
+  const raw = text(value, field);
+  // Plain http only for an identity provider on this machine.
+  const parsed = URL.canParse(raw) ? new URL(raw) : undefined;
+  const loopback = parsed?.hostname === "127.0.0.1" || parsed?.hostname === "localhost";
+  if (
+    parsed === undefined ||
+    !(parsed.protocol === "https:" || (loopback && parsed.protocol === "http:"))
+  )
+    throw new Error(`${field} must be an https URL`);
+  return raw.replace(/\/+$/, "");
+}
+
+function webConfig(value: unknown): WebConfig | undefined {
+  if (value === undefined) return undefined;
+  object(value, "web", ["port", "host", "access", "oidc", "allow"]);
+  let access: WebConfig["access"];
+  if (value.access !== undefined) {
+    object(value.access, "web.access", ["teamDomain", "audience", "subjectClaim"]);
+    access = {
+      teamDomain: url(value.access.teamDomain, "web.access.teamDomain"),
+      audience: text(value.access.audience, "web.access.audience"),
+      subjectClaim:
+        value.access.subjectClaim === undefined
+          ? "sub"
+          : text(value.access.subjectClaim, "web.access.subjectClaim"),
+    };
+  }
+  let oidc: WebConfig["oidc"];
+  if (value.oidc !== undefined) {
+    object(value.oidc, "web.oidc", [
+      "issuer",
+      "clientId",
+      "clientSecretEnv",
+      "scopes",
+      "subjectClaim",
+    ]);
+    const scopes = value.oidc.scopes ?? ["openid", "profile", "email"];
+    if (!Array.isArray(scopes) || !scopes.every((scope) => typeof scope === "string"))
+      throw new Error("web.oidc.scopes must be a list of strings");
+    if (!scopes.includes("openid")) throw new Error("web.oidc.scopes must include openid");
+    oidc = {
+      issuer: url(value.oidc.issuer, "web.oidc.issuer"),
+      clientId: text(value.oidc.clientId, "web.oidc.clientId"),
+      clientSecretEnv:
+        value.oidc.clientSecretEnv === undefined
+          ? undefined
+          : text(value.oidc.clientSecretEnv, "web.oidc.clientSecretEnv"),
+      scopes,
+      subjectClaim:
+        value.oidc.subjectClaim === undefined
+          ? "sub"
+          : text(value.oidc.subjectClaim, "web.oidc.subjectClaim"),
+    };
+  }
+  const listed: unknown = value.allow ?? [];
+  const allow: string[] = [];
+  if (Array.isArray(listed))
+    for (const item of listed) {
+      const entry: unknown = item;
+      if (typeof entry === "string" && /^(sub|email|service):.+$/.test(entry)) allow.push(entry);
+    }
+  if (!Array.isArray(listed) || allow.length !== listed.length)
+    throw new Error("web.allow must list sub:<subject>, email:<address> or service:<client id>");
+  const host = value.host === undefined ? undefined : text(value.host, "web.host");
+  if (host !== undefined && !/^[a-z0-9.-]+(:\d+)?$/i.test(host))
+    throw new Error("web.host must be a host name, without a scheme or path");
+  return {
+    port: value.port === undefined ? 7420 : integer(value.port, "web.port", 1),
+    host,
+    access,
+    oidc,
+    allow,
+  };
 }
 
 function runSettings(value: unknown): RunSettings {
@@ -422,7 +534,7 @@ export async function saveRole(
 function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
     if (!isObject(value)) throw new Error("expected a JSON object");
-    const known = ["front", "worker", "profiles", "classifier", "settings", "claude"];
+    const known = ["front", "worker", "profiles", "classifier", "settings", "claude", "web"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
     let claude = defaults.claude;
@@ -451,6 +563,7 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
       classifier: classifierRole(value.classifier),
       settings: runSettings(value.settings),
       chosen: { front: value.front !== undefined, worker: value.worker !== undefined },
+      web: webConfig(value.web),
     };
   } catch (error) {
     throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);

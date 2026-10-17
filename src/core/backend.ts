@@ -6,7 +6,6 @@ import {
   type AuthInteraction,
   type AuthType,
   type Model,
-  type ModelThinkingLevel,
   type Provider,
   type Models,
 } from "@earendil-works/pi-ai";
@@ -17,17 +16,22 @@ import {
   InboxDoc,
   LiveDoc,
   ProviderDoc,
+  type CommitPublication,
   type Conversation,
   type ConversationId,
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { appendFile, mkdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AssessmentsDoc, escalationSummary, type Assessment } from "./agents/classifier.ts";
+import type { Client, ModelChoice, ModelPick, QueueChange } from "../api/client.ts";
+import { escalationSummary, noticeText, parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
+import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
+import type { McpServerReport } from "../api/reports.ts";
+import { Log } from "../telemetry/log.ts";
+import { AssessmentsDoc, type Assessment } from "./agents/classifier.ts";
 import {
   defaultConfig,
   isThinkingLevel,
@@ -36,26 +40,23 @@ import {
   thinkingLevels,
   type ModelRole,
   type Settings,
+  type WebConfig,
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
-import { JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
+import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
-import type { McpServerReport } from "./mcp/manage.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   DELETED_FROM_QUEUE,
   hasPendingDelivery,
   listWorkers,
   messageWorker,
-  noticeText,
-  parseWorkerNotice,
   startWorker,
   stopWorker,
   workerConversationId,
-  type WhenBusy,
   WorkersDoc,
 } from "./agents/workers.ts";
 import { preloadGroups } from "./tools/tool-search.ts";
@@ -129,28 +130,26 @@ async function preloadAll(
   }, context);
 }
 
-/** A model or thinking-level pick from the terminal, for the root or a worker. */
-export type ModelPick = { model: ModelRef } | { thinkingLevel: ModelThinkingLevel };
-
-/** An edit to a still-queued input: new text, a new busy mode, or deleting it. */
-export type QueueChange =
-  | { kind: "text"; text: string }
-  | { kind: "mode"; mode: WhenBusy }
-  | { kind: "delete" };
-
-/** One runtime/store owner. No terminal, transport, or rendering dependencies. */
-export class Monchu {
+/** One runtime/store owner, and the in-process implementation of the client contract. No terminal, transport, or rendering dependencies. */
+export class Monchu implements Client {
   readonly home: string;
   private readonly owner: DatabaseSync;
   private readonly harness: Harness;
   private readonly front: Conversation;
   private readonly models: Models;
   private readonly reloadListeners = new Set<() => void>();
+  private readonly restartListeners = new Set<() => void>();
+  private readonly startup: string[] = [];
+  /** This process is the core: restarting re-executes it, so its own terminal must let go first. */
+  readonly restartsProcess = true;
   private reloading: Promise<readonly string[]> | undefined;
   private readonly reports: Reports;
   private readonly extensions: Extensions;
   private closing: Promise<void> | undefined;
   private readonly envs: ExecutionEnvs;
+  /** The structured log: warnings, timings, model replies and client events. */
+  readonly log: Log;
+  private readonly stopTelemetry: () => void;
 
   private constructor(
     home: string,
@@ -161,6 +160,7 @@ export class Monchu {
     reports: Reports,
     extensions: Extensions,
     envs: ExecutionEnvs,
+    log: Log,
   ) {
     this.home = home;
     this.owner = owner;
@@ -170,6 +170,10 @@ export class Monchu {
     this.reports = reports;
     this.extensions = extensions;
     this.envs = envs;
+    this.log = log;
+    this.stopTelemetry = harness.subscribeCommits((publication) =>
+      modelTelemetry(log, publication),
+    );
   }
 
   static async open(home: string, devProvider?: Provider): Promise<Monchu> {
@@ -189,7 +193,16 @@ export class Monchu {
           { cause: error },
         );
       }
-      const reports = new Reports(join(home, "monchu.log"));
+      const log = new Log(home);
+      const reports = new Reports(log);
+      // Each phase's time goes to the log with the open: the startup budget, measured on every device.
+      const phases: LogAttributes = {};
+      let phaseStart = performance.now();
+      const phase = (name: string) => {
+        const now = performance.now();
+        phases[name] = Math.round(now - phaseStart);
+        phaseStart = now;
+      };
       // A broken config.json must not keep Monchu from opening: the defaults apply and the warning says why.
       let written: MonchuConfig;
       try {
@@ -200,6 +213,7 @@ export class Monchu {
           `${error instanceof Error ? error.message : String(error)}. Using the built-in defaults until it is fixed`,
         );
       }
+      phase("config");
       const models = await openModels(home, devProvider, written.claude);
       const { config, warnings } = await configuredRoles(models, written);
       for (const warning of warnings) reports.report(warning);
@@ -207,6 +221,7 @@ export class Monchu {
         reports.report(warning),
       );
       extensions = loaded;
+      phase("extensions");
       harness = await Harness.open(
         await openNodeSqliteStorage(join(home, "monchu.sqlite")),
         {
@@ -219,6 +234,7 @@ export class Monchu {
         },
         context,
       );
+      phase("store");
       const front = await harness.root(context, { agent: { cwd: home } });
       await front.configure(
         {
@@ -231,7 +247,19 @@ export class Monchu {
       // The configured front role applies from the next request; a running request keeps its model.
       await applyFrontRole(front, config.front, extensions.preload);
       await preloadAll(harness, front, extensions.preload);
-      const backend = new Monchu(home, owner, harness, front, models, reports, extensions, envs);
+      phase("root");
+      const backend = new Monchu(
+        home,
+        owner,
+        harness,
+        front,
+        models,
+        reports,
+        extensions,
+        envs,
+        log,
+      );
+      log.write("info", "core.open", "opened", phases);
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
@@ -254,10 +282,15 @@ export class Monchu {
   }
 
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
-  skillInput(name: string, text: string): string {
+  async skillInput(name: string, text: string): Promise<string> {
     const skill = this.extensions.skills.find((item) => item.name === name);
     if (skill === undefined) throw new Error(`No skill named ${name}`);
     return skillMessage(skill, text);
+  }
+
+  /** The web server's settings from `config.json`, as of the last successful load or reload. */
+  get web(): WebConfig | undefined {
+    return this.extensions.config.web;
   }
 
   /** The run settings of the last successful load or reload. */
@@ -341,7 +374,7 @@ export class Monchu {
     return () => this.reloadListeners.delete(listener);
   }
 
-  /** Non-fatal runtime failures, also appended to `monchu.log`. Returns an unsubscribe function. */
+  /** Non-fatal runtime failures, also logged. Returns an unsubscribe function. */
   onReport(listener: (message: string) => void): () => void {
     return this.reports.subscribe(listener);
   }
@@ -380,11 +413,14 @@ export class Monchu {
     };
   }
 
-  /** Every background job and the recent job events, store-wide. */
-  async jobs(): Promise<Readonly<JobsState>> {
-    return (
-      (await this.harness.snapshot(JobsDoc, context)) ?? { jobs: [], events: [], nextEvent: 1 }
-    );
+  /** Every background job and the recent job events, store-wide, with the jobs as the job tool lists them. */
+  async jobs(): Promise<Readonly<JobsState> & { listing: string }> {
+    const state = (await this.harness.snapshot(JobsDoc, context)) ?? {
+      jobs: [],
+      events: [],
+      nextEvent: 1,
+    };
+    return { ...state, listing: formatJobs(state.jobs) };
   }
 
   /**
@@ -584,13 +620,7 @@ export class Monchu {
   }
 
   /** The model and thinking level of the root or a worker, its role's default, and the chat models with credentials. */
-  async modelChoice(workerName?: string): Promise<{
-    model: Model<Api> | undefined;
-    thinkingLevel: ModelThinkingLevel;
-    thinkingLevels: readonly ModelThinkingLevel[];
-    defaults: ModelRole;
-    models: readonly Model<Api>[];
-  }> {
+  async modelChoice(workerName?: string): Promise<ModelChoice> {
     const conversation = workerName === undefined ? this.front : await this.worker(workerName);
     const agent = await conversation.agent(context);
     const model =
@@ -637,7 +667,7 @@ export class Monchu {
   }
 
   /** A role default's model and thinking level from `config.json`, and the chat models with credentials. */
-  async roleChoice(role: "front" | "worker") {
+  async roleChoice(role: "front" | "worker"): Promise<ModelChoice> {
     const saved = this.extensions.config[role];
     const model = this.models.getModel(saved.provider, saved.modelId);
     return {
@@ -693,6 +723,7 @@ export class Monchu {
   /** Concurrent requests share one reload. No registry or settings changes survive a failed preparation. */
   reload(): Promise<readonly string[]> {
     if (this.closing !== undefined) return Promise.reject(new Error("Monchu is closing"));
+    const started = performance.now();
     this.reloading ??= this.extensions
       .reload(async (config) => {
         // Durable captures model and stream options during request preparation; later phases resolve current policy.
@@ -708,6 +739,10 @@ export class Monchu {
             this.reports.report("Reload listener failed");
           }
         }
+        this.log.write("info", "core.reload", "reloaded", {
+          ms: Math.round(performance.now() - started),
+          modules: modules.length,
+        });
         return modules;
       })
       .catch(async (error: unknown) => {
@@ -723,29 +758,63 @@ export class Monchu {
     return this.reloading;
   }
 
-  /** User-only backend operation. Never exposed as a model tool. */
-  async restart(): Promise<never> {
+  /** The newest log records, oldest first. */
+  logs(query: LogQuery): Promise<LogRecord[]> {
+    return this.log.tail(query);
+  }
+
+  /** A client's own telemetry, such as its render timings, into the core's log. */
+  record(scope: "tui" | "web", body: string, attributes?: LogAttributes): void {
+    this.log.write("info", scope, body, attributes);
+  }
+
+  /** A non-fatal failure from outside the core, such as its socket server: logged and shown like the core's own. */
+  report(message: string): void {
+    this.reports.report(message);
+  }
+
+  /** This core's startup notes, such as a freshly seeded home: every client shows them under its header. */
+  get notes(): readonly string[] {
+    return this.startup;
+  }
+
+  addNotes(...notes: string[]): void {
+    this.startup.push(...notes);
+  }
+
+  /** The chat model catalog, for remote clients that show context windows and reasoning support. */
+  catalog(): readonly Model<Api>[] {
+    return this.models.getModels();
+  }
+
+  /**
+   * A remote client's user approved a restart. Whoever can restart this process (its own terminal, or the headless
+   * server's entry point) is told; throws when nothing listens.
+   */
+  requestRestart(): void {
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    if (this.restartListeners.size === 0) throw new Error("Nothing here can restart this Monchu");
+    // Next turn: the client that asked hears its answer before the restart closes its connection.
+    setImmediate(() => {
+      for (const listener of this.restartListeners) listener();
+    });
+  }
+
+  /** Restart requests from remote clients; returns an unsubscribe function. */
+  onRestartRequest(listener: () => void): () => void {
+    this.restartListeners.add(listener);
+    return () => this.restartListeners.delete(listener);
+  }
+
+  /**
+   * User-only: clears the restart request and closes the runtime; the entry point then re-executes the process. Never
+   * exposed as a model tool.
+   */
+  async restart(): Promise<void> {
     await this.front.commit(async (tx) => {
       (await tx.doc(RestartRequest, this.front.id)).request = null;
     }, context);
     await this.close();
-    process.stdin.pause();
-    const argv = [...process.execArgv, ...process.argv.slice(1)];
-    // Replacing the process keeps one Monchu per terminal however often it restarts; spawning leaves each old process
-    // waiting on its child, and Android kills Termux once too many pile up. Windows has no execve: Node defines it there
-    // but it throws.
-    if (process.platform !== "win32" && typeof process.execve === "function")
-      process.execve(process.execPath, [process.execPath, ...argv]);
-    return new Promise<never>((_resolve, reject) => {
-      const child = spawn(process.execPath, argv, {
-        stdio: "inherit",
-      });
-      child.once("error", reject);
-      child.once("exit", (code, signal) => {
-        if (signal !== null) process.kill(process.pid, signal);
-        process.exit(code ?? 1);
-      });
-    });
   }
 
   close(): Promise<void> {
@@ -754,6 +823,8 @@ export class Monchu {
   }
 
   private async closeRuntime(): Promise<void> {
+    const started = performance.now();
+    this.stopTelemetry();
     try {
       // A failed reload must not prevent storage from closing.
       await this.reloading?.catch(() => {});
@@ -767,7 +838,31 @@ export class Monchu {
       cleanupSessionResources();
     } finally {
       this.owner.close();
+      this.log.write("info", "core.close", "closed", {
+        ms: Math.round(performance.now() - started),
+      });
+      await this.log.flushed();
     }
+  }
+}
+
+/** One log record per model reply, from the committed assistant entry: model, tokens, time and stop reason, never content. */
+function modelTelemetry(log: Log, publication: CommitPublication): void {
+  for (const change of publication.changes) {
+    if (change.type !== "entry" || change.value.kind !== "pi.assistant") continue;
+    const message = change.value.model?.[0];
+    if (message?.role !== "assistant") continue;
+    log.write(message.stopReason === "error" ? "warn" : "info", "core.model", "reply", {
+      conversation: change.value.conversationId,
+      entry: change.value.id,
+      model: `${message.provider}/${message.model}`,
+      input: message.usage.input,
+      output: message.usage.output,
+      cacheRead: message.usage.cacheRead,
+      cacheWrite: message.usage.cacheWrite,
+      ms: message.durationMs ?? null,
+      stop: message.stopReason,
+    });
   }
 }
 
@@ -800,17 +895,18 @@ class ExecutionEnvs {
 
 /** Durable's `onReport` sink: kept until a client subscribes, and always logged. Never throws. */
 class Reports {
-  private readonly path: string;
+  private readonly file: Log;
   private readonly listeners = new Set<(message: string) => void>();
   private pending: string[] = [];
 
-  constructor(path: string) {
-    this.path = path;
+  constructor(file: Log) {
+    this.file = file;
   }
 
   /** Append to the log only, for failures the caller already shows. Never rejects. */
   log(message: string): Promise<void> {
-    return appendFile(this.path, `${new Date().toISOString()} ${message}\n`).catch(() => {});
+    this.file.write("warn", "core", message);
+    return this.file.flushed();
   }
 
   report(message: string): void {

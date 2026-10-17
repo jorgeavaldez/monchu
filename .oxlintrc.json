@@ -31,11 +31,19 @@
           },
           {
             "group": ["**/ui/*", "./ui/*"],
-            "message": "The shared UI layer is for clients (src/tui) only; the core stays UI-free."
+            "message": "The shared UI layer is for clients only; the core stays UI-free."
           },
           {
             "group": ["**/test/*", "../test/*"],
             "message": "Source never imports test code."
+          },
+          {
+            "group": ["**/reexec.ts", "./reexec.ts"],
+            "message": "Only src/main.ts re-executes the process."
+          },
+          {
+            "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
+            "message": "Only src/main.ts composes the server; the core and clients never import it."
           }
         ]
       }
@@ -43,7 +51,7 @@
   },
   "overrides": [
     {
-      "files": ["src/main.ts", "src/tui/**"],
+      "files": ["src/main.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -59,6 +67,47 @@
       }
     },
     {
+      "files": ["src/api/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["node:*"],
+                "message": "Shared with browser clients: no Node modules."
+              },
+              {
+                "group": ["**/core/*", "**/core/**"],
+                "allowTypeImports": true,
+                "message": "src/api takes core types only, never core code."
+              },
+              {
+                "group": ["**/ui/*", "**/tui/*"],
+                "message": "src/api is the contract: it depends on no client."
+              },
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
+              },
+              {
+                "group": ["**/reexec.ts", "./reexec.ts"],
+                "message": "Only src/main.ts re-executes the process."
+              },
+              {
+                "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
+                "message": "Only src/main.ts composes the server; the core and clients never import it."
+              },
+              {
+                "group": ["../telemetry/*", "../../telemetry/*", "../../../telemetry/*"],
+                "message": "src/telemetry writes the core's log files; clients send telemetry through Client.record."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["src/ui/**"],
       "rules": {
         "no-restricted-imports": [
@@ -67,15 +116,99 @@
             "patterns": [
               {
                 "group": ["node:*"],
-                "message": "src/ui is shared with browser clients: no Node modules."
+                "message": "Shared with browser clients: no Node modules."
               },
               {
-                "group": ["**/core/*", "**/tui/*"],
-                "message": "src/ui depends on neither the core nor a client."
+                "group": ["**/core/*", "**/core/**", "**/tui/*"],
+                "message": "src/ui depends on src/api, never on the core or a client."
               },
               {
                 "group": ["**/test/*", "../test/*"],
                 "message": "Source never imports test code."
+              },
+              {
+                "group": ["**/reexec.ts", "./reexec.ts"],
+                "message": "Only src/main.ts re-executes the process."
+              },
+              {
+                "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
+                "message": "Only src/main.ts composes the server; the core and clients never import it."
+              },
+              {
+                "group": ["../telemetry/*", "../../telemetry/*", "../../../telemetry/*"],
+                "message": "src/telemetry writes the core's log files; clients send telemetry through Client.record."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/core/*", "**/core/**"],
+                "message": "Clients reach the core only through src/api."
+              },
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
+              },
+              {
+                "group": ["**/reexec.ts", "./reexec.ts"],
+                "message": "Only src/main.ts re-executes the process."
+              },
+              {
+                "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
+                "message": "Only src/main.ts composes the server; the core and clients never import it."
+              },
+              {
+                "group": ["../telemetry/*", "../../telemetry/*", "../../../telemetry/*"],
+                "message": "src/telemetry writes the core's log files; clients send telemetry through Client.record."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/web/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["node:*"],
+                "message": "src/web runs in a browser: no Node modules."
+              },
+              {
+                "group": ["**/core/*", "**/core/**"],
+                "message": "Clients reach the core only through src/api."
+              },
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
+              },
+              {
+                "group": ["**/reexec.ts", "./reexec.ts"],
+                "message": "Only src/main.ts re-executes the process."
+              },
+              {
+                "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
+                "message": "Only src/main.ts composes the server; the core and clients never import it."
+              },
+              {
+                "group": ["../telemetry/*", "../../telemetry/*", "../../../telemetry/*"],
+                "message": "src/telemetry writes the core's log files; clients send telemetry through Client.record."
+              },
+              {
+                "group": ["../tui/*", "../../tui/*"],
+                "message": "Clients never import each other."
               }
             ]
           }

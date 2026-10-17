@@ -64,10 +64,14 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { QueueChange } from "../core/backend.ts";
-import { escalationSummary } from "../core/agents/classifier.ts";
-import type { Goal } from "../core/agents/goals.ts";
-import { parseWorkerNotice, workerNotice, type WhenBusy } from "../core/agents/workers.ts";
+import type { Goal, QueueChange } from "../api/client.ts";
+import { shortId } from "../api/ids.ts";
+import {
+  escalationSummary,
+  parseWorkerNotice,
+  workerNotice,
+  type WhenBusy,
+} from "../api/notices.ts";
 import { commands } from "../ui/commands.ts";
 import { presentation, type QueuedItem } from "../ui/state.ts";
 
@@ -1027,7 +1031,7 @@ export class MonchuTui {
     const worker = workerNotice(entry);
     const message = entry.model?.[0];
     if (worker) {
-      const component = new WorkerMessageComponent(worker, (changed) => {
+      const component = new WorkerMessageComponent(worker, shortId(entry.id), (changed) => {
         this.chat.changed(changed);
         this.ui.requestRender();
       });
