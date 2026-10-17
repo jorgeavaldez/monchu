@@ -10,7 +10,15 @@ try {
   const home = await monchuHome(process.env.MONCHU_DEV_FAUX === "1");
   // Inherited by /restart so smoke mode reopens the same isolated home.
   if (process.env.MONCHU_DEV_FAUX === "1") process.env.MONCHU_DEV_HOME = home;
-  if (process.argv[2] === "mcp") {
+  if (process.argv[2] === "update") {
+    // Checks the store's lock without opening it, so it can refuse while Monchu runs.
+    const { runUpdate } = await import("./update.ts");
+    process.exitCode = await runUpdate(process.argv.slice(3), {
+      home,
+      log: (line) => console.log(line),
+      error: (line) => console.error(line),
+    });
+  } else if (process.argv[2] === "mcp") {
     // Configures MCP servers without opening the store, so it runs next to a running Monchu.
     const { runMcpCommand } = await import("./mcp-cli.ts");
     const { openModels } = await import("./models/index.ts");

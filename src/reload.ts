@@ -12,7 +12,9 @@ import {
 } from "@earendil-works/pi-durable";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FffFinders } from "./fff.ts";
 import type { McpSignInPrompt } from "./mcp-auth.ts";
@@ -364,13 +366,26 @@ export class Extensions {
   }
 }
 
+/** Whether any source is newer than the build; every build rewrites `dist/main.js`. */
+async function buildIsStale(): Promise<boolean> {
+  const built = await stat(new URL("main.js", import.meta.url)).catch(() => undefined);
+  if (built === undefined) return true;
+  const src = fileURLToPath(new URL("../src/", import.meta.url));
+  for (const entry of await readdir(src, { recursive: true, withFileTypes: true }))
+    if (entry.isFile() && (await stat(join(entry.parentPath, entry.name))).mtimeMs > built.mtimeMs)
+      return true;
+  return false;
+}
+
 /**
- * A checkout's compiled mode needs fresh JS; source mode uses Node's native type stripping, and an installed package
- * ships no sources, so reload re-reads its fixed build.
+ * A checkout's compiled mode (including one `npm link`ed as the global command) needs fresh JS, so reload builds it
+ * when a source is newer; a build made beforehand, such as one the phone runs by hand, is reused. Source mode uses
+ * Node's native type stripping, and an installed package ships no sources, so reload re-reads its fixed build.
  */
 async function buildForReload(): Promise<void> {
   if (import.meta.url.endsWith(".ts")) return;
   if (!existsSync(fileURLToPath(new URL("../tsconfig.build.json", import.meta.url)))) return;
+  if (!(await buildIsStale())) return;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       process.execPath,
