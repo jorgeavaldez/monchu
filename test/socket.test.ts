@@ -107,6 +107,16 @@ describe("local socket", () => {
       const stopRequests = backend.onRestartRequest(() => requested++);
       await client.restart();
       await waitFor(() => requested === 1);
+      // /update checks before anything closes: a checkout is updated by hand, so the core refuses and keeps running.
+      expect(client.release).toMatchObject({ version: backend.release.version, updating: null });
+      await expect(client.update("v1.x")).rejects.toThrow("Not a release: v1.x");
+      if (process.platform !== "win32")
+        await expect(client.update("edge")).rejects.toThrow(/^monchu runs the checkout at/);
+      expect(requested).toBe(1);
+      expect(backend.plannedUpdate).toBeUndefined();
+      // The outcome of the update the core came back from reaches clients with its release.
+      backend.updated("updated · 1.0.0 → 1.0.1");
+      await waitFor(() => client.release.outcome === "updated · 1.0.0 → 1.0.1");
       stopRequests();
 
       // The server goes away and comes back: the client reconnects and its view picks up again.

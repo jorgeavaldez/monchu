@@ -54,6 +54,10 @@ describe("terminal input boundary", () => {
     for (const text of ["", "on", "off"])
       expect(parseInput(`/clef ${text}`)).toEqual({ command: "/clef", text });
     expect(() => parseInput("/clef pause")).toThrow("Usage: /clef [on|off]");
+    // /update defaults to edge and takes only a release, which never reaches npm as anything else.
+    expect(parseInput("/update")).toEqual({ command: "/update", text: "edge" });
+    expect(parseInput("/update v1.2.0")).toEqual({ command: "/update", text: "1.2.0" });
+    expect(() => parseInput("/update latest; rm -rf ~")).toThrow("Usage: /update [edge|version]");
     for (const invalid of [
       "/work name",
       "/tell w more",

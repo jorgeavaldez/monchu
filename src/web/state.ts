@@ -8,6 +8,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Client, ModelPick, WorkerSummary } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
+import { releaseNotices } from "../api/release.ts";
 import { help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -97,8 +98,14 @@ async function refreshWorkers(): Promise<void> {
 export async function start(connected: Client): Promise<void> {
   core = connected;
   // The terminal's first screen: the header, the core's startup notes, then what still needs a login.
-  notice(`Monchu · /help · home ${connected.home}`);
+  notice(`Monchu ${connected.release.version} · /help · home ${connected.home}`);
   for (const line of connected.notes) notice(line);
+  let release = connected.release;
+  for (const line of releaseNotices(undefined, release)) notice(line);
+  connected.onRelease((next) => {
+    for (const line of releaseNotices(release, next)) notice(line);
+    release = next;
+  });
   for (const line of loginHints(await connected.loginNeeds(), true)) notice(line);
   await attach(undefined);
   await refreshWorkers();
@@ -474,6 +481,11 @@ export async function submit(raw: string): Promise<void> {
       case "/restart":
         await client().restart();
         return notice("restart requested · reconnects when Monchu is back");
+      case "/update":
+        await client().update(input.text);
+        return notice(
+          `installing ${input.text} · reconnects when Monchu is back, on it or on this version if npm fails`,
+        );
       case "/jobs": {
         const { jobs, events, listing } = await client().jobs();
         return notice(

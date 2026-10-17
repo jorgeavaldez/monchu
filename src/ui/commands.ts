@@ -1,3 +1,5 @@
+import { parseRelease } from "../api/release.ts";
+
 type Input =
   | { command: "message"; text: string }
   | {
@@ -22,7 +24,8 @@ type Input =
         | "/model"
         | "/mcp"
         | "/logs"
-        | "/clef";
+        | "/clef"
+        | "/update";
       text: string;
     }
   | { command: "skill"; name: string; text: string };
@@ -71,6 +74,10 @@ export const commands: Record<
   "/restart": {
     usage: "",
     help: "restart Monchu for its own code changes; running steps rerun after",
+  },
+  "/update": {
+    usage: "[edge|version]",
+    help: "install a release (edge: main's newest) and restart on it",
   },
   "/help": { usage: "", help: "commands and keys" },
   "/quit": { usage: "", help: "save and close" },
@@ -128,6 +135,11 @@ export function parseInput(raw: string): Input | undefined {
       if (rest !== "" && rest !== "on" && rest !== "off")
         throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
+    case "/update": {
+      const release = parseRelease(rest || "edge");
+      if (release === undefined) throw new Error(`Usage: ${command} ${commands[command].usage}`);
+      return { command, text: release };
+    }
     case "/cd":
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };

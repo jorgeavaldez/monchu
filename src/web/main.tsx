@@ -1,6 +1,7 @@
 /** Connect to the core over the page's own WebSocket, then render. A dropped connection reconnects by itself. */
 import { render } from "preact";
 import { connectRemote, type Connection } from "../api/connect.ts";
+import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
 import { cancelLogin, connected, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
@@ -43,6 +44,9 @@ async function dial(): Promise<Connection | undefined> {
   });
 }
 
+/** The connected client, and the core's version this page was loaded with. */
+let page: { client: RemoteClient; version: string } | undefined;
+
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (root === null) return;
@@ -54,10 +58,16 @@ async function boot(): Promise<void> {
     cancelLogin();
   });
   const attached = await connectRemote(dial, {
-    onError: () => {},
+    // A core that came back from an update may speak a newer wire than this page: load its page.
+    onError: () => {
+      if (page !== undefined && page.client.release.updating !== null) location.reload();
+    },
     onReconnect: (ms) => {
+      // An update replaced the page's own files: load the new ones.
+      if (page !== undefined && page.client.release.version !== page.version)
+        return location.reload();
       connected("open");
-      attached?.client.record("web", "reconnected", { ms });
+      page?.client.record("web", "reconnected", { ms });
     },
   });
   if (attached === undefined) {
@@ -67,6 +77,7 @@ async function boot(): Promise<void> {
     return;
   }
   const { client } = attached;
+  page = { client, version: client.release.version };
   const watch = telemetry(client);
   await start(client);
   connected("open");

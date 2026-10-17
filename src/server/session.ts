@@ -15,6 +15,7 @@ import {
   type LoginState,
   type Reports,
 } from "../api/services.ts";
+import type { Release } from "../api/release.ts";
 import type { Assessment } from "../core/agents/classifier.ts";
 import type { Monchu } from "../core/backend.ts";
 import type { JobsState } from "../core/jobs.ts";
@@ -56,9 +57,11 @@ function wirePrompt(prompt: AuthPrompt): LoginPrompt {
 /**
  * The services one connection sees. Conversations it opens and logins it starts are spawned in its own provider, so
  * another client never sees its login prompts. `dispose` releases every attachment and cancels its logins.
+ * `updates` is whether this connection's identity may replace Monchu's code: a person, not a service login.
  */
 export async function connectionServices(
   backend: Monchu,
+  { updates }: { updates: boolean },
 ): Promise<{ provider: RemoteServiceProvider; dispose(): void }> {
   const provider = new RemoteServiceProvider([
     { service: Session, mode: "singleton" },
@@ -77,6 +80,8 @@ export async function connectionServices(
       }),
     ),
   );
+  const release = replicatedState<Release>(own(backend.release));
+  cleanups.push(backend.onRelease((value) => release.replace(context, own(value))));
   const assessments = replicatedState<{ items: Assessment[] }>({ items: [] });
   cleanups.push(
     await backend.watchAssessments((items) =>
@@ -175,6 +180,7 @@ export async function connectionServices(
     assessments,
     jobs,
     reports,
+    release,
     open: async (name: string, _context: Context) => {
       const existing = opened.get(name);
       if (existing !== undefined) {
@@ -234,6 +240,11 @@ export async function connectionServices(
     logs: (query) => backend.logs(query),
     record: async (scope, body, attributes) => backend.record(scope, body, attributes ?? undefined),
     restart: async () => backend.requestRestart(),
+    update: async (text) => {
+      // A leaked service token must never swap the code that runs.
+      if (!updates) throw new Error("Only a person's login can update Monchu, not a service token");
+      await backend.update(text);
+    },
     login: async (providerId: string, auth: "oauth" | "api_key") =>
       startLogin(async (state, ask, signal) => {
         await backend.login(providerId, auth, {

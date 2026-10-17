@@ -178,7 +178,8 @@ export async function serveWeb(
       if (new URL(request.url ?? "/", "http://localhost").pathname !== "/api") return refuse(404);
       // A page from anywhere else must never drive the core with this browser's credentials.
       if (!origins.has(header(request, "origin") ?? "")) return refuse(403);
-      if ((await guard(request, undefined)) === undefined) return refuse(401);
+      const identities = await guard(request, undefined);
+      if (identities === undefined) return refuse(401);
       sockets.handleUpgrade(request, socket, head, (connection) => {
         const attached = performance.now();
         log("info", "client attached", { clients: sockets.clients.size });
@@ -201,7 +202,9 @@ export async function serveWeb(
             ms: Math.round(performance.now() - attached),
           });
         });
-        connectionServices(backend).then(
+        connectionServices(backend, {
+          updates: !identities.some((identity) => identity.startsWith("service:")),
+        }).then(
           (services) => {
             const wire = serveWire(services.provider, (text) => {
               if (connection.readyState === connection.OPEN) connection.send(text);

@@ -58,7 +58,8 @@ export async function serveSocket(
         ms: Math.round(performance.now() - attached),
       });
     });
-    connectionServices(backend).then(
+    // Only the user reaches the socket: its directory is theirs alone.
+    connectionServices(backend, { updates: true }).then(
       (services) => {
         const wire = serveWire(services.provider, (text) => {
           if (!socket.destroyed) socket.write(`${text}\n`);

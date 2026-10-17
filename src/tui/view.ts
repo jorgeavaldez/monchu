@@ -97,12 +97,12 @@ function noticeLine(text: string, kind: NoticeKind): string {
   return muted(`system · ${text}`);
 }
 
-/** Pi's startup header: the name, where home is, and the keys worth knowing. */
-function introLines(home: string): string {
+/** Pi's startup header: the name with the version and home after it, and the keys worth knowing. */
+function introLines(about: string): string {
   const muted = getSelectListTheme().description;
   const hint = (key: string, text: string) =>
     `${theme.fg("dim", formatKeyText(key))}${muted(` ${text}`)}`;
-  return `${theme.bold(theme.fg("accent", "Monchu"))}${muted(` · /help · home ${shortPath(home)}`)}\n${[
+  return `${theme.bold(theme.fg("accent", "Monchu"))}${muted(` ${about}`)}\n${[
     hint("escape", "interrupt"),
     hint("ctrl+c/ctrl+d", "clear/exit"),
     hint("alt+s", "steer"),
@@ -877,8 +877,8 @@ export class MonchuTui {
   }
 
   /** Pi's startup header, placed as a notice so a view switch keeps it. */
-  intro(home: string): void {
-    this.notice(home, "intro");
+  intro(home: string, version: string): void {
+    this.notice(`${version} · /help · home ${shortPath(home)}`, "intro");
   }
 
   notice(text: string, kind: NoticeKind = "system"): void {

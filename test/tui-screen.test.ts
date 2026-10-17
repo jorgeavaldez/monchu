@@ -52,7 +52,7 @@ async function withTerminal(
     await backend.reload();
     running = runTerminal(backend, screen);
     await Promise.race([waitFor(() => screen.started), running]);
-    await visible(screen, "Monchu · /help");
+    await visible(screen, "/help · home");
     await test(screen, backend, home);
   } finally {
     try {
@@ -314,7 +314,7 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
     const screen = new VirtualTerminal(60, 40);
     const running = runTerminal(backend, screen);
     try {
-      await visible(screen, "Monchu · /help");
+      await visible(screen, "/help · home");
       if (target === "root") send(screen, "hold");
       else {
         await backend.startWorker("w", "hold", "start:w");
@@ -385,7 +385,7 @@ it("keeps notices beside their entries through compaction and says the context w
   const screen = new VirtualTerminal(60, 40);
   const running = runTerminal(backend, screen);
   try {
-    await visible(screen, "Monchu · /help");
+    await visible(screen, "/help · home");
     for (const [index, text] of ["first", "second"].entries()) {
       send(screen, text);
       await waitFor(async () => {
@@ -447,7 +447,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
   const running = runTerminal(backend, screen);
   const state = await backend.viewState();
   try {
-    await visible(screen, "Monchu · /help");
+    await visible(screen, "/help · home");
     send(screen, "/login");
     await visible(screen, "Choose provider:");
     screen.sendInput("\x1b[B");
@@ -502,7 +502,7 @@ it("offers /login on a fresh home without credentials and cancels without callin
   const screen = new VirtualTerminal(40, 32);
   const running = runTerminal(backend, screen);
   try {
-    await visible(screen, "Monchu · /help");
+    await visible(screen, "/help · home");
     send(screen, "/login");
     await visible(screen, "Choose provider:");
     screen.sendInput("\x1b");
@@ -525,7 +525,7 @@ it("logs in to Claude Code with a setup-token from /login", async () => {
   const screen = new VirtualTerminal(60, 32);
   const running = runTerminal(backend, screen);
   try {
-    await visible(screen, "Monchu · /help");
+    await visible(screen, "/help · home");
     send(screen, "/login");
     await visible(screen, "Choose provider:");
     screen.sendInput("\x1b[B");

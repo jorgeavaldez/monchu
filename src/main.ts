@@ -86,6 +86,10 @@ try {
         }
       }
       backend.addNotes(...notes);
+      // Left by the process this one replaced after /update; once said, it is not carried into later restarts.
+      const updated = process.env.MONCHU_UPDATE_OUTCOME;
+      delete process.env.MONCHU_UPDATE_OUTCOME;
+      if (updated) backend.updated(updated);
       let outcome: "quit" | "restart" = "quit";
       try {
         if (serve) {
@@ -112,8 +116,22 @@ try {
         await server?.close();
         await backend.close();
       }
-      // Inside the try: the exit backstop below must not cut a Windows child short.
-      if (outcome === "restart") await (await import("./reexec.ts")).reexecute();
+      if (outcome === "restart") {
+        // Loaded before npm replaces the package's files under this process.
+        const { reexecute } = await import("./reexec.ts");
+        const plan = backend.plannedUpdate;
+        if (plan !== undefined) {
+          const { install, installedVersion, VERSION } = await import("./core/update.ts");
+          console.log(`monchu · installing ${plan.url} into ${plan.prefix}`);
+          const { code, tail } = await install(plan, (line) => console.log(`npm · ${line}`));
+          process.env.MONCHU_UPDATE_OUTCOME =
+            code === 0
+              ? `updated · ${VERSION} → ${installedVersion()}`
+              : `warning · update failed: npm exited ${code}; still on ${VERSION}\n${tail.join("\n")}`;
+        }
+        // Inside the try: the exit backstop below must not cut a Windows child short.
+        await reexecute();
+      }
     }
   }
 } catch (error) {

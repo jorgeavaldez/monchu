@@ -207,6 +207,8 @@ Config and all modules are prepared, and the complete registry and installation 
 
 `request_restart({ reason })` only records a durable request on the root and advertises it as a section. It never restarts. Your `/restart` approval clears the request, pauses accepted work, closes the Harness/storage and tool/provider resources; the entry point (`src/reexec.ts`) then re-executes the same Node entry/arguments with inherited stdio, and exits with the child. There is no daemon, supervisor, or agent restart tool.
 
+`/update [release]` is the same approval with an install in between, and likewise user-only: no model tool calls `update()`, and a web connection whose identity is a service token (`service:`) is refused. The core first checks the release's tarball answers (a typo never takes Monchu down), marks its release state `updating` so clients wait two minutes instead of 30 seconds, and asks for a restart. After it closes, the entry point runs `npm install -g --prefix <prefix>` with the prefix derived from the running package's own path, then re-executes; the outcome reaches the new process in `MONCHU_UPDATE_OUTCOME` and every client as a notice. The release state also carries the version and, for edge builds, the `edge` tag's commit from GitHub's API when it differs (checked at open and daily; a hint only).
+
 `skills/monchu/SKILL.md` is read from this checkout in place, without a startup copy. It tells Monchu to edit source in a jj workspace, check and build it, apply authorized changes to the running checkout, and reload; host changes need the user's restart approval.
 
 ## Code layout
@@ -222,7 +224,7 @@ Folders follow systems. Lint enforces the arrows: only `src/main.ts` imports `sr
   - `identity.ts`: per-request home-file and device sections, and the front's instructions.
   - `reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
   - `jobs.ts`: background jobs: the store-wide jobs document and event stream, cron, the replay-safe runner tasks, and the `job` tool.
-  - `update.ts`: `monchu update`, installing a release with npm.
+  - `update.ts`: `/update` and `monchu update`: checking a release, installing it with npm into the running package's prefix, and the daily newer-edge hint.
   - `workdir.ts`, `dev-faux.ts`: directory resolution, and the offline smoke backend.
   - `agents/`: `workers.ts` (durable worker ownership/delivery state machines, lookup/stop/pending checks, and model tools), `goals.ts` (the root's goals document, `update_goal`/`list_goals`, and the `goals` section), `memory.ts` (bounded, atomic home-memory edits for every role), `classifier.ts` (non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up; it never grants permission).
   - `models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.

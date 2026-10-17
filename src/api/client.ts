@@ -20,6 +20,7 @@ import type { JobEvent, JobsState } from "../core/jobs.ts";
 import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
+import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
 export type { Goal, JobEvent };
@@ -126,6 +127,16 @@ export interface Client {
   readonly restartsProcess: boolean;
   /** Another client asked the core to restart (only the core in process hears this); returns an unsubscribe function. */
   onRestartRequest(listener: () => void): () => void;
+  /** The core's release: version, an available edge build, an update in progress, the last update's outcome. */
+  readonly release: Release;
+  /** Release changes; returns an unsubscribe function. */
+  onRelease(listener: (release: Release) => void): () => void;
+  /**
+   * The user's update approval: the core checks the release exists, then closes, installs it and restarts as for
+   * `restart()`, on the old version if npm fails. Only a user's command calls it, never model output, and a core refuses
+   * it from a service login.
+   */
+  update(release: string): Promise<void>;
   /** The newest records of the core's structured log, oldest first. */
   logs(query: LogQuery): Promise<LogRecord[]>;
   /** This client's own telemetry, such as its render timings, into the core's log; never content. */

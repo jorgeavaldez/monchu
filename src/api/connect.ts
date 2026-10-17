@@ -15,10 +15,12 @@ export type Connection = {
 
 /** How long a client keeps trying after the core goes away: long enough for a restart. */
 const RECONNECT_FOR_MS = 30_000;
+/** The same while the core said it is updating: npm's install comes first. */
+const UPDATE_RECONNECT_FOR_MS = 120_000;
 
 /**
  * Connect a client through `dial`, or `undefined` when nothing answers the first time. After a drop it redials for 30
- * seconds, then says so through the client's notices. `onReconnect` hears each successful redial with how long it took.
+ * seconds, or two minutes for an update, then says so through the client's notices. `onReconnect` hears each successful redial with how long it took.
  */
 export async function connectRemote(
   dial: () => Promise<Connection | undefined>,
@@ -41,10 +43,11 @@ export async function connectRemote(
     transport.detach("Connection to Monchu lost");
     if (closing || client === undefined) return;
     const started = Date.now();
+    const waitMs = client.release.updating === null ? RECONNECT_FOR_MS : UPDATE_RECONNECT_FOR_MS;
     await client.disconnected();
     for (
       let delay = 50;
-      Date.now() < started + RECONNECT_FOR_MS && !closing;
+      Date.now() < started + waitMs && !closing;
       delay = Math.min(delay * 2, 1000)
     ) {
       await new Promise((wait) => setTimeout(wait, delay));

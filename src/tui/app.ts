@@ -8,6 +8,7 @@ import type { Client, ModelPick } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
+import { releaseNotices } from "../api/release.ts";
 import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -64,6 +65,7 @@ export async function runTerminal(
   let stopScheme: (() => void) | undefined;
   let stopReload: (() => void) | undefined;
   let stopRestarts: (() => void) | undefined;
+  let stopRelease: (() => void) | undefined;
   let login: AbortController | undefined;
   type Worker = Awaited<ReturnType<Client["workers"]>>[number];
   const workers = new Map<
@@ -484,6 +486,13 @@ export async function runTerminal(
         view.notice(`reloaded · ${(await backend.reload()).join(", ")}`);
         break;
       }
+      case "/update":
+        // As for /restart: only editor input gets here. The core checks the release, then closes for the install.
+        await backend.update(input.text);
+        view.notice(
+          `installing ${input.text} · Monchu restarts on it, or on this version if npm fails`,
+        );
+        break;
       case "/restart":
         // Only editor input reaches this handler; model output never authorizes a restart.
         if (!backend.restartsProcess) {
@@ -665,8 +674,19 @@ export async function runTerminal(
       applyTheme();
     }
     show(true);
-    view.intro(backend.home);
+    view.intro(backend.home, backend.release.version);
     for (const note of [...backend.notes, ...notes]) view.notice(note);
+    let release = backend.release;
+    for (const line of releaseNotices(undefined, release)) view.notice(line);
+    stopRelease = backend.onRelease((next) => {
+      for (const line of releaseNotices(release, next)) view.notice(line);
+      // An attached terminal keeps running the code it started with, which the update replaced on disk.
+      if (!backend.restartsProcess && next.version !== release.version)
+        view.notice(
+          "warning · this terminal still runs the old version; quit and start monchu again",
+        );
+      release = next;
+    });
     // Process start to an interactive terminal, the number restart parity is measured by.
     backend.record("tui", "ready", { ms: Math.round(performance.now()) });
     await loginHint(true, needs);
@@ -680,6 +700,7 @@ export async function runTerminal(
     await inputs;
     stopReload?.();
     stopRestarts?.();
+    stopRelease?.();
     stopScheme?.();
     stopReports?.();
     stopAssessments?.();

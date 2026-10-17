@@ -256,8 +256,36 @@ describe("web server", () => {
       });
       expect(client.home).toBe(backend.home);
       expect(await client.workers()).toEqual([]);
+      // A person may ask for an update (this checkout refuses it later, for its own reason).
+      await expect(client.update("edge")).rejects.toThrow("Nothing here can restart this Monchu");
       await client.close();
       socket.close();
+
+      // A service token reaches the core, but never swaps its code.
+      const serviceSocket = await new Promise<WebSocket>((done, fail) => {
+        const opened = new WebSocket(`ws://127.0.0.1:${port}/api`, {
+          headers: {
+            host: "monchu.example.test",
+            origin: "https://monchu.example.test",
+            "cf-access-jwt-assertion": service,
+          },
+        });
+        opened.once("open", () => done(opened));
+        opened.once("error", fail);
+      });
+      const serviceTransport = new WireTransport();
+      serviceTransport.attach({ send: (text) => serviceSocket.send(text) });
+      serviceSocket.on("message", (data: Buffer) =>
+        serviceTransport.receive(data.toString("utf8")),
+      );
+      const serviceClient = await RemoteClient.open(serviceTransport, (error) => {
+        throw error;
+      });
+      await expect(serviceClient.update("edge")).rejects.toThrow(
+        "Only a person's login can update Monchu",
+      );
+      await serviceClient.close();
+      serviceSocket.close();
     } finally {
       await site.close();
       await backend.close();

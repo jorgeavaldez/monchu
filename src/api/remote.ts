@@ -14,6 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, AuthInteraction, AuthType, Model } from "@earendil-works/pi-ai";
 import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
 import type { Client } from "./client.ts";
+import type { Release } from "./release.ts";
 import {
   Conversations,
   Logins,
@@ -98,6 +99,7 @@ function first<T>(
 export class RemoteClient implements Client {
   readonly restartsProcess = false;
   private info: Hello;
+  private releaseInfo: Release;
   private readonly instances = new Map<string, ConversationService>();
   private readonly instanceWaiters = new Set<() => void>();
   private readonly views = new Map<string, Set<RemoteView>>();
@@ -108,10 +110,16 @@ export class RemoteClient implements Client {
   private readonly binding: RemoteServiceBinding;
   private readonly session: SessionService;
 
-  private constructor(binding: RemoteServiceBinding, session: SessionService, info: Hello) {
+  private constructor(
+    binding: RemoteServiceBinding,
+    session: SessionService,
+    info: Hello,
+    release: Release,
+  ) {
     this.binding = binding;
     this.session = session;
     this.info = info;
+    this.releaseInfo = release;
     binding.observe(Conversations, (instance) => {
       const name = instance.about.value?.name;
       if (name === undefined) return;
@@ -128,6 +136,9 @@ export class RemoteClient implements Client {
     session.hello.subscribe((value) => {
       this.info = value;
     });
+    session.release.subscribe((value) => {
+      this.releaseInfo = value;
+    });
   }
 
   /** Bind to a connected transport and wait for the core's hello. */
@@ -143,15 +154,20 @@ export class RemoteClient implements Client {
     const session = binding.use(Session);
     await binding.ready(context);
     const info = session.hello.value;
-    if (info === undefined) throw new Error("Monchu sent no hello");
-    return new RemoteClient(binding, session, info);
+    const release = session.release.value;
+    if (info === undefined || release === undefined) throw new Error("Monchu sent no hello");
+    return new RemoteClient(binding, session, info, release);
   }
 
   /** The connection dropped: calls fail until `reconnected`. */
   async disconnected(): Promise<void> {
     this.instances.clear();
     this.logins.clear();
-    this.notice("connection to Monchu lost · reconnecting");
+    this.notice(
+      this.releaseInfo.updating === null
+        ? "connection to Monchu lost · reconnecting"
+        : `Monchu is installing ${this.releaseInfo.updating} · reconnecting`,
+    );
     await this.binding.rebind(false, context).catch(() => {});
   }
 
@@ -329,6 +345,15 @@ export class RemoteClient implements Client {
   }
   onRestartRequest(): () => void {
     return () => {};
+  }
+  get release(): Release {
+    return this.releaseInfo;
+  }
+  onRelease(listener: (release: Release) => void): () => void {
+    return this.session.release.subscribe((value) => listener(value));
+  }
+  update(release: string) {
+    return this.session.update(release, context);
   }
 
   onReload(listener: () => void): () => void {

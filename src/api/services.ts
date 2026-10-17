@@ -13,6 +13,7 @@ import type { JobsState } from "../core/jobs.ts";
 import type { ModelChoice, ModelPick, QueueChange, WorkerSummary } from "./client.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
+import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
 /** What a client needs before it can render: replaced after each reload. */
@@ -53,6 +54,7 @@ export interface SessionService {
   assessments: ReplicatedState<{ items: Assessment[] }>;
   jobs: ReplicatedState<JobsState>;
   reports: ReplicatedState<Reports>;
+  release: ReplicatedState<Release>;
 
   /** Attach this connection to the root (`""`) or a worker's conversation, as a `conversation` instance. */
   open(name: string, context: Context): Promise<void>;
@@ -111,6 +113,8 @@ export interface SessionService {
   ): Promise<void>;
   /** Ask the owner to restart; it fails when nothing there can restart it. */
   restart(context: Context): Promise<void>;
+  /** Ask the owner to install a release and restart; refused for a service login. */
+  update(release: string, context: Context): Promise<void>;
   /** Start a provider login for this connection, as a `login` instance; resolves with its id. */
   login(provider: string, auth: "oauth" | "api_key", context: Context): Promise<number>;
   /** Start an MCP sign-in for this connection, as a `login` instance; resolves with its id. */

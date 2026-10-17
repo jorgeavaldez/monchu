@@ -27,6 +27,7 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Client, ModelChoice, ModelPick, QueueChange } from "../api/client.ts";
+import { parseRelease, type Release } from "../api/release.ts";
 import { escalationSummary, noticeText, parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
 import type { McpServerReport } from "../api/reports.ts";
@@ -49,6 +50,7 @@ import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
+import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import {
   DELETED_FROM_QUEUE,
   hasPendingDelivery,
@@ -139,6 +141,15 @@ export class Monchu implements Client {
   private readonly models: Models;
   private readonly reloadListeners = new Set<() => void>();
   private readonly restartListeners = new Set<() => void>();
+  private readonly releaseListeners = new Set<(release: Release) => void>();
+  private releaseState: Release = {
+    version: VERSION,
+    available: null,
+    updating: null,
+    outcome: null,
+  };
+  private planned: UpdatePlan | undefined;
+  private edgeCheck: ReturnType<typeof setInterval> | undefined;
   private readonly startup: string[] = [];
   /** This process is the core: restarting re-executes it, so its own terminal must let go first. */
   readonly restartsProcess = true;
@@ -263,6 +274,7 @@ export class Monchu implements Client {
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
+      backend.watchEdge();
       return backend;
     } catch (error) {
       try {
@@ -834,6 +846,66 @@ export class Monchu implements Client {
     await this.close();
   }
 
+  get release(): Release {
+    return this.releaseState;
+  }
+
+  onRelease(listener: (release: Release) => void): () => void {
+    this.releaseListeners.add(listener);
+    return () => this.releaseListeners.delete(listener);
+  }
+
+  private setRelease(change: Partial<Release>): void {
+    this.releaseState = { ...this.releaseState, ...change };
+    for (const listener of this.releaseListeners) listener(this.releaseState);
+  }
+
+  /** The entry point's word on the update this process came back from. */
+  updated(outcome: string): void {
+    this.setRelease({ outcome });
+  }
+
+  /** A newer edge build, at open and then daily; a failed check is logged, never reported, since it only feeds a hint. */
+  private watchEdge(): void {
+    const check = () =>
+      void newerEdge().then(
+        (available) => this.setRelease({ available: available ?? null }),
+        (error: unknown) =>
+          this.log.write("warn", "core.update", "edge check failed", {
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+      );
+    check();
+    this.edgeCheck = setInterval(check, 86_400_000);
+    this.edgeCheck.unref();
+  }
+
+  /**
+   * A user approved an update: check it can run, then ask whoever restarts this process to close it; the entry point
+   * installs `plannedUpdate` before re-executing. Never exposed as a model tool.
+   */
+  async update(text: string): Promise<void> {
+    const release = parseRelease(text);
+    if (release === undefined) throw new Error(`Not a release: ${text}. Use edge or a version`);
+    if (process.platform === "win32")
+      throw new Error(
+        "Windows keeps a running Monchu's files locked: /quit, then run monchu update",
+      );
+    if (this.closing !== undefined || this.planned !== undefined)
+      throw new Error("Monchu is already closing");
+    if (this.restartListeners.size === 0) throw new Error("Nothing here can restart this Monchu");
+    const plan = await planUpdate(release);
+    this.planned = plan;
+    this.setRelease({ updating: release });
+    this.log.write("info", "core.update", "updating", { release, prefix: plan.prefix });
+    this.requestRestart();
+  }
+
+  /** The install the entry point runs after closing for `/update`. */
+  get plannedUpdate(): UpdatePlan | undefined {
+    return this.planned;
+  }
+
   close(): Promise<void> {
     this.closing ??= this.closeRuntime();
     return this.closing;
@@ -842,6 +914,7 @@ export class Monchu implements Client {
   private async closeRuntime(): Promise<void> {
     const started = performance.now();
     this.stopTelemetry();
+    clearInterval(this.edgeCheck);
     try {
       // A failed reload must not prevent storage from closing.
       await this.reloading?.catch(() => {});
