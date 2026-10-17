@@ -1,6 +1,7 @@
 import { createModels, type Models, type Provider } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { defaultConfig, type ClaudeConfig, type ModelRole, type MonchuConfig } from "../config.ts";
+import { OpenCodeGo, OpenCodeZen, OpenRouter } from "./api-key.ts";
 import { createClaudeCodeProvider } from "./claude-code.ts";
 import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
@@ -11,7 +12,8 @@ export { createDevProvider } from "./dev.ts";
 /**
  * Monchu's public models seam. Providers are code modules using pi-ai's native Provider contract.
  * Add a provider module and register it here; every role uses this same collection and credential store.
- * Only the explicit dev entry point and tests supply a faux provider. No catalogs are fetched or persisted.
+ * Only the explicit dev entry point and tests supply a faux provider. Catalogs are pi-ai's bundled ones: none are
+ * fetched or persisted.
  */
 export async function openModels(
   home: string,
@@ -25,6 +27,9 @@ export async function openModels(
   models.setProvider(createCodexProvider());
   models.setProvider(Cloudflare);
   models.setProvider(createClaudeCodeProvider(home, claude));
+  models.setProvider(OpenCodeGo);
+  models.setProvider(OpenCodeZen);
+  models.setProvider(OpenRouter);
   if (devProvider !== undefined)
     models.setProvider(
       devProvider.id === "openai-codex" ? createCodexProvider(devProvider) : devProvider,

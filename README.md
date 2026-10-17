@@ -19,7 +19,7 @@ monchu
 To update, type `/update` in Monchu (or `/update <version>` for a [tagged release](https://github.com/jorgeavaldez/monchu/releases)): it installs the release and restarts on it. With Monchu quit, `monchu update` does the same. `npm uninstall -g monchu` removes the command but keeps the home. [docs/setup.md](docs/setup.md#updating) also covers running your own checkout with `npm link`.
 
 1. Monchu creates its home at `~/.monchu`. Set `MONCHU_HOME` to use a different directory.
-2. Run `/login` and pick Codex or Claude Code. Monchu uses that provider's models.
+2. Run `/login` and pick a provider. With Codex or Claude Code, Monchu uses its models; with OpenCode or OpenRouter (API keys), pick models with `/model` and Ctrl+S.
 3. Ask Monchu to use the `onboard` skill to learn about you from what's already on the machine.
 
 [docs/setup.md](docs/setup.md) covers logins, configuration, MCP servers, and running on several devices. [docs/internals.md](docs/internals.md) covers how Monchu works. `/help` lists the commands.

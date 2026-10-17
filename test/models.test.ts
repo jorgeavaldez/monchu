@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig, loadConfig } from "../src/core/config.ts";
 import { configuredRoles, openModels } from "../src/core/models/index.ts";
+import { LOGIN_PROVIDERS } from "../src/ui/commands.ts";
 import { cleanup, fauxRole, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -17,6 +18,9 @@ describe("Monchu models", () => {
       "openai-codex",
       "cloudflare-workers-ai",
       "claude-code",
+      "opencode-go",
+      "opencode",
+      "openrouter",
       "faux",
     ]);
     const config = await loadConfig(value.directory);
@@ -54,7 +58,7 @@ describe("Monchu models", () => {
     expect(fixed.warnings).toHaveLength(3);
     expect(fixed.warnings[0]).toContain("no configured model faux/opus (front); faux has");
     expect(fixed.warnings[1]).toContain(
-      "providers: openai-codex, cloudflare-workers-ai, claude-code",
+      "providers: openai-codex, cloudflare-workers-ai, claude-code, opencode-go, opencode, openrouter",
     );
     expect(fixed.warnings[2]).toContain("Routing advice is off");
     expect(await configuredRoles(models, config)).toEqual({ config, warnings: [] });
@@ -146,6 +150,54 @@ describe("Monchu models", () => {
     expect((await readdir(value.directory)).filter((name) => name.startsWith("auth.json"))).toEqual(
       ["auth.json"],
     );
+  });
+
+  it.each(["opencode-go", "opencode", "openrouter"])(
+    "logs in to %s with an API key that only auth.json holds",
+    async (provider) => {
+      const value = await setup();
+      const models = await openModels(value.directory);
+      const prompts: string[] = [];
+      await models.login(provider, "api_key", {
+        prompt: async (prompt) => {
+          prompts.push(prompt.type);
+          return "test-provider-key";
+        },
+        notify: () => {},
+      });
+      expect(prompts).toEqual(["secret"]);
+      const reopened = await openModels(value.directory);
+      expect(await reopened.getAuth(provider)).toEqual({
+        auth: { apiKey: "test-provider-key" },
+        source: "stored credential",
+      });
+      expect(JSON.stringify(reopened.getAllModels())).not.toContain("test-provider-key");
+      expect(reopened.getModels(provider).length).toBeGreaterThan(0);
+    },
+  );
+
+  it("resolves OpenCode and OpenRouter roles, and Zen's Jev as a classifier", async () => {
+    const value = await setup();
+    const models = await openModels(value.directory);
+    // Every /login entry is a registered provider offering the login it asks for.
+    for (const entry of LOGIN_PROVIDERS)
+      expect(models.getProvider(entry.id)?.auth).toHaveProperty(
+        entry.auth === "api_key" ? "apiKey" : "oauth",
+      );
+    const config = await loadConfig(value.directory);
+    const go = models.getModels("opencode-go")[0];
+    const router = models.getModels("openrouter")[0];
+    if (go === undefined || router === undefined) throw new Error("missing bundled catalogs");
+    expect(
+      (
+        await configuredRoles(models, {
+          ...config,
+          front: { provider: "opencode-go", modelId: go.id, thinkingLevel: "low" },
+          worker: { provider: "openrouter", modelId: router.id, thinkingLevel: "low" },
+          classifier: { provider: "opencode", modelId: "jev-1.13-free" },
+        })
+      ).warnings,
+    ).toEqual([]);
   });
 
   it.each([

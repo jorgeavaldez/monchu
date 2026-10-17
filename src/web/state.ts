@@ -19,7 +19,7 @@ import { shortId } from "../api/ids.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
 import type { Connection } from "../api/remote.ts";
-import { help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
+import { help, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
@@ -395,7 +395,7 @@ async function runLogin(): Promise<void> {
     );
     if (picked === undefined) return;
     loginStatus.value = { message: "Starting…" };
-    await client().login(picked.id, picked.id === "cloudflare-workers-ai" ? "api_key" : "oauth", {
+    await client().login(picked.id, loginAuth(picked.id), {
       signal: controller.signal,
       prompt: (request) => answerPrompt(request, controller.signal),
       notify: loginEvent,

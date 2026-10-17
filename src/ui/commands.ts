@@ -73,7 +73,10 @@ export const commands: Record<
   "/new": { usage: "[handoff]", help: "fresh root context, optionally carrying a handoff" },
   "/compact": { usage: "[instructions]", help: "summarize the root's context now" },
   "/cd": { usage: "<path>", help: "change the shown conversation's directory (while idle)" },
-  "/login": { usage: "", help: "sign in to a model provider: Codex, Claude Code, Cloudflare" },
+  "/login": {
+    usage: "",
+    help: "sign in to a model provider: Codex, Claude Code, Cloudflare, OpenCode, OpenRouter",
+  },
   "/mcp": {
     usage: "[login|logout|reconnect] [server]",
     help: "MCP servers and their tools; sign in, sign out, reconnect",
@@ -95,12 +98,25 @@ export const commands: Record<
   "/quit": { usage: "", help: "save and close" },
 };
 
-/** Providers /login offers, in menu order, in every client; Cloudflare's takes an API key, the others OAuth. */
-export const LOGIN_PROVIDERS = [
-  { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)" },
-  { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)" },
-  { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (optional routing advice)" },
-];
+/** Providers /login offers, in menu order, in every client, with the login each takes. */
+export const LOGIN_PROVIDERS: readonly { id: string; label: string; auth: "oauth" | "api_key" }[] =
+  [
+    { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)", auth: "oauth" },
+    { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)", auth: "oauth" },
+    {
+      id: "cloudflare-workers-ai",
+      label: "Cloudflare Workers AI (optional routing advice)",
+      auth: "api_key",
+    },
+    { id: "opencode-go", label: "OpenCode Go (API key)", auth: "api_key" },
+    { id: "opencode", label: "OpenCode Zen (API key)", auth: "api_key" },
+    { id: "openrouter", label: "OpenRouter (API key)", auth: "api_key" },
+  ];
+
+/** The login a /login provider takes. */
+export function loginAuth(provider: string): "oauth" | "api_key" {
+  return LOGIN_PROVIDERS.find((entry) => entry.id === provider)?.auth ?? "oauth";
+}
 
 export const help = [
   "Commands:",

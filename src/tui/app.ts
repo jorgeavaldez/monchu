@@ -18,7 +18,7 @@ import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { releaseNotices } from "../api/release.ts";
-import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
+import { commands, help, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
 import { formatJobEvent, jobEventRoot } from "../ui/jobs.ts";
 import { activeRoots, parseRootsCommand, rootIds, rootLabel } from "../ui/roots.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -604,36 +604,36 @@ export async function runTerminal(
         view.beginLogin(() => controller.abort());
         try {
           const provider = await view.promptLogin(
-            { type: "select", message: "Choose provider:", options: LOGIN_PROVIDERS },
+            {
+              type: "select",
+              message: "Choose provider:",
+              options: LOGIN_PROVIDERS.map(({ id, label }) => ({ id, label })),
+            },
             controller.signal,
           );
-          await backend.login(
-            provider,
-            provider === "cloudflare-workers-ai" ? "api_key" : "oauth",
-            {
-              signal: controller.signal,
-              prompt: (prompt) => view.promptLogin(prompt, controller.signal),
-              notify: (event) => {
-                switch (event.type) {
-                  case "device_code":
-                    view.loginMessage(
-                      `Code: ${event.userCode}\nWaiting for approval · Esc to cancel`,
-                      event.verificationUri,
-                    );
-                    break;
-                  case "auth_url":
-                    // As in Pi: a sign-in page opens by itself; a device code is read first, so its page waits.
-                    view.loginMessage("", event.url, browserHere());
-                    break;
-                  case "info":
-                  case "progress":
-                    // Keep provider output ephemeral, outside chat/history/logs.
-                    view.loginMessage(event.message);
-                    break;
-                }
-              },
+          await backend.login(provider, loginAuth(provider), {
+            signal: controller.signal,
+            prompt: (prompt) => view.promptLogin(prompt, controller.signal),
+            notify: (event) => {
+              switch (event.type) {
+                case "device_code":
+                  view.loginMessage(
+                    `Code: ${event.userCode}\nWaiting for approval · Esc to cancel`,
+                    event.verificationUri,
+                  );
+                  break;
+                case "auth_url":
+                  // As in Pi: a sign-in page opens by itself; a device code is read first, so its page waits.
+                  view.loginMessage("", event.url, browserHere());
+                  break;
+                case "info":
+                case "progress":
+                  // Keep provider output ephemeral, outside chat/history/logs.
+                  view.loginMessage(event.message);
+                  break;
+              }
             },
-          );
+          });
           view.notice(`logged in · ${provider}`);
           loggedIn = true;
         } catch {
