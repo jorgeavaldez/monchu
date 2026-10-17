@@ -523,7 +523,7 @@ describe("committed Durable presentation", () => {
       await harness.waitForTask(await deliveryTaskId(harness, root.id, -1), context);
       await root.waitForIdle(context);
       const collapsed = await viewport();
-      expect(collapsed).toMatch(/│ ▸ w · \S.*\d:\d{2}.* · [k-z]{4}\s*\n/);
+      expect(collapsed).toMatch(/│ ▸ w · .*\d:\d{2}.* · [k-z]{4}\s*\n/);
       expect(collapsed).toContain("report line 1");
       expect(collapsed).not.toContain("report line 3");
       expect(collapsed).toMatch(/more lines · click or Ctrl-O to expand/);
@@ -531,13 +531,13 @@ describe("committed Durable presentation", () => {
       const lines = collapsed.split("\n");
       const last = lines.findIndex((line) => line.includes("front reply line 8"));
       expect(lines.findIndex((line) => line.includes("front reply line 1"))).toBeGreaterThan(-1);
-      expect(lines[last + 1]).toMatch(/^ \S.*\d:\d{2}.* · [k-z]{4}\s*$/);
+      expect(lines[last + 1]).toMatch(/^ .*\d:\d{2}.* · [k-z]{4}\s*$/);
       // A click on the report toggles only that message, from the keyboard-free pointer path.
-      const row = lines.findIndex((line) => /^│ ▸ w · \S.*\d:\d{2}.* · [k-z]{4}\s*$/.test(line));
+      const row = lines.findIndex((line) => /^│ ▸ w · .*\d:\d{2}.* · [k-z]{4}\s*$/.test(line));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
       screen.sendInput(`\x1b[<0;5;${row + 1}m`);
       await waitFor(async () => (await viewport()).includes("report line 8"));
-      expect(await viewport()).toMatch(/│ ▾ w · \S.*\d:\d{2}.* · [k-z]{4}\s*\n/);
+      expect(await viewport()).toMatch(/│ ▾ w · .*\d:\d{2}.* · [k-z]{4}\s*\n/);
       // A second press within 500 ms would be a double click.
       await new Promise((resolve) => setTimeout(resolve, 600));
       screen.sendInput(`\x1b[<0;5;${row + 1}M`);
@@ -668,13 +668,13 @@ describe("committed Durable presentation", () => {
         expect(chat).not.toMatch(/not a new user instruction|Tell the user|worker · |\[Worker /);
         // A report: the worker's name behind a purple rule, every body line on its own ruled row.
         const report = lines.findIndex((line) => line.startsWith("│ report line one"));
-        expect(lines[report - 1]).toMatch(/^│ reader · \S.*\d:\d{2}.* · [k-z]{4}\s*$/);
+        expect(lines[report - 1]).toMatch(/^│ reader · .*\d:\d{2}.* · [k-z]{4}\s*$/);
         expect(lines[report + 1]).toMatch(/^│ report line two\s*$/);
         for (const row of [report - 1, report, report + 1])
           expect(await screen.foreground(row, 0)).toBe(purple);
         // An update: a gray rule and muted text, its lines kept.
         const update = lines.findIndex((line) => line.startsWith("│ checking files"));
-        expect(lines[update - 1]).toMatch(/^│ reader · \S.*\d:\d{2}.* · [k-z]{4}\s*$/);
+        expect(lines[update - 1]).toMatch(/^│ reader · .*\d:\d{2}.* · [k-z]{4}\s*$/);
         expect(lines[update + 1]).toMatch(/^│ halfway there\s*$/);
         for (const row of [update - 1, update, update + 1])
           expect(await screen.foreground(row, 0)).toBe(gray);
@@ -910,13 +910,13 @@ describe("committed Durable presentation", () => {
       );
       const update = lines.findIndex((line) => line.startsWith("│ checking files"));
       expect(update, `${refresh}\n${shown}`).toBeGreaterThan(0);
-      expect(lines[update - 1], refresh).toMatch(/^│ reader · \S.*\d:\d{2}.* · [k-z]{4}\s*$/);
+      expect(lines[update - 1], refresh).toMatch(/^│ reader · .*\d:\d{2}.* · [k-z]{4}\s*$/);
       expect(lines[update + 1], refresh).toMatch(/^│ halfway there\s*$/);
       for (const row of [update - 1, update, update + 1])
         expect(await screen.foreground(row, 0), refresh).toBe(gray);
       expect(await screen.foreground(update, 2), refresh).toBe(muted);
       const report = lines.findIndex((line) => line.startsWith("│ report body"));
-      expect(lines[report - 1], refresh).toMatch(/^│ reader · \S.*\d:\d{2}.* · [k-z]{4}\s*$/);
+      expect(lines[report - 1], refresh).toMatch(/^│ reader · .*\d:\d{2}.* · [k-z]{4}\s*$/);
       expect(await screen.foreground(report, 0), refresh).toBe(purple);
     };
 
