@@ -9,7 +9,8 @@ process.once("exit", () => rmSync(home, { recursive: true, force: true }));
 
 export default defineConfig({
   test: {
-    env: { HOME: home, USERPROFILE: home },
+    // jj keeps `config set --repo` under XDG_CONFIG_HOME; keep it out of test repos and the real config.
+    env: { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config") },
     // Hosted Windows runners take several seconds to spawn processes and open stores.
     testTimeout: 20_000,
   },
