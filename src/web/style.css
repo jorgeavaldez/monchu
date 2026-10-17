@@ -178,6 +178,83 @@ pre {
 .assistant {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  min-width: 0;
+}
+/* Markdown keeps the message's one size and line height: hierarchy from weight, blocks a step apart, code boxed. */
+.md {
+  min-width: 0;
+}
+.md :where(p, ul, ol, blockquote, hr, pre) {
+  margin: 0;
+}
+.md > * + *,
+.md li > * + *,
+.md blockquote > * + * {
+  margin-top: var(--s1);
+}
+/* Lists stay tight: a nested one follows its item's line directly. */
+.md li > :is(ul, ol) {
+  margin-top: 0;
+}
+.md .h {
+  font-weight: bold;
+}
+.md .h1,
+.md .h2 {
+  text-decoration: underline;
+}
+.md .h4,
+.md .h5,
+.md .h6 {
+  color: var(--muted);
+}
+/* Room for a two-digit number and its dot. */
+.md ul,
+.md ol {
+  padding-left: calc(var(--s2) + var(--s1));
+}
+.md blockquote {
+  padding-left: var(--s1);
+  border-left: 1px solid var(--muted);
+  color: var(--muted);
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--muted);
+}
+.md code {
+  font: inherit;
+  background: var(--card);
+}
+.card .md code {
+  background: var(--bg);
+}
+.md pre.code {
+  white-space: pre;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  padding: var(--s0) var(--s1);
+  border: 1px solid var(--muted);
+  background: var(--card);
+}
+.card .md pre.code {
+  background: var(--bg);
+}
+.md pre.code code {
+  background: none;
+}
+.md .table {
+  overflow-x: auto;
+}
+.md table {
+  border-collapse: collapse;
+}
+.md th,
+.md td {
+  border: 1px solid var(--muted);
+  padding: 0 var(--s1);
+  text-align: left;
+  vertical-align: top;
 }
 .card {
   border: 1px solid var(--line);
@@ -189,12 +266,12 @@ pre {
 .card header:not(:last-child) {
   border-bottom: 1px solid var(--line);
 }
-.card pre,
+.card .body,
 .card footer {
   padding: 0 var(--s1);
 }
 /* A folded card's first lines as they wrap; the card sets how many. */
-.card pre.clamp {
+.card .clamp {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   overflow: hidden;

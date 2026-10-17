@@ -18,11 +18,12 @@ import {
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
+import { Markdown } from "./markdown.tsx";
 import { expandAll, following, notices, rootId, type Notice } from "./state.ts";
 
 const PREVIEW_LINES = 4;
 
-/** Plain text with links made clickable; markdown stays as written, which reads fine in monospace. */
+/** Plain text with links made clickable: what the user typed, tool output and notices. */
 function Text({ text }: { text: string }) {
   const parts: ComponentChildren[] = [];
   let last = 0;
@@ -62,7 +63,7 @@ function Card(props: {
   const lines = props.body.split("\n");
   // Whether the clamped preview hides wrapped lines; measured once it is laid out.
   const clipped = useSignal(false);
-  const text = useRef<HTMLPreElement>(null);
+  const text = useRef<HTMLDivElement>(null);
   const long = lines.length > preview || clipped.value;
   const expanded = open.value ?? expandAll.value;
   const folded = long && !expanded;
@@ -90,14 +91,14 @@ function Card(props: {
         {props.stamp === undefined ? null : <> · {props.stamp}</>}
       </header>
       {props.body && !(folded && preview === 0) ? (
-        <pre
+        <div
           ref={text}
-          class={expanded ? undefined : "clamp"}
+          class={expanded ? "body" : "body clamp"}
           style={expanded ? undefined : { WebkitLineClamp: preview }}
         >
           {/* Folded, only the lines it can show: a long report never lays out unseen. */}
-          <Text text={expanded ? props.body : lines.slice(0, preview).join("\n")} />
-        </pre>
+          <Markdown text={expanded ? props.body : lines.slice(0, preview).join("\n")} />
+        </div>
       ) : null}
       {folded && preview > 0 && lines.length > preview ? (
         <footer>{`… ${lines.length - preview} more line${lines.length - preview === 1 ? "" : "s"}`}</footer>
@@ -185,7 +186,7 @@ function Assistant(props: {
         if (part.type === "text")
           return part.text.trim() ? (
             <div class="assistant">
-              <Text text={part.text} />
+              <Markdown text={part.text} />
             </div>
           ) : null;
         if (part.type === "toolCall")
@@ -256,7 +257,8 @@ function entryNode(
     return (
       <>
         <div class="user">
-          <Text text={text} />
+          {/* Typed text stays as written; a fenced block says markdown is meant. */}
+          {/^ {0,3}(```|~~~)/m.test(text) ? <Markdown text={text} /> : <Text text={text} />}
           <UserAttachments files={files} images={images} />
         </div>
         <div class="meta">{shown}</div>
@@ -452,7 +454,7 @@ export function Transcript({ view }: { view: ConversationView }) {
       {nodes}
       {live.partial ? (
         <div class="assistant live">
-          <Text text={live.partial} />
+          <Markdown text={live.partial} />
         </div>
       ) : null}
       {live.calls

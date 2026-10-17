@@ -5,6 +5,41 @@ import {
   type Provider,
 } from "@earendil-works/pi-ai";
 
+/** A reply with every kind of markdown the clients render, for checking how they draw it. */
+const MARKDOWN = [
+  "# Heading one",
+  "",
+  "Some **bold**, *italic*, ~~struck~~ and `inline code`, a [link](https://example.com/docs) and snake_case_name.",
+  "A second line in the same paragraph.",
+  "",
+  "## A list",
+  "",
+  "- first item",
+  "- second item with `code`",
+  "  - nested item",
+  "1. ordered one",
+  "2. ordered two",
+  "",
+  "> a quoted line",
+  "> and another",
+  "",
+  "```ts",
+  'const wide = "a long line of code that runs well past the width of a phone screen and scrolls";',
+  "function add(a: number, b: number) {",
+  "  return a + b;",
+  "}",
+  "```",
+  "",
+  "| tool | state |",
+  "| --- | :---: |",
+  "| read | done |",
+  "| bash | **running** |",
+  "",
+  "---",
+  "",
+  "[unsafe](javascript:alert(1)) <b>raw html</b> DONE",
+].join("\n");
+
 /** Offline provider for the real TUI smoke mode; all tool calls still execute through Durable. */
 export function createDevProvider(): Provider {
   const faux = fauxProvider({
@@ -36,6 +71,7 @@ export function createDevProvider(): Provider {
           ),
           { stopReason: "toolUse" },
         );
+      if (text === "markdown") return fauxAssistantMessage(MARKDOWN);
       if (text === "read")
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",

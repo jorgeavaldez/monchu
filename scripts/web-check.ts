@@ -739,6 +739,86 @@ async function journeys(url: string, home: string, origin: string): Promise<void
   });
 
   await journey(
+    "markdown: a reply renders as markdown while it streams and once settled, safely",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const before = Number(await page(replies));
+      await browser("fill", "textarea", "markdown");
+      await browser("press", "Enter");
+      // Part way through: the blocks streamed so far are already drawn, and nothing overflows.
+      await browser("wait", "--fn", `!!document.querySelector(".live .md li")`);
+      check(
+        (await page(`!!document.querySelector(".live .md .h1 + p strong")`)) === true,
+        "the streaming reply isn't drawn as markdown",
+      );
+      const streamingOverflow =
+        number(await page("document.documentElement.scrollWidth - innerWidth")) ?? 0;
+      check(streamingOverflow <= 0, `the streaming reply overflows by ${streamingOverflow} px`);
+      await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      const reply = `[...document.querySelectorAll(".assistant:not(.live)")].at(-1).querySelector(".md")`;
+      const has = async (selector: string, what: string) =>
+        check(
+          (await page(`!!${reply}.querySelector(${JSON.stringify(selector)})`)) === true,
+          `no ${what}`,
+        );
+      await has(".h1", "heading");
+      await has("p strong", "bold");
+      await has("p em", "italic");
+      await has("p s", "strikethrough");
+      await has("p code", "inline code");
+      await has(
+        `a[href="https://example.com/docs"][rel~="noopener"][target="_blank"]`,
+        "safe link",
+      );
+      await has("ul > li > ul > li", "nested list");
+      await has("ol > li + li", "ordered list");
+      await has("blockquote", "quote");
+      await has(".table th + th", "table");
+      await has("hr", "rule");
+      check(
+        (await page(`${reply}.textContent.includes("snake_case_name")`)) === true,
+        "underscores inside a word became emphasis",
+      );
+      check(
+        (await page(
+          `!${reply}.querySelector("b, a[href^='javascript']") && ${reply}.textContent.includes("<b>raw html</b>") && ${reply}.textContent.includes("unsafe")`,
+        )) === true,
+        "raw HTML or a javascript: link got through",
+      );
+      check(
+        (await page(
+          `(({ scrollWidth, clientWidth }) => scrollWidth > clientWidth)(${reply}.querySelector("pre.code"))`,
+        )) === true,
+        "a wide code block wraps instead of scrolling",
+      );
+      check(
+        (await page(
+          `(() => { const lh = parseFloat(getComputedStyle(${reply}).lineHeight); return [...${reply}.querySelectorAll("p, li, code, th, td")].every((item) => parseFloat(getComputedStyle(item).fontSize) === 14 && Math.abs(parseFloat(getComputedStyle(item).lineHeight) - lh) < 0.5); })()`,
+        )) === true,
+        "markdown text strays from the message's size or line height",
+      );
+      await capture("markdown", home, origin);
+      // Typed text stays as written unless a fence says markdown is meant.
+      const user = `[...document.querySelectorAll(".user")].at(-1)`;
+      for (const [typed, markdown] of [
+        ["a *plain* note", false],
+        ["a *fenced* note\n```\nfenced\n```", true],
+      ] as const) {
+        const count = Number(await page(replies));
+        await browser("fill", "textarea", typed);
+        await browser("press", "Enter");
+        await browser("wait", "--fn", `${replies} > ${count} && !document.querySelector(".live")`);
+        check(
+          (await page(`!!${user}.querySelector("pre.code") && !!${user}.querySelector("em")`)) ===
+            markdown,
+          markdown ? "a fenced message isn't drawn as markdown" : "a plain message got markdown",
+        );
+      }
+      return "streamed and settled reply drawn as markdown, links safe, raw HTML as text";
+    },
+  );
+
+  await journey(
     "attach: a picked image uploads, previews in the tray, and goes with the message",
     async () => {
       const file = join(home, "attach-check.png");
@@ -868,7 +948,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         true,
       "no skill card",
     );
-    check((await page(`${card}.querySelector("pre") === null`)) === true, "the skill shows open");
+    check((await page(`${card}.querySelector(".body") === null`)) === true, "the skill shows open");
     check(
       (await page(
         `${card}.nextElementSibling?.matches(".user") && ${card}.nextElementSibling.textContent === "check this"`,
@@ -883,7 +963,10 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     );
     await capture("skill", home, origin);
     await page(`${card}.querySelector("header").click()`);
-    check((await page(`${card}.querySelector("pre") !== null`)) === true, "a tap doesn't open it");
+    check(
+      (await page(`${card}.querySelector(".body .md") !== null`)) === true,
+      "a tap doesn't open it",
+    );
     await page(`${card}.querySelector("header").click()`);
     return "folded under /skill:onboard, the typed text below it, a tap opens it";
   });
