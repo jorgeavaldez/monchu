@@ -157,6 +157,7 @@ pre {
 }
 .user {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   border-left: 3px solid var(--yellow);
   padding-left: 1ch;
 }
@@ -192,6 +193,9 @@ pre {
 }
 .card.report {
   border-left: 3px solid var(--accent);
+}
+.card.skill {
+  border-left: 3px solid var(--yellow);
 }
 .card.update {
   border-style: dashed;

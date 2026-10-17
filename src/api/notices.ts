@@ -101,3 +101,18 @@ export function systemNoticeSummary(content: string): string | undefined {
   if (!label.startsWith(SYSTEM_PREFIX) || !label.endsWith(SYSTEM_SUFFIX)) return undefined;
   return label.slice(SYSTEM_PREFIX.length, -SYSTEM_SUFFIX.length);
 }
+
+/**
+ * A `/skill:<name>` message split for display: the skill's name and instructions, as `skillMessage` writes them, and
+ * the user's own text after them; `undefined` for any other text. The model still gets the whole message.
+ */
+export function skillInvocation(
+  content: string,
+): { name: string; body: string; text: string } | undefined {
+  const match =
+    /^<skill name="([^"]*)" location="[^"]*">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]*))?$/.exec(
+      content,
+    );
+  if (match === null) return undefined;
+  return { name: match[1] ?? "", body: match[2] ?? "", text: match[3] ?? "" };
+}

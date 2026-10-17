@@ -651,6 +651,38 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     },
   );
 
+  await journey("skill: its instructions fold under its name, the typed text shows", async () => {
+    const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+    const before = Number(await page(replies));
+    await browser("fill", "textarea", "/skill:onboard check this");
+    await browser("press", "Enter");
+    await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+    const card = `[...document.querySelectorAll(".card.skill")].at(-1)`;
+    check(
+      (await page(`${card}?.querySelector("header").textContent.includes("/skill:onboard")`)) ===
+        true,
+      "no skill card",
+    );
+    check((await page(`${card}.querySelector("pre") === null`)) === true, "the skill shows open");
+    check(
+      (await page(
+        `${card}.nextElementSibling?.matches(".user") && ${card}.nextElementSibling.textContent === "check this"`,
+      )) === true,
+      "the typed text isn't shown after the skill",
+    );
+    check(
+      (await page(
+        `[...document.querySelectorAll(".user")].some((item) => item.textContent.includes("<skill"))`,
+      )) === false,
+      "a message shows the raw skill block",
+    );
+    await capture("skill", home, origin);
+    await page(`${card}.querySelector("header").click()`);
+    check((await page(`${card}.querySelector("pre") !== null`)) === true, "a tap doesn't open it");
+    await page(`${card}.querySelector("header").click()`);
+    return "folded under /skill:onboard, the typed text below it, a tap opens it";
+  });
+
   await journey("editor: grows with its text up to a cap, then scrolls", async () => {
     const box = `(({ clientHeight, scrollHeight }) => ({ height: clientHeight, scroll: scrollHeight, pad: parseFloat(getComputedStyle(document.querySelector("textarea")).paddingTop) }))(document.querySelector("textarea"))`;
     const measure = async () => {

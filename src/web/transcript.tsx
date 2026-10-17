@@ -9,7 +9,12 @@ import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageParts } from "../api/attachments.ts";
-import { escalationSummary, systemNoticeSummary, workerNotice } from "../api/notices.ts";
+import {
+  escalationSummary,
+  skillInvocation,
+  systemNoticeSummary,
+  workerNotice,
+} from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
@@ -46,12 +51,15 @@ function Card(props: {
   body: string;
   stamp?: ComponentChildren;
   error?: boolean;
+  /** Lines shown while collapsed; none shows the header alone. */
+  preview?: number;
 }) {
   const open = useSignal<boolean | undefined>(undefined);
+  const preview = props.preview ?? PREVIEW_LINES;
   const lines = props.body.split("\n");
-  const long = lines.length > PREVIEW_LINES;
+  const long = lines.length > preview;
   const expanded = open.value ?? expandAll.value;
-  const shownText = !long || expanded ? props.body : lines.slice(0, PREVIEW_LINES).join("\n");
+  const shownText = !long || expanded ? props.body : lines.slice(0, preview).join("\n");
   return (
     <section
       class={`card ${props.kind}${props.error === true ? " error" : ""}`}
@@ -65,14 +73,14 @@ function Card(props: {
         {props.header}
         {props.stamp === undefined ? null : <> · {props.stamp}</>}
       </header>
-      {props.body ? (
+      {shownText ? (
         <pre>
           <Text text={shownText} />
         </pre>
       ) : null}
       {long && !expanded ? (
         <footer>
-          … {lines.length - PREVIEW_LINES} more line{lines.length - PREVIEW_LINES === 1 ? "" : "s"}
+          {`… ${lines.length - preview} ${preview === 0 ? "" : "more "}line${lines.length - preview === 1 ? "" : "s"}`}
         </footer>
       ) : null}
     </section>
@@ -178,6 +186,21 @@ function entryNode(
     if (escalation !== undefined) return <div class="system">clef · escalated · {escalation}</div>;
     const system = systemNoticeSummary(text);
     if (system !== undefined) return <div class="system">system · {system}</div>;
+    // A skill's instructions stay folded under its name; what the user typed with it shows as usual.
+    const skill = skillInvocation(text);
+    if (skill !== undefined)
+      return (
+        <>
+          <Card kind="skill" header={<b>/skill:{skill.name}</b>} body={skill.body} preview={0} />
+          {skill.text || files.length > 0 || images.length > 0 ? (
+            <div class="user">
+              <Text text={skill.text} />
+              <UserAttachments files={files} images={images} />
+            </div>
+          ) : null}
+          <div class="meta">{shown}</div>
+        </>
+      );
     return (
       <>
         <div class="user">
@@ -332,6 +355,9 @@ export function Transcript({ view }: { view: ConversationView }) {
     <main
       class="transcript"
       ref={main}
+      // Focusable, so a keyboard can scroll it.
+      tabIndex={0}
+      aria-label="transcript"
       onWheel={(event) => {
         if (event.deltaY < 0) reading();
       }}

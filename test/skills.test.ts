@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { formatSkillsForPrompt, loadSkills } from "../src/core/skills/index.ts";
+import { skillInvocation } from "../src/api/notices.ts";
+import { formatSkillsForPrompt, loadSkills, skillMessage } from "../src/core/skills/index.ts";
 import { cleanup, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -76,4 +77,19 @@ it("reports malformed metadata and missing paths, and excludes disabled skills f
   );
   expect(diagnostics.some(({ message }) => message === "skill path does not exist")).toBe(true);
   expect(formatSkillsForPrompt(skills)).not.toContain("manual only");
+});
+
+it("splits a skill message back into the skill and the user's text for display", async () => {
+  const { directory } = await setup();
+  const file = join(directory, "SKILL.md");
+  await writeFile(file, "---\nname: plan\ndescription: d\n---\nStep one.\n\nStep two.\n");
+  const skill = { name: "plan", description: "d", filePath: file, disableModelInvocation: false };
+  const body = `References are relative to ${directory}.\n\nStep one.\n\nStep two.`;
+  expect(skillInvocation(skillMessage(skill, "ship it\n\nthanks"))).toEqual({
+    name: "plan",
+    body,
+    text: "ship it\n\nthanks",
+  });
+  expect(skillInvocation(skillMessage(skill, ""))).toEqual({ name: "plan", body, text: "" });
+  expect(skillInvocation("hello <skill>")).toBeUndefined();
 });

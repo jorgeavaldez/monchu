@@ -66,6 +66,9 @@ export function createDevProvider(): Provider {
       if (text.startsWith("[Worker")) return fauxAssistantMessage("Faux front: progress received.");
       if (text.startsWith("[Background worker"))
         return fauxAssistantMessage("Faux front: result received.");
+      // A skill's instructions name a home path; the reply names the skill alone, so checks read the same anywhere.
+      const skill = /^<skill name="([^"]*)"/.exec(text);
+      if (skill !== null) return fauxAssistantMessage(`Faux reply: skill ${skill[1] ?? ""}. DONE`);
       return fauxAssistantMessage(`Faux reply: ${text}. Streaming stays above the editor. DONE`);
     }),
   );
