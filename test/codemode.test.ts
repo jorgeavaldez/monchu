@@ -118,13 +118,21 @@ describe("codemode", () => {
       callTools({
         throws: { tool: "codemode", args: { code: `throw new Error("boom")` } },
         nested: { tool: "codemode", args: { code: `await tools.read({ path: "missing.txt" })` } },
+        exit: {
+          tool: "codemode",
+          args: { code: `await tools.bash({ command: "echo partial; exit 3" })` },
+        },
       }),
     );
     const { harness, root } = await open(value);
-    for (const message of ["throws", "nested"])
+    for (const message of ["throws", "nested", "exit"])
       await (await root.submit({ type: "input", content: message }, context)).wait(context);
 
-    const [thrown, nested] = await toolResults(root);
+    const [thrown, nested, exited] = await toolResults(root);
+    // A nonzero exit is an error result, not a throw: the script still rejects, with the output and the exit code.
+    expect(exited?.isError).toBe(true);
+    expect(textOf(exited)).toContain("partial");
+    expect(textOf(exited)).toContain("exited with code 3");
     expect(thrown?.isError).toBe(true);
     expect(textOf(thrown)).toContain("boom");
     expect(nested?.isError).toBe(true);

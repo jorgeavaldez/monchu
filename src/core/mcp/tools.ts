@@ -39,7 +39,7 @@ function tool(
     execute: async (args, _api, context) => {
       const result = await clients.call(server, config, listed.name, args, context.abortSignal);
       return {
-        content: result.content.length ? result.content : [{ type: "text", text: "(no output)" }],
+        output: result.content.length ? result.content : [{ type: "text", text: "(no output)" }],
         isError: result.isError,
       };
     },

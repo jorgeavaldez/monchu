@@ -353,6 +353,20 @@ export function sectionTexts(messages: readonly Message[], name?: string): strin
   );
 }
 
+/** A PNG of `width` by `height` noise at `path`, so it doesn't compress away. */
+export async function writePng(path: string, width: number, height: number): Promise<void> {
+  const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+  const pixels = new Uint8Array(width * height * 4).map((_, index) =>
+    index % 4 === 3 ? 255 : (index * 7919) % 251,
+  );
+  const image = new PhotonImage(pixels, width, height);
+  try {
+    await writeFile(path, image.get_bytes());
+  } finally {
+    image.free();
+  }
+}
+
 /** One response factory reused for every request. */
 export function route(faux: FauxProviderHandle, step: FauxResponseStep): void {
   faux.setResponses(Array.from({ length: 100 }, () => step));

@@ -519,7 +519,7 @@ export function createEffortAssessment(
         hook(ToolTask, {
           // A nudge, not a block: the front keeps its tools, and a quick look to route is fine.
           afterTool: async (call, result, api, context) => {
-            if (ROUTING_TOOLS.has(call.name) || result.content === undefined) return;
+            if (ROUTING_TOOLS.has(call.name) || result.output === undefined) return;
             const item = await current(api, context);
             if (item?.result == null || !needsWorker(item.result) || nudged.has(item.submissionId))
               return;
@@ -528,8 +528,8 @@ export function createEffortAssessment(
             nudged.add(item.submissionId);
             return {
               ...result,
-              content: [
-                ...result.content,
+              output: [
+                ...result.output,
                 {
                   type: "text",
                   text: `\n[Routing helper: ${advice(item.result, profiles)} Nothing is routed for it yet. Unless this was a quick look to route it, hand the work to the worker whose line of context it continues.]`,

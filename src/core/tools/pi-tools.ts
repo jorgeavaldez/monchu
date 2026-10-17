@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-durable/tools";
 import type { Settings } from "../config.ts";
 import { createFffTools, type FffFinders } from "./fff.ts";
+import { imageBudget, images } from "./images.ts";
 
 /**
  * pi-fff 0.11.0's promptSnippet and promptGuidelines (MIT, see src/fff.ts), which Pi puts in the system prompt.
@@ -44,7 +45,7 @@ const FFF_PROMPT = {
 export function createPiTools(settings: Settings, finders: FffFinders) {
   const commandPrefix = settings.shellCommandPrefix;
   const codingTools = [
-    createReadTool(),
+    createReadTool({ images }),
     createWriteTool(),
     createEditTool(),
     createBashTool(commandPrefix === undefined ? {} : { commandPrefix }),
@@ -75,6 +76,7 @@ export function createPiTools(settings: Settings, finders: FffFinders) {
       name: "monchu.pi-tools",
       tools: tools.filter(({ name }) => defaults.includes(name)),
       sections: [section("search_tools", () => searchPrompt, { tag: false })],
+      hooks: imageBudget(),
     }),
     warnings,
   };

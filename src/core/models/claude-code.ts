@@ -224,6 +224,8 @@ export function createClaudeCodeProvider(
         name: model.name,
         reasoning: model.reasoning,
         input: model.input,
+        // The image limits `read` shrinks images to, as Anthropic's API takes them.
+        ...(model.inputLimits === undefined ? {} : { inputLimits: model.inputLimits }),
         maxTokens: model.maxTokens,
         ...(model.thinkingLevelMap === undefined
           ? {}

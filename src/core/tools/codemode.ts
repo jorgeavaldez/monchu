@@ -13,6 +13,7 @@ import {
   defineDoc,
   defineExtension,
   defineTool,
+  type ToolDiagnostic,
   type ToolExecutionApi,
   type ToolExecutionResult,
   type ToolRegistration,
@@ -35,11 +36,22 @@ function isJsonObject(value: unknown): value is Record<string, JsonValue> {
   return isJsonValue(value) && typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function resultText(result: ToolExecutionResult, output: string): string {
-  if (result.content === undefined) return output;
-  return result.content
-    .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
-    .join("\n");
+/** A nested call's text: its output, or the local output when it returns none, then its error diagnostics. */
+function resultText(
+  result: ToolExecutionResult,
+  output: string,
+  diagnostics: readonly ToolDiagnostic[],
+): string {
+  const text =
+    result.output === undefined
+      ? output
+      : result.output
+          .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
+          .join("\n");
+  const errors = [...diagnostics, ...(result.diagnostics ?? [])]
+    .filter((diagnostic) => diagnostic.severity === "error")
+    .map((diagnostic) => diagnostic.message);
+  return [text, ...errors].filter((part) => part !== "").join("\n");
 }
 
 /** What a script sees of a tool: tools resolve to their text output. */
@@ -147,13 +159,18 @@ export const Codemode = defineExtension({
               arguments: args,
             });
             let output = "";
-            // Nested calls see a distinct call ID and keep their running output and details local.
+            const diagnostics: ToolDiagnostic[] = [];
+            // Nested calls see a distinct call ID and keep their running output, diagnostics and details local.
             const overrides: Partial<ToolExecutionApi> = {
               callId,
               // The local sink needs all text, not the outer call's retained tail.
               outputWindow: undefined,
               output: (chunk) => {
                 output += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+              },
+              retainedOutput: () => ({ text: output, truncated: false }),
+              diagnostic: (diagnostic) => {
+                diagnostics.push(diagnostic);
               },
               details: async () => {},
             };
@@ -170,7 +187,7 @@ export const Codemode = defineExtension({
               nested,
               withAbortSignal(AbortSignal.any([signal, controller.signal]), context),
             );
-            const text = resultText(result, output);
+            const text = resultText(result, output, diagnostics);
             if (result.isError) throw new Error(text);
             return text;
           },
@@ -210,7 +227,7 @@ export const Codemode = defineExtension({
             });
           if (content.length === 0) content.push({ type: "text", text: "(no output)" });
           return {
-            content,
+            output: content,
             isError: !result.ok,
             details: {
               calls: result.calls.map(({ name, status, durationMs }) => ({

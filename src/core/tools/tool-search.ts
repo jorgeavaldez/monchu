@@ -346,7 +346,7 @@ export function createToolSearch(all: readonly ToolGroup[]) {
           lines.push(
             `Already in your tools: ${loaded.map((group) => `${group.name} (${group.tools.map((tool) => tool.name).join(", ")})`).join("; ")}.`,
           );
-        return { content: [{ type: "text", text: lines.join("\n") }], details: { loaded: [] } };
+        return { output: [{ type: "text", text: lines.join("\n") }], details: { loaded: [] } };
       }
       await api.commit(
         (tx) =>
@@ -372,7 +372,7 @@ export function createToolSearch(all: readonly ToolGroup[]) {
         sections.push(lines.join("\n"));
       }
       return {
-        content: [{ type: "text", text: sections.join("\n\n") }],
+        output: [{ type: "text", text: sections.join("\n\n") }],
         details: { loaded: matched.map((group) => group.name) },
       };
     },

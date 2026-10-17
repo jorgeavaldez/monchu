@@ -244,7 +244,7 @@ describe("deferred tools", () => {
             name: "save_note",
             description: "Save a note for later",
             parameters: Type.Object({}),
-            execute: async () => ({ content: [{ type: "text", text: "saved" }] }),
+            execute: async () => ({ output: [{ type: "text", text: "saved" }] }),
           }),
         ],
         details: async () => "notes guide",
@@ -303,7 +303,7 @@ describe("deferred tools", () => {
             description: "Forecast the weather for a city",
             parameters: Type.Object({ city: Type.String() }),
             execute: async ({ city }) => ({
-              content: [{ type: "text", text: `sunny in ${city}` }],
+              output: [{ type: "text", text: `sunny in ${city}` }],
             }),
           }),
         ],
@@ -537,7 +537,7 @@ text(await tools[found.name]({ city: "Testville" }));`,
         name,
         description: name,
         parameters: Type.Object({}),
-        execute: async () => ({ content: [{ type: "text", text: name }] }),
+        execute: async () => ({ output: [{ type: "text", text: name }] }),
       });
     const search = createToolSearch([
       { name: "small", summary: "small", tools: [tool("small_tool")], preload: true },

@@ -717,7 +717,7 @@ export function createWorkerTools(
             context,
           );
           return {
-            content: [
+            output: [
               {
                 type: "text",
                 text: `Started ${args.name} (conversation ${id}) in ${cwd} on ${describeRole(picked)}.`,
@@ -748,7 +748,7 @@ export function createWorkerTools(
               ),
             context,
           );
-          return { content: [{ type: "text", text: `Message committed for ${args.name}.` }] };
+          return { output: [{ type: "text", text: `Message committed for ${args.name}.` }] };
         },
       }),
       defineTool({
@@ -770,7 +770,7 @@ export function createWorkerTools(
             context,
           );
           return {
-            content: [
+            output: [
               {
                 type: "text",
                 text: JSON.stringify(
@@ -810,7 +810,7 @@ export function createWorkerTools(
           );
           await releaseProviders(api, workerId, context);
           return {
-            content: [
+            output: [
               {
                 type: "text",
                 text: closed ? `Closed ${args.name}.` : `${args.name} was already closed.`,
@@ -827,7 +827,7 @@ export function createWorkerTools(
         replay: "safe",
         execute: async (args, api, context) => {
           await api.commit((tx) => reopenWorker(tx, api.conversationId, args.name), context);
-          return { content: [{ type: "text", text: `Reopened ${args.name}.` }] };
+          return { output: [{ type: "text", text: `Reopened ${args.name}.` }] };
         },
       }),
       defineTool({
@@ -873,7 +873,7 @@ export function createWorkerTools(
             const state = await tx.doc(WorkerUpdatesDoc, api.conversationId);
             state.queued = await withdrawQueued(tx, parentId, state.queued, true);
           }, context);
-          return { content: [{ type: "text", text: "Update posted." }] };
+          return { output: [{ type: "text", text: "Update posted." }] };
         },
       }),
       defineTool({
@@ -933,7 +933,7 @@ export function createWorkerTools(
           if (lines === undefined) throw new Error("user_messages is only available to workers");
           const text = lines.map((line) => line.text).join("\n\n");
           return {
-            content: [
+            output: [
               { type: "text", text: text || "No user messages in the front's current context." },
             ],
           };
@@ -947,7 +947,7 @@ export function createWorkerTools(
         replay: "unsafe",
         execute: async (args, api, context) => {
           await stopWorker(api, api.conversationId, args.name, context);
-          return { content: [{ type: "text", text: `Stopped ${args.name}.` }] };
+          return { output: [{ type: "text", text: `Stopped ${args.name}.` }] };
         },
       }),
     ],

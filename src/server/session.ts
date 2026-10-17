@@ -1,11 +1,14 @@
 import {
   replicatedState,
   RemoteServiceProvider,
+  type AttachedReplicatedState,
   type Context,
   type MutableReplicatedState,
+  type ReplicatedStateSourceFrame,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
+import type { ConversationView, ConversationWatch } from "@earendil-works/pi-durable";
 import {
   Conversations,
   Logins,
@@ -52,6 +55,37 @@ function wirePrompt(prompt: AuthPrompt): LoginPrompt {
         ...(prompt.placeholder === undefined ? {} : { placeholder: prompt.placeholder }),
       };
   }
+}
+
+/**
+ * A conversation view as a state this Chord can publish. Durable's own states come from its newer Chord, whose states
+ * the remote services here can't expose, so the view is fed from Durable's watch, frame by frame with its delta ops.
+ * Goes away with the move to Chord's host runtime.
+ */
+function publishedView(watch: ConversationWatch): AttachedReplicatedState<ConversationView> {
+  return replicatedState<ConversationView>({
+    attach() {
+      let cursor = 0;
+      let deliver: ((frame: ReplicatedStateSourceFrame<ConversationView>) => void) | undefined;
+      const waiting: ReplicatedStateSourceFrame<ConversationView>[] = [];
+      watch.start(async (value, ops, frameContext) => {
+        const frame = { cursor: ++cursor, value, ops, context: frameContext };
+        if (deliver === undefined) waiting.push(frame);
+        else deliver(frame);
+      });
+      return {
+        snapshot: { value: watch.value, cursor: 0 },
+        activate(listener) {
+          deliver = listener;
+          for (const frame of waiting.splice(0)) listener(frame);
+        },
+        dispose() {
+          deliver = undefined;
+          void watch.stop();
+        },
+      };
+    },
+  });
 }
 
 /**
@@ -187,7 +221,7 @@ export async function connectionServices(
         existing.count += 1;
         return;
       }
-      const view = await backend.viewState(name === "" ? undefined : name);
+      const view = publishedView(await backend.viewWatch(name === "" ? undefined : name));
       // Instance keys must not be empty, and a worker can't be mistaken for the root.
       const close = provider.spawn(Conversations, name === "" ? "root" : `worker:${name}`, {
         about: replicatedState({ name }),

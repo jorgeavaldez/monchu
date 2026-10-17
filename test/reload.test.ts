@@ -78,7 +78,7 @@ function source(version: string, gated = false) {
         start.resolve();
         ${gated ? "await gate.promise;" : ""}
         const value = (await api.snapshot(Doc, api.conversationId, context))?.value;
-        return { content: [{ type: "text", text: ${JSON.stringify(version)} + ":" + value }] };
+        return { output: [{ type: "text", text: ${JSON.stringify(version)} + ":" + value }] };
       },
     })] });
   `;

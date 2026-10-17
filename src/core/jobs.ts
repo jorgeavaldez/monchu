@@ -748,7 +748,7 @@ export function createJobs(
         replay: "safe",
         executionMode: "sequential",
         execute: async (args, api, context) => {
-          const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
+          const reply = (text: string) => ({ output: [{ type: "text" as const, text }] });
           if (args.action === "list") {
             const state = await api.snapshot(JobsDoc, context);
             return reply(formatJobs(state?.jobs ?? []));

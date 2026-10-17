@@ -17,7 +17,7 @@ const match = Type.String({ minLength: 1, pattern: "\\S", description: "Unique e
 
 function result(changed: boolean, file: string, text: string, delivery: string | undefined) {
   return {
-    content: [
+    output: [
       {
         type: "text" as const,
         text: `${changed ? "Changed" : "Unchanged"}. ${file} usage: ${text.length}/${LIMIT} characters${delivery === undefined ? "" : `. ${delivery}`}`,

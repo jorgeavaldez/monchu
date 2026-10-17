@@ -204,7 +204,7 @@ export const Goals = defineExtension({
           return { saved: formatGoals([saved]), changed };
         }, context);
         return {
-          content: [
+          output: [
             {
               type: "text",
               text: `${changed.length === 0 ? "Unchanged" : `Changed: ${changed.join(", ")}`}\n${saved}`,
@@ -222,7 +222,7 @@ export const Goals = defineExtension({
       execute: async (_args, api, context) => {
         const goals = (await api.snapshot(GoalsDoc, api.conversationId, context))?.goals ?? [];
         return {
-          content: [{ type: "text", text: goals.length === 0 ? "No goals." : formatGoals(goals) }],
+          output: [{ type: "text", text: goals.length === 0 ? "No goals." : formatGoals(goals) }],
         };
       },
     }),

@@ -288,6 +288,14 @@ export class Monchu implements Client {
       );
       log.write("info", "core.open", "opened", phases);
       observeBudget = (levels) => backend.observeBudget(levels);
+      // A failed storage call closes the Session for good, and every later call rejects: say why, once.
+      void harness.closed.then((end) => {
+        if (end.reason !== "failed") return;
+        const cause = end.error instanceof Error ? end.error.message : String(end.error);
+        reports.report(
+          `Monchu's store failed and closed (${cause}). Nothing more is saved until Monchu restarts: use /restart`,
+        );
+      });
       extensions.registry.install(createReloadControls(front.id, () => backend.reload()));
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
@@ -412,6 +420,12 @@ export class Monchu implements Client {
   async viewState(workerName?: string) {
     const conversation = workerName === undefined ? this.front : await this.worker(workerName);
     return conversation.viewState(context);
+  }
+
+  /** The same view as an exact-frame watch with its delta ops. The caller stops it. */
+  async viewWatch(workerName?: string) {
+    const conversation = workerName === undefined ? this.front : await this.worker(workerName);
+    return conversation.watch(context);
   }
 
   /**

@@ -556,7 +556,7 @@ export function createFffTools(finders: FffFinders) {
 
         if (isWildcardOnly) {
           return {
-            content: [
+            output: [
               {
                 type: "text",
                 text: `Pattern '${params.pattern}' matches everything — grep needs a concrete substring or identifier. Example: \`pattern: 'MyClass'\` or \`pattern: 'export function'\`.`,
@@ -631,7 +631,7 @@ export function createFffTools(finders: FffFinders) {
         if (fuzzyNotice) output = `[${fuzzyNotice}]\n${output}`;
 
         return {
-          content: [{ type: "text", text: output }],
+          output: [{ type: "text", text: output }],
           details: {
             totalMatched: result.totalMatched,
             totalFiles: result.totalFiles,
@@ -726,7 +726,7 @@ export function createFffTools(finders: FffFinders) {
 
         if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
         return {
-          content: [{ type: "text", text: output }],
+          output: [{ type: "text", text: output }],
           details: {
             totalMatched: result.totalMatched,
             totalFiles: result.totalFiles,

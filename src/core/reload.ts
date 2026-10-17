@@ -483,7 +483,7 @@ export function createReloadControls(
         parameters: Type.Object({}),
         replay: "unsafe",
         execute: async () => ({
-          content: [{ type: "text", text: `Reloaded: ${(await reload()).join(", ")}` }],
+          output: [{ type: "text", text: `Reloaded: ${(await reload()).join(", ")}` }],
         }),
       }),
       defineTool({
@@ -503,7 +503,7 @@ export function createReloadControls(
             };
           }, context);
           return {
-            content: [
+            output: [
               {
                 type: "text",
                 text: "Restart requested. The user must use /restart; nothing was restarted.",
