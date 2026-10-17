@@ -36,6 +36,31 @@ export function describeAssessment(result: AssessmentResult): string {
   return parts.join(", ");
 }
 
+/** What a settled assessment's notice says, and how often a failure repeats: once until Clef answers again. */
+export function assessmentNotice(
+  result: AssessmentResult,
+  seen: { failure?: string },
+): string | undefined {
+  if (result.status !== "failed") {
+    delete seen.failure;
+    return `clef · ${describeAssessment(result)}`;
+  }
+  // Keyed by the HTTP status when there is one, so a provider's changing error body doesn't repeat it.
+  const failure = /\((\d{3})\)/.exec(result.message)?.[1] ?? result.message.slice(0, 120);
+  if (seen.failure === failure) return undefined;
+  seen.failure = failure;
+  return `clef · unavailable (${result.message.slice(0, 200)}) · /clef off pauses it`;
+}
+
+/** The `/clef` reply in every client. */
+export function routingText(state: { configured: boolean; paused: boolean }): string {
+  if (state.paused)
+    return `routing advice (Clef) paused · messages go to the front unassessed · /clef on resumes it${state.configured ? "" : " (it also needs its login or config)"}`;
+  return state.configured
+    ? "routing advice (Clef) on · /clef off pauses it"
+    : `routing advice (Clef) off · needs /login → Cloudflare, or config.json turned it off`;
+}
+
 export type McpState = "connected" | "needs-auth" | "missing" | "failed";
 
 /** One server as `/mcp` and `monchu mcp list` show it. */

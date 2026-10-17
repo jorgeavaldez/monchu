@@ -13,7 +13,16 @@ type Input =
         | "/thinking";
     }
   | {
-      command: "/new" | "/compact" | "/cd" | "/stop" | "/agents" | "/model" | "/mcp" | "/logs";
+      command:
+        | "/new"
+        | "/compact"
+        | "/cd"
+        | "/stop"
+        | "/agents"
+        | "/model"
+        | "/mcp"
+        | "/logs"
+        | "/clef";
       text: string;
     }
   | { command: "skill"; name: string; text: string };
@@ -54,6 +63,7 @@ export const commands: Record<
     usage: "[login|logout|reconnect] [server]",
     help: "MCP servers and their tools; sign in, sign out, reconnect",
   },
+  "/clef": { usage: "[on|off]", help: "routing advice (Clef): show, pause or resume it" },
   "/reload": {
     usage: "",
     help: "apply config, skill and extension edits now; running work keeps going",
@@ -113,6 +123,10 @@ export function parseInput(raw: string): Input | undefined {
     case "/mcp":
     case "/stop":
     case "/logs":
+      return { command, text: rest };
+    case "/clef":
+      if (rest !== "" && rest !== "on" && rest !== "off")
+        throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
     case "/cd":
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);

@@ -51,6 +51,9 @@ describe("terminal input boundary", () => {
       expect(parseInput(command)).toEqual({ command, text: "" });
     for (const command of ["/cd", "/stop", "/agents", "/new", "/compact"])
       expect(parseInput(`${command} target`)).toEqual({ command, text: "target" });
+    for (const text of ["", "on", "off"])
+      expect(parseInput(`/clef ${text}`)).toEqual({ command: "/clef", text });
+    expect(() => parseInput("/clef pause")).toThrow("Usage: /clef [on|off]");
     for (const invalid of [
       "/work name",
       "/tell w more",

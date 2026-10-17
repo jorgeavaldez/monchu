@@ -14,7 +14,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { ESCALATION_PREFIX, escalationSummary } from "../src/api/notices.ts";
-import { AssessmentsDoc, createEffortAssessment } from "../src/core/agents/classifier.ts";
+import { assessmentNotice } from "../src/api/reports.ts";
+import {
+  AssessmentsDoc,
+  createEffortAssessment,
+  RoutingDoc,
+} from "../src/core/agents/classifier.ts";
 import type { WorkerProfile } from "../src/core/config.ts";
 import { GoalsDoc } from "../src/core/agents/goals.ts";
 import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
@@ -443,6 +448,64 @@ describe("routing helper", () => {
       status: "failed",
       message: "401 from provider",
     });
+    await test.harness.close(context);
+  });
+
+  it("shows a repeated failure once until Clef answers again, and keeps its error out of the front's advice", async () => {
+    const test = await withAssessment();
+    const advice: string[] = [];
+    route(test.faux, (request) => {
+      const last = request.messages.findLast(
+        (message) => message.role === "system" && typeof message.content === "string",
+      );
+      if (typeof last?.content === "string") advice.push(last.content);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const limited = (body: string) => ({
+      ...routed("front", 1),
+      stopReason: "error" as const,
+      errorMessage: `Cloudflare Workers AI error (429): ${body}`,
+    });
+    const seen: { failure?: string } = {};
+    const notices: (string | undefined)[] = [];
+    for (const [index, answer] of [
+      limited("out of credits"),
+      limited("still out"),
+      routed("worker", 0.9),
+      limited("out again"),
+    ].entries()) {
+      test.classifier.answer = () => answer;
+      await test.send(`message ${index}`);
+      await test.settle(index);
+      const result = (await test.items())[index]?.result;
+      if (result != null) notices.push(assessmentNotice(result, seen));
+    }
+    expect(notices).toEqual([
+      "clef · unavailable (Cloudflare Workers AI error (429): out of credits) · /clef off pauses it",
+      undefined,
+      "clef · needs a worker (90%)",
+      "clef · unavailable (Cloudflare Workers AI error (429): out again) · /clef off pauses it",
+    ]);
+    expect(advice[0]).toBe(
+      "Routing helper unavailable for this message. Route by your own judgment.",
+    );
+    await test.harness.close(context);
+  });
+
+  it("assesses nothing while the user has it paused, and the front doesn't wait for it", async () => {
+    const test = await withAssessment([], 60_000);
+    await test.root.commit(async (tx) => {
+      (await tx.doc(RoutingDoc, test.root.id)).paused = true;
+    }, context);
+    route(test.faux, () => fauxAssistantMessage([fauxText("ok")]));
+    await test.send("hello");
+    expect(await test.items()).toEqual([]);
+    expect(test.classifier.requests).toEqual([]);
+    await test.root.commit(async (tx) => {
+      (await tx.doc(RoutingDoc, test.root.id)).paused = false;
+    }, context);
+    await test.send("again");
+    expect(await test.items()).toHaveLength(1);
     await test.harness.close(context);
   });
 

@@ -230,6 +230,7 @@ export async function connectionServices(
     mcpLogout: (name) => backend.mcpLogout(name),
     mcpReconnect: async () => own(await backend.mcpReconnect()),
     reload: async () => [...(await backend.reload())],
+    routing: (paused) => backend.routing(paused ?? undefined),
     logs: (query) => backend.logs(query),
     record: async (scope, body, attributes) => backend.record(scope, body, attributes ?? undefined),
     restart: async () => backend.requestRestart(),

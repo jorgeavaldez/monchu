@@ -134,6 +134,16 @@ export const AssessmentsDoc = defineDoc<{ items: Assessment[] }>({
   initial: () => ({ items: [] }),
 });
 
+/** The user's pause switch for the routing helper, kept on the front so it survives restarts and reloads. */
+export const RoutingDoc = defineDoc<{ paused: boolean }>({
+  kind: "monchu.routing",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ paused: false }),
+});
+
 /** Whether a sure answer says the input needs a worker. */
 function needsWorker(result: AssessmentResult): boolean {
   return (
@@ -151,7 +161,7 @@ const percent = (value: number) => `${Math.round(value * 100)}%`;
  */
 function advice(result: AssessmentResult, profiles: Record<string, WorkerProfile>): string {
   if (result.status === "failed")
-    return `Routing helper unavailable (${result.message}). Route by your own judgment.`;
+    return "Routing helper unavailable for this message. Route by your own judgment.";
   const lines: string[] = [];
   if (result.route.probability < SURE) lines.push("unsure whether it needs a worker");
   else if (result.route.choice === "worker")
@@ -436,8 +446,13 @@ export function createEffortAssessment(
       context: Context,
     ) {
       const input = { type: "input" as const, content: message, requestId, whenBusy };
-      // Clef is optional: without its provider's credentials, input goes to the front unassessed.
+      // Clef is optional: without its provider's credentials, or paused by the user, input goes to the front unassessed.
       if (!(await available())) return front.submit(input, context);
+      const paused = await front.commit(
+        async (tx) => (await tx.doc(RoutingDoc, front.id)).paused,
+        context,
+      );
+      if (paused) return front.submit(input, context);
       const recent = await recentOf(front, context);
       const submission = await front.submit(input, context);
       await front.commit(async (tx) => {

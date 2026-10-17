@@ -98,6 +98,10 @@ export interface SessionService {
   mcpLogout(name: string, context: Context): Promise<string>;
   mcpReconnect(context: Context): Promise<{ servers: McpServerReport[]; errors: string[] }>;
   reload(context: Context): Promise<string[]>;
+  routing(
+    paused: boolean | null,
+    context: Context,
+  ): Promise<{ configured: boolean; paused: boolean }>;
   logs(query: LogQuery, context: Context): Promise<LogRecord[]>;
   record(
     scope: "tui" | "web",

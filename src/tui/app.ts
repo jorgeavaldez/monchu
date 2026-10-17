@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { Client, ModelPick } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
-import { describeAssessment, formatReports } from "../api/reports.ts";
+import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
@@ -475,6 +475,11 @@ export async function runTerminal(
         if (loggedIn) await loginHint(false);
         break;
       }
+      case "/clef":
+        view.notice(
+          routingText(await backend.routing(input.text === "" ? undefined : input.text === "off")),
+        );
+        return;
       case "/reload": {
         view.notice(`reloaded · ${(await backend.reload()).join(", ")}`);
         break;
@@ -625,17 +630,20 @@ export async function runTerminal(
       exit();
     });
     const shown = new Set<number>();
+    const seen: { failure?: string } = {};
     let hydrated = false;
     stopAssessments = await backend.watchAssessments((items) => {
       for (const item of items) {
         if (item.result === null || shown.has(item.taskId)) continue;
         shown.add(item.taskId);
         if (!hydrated) continue;
-        const result = item.result;
-        view.notice(`clef · ${describeAssessment(result)}`);
+        const text = assessmentNotice(item.result, seen);
+        if (text !== undefined) view.notice(text);
       }
       hydrated = true;
     });
+    const routing = await backend.routing();
+    if (routing.paused) view.notice(routingText(routing));
     // The TUI is one client of the job event stream: events from now on show as notices.
     stopJobs = await backend.watchJobEvents((await backend.jobs()).nextEvent - 1, (events) => {
       for (const event of events) view.notice(formatJobEvent(event));

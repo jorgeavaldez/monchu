@@ -7,7 +7,7 @@ import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Client, ModelPick, WorkerSummary } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
-import { describeAssessment, formatReports } from "../api/reports.ts";
+import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -112,15 +112,19 @@ export async function start(connected: Client): Promise<void> {
   });
   connected.onReport((message) => notice(message, "warning"));
   const shownAssessments = new Set<number>();
+  const seen: { failure?: string } = {};
   let hydrated = false;
   await connected.watchAssessments((items) => {
     for (const item of items) {
       if (item.result === null || shownAssessments.has(item.taskId)) continue;
       shownAssessments.add(item.taskId);
-      if (hydrated) notice(`clef · ${describeAssessment(item.result)}`, "event");
+      const text = hydrated ? assessmentNotice(item.result, seen) : undefined;
+      if (text !== undefined) notice(text, "event");
     }
     hydrated = true;
   });
+  const routing = await connected.routing();
+  if (routing.paused) notice(routingText(routing), "event");
   await connected.watchJobEvents((await connected.jobs()).nextEvent - 1, (events) => {
     for (const event of events) notice(formatJobEvent(event), "event");
   });
@@ -463,6 +467,10 @@ export async function submit(raw: string): Promise<void> {
         return notice(`cwd · ${await client().changeDirectory(input.text, name)}`);
       case "/reload":
         return notice(`reloaded · ${(await client().reload()).join(", ")}`);
+      case "/clef":
+        return notice(
+          routingText(await client().routing(input.text === "" ? undefined : input.text === "off")),
+        );
       case "/restart":
         await client().restart();
         return notice("restart requested · reconnects when Monchu is back");

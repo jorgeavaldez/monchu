@@ -314,6 +314,9 @@ export class RemoteClient implements Client {
   reload() {
     return this.session.reload(context);
   }
+  routing(paused?: boolean) {
+    return this.session.routing(paused ?? null, context);
+  }
   logs(query: Parameters<Client["logs"]>[0]) {
     return this.session.logs(query, context);
   }

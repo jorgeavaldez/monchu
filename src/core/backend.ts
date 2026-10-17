@@ -31,7 +31,7 @@ import { escalationSummary, noticeText, parseWorkerNotice, type WhenBusy } from 
 import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { Log } from "../telemetry/log.ts";
-import { AssessmentsDoc, type Assessment } from "./agents/classifier.ts";
+import { AssessmentsDoc, RoutingDoc, type Assessment } from "./agents/classifier.ts";
 import {
   defaultConfig,
   isThinkingLevel,
@@ -396,6 +396,23 @@ export class Monchu implements Client {
     if (assessment === undefined)
       await this.front.submit({ type: "input", content: message, requestId, whenBusy }, context);
     else await assessment.submit(this.front, message, requestId, whenBusy, context);
+  }
+
+  /**
+   * The routing helper's state, pausing or resuming it first when `paused` is given. A pause is stored on the front, so
+   * it outlasts restarts; `configured` is false when config.json turns Clef off or its provider has no login.
+   */
+  async routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }> {
+    const stored = await this.front.commit(async (tx) => {
+      const state = await tx.doc(RoutingDoc, this.front.id);
+      if (paused !== undefined) state.paused = paused;
+      return state.paused;
+    }, context);
+    const needs = await this.loginNeeds();
+    return {
+      configured: this.extensions.assessment !== undefined && needs.classifier === undefined,
+      paused: stored,
+    };
   }
 
   /** Routing assessments of front inputs as they settle, newest last. Returns a stop function. */

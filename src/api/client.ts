@@ -112,6 +112,8 @@ export interface Client {
 
   /** Applies config, skill and extension edits in process; resolves with the reloaded modules. */
   reload(): Promise<readonly string[]>;
+  /** The routing helper's state, pausing or resuming it first when `paused` is given. */
+  routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }>;
   /**
    * The user's restart approval. In process it clears the restart request and closes the core so its process can be
    * re-executed; remotely it asks the core to restart. Only a user's command calls it, never model output.
