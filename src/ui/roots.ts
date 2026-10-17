@@ -45,7 +45,7 @@ export function rootCounts(root: Pick<RootSummary, "workers" | "jobs">): string 
     ...(open
       ? [busy ? `${busy}/${open} workers busy` : `${open} worker${open === 1 ? "" : "s"}`]
       : []),
-    ...(root.jobs ? [`${root.jobs} bg`] : []),
+    ...(root.jobs.running ? [`${root.jobs.running} bg`] : []),
   ].join(" · ");
 }
 

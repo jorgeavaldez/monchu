@@ -200,6 +200,11 @@ describe("roots", () => {
       const status = (id: string) => watched.value.find((root) => root.id === id)?.status;
       await backend.root(second).submit("hold", "hold", "followUp");
       await waitFor(() => status(second) === "working");
+      expect(watched.value.find((root) => root.id === second)).toMatchObject({
+        front: "working",
+        workers: { open: 0, busy: 0 },
+        jobs: { running: 0, scheduled: 0 },
+      });
       expect(status(first)).toBe("idle");
       await backend.root(second).abort();
       await backend.root(second).submit("answer me", "answer", "followUp");
@@ -255,7 +260,17 @@ describe("roots", () => {
       await idle(a);
       await idle(b);
 
+      const created = (await backend.jobs()).events.find(
+        (event) => event.job === "nightly" && event.kind === "created",
+      );
+      expect(created?.rootId && shortId(created.rootId)).toBe(a.id);
+      const watched = await watch(backend);
+      const jobsOf = (id: string) => watched.value.find((root) => root.id === id)?.jobs;
+      expect(jobsOf(a.id)).toEqual({ running: 0, scheduled: 1 });
+
       await a.handOff("w", b.id);
+      await waitFor(() => jobsOf(b.id)?.scheduled === 1 && jobsOf(a.id)?.scheduled === 0);
+      watched.stop();
       expect(await a.workers()).toEqual([]);
       expect(await b.workers()).toMatchObject([{ name: "w", busy: false }]);
       const job = (await backend.jobs()).jobs.find((item) => item.name === "nightly");

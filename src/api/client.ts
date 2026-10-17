@@ -64,10 +64,12 @@ export type RootSummary = {
   lastInputAt: number | null;
   archived: boolean;
   status: RootStatus;
+  /** Whether the root's own front is running a turn. */
+  front: "working" | "idle";
   /** Open workers, and how many of them are busy. */
   workers: { open: number; busy: number };
-  /** Background (`bg`) commands running for this root. */
-  jobs: number;
+  /** This root's jobs: `bg` commands running now, and scheduled jobs that are active (not paused). */
+  jobs: { running: number; scheduled: number };
 };
 
 export type RootStatus = "working" | "done" | "idle";

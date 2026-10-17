@@ -86,8 +86,9 @@ describe("roots in clients", () => {
     lastInputAt: null,
     archived: false,
     status: "idle",
+    front: "idle",
     workers: { open: 0, busy: 0 },
-    jobs: 0,
+    jobs: { running: 0, scheduled: 0 },
     ...change,
   });
 
@@ -111,9 +112,11 @@ describe("roots in clients", () => {
     expect(listedRoots(roots, false).map((each) => each.id)).toEqual(["llll", "mmmm", "kkkk"]);
     expect(listedRoots(roots, true)).toHaveLength(4);
     expect(rootLabel(root("kkkk"))).toBe("new root");
-    expect(rootCounts(root("kkkk", { workers: { open: 3, busy: 2 }, jobs: 1 }))).toBe(
-      "2/3 workers busy · 1 bg",
-    );
+    expect(
+      rootCounts(
+        root("kkkk", { workers: { open: 3, busy: 2 }, jobs: { running: 1, scheduled: 2 } }),
+      ),
+    ).toBe("2/3 workers busy · 1 bg");
     expect(rootCounts(root("kkkk", { workers: { open: 1, busy: 0 } }))).toBe("1 worker");
     expect(ARCHIVE_HELP).toContain("Nothing is deleted");
   });

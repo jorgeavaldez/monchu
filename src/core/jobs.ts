@@ -102,6 +102,8 @@ export type JobEvent = {
   text: string;
   /** The worker the event woke, if any. */
   worker?: string;
+  /** The job's root, so a client shows the event in that root. Absent on events from before roots: the first root's. */
+  rootId?: ConversationId;
 };
 
 export type JobsState = { jobs: Job[]; events: JobEvent[]; nextEvent: number };
@@ -136,8 +138,12 @@ export async function moveJobs(
   }
 }
 
-function addEvent(state: JobsState, event: Omit<JobEvent, "id">): void {
-  state.events.push({ id: state.nextEvent++, ...event });
+function addEvent(
+  state: JobsState,
+  job: Pick<Job, "name" | "rootId">,
+  event: Omit<JobEvent, "id" | "job" | "rootId">,
+): void {
+  state.events.push({ id: state.nextEvent++, job: job.name, rootId: job.rootId, ...event });
   if (state.events.length > EVENTS_KEPT) state.events.splice(0, state.events.length - EVENTS_KEPT);
 }
 
@@ -481,9 +487,8 @@ export function createJobs(
           const event = async (kind: JobEvent["kind"], text: string, wakeText?: string) => {
             const worker =
               wakeText === undefined ? undefined : await wake(tx, job, wakeText, requestId);
-            addEvent(state, {
+            addEvent(state, job, {
               at,
-              job: job.name,
               kind,
               text: text.slice(0, 300),
               ...(worker === undefined ? {} : { worker }),
@@ -659,9 +664,8 @@ export function createJobs(
             text,
             `job:${current.name}:${current.createdAt}:end`,
           );
-          addEvent(state, {
+          addEvent(state, current, {
             at: end.at,
-            job: current.name,
             kind:
               end.reason === "exited"
                 ? end.code === null
@@ -855,9 +859,8 @@ export function createJobs(
                 runs: 0,
               };
               state.jobs.push(job);
-              addEvent(state, {
+              addEvent(state, job, {
                 at: createdAt,
-                job: name,
                 kind: type === "bg" ? "started" : "created",
                 text: describeJob(job),
               });
@@ -891,13 +894,13 @@ export function createJobs(
                 if (job.status === "paused") return `${name} is already paused`;
                 job.status = "paused";
                 delete job.nextAt;
-                addEvent(state, { at, job: name, kind: "paused", text: "paused" });
+                addEvent(state, job, { at, kind: "paused", text: "paused" });
                 return `Paused ${name}`;
               case "resume":
                 if (job.status === "active") return `${name} is already active`;
                 job.status = "active";
                 job.taskId = await startRunner(tx, job);
-                addEvent(state, { at, job: name, kind: "resumed", text: "resumed" });
+                addEvent(state, job, { at, kind: "resumed", text: "resumed" });
                 return `Resumed ${name}`;
               case "run_now":
                 if (job.status !== "active") throw new Error(`${name} is paused; resume it first`);
@@ -906,7 +909,7 @@ export function createJobs(
               case "delete":
                 state.jobs.splice(index, 1);
                 removed = job.log;
-                addEvent(state, { at, job: name, kind: "deleted", text: "deleted" });
+                addEvent(state, job, { at, kind: "deleted", text: "deleted" });
                 return `Deleted ${name}`;
               case "create":
               case "list":

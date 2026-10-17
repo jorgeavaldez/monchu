@@ -154,11 +154,13 @@ export async function summarize(
   const live = await harness.snapshot(LiveDoc, root.id, context);
   const workers = await listWorkers(harness, root.id, context);
   const busy = workers.filter((worker) => worker.busy).length;
-  const running = (jobs?.jobs ?? []).filter(
-    (job) => job.rootId === root.id && job.type === "bg" && job.ended === undefined,
-  ).length;
+  const own = (jobs?.jobs ?? []).filter((job) => job.rootId === root.id);
+  const running = own.filter((job) => job.type === "bg" && job.ended === undefined).length;
+  const scheduled = own.filter((job) => job.type !== "bg" && job.status === "active").length;
+  const front = live?.run === undefined ? "idle" : "working";
+  // Scheduled jobs waiting for their slot don't make a root active; a run they wake shows as a busy worker.
   let status: RootStatus = "idle";
-  if (live?.run !== undefined || busy > 0 || running > 0) status = "working";
+  if (front === "working" || busy > 0 || running > 0) status = "working";
   else if (!shown) {
     const answered = await lastAnswer(harness, root.id, context);
     if (answered !== undefined && answered > (root.seenAt ?? root.createdAt)) status = "done";
@@ -171,8 +173,9 @@ export async function summarize(
     lastInputAt: root.lastInputAt ?? null,
     archived: root.archived === true,
     status,
+    front,
     workers: { open: workers.length, busy },
-    jobs: running,
+    jobs: { running, scheduled },
   };
 }
 
