@@ -11,6 +11,7 @@ import type { EffortAssessment } from "./agents/classifier.ts";
 import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
 import type { BudgetLevel } from "./identity.ts";
 import type { McpClients } from "./mcp/index.ts";
+import type { PluginBuild, Plugins } from "./plugins.ts";
 import type { Skill } from "./skills/index.ts";
 import type { Vault } from "./secrets/vault.ts";
 import type { FffFinders } from "./tools/fff.ts";
@@ -29,6 +30,8 @@ export type BuildInputs = {
   clients: McpClients;
   /** The home's secrets: shells, the browser and the `secret` tool use them by name. */
   vault: Vault;
+  /** Bundled and home plugins, with the modules they last loaded. */
+  plugins: Plugins;
   /** Throws when `extensions` could not replace the installed ones, so a failing build changes nothing. */
   validate: (extensions: readonly Extension[]) => void;
 };
@@ -46,8 +49,15 @@ export type Build = {
   skills: Skill[];
   config: MonchuConfig;
   assessment: EffortAssessment | undefined;
+  /** What the plugins added; their extensions and groups are also in `extensions`. */
+  plugins: PluginBuild;
+  /** Names of the installed extensions the plugins own, which a later build without them uninstalls. */
+  owned: string[];
   warnings: string[];
 };
+
+/** Tools of the reload controls, installed by the backend outside the build: no plugin may take their names. */
+export const RELOAD_TOOLS = ["reload_extensions", "request_restart"];
 
 /** Served by the core for the facet: the build inputs. */
 export const BuildHost = local("monchu.build-host", {

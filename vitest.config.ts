@@ -13,5 +13,7 @@ export default defineConfig({
     env: { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config") },
     // Hosted Windows runners take several seconds to spawn processes and open stores.
     testTimeout: 20_000,
+    // Plugins load through Node's own loader and resolve hooks, as in Monchu, not through Vite's transform.
+    server: { deps: { external: [/[?&]monchu-plugin=/] } },
   },
 });

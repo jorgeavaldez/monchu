@@ -55,4 +55,9 @@ mcp-tools.json*
 # Device-local skills: context that must stay on one machine (for example work).
 skills/local/
 
+# Device-local plugins, this device's plugin deny list, and plugin dependencies installed per device.
+plugins/local/
+plugins.local.json
+plugins/**/node_modules/
+
 # mcp.json is synced: put secrets in environment variables and reference them as ${NAME}, never inline.

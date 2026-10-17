@@ -24,6 +24,7 @@ import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
+import { formatPluginStatus, Plugins, type PluginStatus } from "./plugins.ts";
 import type { EffortAssessment } from "./agents/classifier.ts";
 import type { BudgetLevel } from "./identity.ts";
 import {
@@ -83,6 +84,7 @@ export class Extensions {
   private readonly home: string;
   private readonly finders: FffFinders;
   private readonly clients: McpClients;
+  private readonly plugins: Plugins;
   private readonly report: (warning: string) => void;
   private readonly facets: string[];
   private current: Build;
@@ -103,10 +105,12 @@ export class Extensions {
     current: Build,
     finders: FffFinders,
     clients: McpClients,
+    plugins: Plugins,
     registry: Registry,
     host: Host<Principal>,
     facets: string[],
   ) {
+    this.plugins = plugins;
     this.registry = registry;
     this.host = host;
     this.facets = facets;
@@ -148,6 +152,7 @@ export class Extensions {
       report,
       async (provider) => (await models.getAuth(provider))?.auth.apiKey,
     );
+    const plugins = new Plugins(home, report);
     const registry = createRegistry();
     const host = createHost<Principal>({
       name: "core",
@@ -175,6 +180,7 @@ export class Extensions {
       finders,
       clients,
       vault: options.vault ?? new Vault(join(home, "secrets")),
+      plugins,
       validate: (list) => validateExtensions(registry, list),
     };
     host.serve(
@@ -196,6 +202,7 @@ export class Extensions {
       installExtensions(registry, build.extensions);
     } catch (error) {
       await host.close();
+      plugins.close();
       await finders.close();
       await clients.close();
       throw error;
@@ -207,6 +214,7 @@ export class Extensions {
       build,
       finders,
       clients,
+      plugins,
       registry,
       host,
       facets,
@@ -235,12 +243,19 @@ export class Extensions {
   /** A committed reload's build: install it; the build validated it while the reload prepared. */
   private publish(build: Build): void {
     try {
+      // A plugin that is gone or turned off leaves now; Monchu's own extensions stay installed until a restart.
+      const owned = new Set(build.owned);
+      for (const name of this.current.owned) {
+        const extension = owned.has(name) ? undefined : this.registry.snapshot().extension(name);
+        if (extension !== undefined) this.registry.uninstall(extension);
+      }
       for (const extension of build.extensions) this.registry.install(extension);
     } catch (error) {
       this.published?.reject(error);
       throw error;
     }
     this.current = build;
+    this.plugins.settle(build.plugins);
     this.published?.resolve();
   }
 
@@ -298,15 +313,25 @@ export class Extensions {
     return this.current.root;
   }
 
+  /** Home plugins' extensions, which every conversation selects by appending them. */
+  get attached(): readonly Extension[] {
+    return this.current.plugins.attached;
+  }
+
+  /** What the last build loaded of each plugin. */
+  get pluginStatus(): readonly PluginStatus[] {
+    return this.current.plugins.status;
+  }
+
   /** Deferred tool groups, loaded per conversation by `tool_search` or preloading. */
   get groups(): readonly Extension[] {
     return this.current.groups;
   }
 
-  /** Every installed extension except the ones only added to the root. */
+  /** Every installed extension except the ones added to each conversation: the root's, groups and home plugins. */
   defaults(): readonly Extension[] {
     const names = new Set(this.current.extensions.map((extension) => extension.name));
-    for (const extension of [...this.current.root, ...this.current.groups])
+    for (const extension of [...this.current.root, ...this.current.groups, ...this.attached])
       names.delete(extension.name);
     names.add("monchu.reload");
     // Disabled classifier definitions remain installed to finish already accepted assessment tasks.
@@ -347,6 +372,8 @@ export class Extensions {
       } finally {
         this.pending = undefined;
         this.published = undefined;
+        // Plugin instances a failed reload started never run.
+        this.plugins.settle(this.current.plugins);
       }
       await applyConfig?.(config);
       for (const warning of [...roles.warnings, ...this.current.warnings]) this.report(warning);
@@ -387,6 +414,7 @@ export class Extensions {
   /** Close the host, then release search indexes and MCP servers after Durable stops its calls. */
   async close(): Promise<void> {
     await this.closeHost();
+    this.plugins.close();
     await this.finders.close();
     await this.clients.close();
   }
@@ -465,7 +493,10 @@ export const RestartRequest = defineDoc<{
   initial: () => ({ request: null }),
 });
 
-export function createReloadControls(reload: () => Promise<readonly string[]>) {
+export function createReloadControls(
+  reload: () => Promise<readonly string[]>,
+  plugins: () => readonly PluginStatus[] = () => [],
+) {
   return defineExtension({
     name: "monchu.reload",
     sections: [
@@ -485,7 +516,14 @@ export function createReloadControls(reload: () => Promise<readonly string[]>) {
         parameters: Type.Object({}),
         replay: "unsafe",
         execute: async () => ({
-          output: [{ type: "text", text: `Reloaded: ${(await reload()).join(", ")}` }],
+          output: [
+            {
+              type: "text",
+              text: [`Reloaded: ${(await reload()).join(", ")}`, formatPluginStatus(plugins())]
+                .filter(Boolean)
+                .join("\n"),
+            },
+          ],
         }),
       }),
       defineTool({

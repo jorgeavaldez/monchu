@@ -1,4 +1,4 @@
-import type { Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -109,5 +109,77 @@ describe("prompt cache", () => {
     expect(
       later.some((message) => message.toolsAdded?.some((tool) => tool.name === "agent_browser")),
     ).toBe(true);
+  });
+
+  // A plugin added while conversations run appends its tools, and patches only the plugins' section, also after a
+  // restart: Durable redeclares every tool when their order changes, and re-sends every section after a new one.
+  it("appends a home plugin's direct tool, patches only the plugins section, and keeps both across a restart", async () => {
+    const value = await setup();
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    );
+    prepareHome(home);
+    await mkdir(join(home, "plugins", "base"), { recursive: true });
+    await writeFile(
+      join(home, "plugins", "base", "index.js"),
+      `export default (monchu) => monchu.registerSection("state", () => "base state");`,
+    );
+    const requests: Message[][] = [];
+    route(value.faux, (request) => {
+      requests.push(structuredClone([...request.messages]));
+      return fauxAssistantMessage("ok");
+    });
+    const turn = async (backend: Monchu, text: string) => {
+      const count = requests.length;
+      await (await front(backend)).submit(text, `cache:${text}`, "followUp");
+      await waitFor(async () => {
+        if (requests.length <= count) return false;
+        const entries = await (await front(backend)).viewState();
+        const last = lastMessage(entries.value.entries.flatMap((entry) => entry.model ?? []));
+        entries.dispose();
+        return last?.role === "assistant" && textOf(last) === "ok";
+      });
+    };
+    let backend = await Monchu.open(home, value.faux.provider);
+    try {
+      await turn(backend, "hello");
+      await mkdir(join(home, "plugins", "probe"), { recursive: true });
+      await writeFile(
+        join(home, "plugins", "probe", "index.js"),
+        `import { defineTool, Type } from "monchu/plugin";
+export default (monchu) => {
+  monchu.registerTool(defineTool({ name: "probe_now", description: "Probe", parameters: Type.Object({}), execute: async () => ({ output: [] }) }), { exposure: "direct" });
+  monchu.registerSection("state", () => "probe state");
+};`,
+      );
+      await backend.reload();
+      await turn(backend, "after reload");
+    } finally {
+      await backend.close();
+    }
+    backend = await Monchu.open(home, value.faux.provider);
+    try {
+      await turn(backend, "after restart");
+    } finally {
+      await backend.close();
+    }
+    for (let i = 1; i < requests.length; i++) {
+      const previous = requests[i - 1] ?? [];
+      expect(requests[i]?.slice(0, previous.length), `request ${i}`).toEqual(previous);
+    }
+    const later = (requests.at(-1) ?? []).slice(1).filter((message) => message.role === "system");
+    expect(
+      later.map((message) => [
+        ...Object.keys(message.sections ?? {}),
+        ...(message.toolsAdded ?? []).map((tool) => tool.name),
+        ...(message.toolsRemoved ?? []).map((tool) => `-${tool.name}`),
+      ]),
+    ).toEqual([["plugins", "probe_now"]]);
+    const plugins = later[0]?.sections?.plugins;
+    expect(plugins).toContain("<base_state>\nbase state\n</base_state>");
+    expect(plugins).toContain("<probe_state>\nprobe state\n</probe_state>");
   });
 });

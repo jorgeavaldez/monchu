@@ -22,7 +22,7 @@ To update, type `/update` in Monchu (or `/update <version>` for a [tagged releas
 2. Run `/login` and pick a provider. With Codex or Claude Code, Monchu uses its models; with OpenCode or OpenRouter (API keys), pick models with `/model` and Ctrl+S.
 3. Ask Monchu to use the `onboard` skill to learn about you from what's already on the machine.
 
-[docs/setup.md](docs/setup.md) covers logins, configuration, MCP servers, and running on several devices. [docs/internals.md](docs/internals.md) covers how Monchu works. `/help` lists the commands.
+[docs/setup.md](docs/setup.md) covers logins, configuration, MCP servers, and running on several devices; [docs/plugins.md](docs/plugins.md) how to add your own tools and hooks as private plugins. [docs/internals.md](docs/internals.md) covers how Monchu works. `/help` lists the commands.
 
 ## Development
 

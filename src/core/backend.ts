@@ -49,7 +49,7 @@ import {
   type Settings,
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
-import { applyFrontRole, Front, preloadAll, prepareFront, type FrontHost } from "./front.ts";
+import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
 import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
@@ -241,7 +241,7 @@ export class Monchu implements Client {
         for (const root of state.roots) await prepareFront(tx, root.id, loaded);
         return state.roots.map((root) => root.id);
       }, context);
-      for (const id of roots) await preloadAll(harness, id, loaded.preload);
+      for (const id of roots) await selectAll(harness, id, loaded);
       phase("root");
       const backend = new Monchu(
         home,
@@ -264,7 +264,12 @@ export class Monchu implements Client {
           `Monchu's store failed and closed (${cause}). Nothing more is saved until Monchu restarts: use /restart`,
         );
       });
-      extensions.registry.install(createReloadControls(() => backend.reload()));
+      extensions.registry.install(
+        createReloadControls(
+          () => backend.reload(),
+          () => loaded.pluginStatus,
+        ),
+      );
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
       backend.watchEdge();
@@ -719,8 +724,7 @@ export class Monchu implements Client {
       })
       .then(async (modules) => {
         // The new build's groups: a server whose preload was just turned on reaches existing conversations now.
-        for (const id of await this.rootIds())
-          await preloadAll(this.harness, id, this.extensions.preload);
+        for (const id of await this.rootIds()) await selectAll(this.harness, id, this.extensions);
         for (const listener of this.reloadListeners) {
           try {
             listener();

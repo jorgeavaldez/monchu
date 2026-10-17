@@ -63,6 +63,11 @@ export type ToolGroup = {
   details?(api: ToolExecutionApi, context: Context): Promise<string | undefined>;
 };
 
+/** The extension a group installs as. */
+export function groupExtensionName(group: Pick<ToolGroup, "name" | "codemode">): string {
+  return `${group.codemode === true ? CODEMODE_PREFIX : GROUP_PREFIX}${group.name}`;
+}
+
 function isGroupExtension(name: string): boolean {
   return name.startsWith(GROUP_PREFIX);
 }
@@ -86,6 +91,31 @@ export async function unloadGroups(tx: Tx, conversationId: ConversationId): Prom
       ...selected,
       add: selected.add.filter((name) => !isGroupExtension(name)),
     };
+}
+
+/** Extension names of home plugins, which every conversation selects by appending them (see `attachPlugins`). */
+export const PLUGIN_PREFIX = "plugin.";
+
+/**
+ * Keep a conversation's home plugins current: append the ones it lacks, and drop removed ones, so a plugin added back
+ * appends again. Appending keeps the prompt cache: Durable redeclares every tool when their order changes.
+ */
+export async function attachPlugins(
+  tx: Tx,
+  conversationId: ConversationId,
+  attached: readonly string[],
+): Promise<void> {
+  const agent = await tx.doc(AgentDoc, conversationId);
+  const selected = agent.extensions;
+  // An exact selection is the conversation's own choice.
+  if (Array.isArray(selected)) return;
+  const add = selected?.add ?? [];
+  const next = [
+    ...add.filter((name) => !name.startsWith(PLUGIN_PREFIX) || attached.includes(name)),
+    ...attached.filter((name) => !add.includes(name)),
+  ];
+  if (next.length === add.length && next.every((name, index) => name === add[index])) return;
+  agent.extensions = { ...selected, add: next };
 }
 
 /** The provider whose conversations load preloaded groups from the start. */
@@ -266,12 +296,12 @@ export function createToolSearch(all: readonly ToolGroup[]) {
   const groups = all.filter((group) => group.codemode !== true);
   const scripted = all.filter((group) => group.codemode === true);
   const scriptExtensions = scripted.map((group) =>
-    defineExtension({ name: `${CODEMODE_PREFIX}${group.name}`, tools: group.tools }),
+    defineExtension({ name: groupExtensionName(group), tools: group.tools }),
   );
   const extensions = new Map(
     groups.map((group) => [
       group.name,
-      defineExtension({ name: `${GROUP_PREFIX}${group.name}`, tools: group.tools }),
+      defineExtension({ name: groupExtensionName(group), tools: group.tools }),
     ]),
   );
   const prompt = [

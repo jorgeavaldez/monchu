@@ -1,10 +1,10 @@
-import type { JsonObject } from "@earendil-works/pi-durable";
+import { defineExtension, type JsonObject } from "@earendil-works/pi-durable";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Jj } from "../src/core/tools/jj.ts";
+import { tools as jjTools } from "../src/plugins/jj/index.ts";
 import {
   callTools,
   cleanup,
@@ -17,6 +17,8 @@ import {
 } from "./support.ts";
 
 afterEach(cleanup);
+
+const Jj = defineExtension({ name: "monchu.jj", tools: jjTools });
 
 const mentions = (text: string): unknown => expect.stringContaining(text);
 

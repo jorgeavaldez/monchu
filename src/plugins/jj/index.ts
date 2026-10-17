@@ -1,10 +1,11 @@
-// Ported from the `jj` tool in the user's Pi extensions (jj-tool.ts) and extended with writes.
+// The bundled jj plugin. Ported from the `jj` tool in the user's Pi extensions (jj-tool.ts) and extended with writes.
 import { isJsonValue } from "@earendil-works/chord";
 import { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { Check } from "typebox/value";
+import { definePlugin } from "../../plugin.ts";
 
 const strict = { additionalProperties: false };
 const text = (description?: string) =>
@@ -413,317 +414,317 @@ const READ_DESCRIPTION =
 const WRITE_DESCRIPTION =
   'Change a Jujutsu repository at an explicit absolute cwd: describe, commit, new, bookmark_set (create or move), bookmark_move (existing only), git_fetch, git_push. Only act on what the user authorized; never push, move bookmarks or commit unasked. Revisions are jj revsets that must resolve to exactly one revision where one is named; bookmark and remote names and commit paths are literal. describe sets one revision\'s message. commit describes @ (or only the given paths) and starts a new empty @ on top; the committed change is then @-, so after commit a bookmark normally goes on @-, not @. new starts an empty change on the given parents. bookmark_set/bookmark_move always take an explicit revision and refuse an empty revision without a description unless allow_empty; moving backwards or sideways needs allow_backwards. git_push pushes only the named bookmarks; dry_run shows what would change. Results include the resulting revisions or bookmarks. These calls are never replayed after a crash. write="uncertain" means the jj command started but did not finish cleanly: inspect with the jj tool (status, bookmark_list, op_log) before trying again; never retry blindly.';
 
-/**
- * jj for every role: `jj` reads and is replay-safe; `jj_write` changes repositories and is never replayed.
- */
-export const Jj = defineExtension({
-  name: "monchu.jj",
-  tools: [
-    defineTool({
-      name: "jj",
-      description: READ_DESCRIPTION,
-      parameters: ReadParameters,
-      replay: "safe",
-      execute: async (args, api, context) => {
-        const directory = args.cwd;
-        const jj = session(directory, context.abortSignal);
-        const fail = (kind: Failure, failure: string) =>
-          respond(api, {
-            ok: false,
-            error: { kind, message: failure },
-            commands: jj.commands,
-            stdout: jj.stdout,
-          });
-        if (!isAbsolute(directory))
-          return fail("invalid_request", "cwd must be an absolute repository or workspace path.");
-        const { request } = args;
-        const maxBytes = args.max_bytes ?? 32768;
-        const base = {
-          ok: true,
-          cwd: directory,
-          operation: request.operation,
+/** `jj` reads and is replay-safe; `jj_write` changes repositories and is never replayed. */
+export const tools = [
+  defineTool({
+    name: "jj",
+    description: READ_DESCRIPTION,
+    parameters: ReadParameters,
+    replay: "safe",
+    execute: async (args, api, context) => {
+      const directory = args.cwd;
+      const jj = session(directory, context.abortSignal);
+      const fail = (kind: Failure, failure: string) =>
+        respond(api, {
+          ok: false,
+          error: { kind, message: failure },
           commands: jj.commands,
-        };
-        const read = (command: string[]) => jj.run(command, maxBytes, READ_TIMEOUT_MS);
-        try {
-          switch (request.operation) {
-            case "status": {
-              const status = await resolveOne(jj, "@", maxBytes);
-              return respond(api, { ...base, status, complete: true });
-            }
-            case "show": {
-              const current = await resolveOne(jj, request.revision, maxBytes);
-              const patch = await read([
-                "diff",
-                "--git",
-                "--revisions=" + current.revision.commit_id,
-              ]);
-              return respond(api, { ...base, revision: current, patch, complete: patch.complete });
-            }
-            case "log": {
-              const max = request.limit ?? 20;
-              const output = await read([
-                "log",
-                "--no-graph",
-                "--revisions=" + request.revset,
-                "--limit=" + (max + 1),
-                "--template",
-                revisionTemplate,
-                "--",
-                ...(request.paths ?? []).map((value) => literal("root", value)),
-              ]);
-              const parsed = parseRows(Revision, output, max);
-              return respond(api, { ...base, revisions: parsed.rows, complete: parsed.complete });
-            }
-            case "diff": {
-              const output = await read([
-                "diff",
-                ...(request.comparison.kind === "revisions"
-                  ? ["--revisions=" + request.comparison.revset]
-                  : ["--from=" + request.comparison.from, "--to=" + request.comparison.to]),
-                ...(request.format === "patch"
-                  ? ["--git"]
-                  : ["--template", changedFileTemplate + ' ++ "\\n"']),
-                "--",
-                ...(request.paths ?? []).map((value) => literal("root", value)),
-              ]);
-              if (request.format === "patch")
-                return respond(api, {
-                  ...base,
-                  format: "patch",
-                  patch: output,
-                  complete: output.complete,
-                });
-              const parsed = parseRows(ChangedFile, output, request.limit ?? 20);
-              return respond(api, {
-                ...base,
-                format: "files",
-                files: parsed.rows,
-                complete: parsed.complete,
-              });
-            }
-            case "file_show": {
-              const body = await read([
-                "file",
-                "show",
-                "--revision=" + request.revision,
-                "--",
-                literal("root-file", request.path),
-              ]);
-              return respond(api, {
-                ...base,
-                revision: request.revision,
-                path: request.path,
-                body,
-                complete: body.complete,
-              });
-            }
-            case "bookmark_list": {
-              const output = await read([
-                "bookmark",
-                "list",
-                "--all-remotes",
-                "--sort=name",
-                "--template",
-                bookmarkTemplate + ' ++ "\\n"',
-                ...(request.revset === undefined ? [] : ["--revision=" + request.revset]),
-                "--",
-                ...(request.names ?? []).map((name) => literal("exact", name)),
-              ]);
-              const parsed = parseRows(Bookmark, output, request.limit ?? 20);
-              return respond(api, { ...base, bookmarks: parsed.rows, complete: parsed.complete });
-            }
-            case "op_log": {
-              const max = request.limit ?? 20;
-              const output = await read([
-                "operation",
-                "log",
-                "--no-graph",
-                "--limit=" + (max + 1),
-                "--template",
-                'json(self) ++ "\\n"',
-              ]);
-              const parsed = parseRows(Operation, output, max);
-              return respond(api, { ...base, operations: parsed.rows, complete: parsed.complete });
-            }
+          stdout: jj.stdout,
+        });
+      if (!isAbsolute(directory))
+        return fail("invalid_request", "cwd must be an absolute repository or workspace path.");
+      const { request } = args;
+      const maxBytes = args.max_bytes ?? 32768;
+      const base = {
+        ok: true,
+        cwd: directory,
+        operation: request.operation,
+        commands: jj.commands,
+      };
+      const read = (command: string[]) => jj.run(command, maxBytes, READ_TIMEOUT_MS);
+      try {
+        switch (request.operation) {
+          case "status": {
+            const status = await resolveOne(jj, "@", maxBytes);
+            return respond(api, { ...base, status, complete: true });
           }
-        } catch (error) {
-          if (error instanceof JjFailure) return fail(error.kind, error.message);
-          return fail("invalid_output", error instanceof Error ? error.message : String(error));
-        }
-      },
-    }),
-    defineTool({
-      name: "jj_write",
-      description: WRITE_DESCRIPTION,
-      parameters: WriteParameters,
-      replay: "unsafe",
-      executionMode: "sequential",
-      execute: async (args, api, context) => {
-        const directory = args.cwd;
-        const jj = session(directory, context.abortSignal);
-        // Whether the state-changing command ran: uncertain until it exits zero.
-        let write: "not_attempted" | "uncertain" | "applied" = "not_attempted";
-        const fail = (kind: Failure, failure: string) =>
-          respond(api, {
-            ok: false,
-            write,
-            error: { kind, message: failure },
-            commands: jj.commands,
-          });
-        if (!isAbsolute(directory))
-          return fail("invalid_request", "cwd must be an absolute repository or workspace path.");
-        const { request } = args;
-        const maxBytes = 32768;
-        const base = { ok: true, cwd: directory, operation: request.operation, write: "applied" };
-        const change = async (command: string[], timeoutMs = LOCAL_WRITE_TIMEOUT_MS) => {
-          write = "uncertain";
-          await jj.run(command, WRITE_STDOUT_BYTES, timeoutMs, true);
-          write = "applied";
-        };
-        const bookmarks = async (list: readonly string[]) => {
-          const output = await jj.run(
-            [
+          case "show": {
+            const current = await resolveOne(jj, request.revision, maxBytes);
+            const patch = await read([
+              "diff",
+              "--git",
+              "--revisions=" + current.revision.commit_id,
+            ]);
+            return respond(api, { ...base, revision: current, patch, complete: patch.complete });
+          }
+          case "log": {
+            const max = request.limit ?? 20;
+            const output = await read([
+              "log",
+              "--no-graph",
+              "--revisions=" + request.revset,
+              "--limit=" + (max + 1),
+              "--template",
+              revisionTemplate,
+              "--",
+              ...(request.paths ?? []).map((value) => literal("root", value)),
+            ]);
+            const parsed = parseRows(Revision, output, max);
+            return respond(api, { ...base, revisions: parsed.rows, complete: parsed.complete });
+          }
+          case "diff": {
+            const output = await read([
+              "diff",
+              ...(request.comparison.kind === "revisions"
+                ? ["--revisions=" + request.comparison.revset]
+                : ["--from=" + request.comparison.from, "--to=" + request.comparison.to]),
+              ...(request.format === "patch"
+                ? ["--git"]
+                : ["--template", changedFileTemplate + ' ++ "\\n"']),
+              "--",
+              ...(request.paths ?? []).map((value) => literal("root", value)),
+            ]);
+            if (request.format === "patch")
+              return respond(api, {
+                ...base,
+                format: "patch",
+                patch: output,
+                complete: output.complete,
+              });
+            const parsed = parseRows(ChangedFile, output, request.limit ?? 20);
+            return respond(api, {
+              ...base,
+              format: "files",
+              files: parsed.rows,
+              complete: parsed.complete,
+            });
+          }
+          case "file_show": {
+            const body = await read([
+              "file",
+              "show",
+              "--revision=" + request.revision,
+              "--",
+              literal("root-file", request.path),
+            ]);
+            return respond(api, {
+              ...base,
+              revision: request.revision,
+              path: request.path,
+              body,
+              complete: body.complete,
+            });
+          }
+          case "bookmark_list": {
+            const output = await read([
               "bookmark",
               "list",
               "--all-remotes",
               "--sort=name",
               "--template",
               bookmarkTemplate + ' ++ "\\n"',
+              ...(request.revset === undefined ? [] : ["--revision=" + request.revset]),
               "--",
-              ...list.map((name) => literal("exact", name)),
-            ],
-            maxBytes,
-            READ_TIMEOUT_MS,
-          );
-          return parseRows(Bookmark, output, 100).rows;
-        };
-        try {
-          switch (request.operation) {
-            case "describe": {
-              const target = await resolveOne(jj, request.revision, maxBytes);
-              await change([
-                "describe",
-                "--message=" + request.message,
-                "--",
-                target.revision.commit_id,
-              ]);
-              const revision = await resolveOne(jj, target.revision.change_id, maxBytes);
-              return respond(api, { ...base, revision, commands: jj.commands });
-            }
-            case "commit": {
-              await change([
-                "commit",
-                "--message=" + request.message,
-                "--",
-                ...(request.paths ?? []).map((value) => literal("root", value)),
-              ]);
-              const working_copy = await resolveOne(jj, "@", maxBytes);
-              const committed = await resolveOne(jj, "@-", maxBytes);
-              return respond(api, { ...base, committed, working_copy, commands: jj.commands });
-            }
-            case "new": {
-              await change([
-                "new",
-                ...(request.message === undefined ? [] : ["--message=" + request.message]),
-                "--",
-                ...request.parents,
-              ]);
-              const working_copy = await resolveOne(jj, "@", maxBytes);
-              return respond(api, { ...base, working_copy, commands: jj.commands });
-            }
-            case "bookmark_set":
-            case "bookmark_move": {
-              const target = await resolveOne(jj, request.revision, maxBytes);
-              if (target.empty && target.revision.description.trim() === "" && !request.allow_empty)
-                return fail(
-                  "invalid_request",
-                  `${request.revision} is an empty revision without a description (${target.revision.change_id.slice(0, 12)}${target.current_working_copy ? ", the working copy @" : ""}); after commit the change is usually @-. Pass allow_empty only if this target is intended.`,
-                );
-              const backwards = request.allow_backwards ? ["--allow-backwards"] : [];
-              await change(
-                request.operation === "bookmark_set"
-                  ? [
-                      "bookmark",
-                      "set",
-                      "--revision=" + target.revision.commit_id,
-                      ...backwards,
-                      "--",
-                      ...request.names,
-                    ]
-                  : [
-                      "bookmark",
-                      "move",
-                      "--to=" + target.revision.commit_id,
-                      ...backwards,
-                      "--",
-                      ...request.names.map((name) => literal("exact", name)),
-                    ],
+              ...(request.names ?? []).map((name) => literal("exact", name)),
+            ]);
+            const parsed = parseRows(Bookmark, output, request.limit ?? 20);
+            return respond(api, { ...base, bookmarks: parsed.rows, complete: parsed.complete });
+          }
+          case "op_log": {
+            const max = request.limit ?? 20;
+            const output = await read([
+              "operation",
+              "log",
+              "--no-graph",
+              "--limit=" + (max + 1),
+              "--template",
+              'json(self) ++ "\\n"',
+            ]);
+            const parsed = parseRows(Operation, output, max);
+            return respond(api, { ...base, operations: parsed.rows, complete: parsed.complete });
+          }
+        }
+      } catch (error) {
+        if (error instanceof JjFailure) return fail(error.kind, error.message);
+        return fail("invalid_output", error instanceof Error ? error.message : String(error));
+      }
+    },
+  }),
+  defineTool({
+    name: "jj_write",
+    description: WRITE_DESCRIPTION,
+    parameters: WriteParameters,
+    replay: "unsafe",
+    executionMode: "sequential",
+    execute: async (args, api, context) => {
+      const directory = args.cwd;
+      const jj = session(directory, context.abortSignal);
+      // Whether the state-changing command ran: uncertain until it exits zero.
+      let write: "not_attempted" | "uncertain" | "applied" = "not_attempted";
+      const fail = (kind: Failure, failure: string) =>
+        respond(api, {
+          ok: false,
+          write,
+          error: { kind, message: failure },
+          commands: jj.commands,
+        });
+      if (!isAbsolute(directory))
+        return fail("invalid_request", "cwd must be an absolute repository or workspace path.");
+      const { request } = args;
+      const maxBytes = 32768;
+      const base = { ok: true, cwd: directory, operation: request.operation, write: "applied" };
+      const change = async (command: string[], timeoutMs = LOCAL_WRITE_TIMEOUT_MS) => {
+        write = "uncertain";
+        await jj.run(command, WRITE_STDOUT_BYTES, timeoutMs, true);
+        write = "applied";
+      };
+      const bookmarks = async (list: readonly string[]) => {
+        const output = await jj.run(
+          [
+            "bookmark",
+            "list",
+            "--all-remotes",
+            "--sort=name",
+            "--template",
+            bookmarkTemplate + ' ++ "\\n"',
+            "--",
+            ...list.map((name) => literal("exact", name)),
+          ],
+          maxBytes,
+          READ_TIMEOUT_MS,
+        );
+        return parseRows(Bookmark, output, 100).rows;
+      };
+      try {
+        switch (request.operation) {
+          case "describe": {
+            const target = await resolveOne(jj, request.revision, maxBytes);
+            await change([
+              "describe",
+              "--message=" + request.message,
+              "--",
+              target.revision.commit_id,
+            ]);
+            const revision = await resolveOne(jj, target.revision.change_id, maxBytes);
+            return respond(api, { ...base, revision, commands: jj.commands });
+          }
+          case "commit": {
+            await change([
+              "commit",
+              "--message=" + request.message,
+              "--",
+              ...(request.paths ?? []).map((value) => literal("root", value)),
+            ]);
+            const working_copy = await resolveOne(jj, "@", maxBytes);
+            const committed = await resolveOne(jj, "@-", maxBytes);
+            return respond(api, { ...base, committed, working_copy, commands: jj.commands });
+          }
+          case "new": {
+            await change([
+              "new",
+              ...(request.message === undefined ? [] : ["--message=" + request.message]),
+              "--",
+              ...request.parents,
+            ]);
+            const working_copy = await resolveOne(jj, "@", maxBytes);
+            return respond(api, { ...base, working_copy, commands: jj.commands });
+          }
+          case "bookmark_set":
+          case "bookmark_move": {
+            const target = await resolveOne(jj, request.revision, maxBytes);
+            if (target.empty && target.revision.description.trim() === "" && !request.allow_empty)
+              return fail(
+                "invalid_request",
+                `${request.revision} is an empty revision without a description (${target.revision.change_id.slice(0, 12)}${target.current_working_copy ? ", the working copy @" : ""}); after commit the change is usually @-. Pass allow_empty only if this target is intended.`,
               );
-              const after = await bookmarks(request.names);
-              // jj exits zero when a move matches nothing, so check where each named bookmark ended up.
-              const missed = request.names.filter(
-                (name) =>
-                  !after.some(
-                    (bookmark) =>
-                      bookmark.name === name &&
-                      bookmark.remote === null &&
-                      bookmark.added_targets.length === 1 &&
-                      bookmark.added_targets[0] === target.revision.commit_id,
-                  ),
+            const backwards = request.allow_backwards ? ["--allow-backwards"] : [];
+            await change(
+              request.operation === "bookmark_set"
+                ? [
+                    "bookmark",
+                    "set",
+                    "--revision=" + target.revision.commit_id,
+                    ...backwards,
+                    "--",
+                    ...request.names,
+                  ]
+                : [
+                    "bookmark",
+                    "move",
+                    "--to=" + target.revision.commit_id,
+                    ...backwards,
+                    "--",
+                    ...request.names.map((name) => literal("exact", name)),
+                  ],
+            );
+            const after = await bookmarks(request.names);
+            // jj exits zero when a move matches nothing, so check where each named bookmark ended up.
+            const missed = request.names.filter(
+              (name) =>
+                !after.some(
+                  (bookmark) =>
+                    bookmark.name === name &&
+                    bookmark.remote === null &&
+                    bookmark.added_targets.length === 1 &&
+                    bookmark.added_targets[0] === target.revision.commit_id,
+                ),
+            );
+            if (missed.length)
+              return fail(
+                "unchanged",
+                `jj finished, but ${missed.join(", ")} ${missed.length === 1 ? "does" : "do"} not point at ${target.revision.commit_id}; bookmark_move cannot create bookmarks.`,
               );
-              if (missed.length)
-                return fail(
-                  "unchanged",
-                  `jj finished, but ${missed.join(", ")} ${missed.length === 1 ? "does" : "do"} not point at ${target.revision.commit_id}; bookmark_move cannot create bookmarks.`,
-                );
-              return respond(api, { ...base, target, bookmarks: after, commands: jj.commands });
-            }
-            case "git_fetch": {
-              await change(
-                [
-                  "git",
-                  "fetch",
-                  ...(request.remote === undefined
-                    ? []
-                    : ["--remote=" + literal("exact", request.remote)]),
-                ],
-                REMOTE_WRITE_TIMEOUT_MS,
-              );
-              return respond(api, { ...base, commands: jj.commands });
-            }
-            case "git_push": {
-              const command = [
+            return respond(api, { ...base, target, bookmarks: after, commands: jj.commands });
+          }
+          case "git_fetch": {
+            await change(
+              [
                 "git",
-                "push",
+                "fetch",
                 ...(request.remote === undefined
                   ? []
                   : ["--remote=" + literal("exact", request.remote)]),
-                ...request.bookmarks.map((name) => "--bookmark=" + literal("exact", name)),
-                ...(request.dry_run ? ["--dry-run"] : []),
-              ];
-              if (request.dry_run) {
-                await jj.run(command, WRITE_STDOUT_BYTES, REMOTE_WRITE_TIMEOUT_MS, true);
-                return respond(api, {
-                  ...base,
-                  write: "not_attempted",
-                  dry_run: true,
-                  commands: jj.commands,
-                });
-              }
-              await change(command, REMOTE_WRITE_TIMEOUT_MS);
+              ],
+              REMOTE_WRITE_TIMEOUT_MS,
+            );
+            return respond(api, { ...base, commands: jj.commands });
+          }
+          case "git_push": {
+            const command = [
+              "git",
+              "push",
+              ...(request.remote === undefined
+                ? []
+                : ["--remote=" + literal("exact", request.remote)]),
+              ...request.bookmarks.map((name) => "--bookmark=" + literal("exact", name)),
+              ...(request.dry_run ? ["--dry-run"] : []),
+            ];
+            if (request.dry_run) {
+              await jj.run(command, WRITE_STDOUT_BYTES, REMOTE_WRITE_TIMEOUT_MS, true);
               return respond(api, {
                 ...base,
-                bookmarks: await bookmarks(request.bookmarks),
+                write: "not_attempted",
+                dry_run: true,
                 commands: jj.commands,
               });
             }
+            await change(command, REMOTE_WRITE_TIMEOUT_MS);
+            return respond(api, {
+              ...base,
+              bookmarks: await bookmarks(request.bookmarks),
+              commands: jj.commands,
+            });
           }
-        } catch (error) {
-          if (error instanceof JjFailure) return fail(error.kind, error.message);
-          return fail("invalid_output", error instanceof Error ? error.message : String(error));
         }
-      },
-    }),
-  ],
+      } catch (error) {
+        if (error instanceof JjFailure) return fail(error.kind, error.message);
+        return fail("invalid_output", error instanceof Error ? error.message : String(error));
+      }
+    },
+  }),
+];
+
+/** A bundled plugin, offered to every role in every conversation: agents use jj on most turns. */
+export default definePlugin((monchu) => {
+  for (const tool of tools) monchu.registerTool(tool, { exposure: "direct" });
 });

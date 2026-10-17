@@ -47,7 +47,7 @@ import { thinkingLevels, type ModelRole } from "./config.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import type { Extensions } from "./reload.ts";
 import { IMAGE_BUDGET_BYTES, imageBytes, images } from "./tools/images.ts";
-import { preloadGroups } from "./tools/tool-search.ts";
+import { attachPlugins, preloadGroups } from "./tools/tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -84,15 +84,17 @@ export async function prepareFront(
   id: ConversationId,
   extensions: Extensions,
 ): Promise<void> {
-  // Groups the root already loaded stay, in place: dropping one at a restart changes its tools and costs the prompt cache.
+  // Groups the root already loaded and its plugins stay, in place: dropping one at a restart changes its tools and
+  // costs the prompt cache. Plugins it lacks append after them.
   const selected = (await tx.doc(AgentDoc, id)).extensions;
   const names = Array.isArray(selected) ? selected : (selected?.add ?? []);
-  const loaded = extensions.groups
-    .filter((group) => names.includes(group.name))
+  const kept = [...extensions.groups, ...extensions.attached]
+    .filter((extension) => names.includes(extension.name))
     .sort((left, right) => names.indexOf(left.name) - names.indexOf(right.name));
+  const added = extensions.attached.filter((extension) => !names.includes(extension.name));
   await configure(tx, id, {
     // Goals, memory and roots are not in the host default. Workers get them too: a new worker copies this agent.
-    extensions: { add: [...extensions.root, ...loaded] },
+    extensions: { add: [...extensions.root, ...kept, ...added] },
     instructions: FRONT_INSTRUCTIONS,
   });
   await applyFrontRole(tx, id, extensions.config.front, extensions.preload);
@@ -114,15 +116,16 @@ export async function applyFrontRole(
 }
 
 /**
- * Load the preloaded tool groups into a root and every worker under it, so a group added to the configuration reaches
- * existing conversations once, at a reload or start, instead of mid-run.
+ * Bring a root and every worker under it up to the current build: the preloaded tool groups on the Claude Code bridge
+ * and the home plugins, so a group or plugin added reaches existing conversations once, at a reload or start, instead
+ * of mid-run.
  */
-export async function preloadAll(
+export async function selectAll(
   harness: Harness,
   rootId: ConversationId,
-  preload: readonly string[],
+  extensions: Pick<Extensions, "preload" | "attached">,
 ): Promise<void> {
-  if (preload.length === 0) return;
+  const attached = extensions.attached.map((extension) => extension.name);
   const ids: ConversationId[] = [];
   for (const pending = [rootId]; pending.length;) {
     const id = pending.pop();
@@ -132,7 +135,10 @@ export async function preloadAll(
       pending.push(worker.conversationId);
   }
   await harness.commit(async (tx) => {
-    for (const id of ids) await preloadGroups(tx, id, preload);
+    for (const id of ids) {
+      await preloadGroups(tx, id, extensions.preload);
+      await attachPlugins(tx, id, attached);
+    }
   }, context);
 }
 

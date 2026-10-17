@@ -13,7 +13,7 @@ import { Goals } from "./agents/goals.ts";
 import { createMemory } from "./agents/memory.ts";
 import { Roots } from "./agents/roots.ts";
 import { createWorkerTools } from "./agents/workers.ts";
-import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.ts";
+import { BUILD, BuildHost, Builds, RELOAD_TOOLS, type Build, type BuildInputs } from "./build.ts";
 import { createContext } from "./context.ts";
 import { createIdentity } from "./identity.ts";
 import { createJobs } from "./jobs.ts";
@@ -22,24 +22,40 @@ import { createMcpTools } from "./mcp/tools.ts";
 import { createBrowser } from "./tools/browser.ts";
 import { Codemode } from "./tools/codemode.ts";
 import { createHerdr } from "./tools/herdr.ts";
-import { Jj } from "./tools/jj.ts";
 import { createPiTools } from "./tools/pi-tools.ts";
 import { createSecrets } from "./secrets/tool.ts";
-import { createToolSearch } from "./tools/tool-search.ts";
+import { createPluginSections } from "./plugins.ts";
+import { createToolSearch, groupExtensionName } from "./tools/tool-search.ts";
 
 /** Build every extension from this copy of the code, reading config, skills and MCP listings anew. */
 async function build(inputs: BuildInputs): Promise<Build> {
   const config = inputs.config();
-  const context = createContext(inputs.home, config.settings);
+  const loaded = await inputs.plugins.load();
+  const context = createContext(inputs.home, config.settings, loaded.skills);
   const tools = createPiTools(context.settings, inputs.finders, inputs.vault);
   const memory = createMemory(inputs.home);
   const identity = createIdentity(inputs.home, inputs.reportSkipped, inputs.observeBudget);
   const mcpConfig = await loadMcpConfig(inputs.home);
   const mcp = await createMcpTools(mcpConfig.servers, inputs.clients);
-  const search = createToolSearch([...mcp.groups, createBrowser(inputs.vault)]);
-  const workers = createWorkerTools(inputs.workerRole, config.profiles, search.preload);
-  const jobs = createJobs(inputs.workerRole, inputs.home, config.profiles, search.preload);
+  const browser = createBrowser(inputs.vault);
+  const secrets = createSecrets(inputs.vault);
+  const workers = (preload: readonly string[]) =>
+    createWorkerTools(inputs.workerRole, config.profiles, preload);
+  const jobs = (preload: readonly string[]) =>
+    createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
   const herdr = createHerdr({ command: { executable: "herdr", args: [] }, env: process.env });
+  // Tool names the plugins may not take: every core tool, whatever the preload, and the reload controls.
+  const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
+  const reserved = new Set([
+    ...[...core, memory, identity, herdr, mcp.extension, secrets].flatMap((extension) =>
+      (extension.tools ?? []).map((tool) => tool.name),
+    ),
+    ...[...mcp.groups, browser].flatMap((group) => group.tools.map((tool) => tool.name)),
+    ...RELOAD_TOOLS,
+    "tool_search",
+  ]);
+  const plugins = loaded.use(reserved);
+  const search = createToolSearch([...mcp.groups, browser, ...plugins.groups]);
   const assessment =
     config.classifier === null
       ? undefined
@@ -47,21 +63,24 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const extensions = [
     context.extension,
     tools.extension,
-    workers,
-    jobs,
+    workers(search.preload),
+    jobs(search.preload),
     Roots,
     Codemode,
     Goals,
     memory,
     identity,
-    Jj,
+    // Bundled plugins keep the place jj had before it became one, so every conversation's tools stay in order.
+    ...plugins.bundled,
     herdr,
     mcp.extension,
     search.extension,
     // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.
-    createSecrets(inputs.vault),
+    secrets,
     ...search.groups,
     ...(assessment === undefined ? [] : [assessment.extension]),
+    createPluginSections(plugins.sections),
+    ...plugins.attached,
   ];
   inputs.validate(extensions);
   return {
@@ -73,7 +92,18 @@ async function build(inputs: BuildInputs): Promise<Build> {
     skills: context.skills,
     config,
     assessment,
-    warnings: [...context.warnings, ...tools.warnings, ...mcpConfig.errors, ...mcp.warnings],
+    plugins,
+    owned: [
+      ...[...plugins.bundled, ...plugins.attached].map((extension) => extension.name),
+      ...plugins.groups.map(groupExtensionName),
+    ],
+    warnings: [
+      ...context.warnings,
+      ...tools.warnings,
+      ...mcpConfig.errors,
+      ...mcp.warnings,
+      ...plugins.warnings,
+    ],
   };
 }
 

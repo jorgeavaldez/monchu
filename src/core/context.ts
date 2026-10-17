@@ -62,12 +62,18 @@ function warning(diagnostic: ResourceDiagnostic): string {
 }
 
 /**
- * Skills are read in place from the home and bundled directories, never from Pi or execution cwd.
+ * Skills are read in place from the home, the plugins' and the bundled directories (the first of a name wins), never
+ * from Pi or execution cwd.
  */
-export function createContext(home: string, runSettings: RunSettings) {
+export function createContext(
+  home: string,
+  runSettings: RunSettings,
+  pluginSkills: readonly string[] = [],
+) {
   home = resolve(home);
   const { skills, diagnostics } = loadSkills([
     join(home, "skills"),
+    ...pluginSkills,
     fileURLToPath(new URL("../../skills/", import.meta.url)),
   ]);
   const settings = resolveSettings(runSettings);
