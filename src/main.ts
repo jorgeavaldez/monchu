@@ -88,7 +88,7 @@ try {
       const notes = [...seeded];
       let server: { close(): Promise<void> } | undefined;
       try {
-        server = await serveSocket(backend, path, (message) => backend.report(message));
+        server = await serveSocket(backend, path);
       } catch (error) {
         notes.push(
           `other terminals can't attach: ${error instanceof Error ? error.message : String(error)}`,

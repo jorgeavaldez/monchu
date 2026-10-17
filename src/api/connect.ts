@@ -3,7 +3,7 @@
  * WebSocket. The caller only dials; this attaches the wire, follows drops, and redials, quickly at first.
  */
 import { RemoteClient } from "./remote.ts";
-import { WireTransport } from "./wire.ts";
+import { Rpc } from "./rpc.ts";
 
 /** One open connection, whatever carries it. */
 export type Connection = {
@@ -26,25 +26,26 @@ export async function connectRemote(
   dial: () => Promise<Connection | undefined>,
   options: { onError(error: Error): void; onReconnect?(ms: number): void },
 ): Promise<{ client: RemoteClient; close(): Promise<void> } | undefined> {
-  const transport = new WireTransport();
+  const rpc = new Rpc();
   let connection = await dial();
   if (connection === undefined) return undefined;
   let closing = false;
   let client: RemoteClient | undefined;
+  /** Attach a connection and say hello on it; rejects when the core speaks another protocol. */
   const use = (connected: Connection) => {
     connection = connected;
-    transport.attach({ send: (text) => connected.send(text) });
     connected.listen(
-      (text) => transport.receive(text),
+      (text) => rpc.receive(text),
       () => void lost(),
     );
+    return rpc.attach({ send: (text) => connected.send(text) });
   };
   const lost = async () => {
-    transport.detach("Connection to Monchu lost");
+    rpc.detach("Connection to Monchu lost");
     if (closing || client === undefined) return;
     const started = Date.now();
     const waitMs = client.release.updating === null ? RECONNECT_FOR_MS : UPDATE_RECONNECT_FOR_MS;
-    await client.disconnected();
+    client.disconnected();
     for (
       let delay = 50;
       Date.now() < started + waitMs && !closing;
@@ -53,9 +54,9 @@ export async function connectRemote(
       await new Promise((wait) => setTimeout(wait, delay));
       const next = await dial();
       if (next === undefined) continue;
-      use(next);
       try {
-        await client.reconnected();
+        await use(next);
+        client.reconnected();
         options.onReconnect?.(Date.now() - started);
       } catch (error) {
         options.onError(error instanceof Error ? error : new Error(String(error)));
@@ -65,9 +66,9 @@ export async function connectRemote(
     }
     if (!closing) client.notice("Monchu is gone; start it again, then reload");
   };
-  use(connection);
   try {
-    client = await RemoteClient.open(transport, (error) => options.onError(error));
+    await use(connection);
+    client = await RemoteClient.open(rpc);
   } catch (error) {
     connection.close();
     throw error;
@@ -76,7 +77,7 @@ export async function connectRemote(
     client,
     close: async () => {
       closing = true;
-      await client?.close();
+      client?.close();
       connection?.close();
     },
   };

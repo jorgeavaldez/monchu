@@ -2,6 +2,7 @@
 import { render } from "preact";
 import { connectRemote, type Connection } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
+import { OUTDATED_CORE } from "../api/rpc.ts";
 import { App } from "./app.tsx";
 import { cancelLogin, connected, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
@@ -58,9 +59,10 @@ async function boot(): Promise<void> {
     cancelLogin();
   });
   const attached = await connectRemote(dial, {
-    // A core that came back from an update may speak a newer wire than this page: load its page.
-    onError: () => {
-      if (page !== undefined && page.client.release.updating !== null) location.reload();
+    // A core that came back on another protocol, or from an update, serves a newer page: load it.
+    onError: (error) => {
+      if (error.message === OUTDATED_CORE) location.reload();
+      else if (page !== undefined && page.client.release.updating !== null) location.reload();
     },
     onReconnect: (ms) => {
       // An update replaced the page's own files: load the new ones.

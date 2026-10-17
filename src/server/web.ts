@@ -11,8 +11,7 @@ import { WebSocketServer } from "ws";
 import type { WebConfig } from "../core/config.ts";
 import type { Monchu } from "../core/backend.ts";
 import { WebAuth } from "./auth.ts";
-import { connectionServices } from "./session.ts";
-import { serveWire } from "./wire.ts";
+import { serveConnection } from "./session.ts";
 
 /** The built web client, in the package beside `dist/main.js` and from a checkout alike. */
 const ASSETS = fileURLToPath(new URL("../../dist/web/", import.meta.url));
@@ -183,9 +182,13 @@ export async function serveWeb(
       sockets.handleUpgrade(request, socket, head, (connection) => {
         const attached = performance.now();
         log("info", "client attached", { clients: sockets.clients.size });
-        const waiting: string[] = [];
-        let receive: (text: string) => void = (text) => void waiting.push(text);
-        let dispose = () => {};
+        const served = serveConnection(
+          backend,
+          { updates: !identities.some((identity) => identity.startsWith("service:")) },
+          (text) => {
+            if (connection.readyState === connection.OPEN) connection.send(text);
+          },
+        );
         connection.on("message", (data, binary) => {
           if (binary) return;
           const text = Buffer.isBuffer(data)
@@ -193,35 +196,15 @@ export async function serveWeb(
             : Array.isArray(data)
               ? Buffer.concat(data).toString("utf8")
               : Buffer.from(data).toString("utf8");
-          receive(text);
+          served.receive(text);
         });
         connection.on("close", () => {
-          dispose();
+          served.dispose();
           log("info", "client left", {
             clients: sockets.clients.size,
             ms: Math.round(performance.now() - attached),
           });
         });
-        connectionServices(backend, {
-          updates: !identities.some((identity) => identity.startsWith("service:")),
-        }).then(
-          (services) => {
-            const wire = serveWire(services.provider, (text) => {
-              if (connection.readyState === connection.OPEN) connection.send(text);
-            });
-            dispose = () => {
-              wire.dispose();
-              services.dispose();
-            };
-            if (connection.readyState !== connection.OPEN) {
-              dispose();
-              return;
-            }
-            receive = (text) => wire.receive(text);
-            for (const text of waiting.splice(0)) wire.receive(text);
-          },
-          () => connection.close(1011),
-        );
       });
     })().catch(() => refuse(500));
   });

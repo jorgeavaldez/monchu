@@ -10,7 +10,7 @@ import { cleanup, fauxRole, prepareHome, route, setup, textOf, waitFor, front } 
 afterEach(cleanup);
 
 describe("local socket", () => {
-  it("serves a client the same core over Chord: views, input, workers, login prompts, and a reconnect", async () => {
+  it("serves a client the same core over the wire: views, input, workers, login prompts, and a reconnect", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home);
@@ -41,7 +41,7 @@ describe("local socket", () => {
     const path = socketPath(home);
     const reports: string[] = [];
     backend.addNotes("seeded a test home");
-    let server = await serveSocket(backend, path, (message) => reports.push(message));
+    let server = await serveSocket(backend, path);
     const attached = await attachSocket(path, (error) => reports.push(error.message));
     try {
       if (attached === undefined) throw new Error("Nothing answered on the socket");
@@ -125,7 +125,7 @@ describe("local socket", () => {
       const stop = client.onReport((message) => notices.push(message));
       await server.close();
       await waitFor(() => notices.includes("connection to Monchu lost · reconnecting"));
-      server = await serveSocket(backend, path, (message) => reports.push(message));
+      server = await serveSocket(backend, path);
       await waitFor(() => notices.includes("reconnected to Monchu"));
       await (await front(client)).submit("after reconnect", "remote:2", "followUp");
       await waitFor(() =>

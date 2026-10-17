@@ -3,7 +3,6 @@
  * reach the core only through `Client`; the core implements it in process. Everything here is browser-safe: core types
  * come in as types only, and the shared helpers live beside this file.
  */
-import type { AttachedReplicatedState } from "@earendil-works/chord";
 import type {
   Api,
   AuthInteraction,
@@ -21,6 +20,7 @@ import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
+import type { Watched } from "./rpc.ts";
 import type { McpServerReport } from "./reports.ts";
 
 export type { Goal, JobEvent };
@@ -82,7 +82,7 @@ export interface RootClient {
   /** The root's full short id. */
   readonly id: string;
   /** Read-only committed conversation state of the front or a worker. The caller disposes it. */
-  viewState(workerName?: string): Promise<AttachedReplicatedState<ConversationView>>;
+  viewState(workerName?: string): Promise<Watched<ConversationView>>;
   /** Resolves on durable admission, never on the answer. */
   submit(message: string, requestId: string, whenBusy: WhenBusy): Promise<void>;
   messageWorker(

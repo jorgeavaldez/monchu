@@ -1,42 +1,29 @@
-import {
-  replicatedState,
-  RemoteServiceProvider,
-  type AttachedReplicatedState,
-  type Context,
-  type MutableReplicatedState,
-  type ReplicatedStateSourceFrame,
-} from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
-import type { ConversationView, ConversationWatch } from "@earendil-works/pi-durable";
 import {
-  Conversations,
-  Logins,
-  Session,
+  methods,
+  topics,
+  type Args,
   type Hello,
+  type Key,
   type LoginPrompt,
   type LoginState,
+  type Method,
   type Reports,
-} from "../api/services.ts";
-import type { RootSummary } from "../api/client.ts";
-import type { Release } from "../api/release.ts";
-import type { Assessment } from "../core/agents/classifier.ts";
+  type Results,
+  type Topic,
+} from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
 import type { JobsState } from "../core/jobs.ts";
-
-const context = BACKGROUND_CONTEXT;
-
-/** A JSON copy the state takes ownership of; core values stay the core's. */
-const own = <T>(value: T): T => structuredClone(value);
+import { Published, serveRpc, watchSource, type Source } from "./rpc.ts";
 
 function hello(backend: Monchu): Hello {
-  return own({
+  return {
     home: backend.home,
     settings: backend.settings,
     skills: [...backend.skills()],
     models: [...backend.catalog()],
     notes: [...backend.notes],
-  });
+  };
 }
 
 function wirePrompt(prompt: AuthPrompt): LoginPrompt {
@@ -58,108 +45,72 @@ function wirePrompt(prompt: AuthPrompt): LoginPrompt {
   }
 }
 
-/**
- * A conversation view as a state this Chord can publish. Durable's own states come from its newer Chord, whose states
- * the remote services here can't expose, so the view is fed from Durable's watch, frame by frame with its delta ops.
- * Goes away with the move to Chord's host runtime.
- */
-function publishedView(watch: ConversationWatch): AttachedReplicatedState<ConversationView> {
-  return replicatedState<ConversationView>({
-    attach() {
-      let cursor = 0;
-      let deliver: ((frame: ReplicatedStateSourceFrame<ConversationView>) => void) | undefined;
-      const waiting: ReplicatedStateSourceFrame<ConversationView>[] = [];
-      watch.start(async (value, ops, frameContext) => {
-        const frame = { cursor: ++cursor, value, ops, context: frameContext };
-        if (deliver === undefined) waiting.push(frame);
-        else deliver(frame);
-      });
-      return {
-        snapshot: { value: watch.value, cursor: 0 },
-        activate(listener) {
-          deliver = listener;
-          for (const frame of waiting.splice(0)) listener(frame);
-        },
-        dispose() {
-          deliver = undefined;
-          void watch.stop();
-        },
-      };
+/** A value fed by a backend subscription for as long as one watch runs. */
+async function fed<T>(
+  initial: T,
+  follow: (set: (value: T) => void) => Promise<() => void>,
+): Promise<Source> {
+  const published = new Published(initial);
+  const stop = await follow((value) => published.set(value));
+  const source = published.source();
+  return {
+    value: source.value,
+    start: (emit, end) => source.start(emit, end),
+    stop: () => {
+      source.stop();
+      stop();
     },
-  });
+  };
 }
 
 /**
- * The services one connection sees. Conversations it opens and logins it starts are spawned in its own provider, so
- * another client never sees its login prompts. `dispose` releases every attachment and cancels its logins.
- * `updates` is whether this connection's identity may replace Monchu's code: a person, not a service login.
+ * Serve one connection: `send` writes a message to it, and its owner feeds received ones to `receive`. The
+ * conversations it watches and the logins it starts are its own, so another client never sees its login prompts.
+ * `dispose` releases every watch and cancels its logins. `updates` is whether this connection's identity may replace
+ * Monchu's code: a person, not a service login.
  */
-export async function connectionServices(
+export function serveConnection(
   backend: Monchu,
   { updates }: { updates: boolean },
-): Promise<{ provider: RemoteServiceProvider; dispose(): void }> {
-  const provider = new RemoteServiceProvider([
-    { service: Session, mode: "singleton" },
-    { service: Conversations, mode: "keyed" },
-    { service: Logins, mode: "keyed" },
-  ]);
+  send: (text: string) => void,
+): { receive(text: string): void; dispose(): void } {
   const cleanups: (() => void)[] = [];
-  const helloState = replicatedState(hello(backend));
-  cleanups.push(backend.onReload(() => helloState.replace(context, hello(backend))));
-  const reports = replicatedState<Reports>({ recent: [] });
+  const helloState = new Published(hello(backend));
+  cleanups.push(backend.onReload(() => helloState.set(hello(backend))));
+  const reports = new Published<Reports>({ recent: [] });
   let nextReport = 1;
   cleanups.push(
     backend.onReport((message) =>
-      reports.replace(context, {
+      reports.set({
         recent: [...reports.value.recent, { id: nextReport++, message }].slice(-20),
       }),
     ),
   );
-  const release = replicatedState<Release>(own(backend.release));
-  cleanups.push(backend.onRelease((value) => release.replace(context, own(value))));
-  const roots = replicatedState<{ roots: RootSummary[] }>({ roots: [] });
-  cleanups.push(
-    await backend.watchRoots((value) => roots.replace(context, own({ roots: [...value] }))),
-  );
-  const assessments = replicatedState<{ byRoot: Record<string, Assessment[]> }>({ byRoot: {} });
-  const followed = new Map<string, { count: number; stop: Promise<() => void> }>();
-  cleanups.push(() => {
-    for (const entry of followed.values()) void entry.stop.then((stop) => stop()).catch(() => {});
-    followed.clear();
-  });
-  const initialJobs = await backend.jobs();
-  const jobs = replicatedState<JobsState>(
-    own({ jobs: initialJobs.jobs, events: initialJobs.events, nextEvent: initialJobs.nextEvent }),
-  );
-  cleanups.push(
-    await backend.watchJobEvents(initialJobs.nextEvent - 1, () => {
-      void backend
-        .jobs()
-        .then((state) =>
-          jobs.replace(
-            context,
-            own({ jobs: state.jobs, events: state.events, nextEvent: state.nextEvent }),
-          ),
-        );
-    }),
-  );
+  const release = new Published(backend.release);
+  cleanups.push(backend.onRelease((value) => release.set(value)));
 
-  const opened = new Map<string, { count: number; close(): void }>();
-  const logins = new Map<number, AbortController>();
+  const logins = new Map<
+    number,
+    {
+      state: Published<LoginState>;
+      controller: AbortController;
+      answer(prompt: number, value: string | null): void;
+    }
+  >();
   let nextLogin = 1;
 
-  /** Run one login for this connection: its prompts and events reach only this connection's `login` instance. */
+  /** Run one login for this connection: its prompts and events reach only this connection's `login` watch. */
   function startLogin(
     run: (
-      state: MutableReplicatedState<LoginState>,
+      update: (change: (state: LoginState) => LoginState) => void,
       ask: (request: LoginPrompt, signal?: AbortSignal) => Promise<string>,
       signal: AbortSignal,
     ) => Promise<string>,
   ): number {
     const id = nextLogin++;
     const controller = new AbortController();
-    logins.set(id, controller);
-    const state = replicatedState<LoginState>({ id, prompt: null, events: [], done: null });
+    const state = new Published<LoginState>({ id, prompt: null, events: [], done: null });
+    const update = (change: (state: LoginState) => LoginState) => state.set(change(state.value));
     let nextPrompt = 1;
     const answers = new Map<number, (value: string | null) => void>();
     const ask = (request: LoginPrompt, signal?: AbortSignal) =>
@@ -176,24 +127,14 @@ export async function connectionServices(
           answers.delete(promptId);
           controller.signal.removeEventListener("abort", abort);
           signal?.removeEventListener("abort", abort);
-          state.change(context, (draft) => {
-            draft.prompt = null;
-          });
+          update((current) => ({ ...current, prompt: null }));
           if (value === null) reject(new Error("Login cancelled"));
           else resolve(value);
         });
-        state.change(context, (draft) => {
-          draft.prompt = { id: promptId, request };
-        });
+        update((current) => ({ ...current, prompt: { id: promptId, request } }));
       });
-    const close = provider.spawn(Logins, String(id), {
-      state,
-      answer: async (prompt: number, value: string | null, _context: Context) => {
-        answers.get(prompt)?.(value);
-      },
-      cancel: async (_context: Context) => controller.abort(),
-    });
-    void run(state, ask, controller.signal)
+    logins.set(id, { state, controller, answer: (prompt, value) => answers.get(prompt)?.(value) });
+    void run(update, ask, controller.signal)
       .then(
         (message) => ({ ok: true as const, message }),
         // Provider failures can carry entered credentials; only the cancellation is named.
@@ -203,153 +144,87 @@ export async function connectionServices(
         }),
       )
       .then((done) => {
-        state.change(context, (draft) => {
-          draft.prompt = null;
-          draft.done = done;
-        });
-        logins.delete(id);
-        // The client reads the outcome before the instance goes.
-        setTimeout(close, 30_000).unref();
+        update((current) => ({ ...current, prompt: null, done }));
+        // The client reads the outcome before the login goes.
+        setTimeout(() => {
+          logins.delete(id);
+          state.end("closed");
+        }, 30_000).unref();
       });
     return id;
   }
 
-  provider.provide(Session, {
-    hello: helloState,
-    roots,
-    assessments,
-    jobs,
-    reports,
-    release,
-    open: async (root: string, name: string, _context: Context) => {
-      const key = `${root}:${name}`;
-      const existing = opened.get(key);
-      if (existing !== undefined) {
-        existing.count += 1;
-        return;
-      }
-      const view = publishedView(
-        await backend.root(root).viewWatch(name === "" ? undefined : name),
-      );
-      // Instance keys must not be empty, and a worker can't be mistaken for the front.
-      const close = provider.spawn(
-        Conversations,
-        name === "" ? `${root}:front` : `${root}:worker:${name}`,
-        { about: replicatedState({ root, name }), view },
-      );
-      opened.set(key, {
-        count: 1,
-        close: () => {
-          close();
-          view.dispose();
-        },
-      });
-    },
-    close: async (root: string, name: string, _context: Context) => {
-      const key = `${root}:${name}`;
-      const existing = opened.get(key);
-      if (existing === undefined) return;
-      existing.count -= 1;
-      if (existing.count > 0) return;
-      opened.delete(key);
-      existing.close();
-    },
-    followAssessments: async (root: string) => {
-      const existing = followed.get(root);
-      if (existing !== undefined) {
-        existing.count += 1;
-        return;
-      }
-      const stop = backend.root(root).watchAssessments((items) =>
-        assessments.change(context, (draft) => {
-          draft.byRoot[root] = own([...items]);
-        }),
-      );
-      followed.set(root, { count: 1, stop });
-      try {
-        await stop;
-      } catch (error) {
-        followed.delete(root);
-        throw error;
-      }
-    },
-    unfollowAssessments: async (root: string) => {
-      const existing = followed.get(root);
-      if (existing === undefined) return;
-      existing.count -= 1;
-      if (existing.count > 0) return;
-      followed.delete(root);
-      (await existing.stop)();
-      assessments.change(context, (draft) => {
-        delete draft.byRoot[root];
-      });
-    },
-    findRoot: (prefix) => backend.findRoot(prefix),
+  const login = (id: number) => {
+    const entry = logins.get(id);
+    if (entry === undefined) throw new Error(`No login ${id} on this connection`);
+    return entry;
+  };
+
+  const calls: { [M in Method]: (args: Args<M>) => Results[M] | Promise<Results[M]> } = {
+    skillInput: ([name, text]) => backend.skillInput(name, text),
+    findRoot: ([prefix]) => backend.findRoot(prefix),
     currentRoot: () => backend.currentRoot(),
-    createRoot: (requestId) => backend.createRoot(requestId),
-    renameRoot: (id, label) => backend.renameRoot(id, label),
-    archiveRoot: (id, archived) => backend.archiveRoot(id, archived),
-    skillInput: async (name: string, text: string) => backend.skillInput(name, text),
-    submit: (root, message, requestId, whenBusy) =>
+    createRoot: ([requestId]) => backend.createRoot(requestId),
+    renameRoot: ([id, label]) => backend.renameRoot(id, label),
+    archiveRoot: ([id, archived]) => backend.archiveRoot(id, archived),
+    submit: ([root, message, requestId, whenBusy]) =>
       backend.root(root).submit(message, requestId, whenBusy),
-    messageWorker: (root, name, message, requestId, whenBusy) =>
+    messageWorker: ([root, name, message, requestId, whenBusy]) =>
       backend.root(root).messageWorker(name, message, requestId, whenBusy),
-    editQueued: (root, workerName, id, change) =>
+    editQueued: ([root, workerName, id, change]) =>
       backend.root(root).editQueued(workerName ?? undefined, id, change),
-    abort: (root) => backend.root(root).abort(),
-    stopWorker: (root, name) => backend.root(root).stopWorker(name),
-    reset: (root, handoff) => backend.root(root).reset(handoff ?? undefined),
-    compact: (root, instructions) => backend.root(root).compact(instructions ?? undefined),
-    changeDirectory: (root, path, workerName) =>
+    abort: ([root]) => backend.root(root).abort(),
+    stopWorker: ([root, name]) => backend.root(root).stopWorker(name),
+    reset: ([root, handoff]) => backend.root(root).reset(handoff ?? undefined),
+    compact: ([root, instructions]) => backend.root(root).compact(instructions ?? undefined),
+    changeDirectory: ([root, path, workerName]) =>
       backend.root(root).changeDirectory(path, workerName ?? undefined),
-    workers: async (root) => own([...(await backend.root(root).workers())]),
-    handOff: (root, workerName, toRoot) => backend.root(root).handOff(workerName, toRoot),
-    goals: async (root) => own([...(await backend.root(root).goals())]),
-    seeGoal: (root, id, updatedAt) => backend.root(root).seeGoal(id, updatedAt),
-    jobsListing: async () => (await backend.jobs()).listing,
-    modelChoice: async (root, workerName) =>
-      own(await backend.root(root).modelChoice(workerName ?? undefined)),
-    roleChoice: async (role) => own(await backend.roleChoice(role)),
-    pickModel: (root, pick, saveDefault, workerName) =>
+    workers: async ([root]) => [...(await backend.root(root).workers())],
+    handOff: ([root, workerName, toRoot]) => backend.root(root).handOff(workerName, toRoot),
+    goals: async ([root]) => [...(await backend.root(root).goals())],
+    seeGoal: ([root, id, updatedAt]) => backend.root(root).seeGoal(id, updatedAt),
+    routing: ([root, paused]) => backend.root(root).routing(paused ?? undefined),
+    modelChoice: ([root, workerName]) => backend.root(root).modelChoice(workerName ?? undefined),
+    pickModel: ([root, pick, saveDefault, workerName]) =>
       backend.root(root).pickModel(pick, saveDefault, workerName ?? undefined),
-    saveDefault: (role, pick) => backend.saveDefault(role, pick),
+    jobs: () => backend.jobs(),
+    roleChoice: ([role]) => backend.roleChoice(role),
+    saveDefault: ([role, pick]) => backend.saveDefault(role, pick),
     loginNeeds: async () => {
       const needs = await backend.loginNeeds();
       return { ...needs, classifier: needs.classifier ?? null };
     },
-    mcpServers: async () => own(await backend.mcpServers()),
-    mcpLogout: (name) => backend.mcpLogout(name),
-    mcpReconnect: async () => own(await backend.mcpReconnect()),
+    mcpServers: () => backend.mcpServers(),
+    mcpLogout: ([name]) => backend.mcpLogout(name),
+    mcpReconnect: () => backend.mcpReconnect(),
     reload: async () => [...(await backend.reload())],
-    routing: (root, paused) => backend.root(root).routing(paused ?? undefined),
-    logs: (query) => backend.logs(query),
-    record: async (scope, body, attributes) => backend.record(scope, body, attributes ?? undefined),
-    restart: async () => backend.requestRestart(),
-    update: async (text) => {
+    logs: ([query]) => backend.logs(query),
+    record: ([scope, body, attributes]) => backend.record(scope, body, attributes ?? undefined),
+    restart: () => backend.requestRestart(),
+    update: async ([text]) => {
       // A leaked service token must never swap the code that runs.
       if (!updates) throw new Error("Only a person's login can update Monchu, not a service token");
       await backend.update(text);
     },
-    login: async (providerId: string, auth: "oauth" | "api_key") =>
-      startLogin(async (state, ask, signal) => {
+    login: ([providerId, auth]) =>
+      startLogin(async (update, ask, signal) => {
         await backend.login(providerId, auth, {
           signal,
           prompt: (prompt) => ask(wirePrompt(prompt), prompt.signal),
-          notify: (event) =>
-            state.replace(context, own({ ...state.value, events: [...state.value.events, event] })),
+          notify: (event) => update((state) => ({ ...state, events: [...state.events, event] })),
         });
         return `logged in · ${providerId}`;
       }),
-    mcpLogin: async (server: string) =>
-      startLogin((state, ask, signal) =>
+    mcpLogin: ([server]) =>
+      startLogin((update, ask, signal) =>
         backend.mcpLogin(
           server,
           {
             showAuthorizationUrl: (url) =>
-              state.replace(
-                context,
-                own({ ...state.value, events: [...state.value.events, { type: "auth_url", url }] }),
-              ),
+              update((state) => ({
+                ...state,
+                events: [...state.events, { type: "auth_url", url }],
+              })),
             promptForRedirectUrl: (redirectSignal) =>
               ask(
                 {
@@ -363,16 +238,46 @@ export async function connectionServices(
           signal,
         ),
       ),
-  });
+    loginAnswer: ([id, prompt, value]) => login(id).answer(prompt, value),
+    loginCancel: ([id]) => login(id).controller.abort(),
+  };
 
+  const watches: { [T in Topic]: (key: Key<T>) => Source | Promise<Source> } = {
+    hello: () => helloState.source(),
+    release: () => release.source(),
+    reports: () => reports.source(),
+    roots: () => fed<unknown[]>([], (set) => backend.watchRoots((roots) => set([...roots]))),
+    jobs: async () => {
+      const state = ({ jobs, events, nextEvent }: JobsState): JobsState => ({
+        jobs,
+        events,
+        nextEvent,
+      });
+      const initial = state(await backend.jobs());
+      return fed(initial, (set) =>
+        backend.watchJobEvents(initial.nextEvent - 1, () => {
+          void backend.jobs().then((next) => set(state(next)));
+        }),
+      );
+    },
+    assessments: ([root]) =>
+      fed<unknown[]>([], (set) => backend.root(root).watchAssessments((items) => set([...items]))),
+    conversation: async ([root, name]) =>
+      watchSource(await backend.root(root).viewWatch(name ?? undefined)),
+    login: ([id]) => login(id).state.source(),
+  };
+
+  const rpc = serveRpc({ methods, topics }, { methods: calls, topics: watches }, send);
   return {
-    provider,
+    receive: (text) => rpc.receive(text),
     dispose() {
+      rpc.dispose();
       for (const cleanup of cleanups) cleanup();
-      for (const controller of logins.values()) controller.abort();
-      for (const entry of opened.values()) entry.close();
-      opened.clear();
-      provider.dispose();
+      for (const entry of logins.values()) {
+        entry.controller.abort();
+        entry.state.end("closed");
+      }
+      logins.clear();
     },
   };
 }

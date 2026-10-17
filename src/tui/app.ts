@@ -1,10 +1,10 @@
-import type { AttachedReplicatedState } from "@earendil-works/chord";
 import { initTheme } from "./theme/theme.ts";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import type { Client, ModelPick, RootClient, RootSummary } from "../api/client.ts";
+import type { Watched } from "../api/rpc.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
@@ -61,7 +61,7 @@ export async function runTerminal(
   let closing = false;
   let restarting = false;
   let selected: string | undefined;
-  let root: AttachedReplicatedState<ConversationView> | undefined;
+  let root: Watched<ConversationView> | undefined;
   let stopRoot: (() => void) | undefined;
   let stopReports: (() => void) | undefined;
   let stopAssessments: (() => void) | undefined;
@@ -74,7 +74,7 @@ export async function runTerminal(
   type Worker = Awaited<ReturnType<RootClient["workers"]>>[number];
   const workers = new Map<
     string,
-    { summary: Worker; state: AttachedReplicatedState<ConversationView>; stop(): void }
+    { summary: Worker; state: Watched<ConversationView>; stop(): void }
   >();
   let refreshing: Promise<void> | undefined;
   let refreshAgain = false;

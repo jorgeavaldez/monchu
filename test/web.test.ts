@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { RemoteClient } from "../src/api/remote.ts";
-import { WireTransport } from "../src/api/wire.ts";
+import { Rpc } from "../src/api/rpc.ts";
 import { Monchu } from "../src/core/backend.ts";
 import type { WebConfig } from "../src/core/config.ts";
 import { serveWeb } from "../src/server/web.ts";
@@ -248,17 +248,15 @@ describe("web server", () => {
         });
       await expect(open("https://evil.example.test")).rejects.toThrow();
       const socket = await open("https://monchu.example.test");
-      const transport = new WireTransport();
-      transport.attach({ send: (text) => socket.send(text) });
-      socket.on("message", (data: Buffer) => transport.receive(data.toString("utf8")));
-      const client = await RemoteClient.open(transport, (error) => {
-        throw error;
-      });
+      const rpc = new Rpc();
+      socket.on("message", (data: Buffer) => rpc.receive(data.toString("utf8")));
+      await rpc.attach({ send: (text) => socket.send(text) });
+      const client = await RemoteClient.open(rpc);
       expect(client.home).toBe(backend.home);
       expect(await (await front(client)).workers()).toEqual([]);
       // A person may ask for an update (this checkout refuses it later, for its own reason).
       await expect(client.update("edge")).rejects.toThrow("Nothing here can restart this Monchu");
-      await client.close();
+      client.close();
       socket.close();
 
       // A service token reaches the core, but never swaps its code.
@@ -273,18 +271,14 @@ describe("web server", () => {
         opened.once("open", () => done(opened));
         opened.once("error", fail);
       });
-      const serviceTransport = new WireTransport();
-      serviceTransport.attach({ send: (text) => serviceSocket.send(text) });
-      serviceSocket.on("message", (data: Buffer) =>
-        serviceTransport.receive(data.toString("utf8")),
-      );
-      const serviceClient = await RemoteClient.open(serviceTransport, (error) => {
-        throw error;
-      });
+      const serviceRpc = new Rpc();
+      serviceSocket.on("message", (data: Buffer) => serviceRpc.receive(data.toString("utf8")));
+      await serviceRpc.attach({ send: (text) => serviceSocket.send(text) });
+      const serviceClient = await RemoteClient.open(serviceRpc);
       await expect(serviceClient.update("edge")).rejects.toThrow(
         "Only a person's login can update Monchu",
       );
-      await serviceClient.close();
+      serviceClient.close();
       serviceSocket.close();
     } finally {
       await site.close();

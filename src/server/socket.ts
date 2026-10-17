@@ -4,8 +4,7 @@ import { connect, createServer, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { connectRemote } from "../api/connect.ts";
 import type { Monchu } from "../core/backend.ts";
-import { connectionServices } from "./session.ts";
-import { serveWire } from "./wire.ts";
+import { serveConnection } from "./session.ts";
 
 /** The owner's local socket: `<home>/run/monchu.sock`, or a named pipe on Windows, where sockets are not files. */
 export function socketPath(home: string): string {
@@ -28,13 +27,12 @@ function lines(socket: Socket, receive: (line: string) => void): void {
 }
 
 /**
- * Serve the core on its local socket: each connection gets its own services. The caller owns the home's lock, so a
+ * Serve the core on its local socket: each connection gets its own session. The caller owns the home's lock, so a
  * socket file left there is stale. Only the user can reach it: the run directory is 0700.
  */
 export async function serveSocket(
   backend: Monchu,
   path: string,
-  report: (message: string) => void,
 ): Promise<{ close(): Promise<void> }> {
   if (process.platform !== "win32") {
     await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
@@ -45,43 +43,20 @@ export async function serveSocket(
     sockets.add(socket);
     const attached = performance.now();
     backend.log.write("info", "server.socket", "client attached", { clients: sockets.size });
-    const waiting: string[] = [];
-    let receive: (line: string) => void = (line) => void waiting.push(line);
-    let dispose = () => {};
-    lines(socket, (line) => receive(line));
+    // Only the user reaches the socket: its directory is theirs alone.
+    const connection = serveConnection(backend, { updates: true }, (text) => {
+      if (!socket.destroyed) socket.write(`${text}\n`);
+    });
+    lines(socket, (line) => connection.receive(line));
     socket.on("error", () => {});
     socket.on("close", () => {
       sockets.delete(socket);
-      dispose();
+      connection.dispose();
       backend.log.write("info", "server.socket", "client left", {
         clients: sockets.size,
         ms: Math.round(performance.now() - attached),
       });
     });
-    // Only the user reaches the socket: its directory is theirs alone.
-    connectionServices(backend, { updates: true }).then(
-      (services) => {
-        const wire = serveWire(services.provider, (text) => {
-          if (!socket.destroyed) socket.write(`${text}\n`);
-        });
-        dispose = () => {
-          wire.dispose();
-          services.dispose();
-        };
-        if (socket.destroyed) {
-          dispose();
-          return;
-        }
-        receive = (line) => wire.receive(line);
-        for (const line of waiting.splice(0)) wire.receive(line);
-      },
-      (error: unknown) => {
-        report(
-          `A client could not attach: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        socket.destroy();
-      },
-    );
   });
   await new Promise<void>((done, fail) => {
     server.once("error", fail);
