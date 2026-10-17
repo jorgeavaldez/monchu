@@ -100,10 +100,13 @@ async function touchScreen(): Promise<WebSocket> {
     socket.addEventListener("open", done, { once: true });
     socket.addEventListener("error", () => fail(new Error("no DevTools socket")), { once: true });
   });
-  const target = list((await send("Target.getTargets", {})).targetInfos).find(
+  // The page agent-browser drives, which needn't be the browser's only one.
+  const url = text((await browser("get", "url")).url);
+  const pages = list((await send("Target.getTargets", {})).targetInfos).filter(
     (item) => isData(item) && item.type === "page",
   );
-  if (!isData(target)) throw new Error("no page target");
+  const target = pages.find((item) => isData(item) && item.url === url);
+  if (!isData(target)) throw new Error(`no page target at ${url} among ${pages.length}`);
   const session = text(
     (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId,
   );
@@ -604,7 +607,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         await browser("wait", ".keys");
         check(
           (await page(`matchMedia("(pointer: coarse)").matches`)) === true,
-          "no coarse pointer",
+          `no coarse pointer (${String(await page("navigator.maxTouchPoints"))} touch points)`,
         );
 
         const value = () => page(`document.querySelector("textarea").value`);
