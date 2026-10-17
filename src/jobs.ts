@@ -599,10 +599,15 @@ function describeJob(job: Job): string {
 const time = (at: number | undefined) => (at === undefined ? "never" : slotKey(at));
 
 /** One job on one line, as `job_list` and `/jobs` show it. */
-export function formatJob(job: Job): string {
+function formatJob(job: Job): string {
   return `${job.name} (${job.status}) ${describeJob(job).slice(0, 120)} · worker ${job.owner?.worker ?? `job-${job.name}`} · by ${job.createdBy} · runs ${job.runs}, last ${time(job.lastRunAt)}, next ${job.status === "active" ? time(job.nextAt) : "-"}`;
 }
 
 export function formatJobs(jobs: readonly Job[]): string {
   return jobs.length === 0 ? "No jobs." : jobs.map((job) => `- ${formatJob(job)}`).join("\n");
+}
+
+/** One job event as a client line: `job · <name> · <kind>[ → worker] · <text>`. */
+export function formatJobEvent(event: JobEvent): string {
+  return `job · ${event.job} · ${event.kind}${event.worker === undefined ? "" : ` → ${event.worker}`} · ${event.text}`;
 }

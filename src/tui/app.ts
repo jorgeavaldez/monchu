@@ -7,6 +7,7 @@ import { stdin, stdout } from "node:process";
 import type { ModelPick, Monchu } from "../backend.ts";
 import { formatReports } from "../mcp-manage.ts";
 import { describe as describeAssessment } from "../classifier.ts";
+import { formatJobEvent, formatJobs } from "../jobs.ts";
 import type { HerdrAgent } from "../herdr-agent.ts";
 import type { WhenBusy } from "../workers.ts";
 import { commands, help, parseInput } from "./commands.ts";
@@ -67,6 +68,7 @@ export async function runTerminal(
   let stopRoot: (() => void) | undefined;
   let stopReports: (() => void) | undefined;
   let stopAssessments: (() => void) | undefined;
+  let stopJobs: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
   let stopReload: (() => void) | undefined;
   let login: AbortController | undefined;
@@ -515,6 +517,17 @@ export async function runTerminal(
         });
         break;
       }
+      case "/jobs": {
+        const { jobs, events } = await backend.jobs();
+        view.notice(
+          [
+            `jobs · ${jobs.length}`,
+            formatJobs(jobs),
+            ...(events.length === 0 ? [] : ["recent:", ...events.slice(-8).map(formatJobEvent)]),
+          ].join("\n"),
+        );
+        break;
+      }
       case "/goals":
         view.openGoals(await backend.goals(), (goal) => {
           inputs = inputs.then(() => backend.seeGoal(goal.id, goal.updatedAt)).catch(fail);
@@ -637,6 +650,10 @@ export async function runTerminal(
       }
       hydrated = true;
     });
+    // The TUI is one client of the job event stream: events from now on show as notices.
+    stopJobs = await backend.watchJobEvents((await backend.jobs()).nextEvent - 1, (events) => {
+      for (const event of events) view.notice(formatJobEvent(event));
+    });
     await refreshWorkers();
     // Read before input starts, so the startup hint never lands mid-command.
     const needs = await backend.loginNeeds();
@@ -669,6 +686,7 @@ export async function runTerminal(
     stopScheme?.();
     stopReports?.();
     stopAssessments?.();
+    stopJobs?.();
     stopRoot?.();
     await refreshing?.catch(() => {});
     for (const worker of workers.values()) {

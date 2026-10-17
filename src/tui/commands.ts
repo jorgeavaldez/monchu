@@ -5,6 +5,7 @@ type Input =
         | "/quit"
         | "/help"
         | "/goals"
+        | "/jobs"
         | "/queue"
         | "/reload"
         | "/restart"
@@ -30,6 +31,7 @@ export const commands: Record<
     help: "show the root or a worker; messages go to the one shown",
   },
   "/goals": { usage: "", help: "ongoing projects and commitments" },
+  "/jobs": { usage: "", help: "every scheduled job and watcher, and recent job events" },
   "/model": { usage: "[search]", help: "pick a model, for a conversation or a role default" },
   "/thinking": { usage: "", help: "pick a thinking level, for a conversation or a role default" },
   "/queue": { usage: "", help: "edit, steer or delete queued messages (Alt+Q)" },
@@ -82,6 +84,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/quit":
     case "/help":
     case "/goals":
+    case "/jobs":
     case "/queue":
     case "/login":
     case "/thinking":

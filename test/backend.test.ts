@@ -834,4 +834,52 @@ describe("backend", () => {
       await backend.close();
     }
   });
+
+  it("streams job events with growing ids, from any point, to every client", async () => {
+    const value = await setup();
+    route(value.faux, (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text === "schedule")
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("job_create", {
+              name: "brief",
+              kind: "schedule",
+              schedule: "@daily",
+              prompt: "write the brief",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
+      if (text === "run")
+        return fauxAssistantMessage(
+          [fauxToolCall("job_control", { name: "brief", action: "run_now" })],
+          { stopReason: "toolUse" },
+        );
+      return fauxAssistantMessage("ok");
+    });
+    const { backend } = await openBackend(value);
+    const all: number[] = [];
+    const later: string[] = [];
+    const stopAll = await backend.watchJobEvents(0, (events) =>
+      all.push(...events.map((event) => event.id)),
+    );
+    try {
+      await backend.submit("schedule", "schedule", "followUp");
+      await waitFor(() => all.length === 1);
+      // A client that saw event 1 resumes after it and never gets it again.
+      const stopLater = await backend.watchJobEvents(1, (events) =>
+        later.push(...events.map((event) => `${event.id}:${event.kind}:${event.worker ?? ""}`)),
+      );
+      await backend.submit("run", "run", "followUp");
+      await waitFor(() => later.length === 1);
+      stopLater();
+      expect(all).toEqual([1, 2]);
+      expect(later).toEqual(["2:fired:job-brief"]);
+      expect((await backend.jobs()).jobs.map((job) => job.name)).toEqual(["brief"]);
+    } finally {
+      stopAll();
+      await backend.close();
+    }
+  });
 });

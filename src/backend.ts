@@ -39,6 +39,7 @@ import {
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
+import { JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp-auth.ts";
@@ -373,6 +374,42 @@ export class Monchu {
     const state = await this.harness.documentState(AssessmentsDoc, this.front.id, context);
     if (state === undefined) throw new Error("Assessments document is missing");
     const unsubscribe = state.subscribe((value) => listener(value?.items ?? []));
+    return () => {
+      unsubscribe();
+      state.dispose();
+    };
+  }
+
+  /** Every background job and the recent job events, store-wide. */
+  async jobs(): Promise<Readonly<JobsState>> {
+    return (
+      (await this.harness.snapshot(JobsDoc, context)) ?? { jobs: [], events: [], nextEvent: 1 }
+    );
+  }
+
+  /**
+   * The job event stream, for any client: `listener` gets each batch of events with an id above `after`, in id order,
+   * starting with those already stored. Pass the last id a client saw to resume without repeats; ids only grow.
+   * Returns a stop function.
+   */
+  async watchJobEvents(
+    after: number,
+    listener: (events: readonly JobEvent[]) => void,
+  ): Promise<() => void> {
+    // Observation needs a stored document; reading it in a commit creates it on a fresh home.
+    await this.front.commit(async (tx) => {
+      await tx.doc(JobsDoc);
+    }, context);
+    const state = await this.harness.documentState(JobsDoc, context);
+    if (state === undefined) throw new Error("Jobs document is missing");
+    let seen = after;
+    const unsubscribe = state.subscribe((value) => {
+      const fresh = (value?.events ?? []).filter((event) => event.id > seen);
+      const last = fresh.at(-1);
+      if (last === undefined) return;
+      seen = last.id;
+      listener(fresh);
+    });
     return () => {
       unsubscribe();
       state.dispose();

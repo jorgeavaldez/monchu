@@ -42,6 +42,6 @@ Each device runs its own Monchu with its own logins and database. To share the h
 
 Type a message. The front answers or starts a worker, and reports and progress show up in the chat as `worker · <name>`.
 
-- `/help` lists the commands. The common ones are `/agents` (view and talk to workers), `/goals`, `/model`, `/thinking`, `/login`, `/reload`, `/restart` and `/quit`.
+- `/help` lists the commands. The common ones are `/agents` (view and talk to workers), `/goals`, `/jobs`, `/model`, `/thinking`, `/login`, `/reload`, `/restart` and `/quit`.
 - Esc interrupts the front. Alt+S switches between steering and queuing a message. Alt+Q edits the queue.
 - The home's Markdown files are Monchu's manual, soul, and memory. Monchu rereads them on every request, so edit them freely.

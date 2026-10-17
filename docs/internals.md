@@ -107,6 +107,13 @@ The document is not transcript, so `/new`, compaction, and restarts keep it, and
 `/compact` always asks the summary to keep open goal ids, kinds, titles, project/vault links, workstreams, next steps, and workers, ahead of any focus you add.
 Durable's automatic compaction takes no instructions; its summary may drop goal history, but the section still restores the open goals.
 
+Background jobs run inside Monchu while it is open; there is no daemon, so nothing runs while it is closed. Every role has `job_create`, `job_list` and `job_control` (pause, resume, run now, delete), and `/jobs` lists every job and the recent job events.
+A `schedule` job takes a five-field cron expression (or `@hourly`, `@daily`, `@weekly`, `@monthly`) in the device's local time: a slot removed by a DST gap is skipped and one repeated by a fall-back runs once. A slot missed while Monchu was closed runs once at startup, then the schedule continues from now. A `watch` job polls a shell command every N minutes; its first poll takes a baseline, and it wakes someone only when the output changes or the command fails (once per distinct failure). Unchanged polls wake no model. Commands must be read-only and safe to rerun; output is capped at 8000 characters and each run at 300 seconds.
+Jobs live in the store-wide `monchu.jobs` session document, so the front, every worker and every client see the same list whoever created them. Each job is one background runner task (`monchu.job`) on the root conversation, so stopping a worker never stops its jobs. A runner sleeps until its slot, and also wakes on a pause, a delete or a run-now. A pause or delete ends the runner; a resume starts a new one, and a runner whose task id is no longer the job's stops itself.
+A run is replay-safe. The command runs in its own phase, and a crash there reruns it. What the run changes (the job's cursor, its event, and the worker delivery it starts) commits atomically with the runner's next checkpoint, under request id `job:<name>:<created>:<slot>`. So a restart never wakes anyone twice for one slot or change.
+A job created by a worker wakes that worker, reopening it if closed; one created by the front starts its own worker, `job-<name>`, on the first event. Job deliveries are quiet: the worker's answer reaches its parent only when it starts with `NEEDS USER`, while failures are always reported. A job whose owner worker is gone pauses itself with a `failed` event.
+Delivery to people is a stream of events with growing ids (`created`, `fired`, `changed`, `failed`, `paused`, `resumed`, `deleted`; the newest 200 are kept). `Monchu.watchJobEvents(after, listener)` gives any client the events after the last id it saw. The TUI is the only client today; it shows new events as `job · <name> · <kind> · <text>` notices.
+
 The `memory` tool, available to the root and workers alike, edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
 Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate adds do nothing.
 Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
@@ -170,6 +177,7 @@ Config and all modules are prepared, and the complete registry and installation 
 - `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
 - `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
 - `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
+- `src/jobs.ts`: background jobs: the store-wide jobs document and event stream, cron, the replay-safe runner task, and the job tools.
 - `src/memory.ts`: bounded, atomic home-memory edits for every role.
 - `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
 - `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
@@ -189,7 +197,7 @@ Config and all modules are prepared, and the complete registry and installation 
 The backend imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
 The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
-This slice has no HTTP server, daemon transport, phone UI, scheduling, or memory retrieval backend.
+This slice has no HTTP server, daemon transport, phone UI, or memory retrieval backend; scheduled jobs run only while Monchu is open.
 
 Submission IDs prevent duplicate admission.
 Worker delivery bookkeeping retains all active requests and the latest 200 completed request IDs for retries; older completed IDs may be admitted again.
