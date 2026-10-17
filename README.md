@@ -37,6 +37,8 @@ mise run smoke   # offline TUI with scripted models
 mise run pack    # the installable tarball CI attaches to releases
 ```
 
+To run the full gate on another machine (say, a Linux box when your own can't run every tool), clone this repository there with jj and mise, then call `scripts/gate.sh REV` over SSH, or stream an unpushed working copy in: `jj file list | tar -cf - -T - | ssh HOST CLONE/scripts/gate.sh -`. It runs `check` and `build` one gate at a time, reports every failure, and keeps the logs.
+
 Code rules are in [AGENTS.md](AGENTS.md).
 
 ## Contributing
