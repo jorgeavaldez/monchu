@@ -16,12 +16,12 @@ import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FffFinders } from "./fff.ts";
-import type { McpSignInPrompt } from "./mcp-auth.ts";
-import { loadMcpConfig } from "./mcp-config.ts";
-import { mcpLogin, mcpLogout, mcpReports, type McpServerReport } from "./mcp-manage.ts";
-import { McpClients } from "./mcp.ts";
-import type { EffortAssessment } from "./classifier.ts";
+import { FffFinders } from "./tools/fff.ts";
+import type { McpSignInPrompt } from "./mcp/auth.ts";
+import { loadMcpConfig } from "./mcp/config.ts";
+import { mcpLogin, mcpLogout, mcpReports, type McpServerReport } from "./mcp/manage.ts";
+import { McpClients } from "./mcp/index.ts";
+import type { EffortAssessment } from "./agents/classifier.ts";
 import {
   loadConfig,
   saveRole,
@@ -34,19 +34,37 @@ import { configuredRoles } from "./models/index.ts";
 /** Reloadable modules. Static imports inside them stay cached. */
 type Reloadable = {
   context: typeof import("./context.ts");
-  "pi-tools": typeof import("./pi-tools.ts");
-  workers: typeof import("./workers.ts");
-  codemode: typeof import("./codemode.ts");
-  goals: typeof import("./goals.ts");
-  memory: typeof import("./memory.ts");
+  "pi-tools": typeof import("./tools/pi-tools.ts");
+  workers: typeof import("./agents/workers.ts");
+  codemode: typeof import("./tools/codemode.ts");
+  goals: typeof import("./agents/goals.ts");
+  memory: typeof import("./agents/memory.ts");
   identity: typeof import("./identity.ts");
-  classifier: typeof import("./classifier.ts");
-  jj: typeof import("./jj.ts");
-  herdr: typeof import("./herdr.ts");
-  "tool-search": typeof import("./tool-search.ts");
-  "mcp-tools": typeof import("./mcp-tools.ts");
-  browser: typeof import("./browser.ts");
+  classifier: typeof import("./agents/classifier.ts");
+  jj: typeof import("./tools/jj.ts");
+  herdr: typeof import("./tools/herdr.ts");
+  "tool-search": typeof import("./tools/tool-search.ts");
+  "mcp-tools": typeof import("./mcp/tools.ts");
+  browser: typeof import("./tools/browser.ts");
   jobs: typeof import("./jobs.ts");
+};
+
+/** Each reloadable module's path from this one, without its extension. */
+const reloadablePaths: Record<keyof Reloadable, string> = {
+  context: "./context",
+  "pi-tools": "./tools/pi-tools",
+  workers: "./agents/workers",
+  codemode: "./tools/codemode",
+  goals: "./agents/goals",
+  memory: "./agents/memory",
+  identity: "./identity",
+  classifier: "./agents/classifier",
+  jj: "./tools/jj",
+  herdr: "./tools/herdr",
+  "tool-search": "./tools/tool-search",
+  "mcp-tools": "./mcp/tools",
+  browser: "./tools/browser",
+  jobs: "./jobs",
 };
 
 async function freshImport<Name extends keyof Reloadable>(
@@ -55,7 +73,7 @@ async function freshImport<Name extends keyof Reloadable>(
 ): Promise<Reloadable[Name]> {
   const suffix = import.meta.url.endsWith(".ts") ? "ts" : "js";
   // oxlint-disable-next-line typescript/no-unsafe-return -- A computed specifier imports as `any`; `Reloadable` names each module's own type.
-  return import(new URL(`./${name}.${suffix}?v=${version}`, import.meta.url).href);
+  return import(new URL(`${reloadablePaths[name]}.${suffix}?v=${version}`, import.meta.url).href);
 }
 
 type Build = {
@@ -368,9 +386,9 @@ export class Extensions {
 
 /** Whether any source is newer than the build; every build rewrites `dist/main.js`. */
 async function buildIsStale(): Promise<boolean> {
-  const built = await stat(new URL("main.js", import.meta.url)).catch(() => undefined);
+  const built = await stat(new URL("../main.js", import.meta.url)).catch(() => undefined);
   if (built === undefined) return true;
-  const src = fileURLToPath(new URL("../src/", import.meta.url));
+  const src = fileURLToPath(new URL("../../src/", import.meta.url));
   for (const entry of await readdir(src, { recursive: true, withFileTypes: true }))
     if (entry.isFile() && (await stat(join(entry.parentPath, entry.name))).mtimeMs > built.mtimeMs)
       return true;
@@ -384,18 +402,18 @@ async function buildIsStale(): Promise<boolean> {
  */
 async function buildForReload(): Promise<void> {
   if (import.meta.url.endsWith(".ts")) return;
-  if (!existsSync(fileURLToPath(new URL("../tsconfig.build.json", import.meta.url)))) return;
+  if (!existsSync(fileURLToPath(new URL("../../tsconfig.build.json", import.meta.url)))) return;
   if (!(await buildIsStale())) return;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       process.execPath,
       [
-        fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),
+        fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url)),
         "-p",
         "tsconfig.build.json",
       ],
       {
-        cwd: fileURLToPath(new URL("../", import.meta.url)),
+        cwd: fileURLToPath(new URL("../../", import.meta.url)),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

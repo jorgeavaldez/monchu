@@ -1,9 +1,9 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { createHash } from "node:crypto";
-import { toolExposure, type McpServerConfig } from "./mcp-config.ts";
-import type { McpClients, McpListing, McpTool } from "./mcp.ts";
-import type { ToolGroup } from "./tool-search.ts";
+import { toolExposure, type McpServerConfig } from "./config.ts";
+import type { McpClients, McpListing, McpTool } from "./index.ts";
+import type { ToolGroup } from "../tools/tool-search.ts";
 
 /**
  * Claude Code declares Monchu's tools as `mcp__monchu__<name>` and the API caps tool names at 64 characters, so MCP

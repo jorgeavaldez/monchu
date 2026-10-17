@@ -4,11 +4,11 @@ import { homedir, hostname, release, type, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.ts";
-import { createContext } from "../src/context.ts";
-import { createIdentity, FRONT_INSTRUCTIONS } from "../src/identity.ts";
-import { Extensions } from "../src/reload.ts";
-import { startWorker, WorkersDoc } from "../src/workers.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { createContext } from "../src/core/context.ts";
+import { createIdentity, FRONT_INSTRUCTIONS } from "../src/core/identity.ts";
+import { Extensions } from "../src/core/reload.ts";
+import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   cleanup,
   context,

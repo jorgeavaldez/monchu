@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import ignore from "ignore";
 import { afterEach, describe, expect, it } from "vitest";
-import { monchuHome, seedHome } from "../src/home.ts";
+import { monchuHome, seedHome } from "../src/core/home.ts";
 import { cleanup, setup } from "./support.ts";
 
 afterEach(cleanup);

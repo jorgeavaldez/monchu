@@ -13,7 +13,7 @@ import {
   startWorker,
   workerNotice,
   WorkersDoc,
-} from "../src/workers.ts";
+} from "../src/core/agents/workers.ts";
 import {
   allEntries,
   callTools,

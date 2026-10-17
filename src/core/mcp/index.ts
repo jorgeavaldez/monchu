@@ -8,8 +8,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { McpOAuth, McpSignInRequired, type McpSignInPrompt } from "./mcp-auth.ts";
-import { usesOAuth, type McpServerConfig } from "./mcp-config.ts";
+import { McpOAuth, McpSignInRequired, type McpSignInPrompt } from "./auth.ts";
+import { usesOAuth, type McpServerConfig } from "./config.ts";
 
 /** A tool as a server lists it, kept in the cache file. */
 export type McpTool = {

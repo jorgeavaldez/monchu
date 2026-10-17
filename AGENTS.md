@@ -23,8 +23,8 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 
 `mise run check` enforces most of these. Never weaken a check to pass it.
 
-- **Layering.** `src/main.ts` composes the backend (`src/backend.ts`) and the TUI (`src/tui/`). Nothing else imports `src/tui/`, and the backend never writes to stdout. Only the entry point touches process state (env, home, signals).
-- **Extensions.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory returning the extension, or `{ extension, ..., warnings }`. Register it in `Reloadable` and `build()` in `src/reload.ts`, and tag the export `@public`.
+- **Layering.** `src/main.ts` composes the core (`src/core/`) and the TUI (`src/tui/`). The core imports no client and no `src/ui/` and never writes to stdout; `src/ui/` (shared with browser clients) imports no Node module, core, or client. Only the entry point touches process state (env, home, signals).
+- **Extensions.** A reloadable module exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory returning the extension, or `{ extension, ..., warnings }`. Register it in `Reloadable`, `reloadablePaths` and `build()` in `src/core/reload.ts`, and tag the export `@public`.
 - **Types.** No `any`, casts, non-null assertions, or `@ts-` comments. A lint disable needs a same-line reason.
 - **No compatibility shims.** When you change an API, update every caller and delete the old shape. Stored-shape changes get a migration only when the maintainer asks for one.
 - **Tests.** Use real Durable Harnesses on SQLite in temp dirs with Pi's faux providers, through public seams. No `vi` mocks, spies, or fake timers. Helpers live only in `test/support.ts`. Call `setup()` and `cleanup()`, and never touch the real home. Tests pass on Windows and Linux.

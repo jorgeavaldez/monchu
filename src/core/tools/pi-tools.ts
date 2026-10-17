@@ -6,7 +6,7 @@ import {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
-import type { Settings } from "./config.ts";
+import type { Settings } from "../config.ts";
 import { createFffTools, type FffFinders } from "./fff.ts";
 
 /**

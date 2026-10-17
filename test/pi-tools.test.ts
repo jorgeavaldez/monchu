@@ -5,8 +5,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, resolveSettings, type Settings } from "../src/config.ts";
-import { createPiTools } from "../src/pi-tools.ts";
+import { loadConfig, resolveSettings, type Settings } from "../src/core/config.ts";
+import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import {
   cleanup,
   context,

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { formatSkillsForPrompt, loadSkills } from "../src/skills/index.ts";
+import { formatSkillsForPrompt, loadSkills } from "../src/core/skills/index.ts";
 import { cleanup, setup } from "./support.ts";
 
 afterEach(cleanup);

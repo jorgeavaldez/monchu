@@ -10,10 +10,10 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { help, parseInput } from "../src/tui/commands.ts";
-import { presentation } from "../src/tui/state.ts";
+import { help, parseInput } from "../src/ui/commands.ts";
+import { presentation } from "../src/ui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
-import { startWorker } from "../src/workers.ts";
+import { startWorker } from "../src/core/agents/workers.ts";
 import {
   allEntries,
   cleanup,
@@ -82,7 +82,7 @@ describe("terminal input boundary", () => {
     await writeFile(
       script,
       `
-      import { Monchu } from ${JSON.stringify(new URL("../src/backend.ts", import.meta.url).href)};
+      import { Monchu } from ${JSON.stringify(new URL("../src/core/backend.ts", import.meta.url).href)};
       import { runTerminal } from ${JSON.stringify(new URL("../src/tui/app.ts", import.meta.url).href)};
       import { appendFileSync, existsSync, readFileSync } from "node:fs";
       const home = ${JSON.stringify(home)};

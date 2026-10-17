@@ -8,11 +8,11 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Monchu } from "../src/backend.ts";
-import { loadConfig, type ClaudeConfig } from "../src/config.ts";
-import { createClaudeCodeProvider } from "../src/models/claude-code.ts";
-import { configuredRoles, openModels } from "../src/models/index.ts";
-import { Extensions } from "../src/reload.ts";
+import { Monchu } from "../src/core/backend.ts";
+import { loadConfig, type ClaudeConfig } from "../src/core/config.ts";
+import { createClaudeCodeProvider } from "../src/core/models/claude-code.ts";
+import { configuredRoles, openModels } from "../src/core/models/index.ts";
+import { Extensions } from "../src/core/reload.ts";
 import {
   allEntries,
   claudeResponse,
@@ -1018,8 +1018,8 @@ PROJECT RULES
     const executable = join(bin, process.platform === "win32" ? "claude.EXE" : "claude");
     await writeFile(executable, "not executed by the injected query");
     await chmod(executable, 0o700);
-    const module = new URL("../src/models/claude-code.ts", import.meta.url).href;
-    const index = new URL("../src/models/index.ts", import.meta.url).href;
+    const module = new URL("../src/core/models/claude-code.ts", import.meta.url).href;
+    const index = new URL("../src/core/models/index.ts", import.meta.url).href;
     const script = `
       import { createClaudeCodeProvider } from ${JSON.stringify(module)};
       import { openModels } from ${JSON.stringify(index)};

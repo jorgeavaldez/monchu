@@ -52,18 +52,18 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSync, Visitor, type Node } from "oxc-parser";
-import { Codemode } from "../src/codemode.ts";
+import { Codemode } from "../src/core/tools/codemode.ts";
 import {
   type ClaudeConfig,
   type ModelRole,
   resolveSettings,
   type WorkerProfile,
-} from "../src/config.ts";
-import { createClaudeCodeProvider, type ClaudeQuery } from "../src/models/claude-code.ts";
-import { openModels } from "../src/models/index.ts";
-import { FffFinders } from "../src/fff.ts";
-import { createPiTools } from "../src/pi-tools.ts";
-import { createWorkerTools, WorkersDoc } from "../src/workers.ts";
+} from "../src/core/config.ts";
+import { createClaudeCodeProvider, type ClaudeQuery } from "../src/core/models/claude-code.ts";
+import { openModels } from "../src/core/models/index.ts";
+import { FffFinders } from "../src/core/tools/fff.ts";
+import { createPiTools } from "../src/core/tools/pi-tools.ts";
+import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
 
 export const context: Context = BACKGROUND_CONTEXT;
 

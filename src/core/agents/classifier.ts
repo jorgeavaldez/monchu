@@ -15,7 +15,7 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
-import type { ClassifierRole, WorkerProfile } from "./config.ts";
+import type { ClassifierRole, WorkerProfile } from "../config.ts";
 import { GoalsDoc } from "./goals.ts";
 import { WorkersDoc, type WhenBusy } from "./workers.ts";
 

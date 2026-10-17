@@ -5,7 +5,7 @@ import {
   type Component,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { WorkerNotice } from "../../workers.ts";
+import type { WorkerNotice } from "../../core/agents/workers.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const PREVIEW_LINES = 3;

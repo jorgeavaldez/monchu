@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultConfig, loadConfig } from "../src/config.ts";
-import { configuredRoles, openModels } from "../src/models/index.ts";
+import { defaultConfig, loadConfig } from "../src/core/config.ts";
+import { configuredRoles, openModels } from "../src/core/models/index.ts";
 import { cleanup, fauxRole, setup } from "./support.ts";
 
 afterEach(cleanup);
@@ -239,7 +239,7 @@ describe("Monchu models", () => {
   it("merges concurrent provider logins from separate processes without losing entries or exposing partial JSON", async () => {
     const value = await setup();
     await openModels(value.directory);
-    const moduleUrl = new URL("../src/models/index.ts", import.meta.url).href;
+    const moduleUrl = new URL("../src/core/models/index.ts", import.meta.url).href;
     const script = `
       import { createProvider, fauxProvider } from "@earendil-works/pi-ai";
       const { openModels } = await import(${JSON.stringify(moduleUrl)});

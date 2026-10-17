@@ -14,7 +14,7 @@ import {
   Extensions,
   installExtensions,
   RestartRequest,
-} from "../src/reload.ts";
+} from "../src/core/reload.ts";
 import {
   cleanup,
   classifierModel,

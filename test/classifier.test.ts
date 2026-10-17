@@ -18,10 +18,10 @@ import {
   createEffortAssessment,
   ESCALATION_PREFIX,
   escalationSummary,
-} from "../src/classifier.ts";
-import type { WorkerProfile } from "../src/config.ts";
-import { GoalsDoc } from "../src/goals.ts";
-import { startWorker, WorkersDoc } from "../src/workers.ts";
+} from "../src/core/agents/classifier.ts";
+import type { WorkerProfile } from "../src/core/config.ts";
+import { GoalsDoc } from "../src/core/agents/goals.ts";
+import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   allEntries,
   cleanup,

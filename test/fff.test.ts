@@ -2,9 +2,9 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPiTools } from "../src/pi-tools.ts";
-import { resolveSettings } from "../src/config.ts";
-import { Monchu } from "../src/backend.ts";
+import { createPiTools } from "../src/core/tools/pi-tools.ts";
+import { resolveSettings } from "../src/core/config.ts";
+import { Monchu } from "../src/core/backend.ts";
 import {
   callTools,
   cleanup,

@@ -6,7 +6,12 @@
   },
   "rules": {
     "typescript/ban-ts-comment": "error",
-    "typescript/consistent-type-assertions": ["error", { "assertionStyle": "never" }],
+    "typescript/consistent-type-assertions": [
+      "error",
+      {
+        "assertionStyle": "never"
+      }
+    ],
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-unnecessary-type-assertion": "error",
@@ -22,7 +27,11 @@
         "patterns": [
           {
             "group": ["**/tui/*", "./tui/*"],
-            "message": "Only src/main.ts composes the TUI; the backend and extensions never import it."
+            "message": "Only src/main.ts composes the TUI; the core never imports a client."
+          },
+          {
+            "group": ["**/ui/*", "./ui/*"],
+            "message": "The shared UI layer is for clients (src/tui) only; the core stays UI-free."
           },
           {
             "group": ["**/test/*", "../test/*"],
@@ -40,7 +49,34 @@
           "error",
           {
             "patterns": [
-              { "group": ["**/test/*", "../test/*"], "message": "Source never imports test code." }
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/ui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["node:*"],
+                "message": "src/ui is shared with browser clients: no Node modules."
+              },
+              {
+                "group": ["**/core/*", "**/tui/*"],
+                "message": "src/ui depends on neither the core nor a client."
+              },
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
+              }
             ]
           }
         ]

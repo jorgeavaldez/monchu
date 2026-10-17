@@ -67,7 +67,7 @@ Pi TUI's editor and scrolling viewport provide the terminal UI. Monchu owns its 
 The status indicator shows working, thinking, tool execution, compaction, and retry activity.
 The TUI follows terminal light/dark reports with its copied built-in themes.
 
-`/help` lists the commands; `src/tui/commands.ts` defines them.
+`/help` lists the commands; `src/ui/commands.ts` defines them.
 
 `/agents` opens a live panel of the root and every worker: status (working, or idle with how long ago it last did something), context fill, and directory where it fits.
 Selecting a worker shows its conversation; plain messages go to that worker through the existing worker-delivery path.
@@ -161,7 +161,7 @@ This checks lifecycle/rendering with deterministic models, not live models or An
 
 `reload_extensions` is available to all roles, as is your `/reload` command. The backend exposes `reload()` and `restart()`; only your `/restart` command calls the latter after restoring the terminal.
 
-Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode (including a checkout `npm link`ed as the global command) builds that checkout first, when a file under `src/` is newer than `dist/main.js`, by spawning the installed `typescript/bin/tsc` with the running Node executable and `-p tsconfig.build.json`, without a shell, npm, or mise. An installed package (`npm install -g` of a release tarball) ships no sources or `tsconfig.build.json`, so it skips the build and re-imports its fixed modules; only home skills and config change there. Each module in the manifest (`Reloadable` in `src/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
+Reload reads the running checkout, never a conversation's cwd or another jj workspace. Source mode imports edited `.ts` modules through Node's type stripping; compiled mode (including a checkout `npm link`ed as the global command) builds that checkout first, when a file under `src/` is newer than `dist/main.js`, by spawning the installed `typescript/bin/tsc` with the running Node executable and `-p tsconfig.build.json`, without a shell, npm, or mise. An installed package (`npm install -g` of a release tarball) ships no sources or `tsconfig.build.json`, so it skips the build and re-imports its fixed modules; only home skills and config change there. Each module in the manifest (`Reloadable` in `src/core/reload.ts`) is imported with a fresh query string. Static imports remain cached, so dependency and host changes require a restart.
 
 Config and all modules are prepared, and the complete registry and installation order validated before applying anything. A build/import/config/validation error leaves installed code, model roles and settings unchanged. Running calls finish on old code; later phases/calls/requests use the replacements. Reload also refreshes the skill metadata snapshot; existing tool environments remain alive. Doc kinds and task names/versions preserve existing state and pending tasks; schema/checkpoint changes still require explicit versioning and migration.
 
@@ -169,32 +169,30 @@ Config and all modules are prepared, and the complete registry and installation 
 
 `skills/monchu/SKILL.md` is read from this checkout in place, without a startup copy. It tells Monchu to edit source in a jj workspace, check and build it, apply authorized changes to the running checkout, and reload; host changes need the user's restart approval.
 
-## Backend boundary
+## Code layout
 
-- `src/backend.ts`: store ownership, admission, observation, worker controls, and execution directories.
-- `src/models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.
-- `src/config.ts`: validated host config: model roles, classifier overrides, and the resolved Monchu settings type/defaults.
-- `src/home.ts`: home resolution before SDK imports, including isolated smoke homes.
-- `src/workers.ts`: durable worker ownership/delivery state machines, worker lookup/stop/pending checks, and model tools.
-- `src/goals.ts`: the root's goals document, `update_goal`/`list_goals`, and the `goals` section.
-- `src/jobs.ts`: background jobs: the store-wide jobs document and event stream, cron, the replay-safe runner task, and the job tools.
-- `src/memory.ts`: bounded, atomic home-memory edits for every role.
-- `src/codemode.ts`: the `codemode` tool over `@earendil-works/pi-codemode` and its per-conversation store.
-- `src/classifier.ts`: non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up. It never grants permission.
-- `src/context.ts`: home/bundled skill metadata as a prompt section, the config-backed in-memory settings snapshot, and Durable run policy.
-- `src/reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
-- `src/identity.ts`: per-request home-file and device sections, and the front's instructions.
-- `src/pi-tools.ts`: built-in selection and shell configuration inside Durable tool invocations.
-- `src/jj.ts`: the `jj` and `jj_write` tools over the jj CLI.
-- `src/herdr.ts`: the `herdr` tool over the local Herdr CLI or SSH.
-- `src/herdr-agent.ts`: Monchu's own agent state in its Herdr pane, over Herdr's socket API.
-- `src/fff.ts`: Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases.
-- `src/tui/app.ts`: terminal lifecycle, command dispatch, and read-only view attachments.
-- `src/skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
-- `src/tui/`: the command table and input parsing, Durable presentation mapping, copied themes/message components/tool renderers, and Pi-style viewport rendering.
-- `src/main.ts`: lifecycle wiring.
+Folders follow systems. Lint enforces the arrows: `src/core` imports no client and no `src/ui`; `src/ui` imports no Node module, no core and no client; only `src/main.ts` composes a client.
 
-The backend imports no terminal code and writes nothing to stdout.
+- `src/main.ts`: entry and lifecycle wiring; the only module that touches process state.
+- `src/core/`: the store owner, with no terminal, transport, or rendering dependencies.
+  - `backend.ts`: store ownership, admission, observation, worker controls, and execution directories.
+  - `config.ts`: validated host config: model roles, classifier overrides, and the resolved Monchu settings type/defaults.
+  - `home.ts`: home resolution before SDK imports, including isolated smoke homes.
+  - `context.ts`: home/bundled skill metadata as a prompt section, the config-backed in-memory settings snapshot, and Durable run policy.
+  - `identity.ts`: per-request home-file and device sections, and the front's instructions.
+  - `reload.ts`: the extension registry, the reloadable-module manifest, validated in-process replacement, once-only missing-file warnings, the reload tool, and durable restart requests.
+  - `jobs.ts`: background jobs: the store-wide jobs document and event stream, cron, the replay-safe runner task, and the job tools.
+  - `update.ts`: `monchu update`, installing a release with npm.
+  - `workdir.ts`, `dev-faux.ts`: directory resolution, and the offline smoke backend.
+  - `agents/`: `workers.ts` (durable worker ownership/delivery state machines, lookup/stop/pending checks, and model tools), `goals.ts` (the root's goals document, `update_goal`/`list_goals`, and the `goals` section), `memory.ts` (bounded, atomic home-memory edits for every role), `classifier.ts` (non-blocking Clef Flash effort/scope assessment as a background Durable task per front input, advice for later requests, and the escalation follow-up; it never grants permission).
+  - `models/`: Monchu credential store, pi-ai provider modules/catalogs, private login flows, and configured model roles.
+  - `tools/`: `pi-tools.ts` (built-in selection and shell configuration inside Durable tool invocations), `jj.ts`, `herdr.ts` (local Herdr CLI or SSH), `fff.ts` (Pi-fff tool logic, native search indexes, pagination, and Monchu-local search databases), `codemode.ts` (over `@earendil-works/pi-codemode`, with its per-conversation store), `tool-search.ts`, `browser.ts`.
+  - `mcp/`: MCP config, clients, OAuth sign-in, tools, and the `monchu mcp` command.
+  - `skills/`: Pi-derived skill discovery, YAML front matter, diagnostics, and prompt formatting for explicit home/bundled paths only.
+- `src/ui/`: presentation shared by clients and safe for a browser: the command table and input parsing, and the Durable presentation mapping with context meters.
+- `src/tui/`: the terminal client: lifecycle, command dispatch and read-only view attachments (`app.ts`), copied themes, message components and tool renderers, Pi-style viewport rendering, and Monchu's own agent state in its Herdr pane (`herdr-agent.ts`).
+
+The core imports no terminal code and writes nothing to stdout.
 Its public methods admit messages/work using caller-supplied retry IDs, attach a snapshot plus committed events, change directories, cancel work, and close.
 The TUI uses the read-only `viewState(workerName?)` attachment and disposes it on exit; input still goes through backend methods.
 This slice has no HTTP server, daemon transport, phone UI, or memory retrieval backend; scheduled jobs run only while Monchu is open.
@@ -226,7 +224,7 @@ mise run build
 - `mise run install`: `npm ci`, skipped when the locked dependencies are current.
 - `mise run typecheck`: `tsc` over `src`, `test`, and `vitest.config.ts` (`tsconfig.json`); `mise run build` runs `node node_modules/typescript/bin/tsc -p tsconfig.build.json` to emit `src` only, skipped when current.
 - `mise run fmt`: format with oxfmt; `mise run check` checks formatting without rewriting.
-- `mise run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, any import of `src/tui` outside `src/main.ts` and the TUI itself, and `vi` in tests.
+- `mise run lint`: oxlint with type information. It rejects `any` leaks, casts and non-null assertions, TypeScript suppression comments, values that would print as `[object Object]`, import cycles, imports across the `src/core`, `src/ui` and `src/tui` boundaries, and `vi` in tests.
 - `mise run check` also runs knip for unused files, exports, and dependencies. The reload manifest imports its modules through computed URLs, so the exports it reads are tagged `@public`.
 - `mise run test`: vitest against real Durable Harnesses on SQLite, with Pi's faux chat provider and a scripted classifier provider registered in real pi-ai `Models`, following Pi Durable's own tests. `vitest.config.ts` points `HOME` and `USERPROFILE` at a temp sandbox, and each test's `setup()` narrows them to its own directory, so no test reads or writes `~/.monchu`, `~/.pi`, or `~/.agents`.
   TUI tests use a Pi-derived `VirtualTerminal` backed by `@xterm/headless` to check the visible screen at 40/60 columns in light/dark.

@@ -64,12 +64,12 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { QueueChange } from "../backend.ts";
-import { escalationSummary } from "../classifier.ts";
-import type { Goal } from "../goals.ts";
-import { parseWorkerNotice, workerNotice, type WhenBusy } from "../workers.ts";
-import { commands } from "./commands.ts";
-import { presentation, type QueuedItem } from "./state.ts";
+import type { QueueChange } from "../core/backend.ts";
+import { escalationSummary } from "../core/agents/classifier.ts";
+import type { Goal } from "../core/agents/goals.ts";
+import { parseWorkerNotice, workerNotice, type WhenBusy } from "../core/agents/workers.ts";
+import { commands } from "../ui/commands.ts";
+import { presentation, type QueuedItem } from "../ui/state.ts";
 
 /**
  * What a chat notice reports: Monchu's own status, the startup header, or input delivered to a worker. A delivery says

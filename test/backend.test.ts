@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { Monchu } from "../src/backend.ts";
-import { loadConfig } from "../src/config.ts";
-import { presentation } from "../src/tui/state.ts";
-import { parseWorkerNotice, workerNotice } from "../src/workers.ts";
+import { Monchu } from "../src/core/backend.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { presentation } from "../src/ui/state.ts";
+import { parseWorkerNotice, workerNotice } from "../src/core/agents/workers.ts";
 import {
   cleanup,
   fauxRole,

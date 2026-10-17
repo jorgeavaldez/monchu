@@ -4,8 +4,8 @@ import assert from "node:assert";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/jobs.ts";
-import { WorkersDoc, workerNotice } from "../src/workers.ts";
+import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
+import { WorkersDoc, workerNotice } from "../src/core/agents/workers.ts";
 import {
   allEntries,
   callTools,

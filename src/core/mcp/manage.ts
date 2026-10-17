@@ -1,6 +1,6 @@
-import type { McpSignInPrompt } from "./mcp-auth.ts";
-import { loadMcpConfig, usesOAuth, type McpServerConfig } from "./mcp-config.ts";
-import type { McpClients, McpState } from "./mcp.ts";
+import type { McpSignInPrompt } from "./auth.ts";
+import { loadMcpConfig, usesOAuth, type McpServerConfig } from "./config.ts";
+import type { McpClients, McpState } from "./index.ts";
 
 /** One server as `/mcp` and `monchu mcp list` show it. */
 export type McpServerReport = {

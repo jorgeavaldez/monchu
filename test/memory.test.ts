@@ -3,7 +3,7 @@ import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineExtension } from "@earendil-works/pi-durable";
-import { createMemory } from "../src/memory.ts";
+import { createMemory } from "../src/core/agents/memory.ts";
 import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
 afterEach(cleanup);

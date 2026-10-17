@@ -1,8 +1,8 @@
 import { defineExtension, wrapTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { afterEach, describe, expect, it } from "vitest";
-import { Codemode } from "../src/codemode.ts";
-import { WorkersDoc } from "../src/workers.ts";
+import { Codemode } from "../src/core/tools/codemode.ts";
+import { WorkersDoc } from "../src/core/agents/workers.ts";
 import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
 afterEach(cleanup);

@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { herdrAgent } from "../src/herdr-agent.ts";
+import { herdrAgent } from "../src/tui/herdr-agent.ts";
 import { waitFor } from "./support.ts";
 
 type Request = { method: string; params: Record<string, unknown> };

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Jj } from "../src/jj.ts";
+import { Jj } from "../src/core/tools/jj.ts";
 import {
   callTools,
   cleanup,

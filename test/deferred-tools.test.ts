@@ -11,14 +11,14 @@ import { once } from "node:events";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Browser } from "../src/browser.ts";
-import { loadMcpConfig } from "../src/mcp-config.ts";
-import { createMcpTools } from "../src/mcp-tools.ts";
-import { runMcpCommand } from "../src/mcp-cli.ts";
-import { mcpReports } from "../src/mcp-manage.ts";
-import { McpClients } from "../src/mcp.ts";
-import { createToolSearch, preloadGroups, type ToolGroup } from "../src/tool-search.ts";
-import { startWorker, workerConversationId } from "../src/workers.ts";
+import { Browser } from "../src/core/tools/browser.ts";
+import { loadMcpConfig } from "../src/core/mcp/config.ts";
+import { createMcpTools } from "../src/core/mcp/tools.ts";
+import { runMcpCommand } from "../src/core/mcp/cli.ts";
+import { mcpReports } from "../src/core/mcp/manage.ts";
+import { McpClients } from "../src/core/mcp/index.ts";
+import { createToolSearch, preloadGroups, type ToolGroup } from "../src/core/tools/tool-search.ts";
+import { startWorker, workerConversationId } from "../src/core/agents/workers.ts";
 import {
   cleanup,
   context,

@@ -66,7 +66,7 @@ export function createContext(home: string, runSettings: RunSettings) {
   home = resolve(home);
   const { skills, diagnostics } = loadSkills([
     join(home, "skills"),
-    fileURLToPath(new URL("../skills/", import.meta.url)),
+    fileURLToPath(new URL("../../skills/", import.meta.url)),
   ]);
   const settings = resolveSettings(runSettings);
   const skillPrompt = formatSkillsForPrompt(skills).trim();

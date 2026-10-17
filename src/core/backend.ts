@@ -27,7 +27,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AssessmentsDoc, escalationSummary, type Assessment } from "./classifier.ts";
+import { AssessmentsDoc, escalationSummary, type Assessment } from "./agents/classifier.ts";
 import {
   defaultConfig,
   isThinkingLevel,
@@ -38,12 +38,12 @@ import {
   type Settings,
 } from "./config.ts";
 import { harnessSettings } from "./context.ts";
-import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./goals.ts";
+import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
 import { JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
-import type { McpSignInPrompt } from "./mcp-auth.ts";
-import type { McpServerReport } from "./mcp-manage.ts";
+import type { McpSignInPrompt } from "./mcp/auth.ts";
+import type { McpServerReport } from "./mcp/manage.ts";
 import { createReloadControls, Extensions, RestartRequest } from "./reload.ts";
 import {
   DELETED_FROM_QUEUE,
@@ -57,8 +57,8 @@ import {
   workerConversationId,
   type WhenBusy,
   WorkersDoc,
-} from "./workers.ts";
-import { preloadGroups } from "./tool-search.ts";
+} from "./agents/workers.ts";
+import { preloadGroups } from "./tools/tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 import { skillMessage } from "./skills/index.ts";
 

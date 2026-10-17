@@ -27,7 +27,7 @@ import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/p
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { theme } from "../theme/theme.ts";
-import type { ContextUsage } from "../state.ts";
+import type { ContextUsage } from "../../ui/state.ts";
 
 /** Pi's compact token count: 999, 1.2k, 45k, 1.2M. */
 function formatTokens(count: number): string {

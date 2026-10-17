@@ -27,9 +27,9 @@ import {
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
-import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
-import { preloadGroups, unloadGroups } from "./tool-search.ts";
-import { resolveDirectory } from "./workdir.ts";
+import { thinkingLevels, type ModelRole, type WorkerProfile } from "../config.ts";
+import { preloadGroups, unloadGroups } from "../tools/tool-search.ts";
+import { resolveDirectory } from "../workdir.ts";
 
 type WorkerRecords = {
   workers: {

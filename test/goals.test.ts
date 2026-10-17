@@ -8,7 +8,7 @@ import {
   ToolTask,
 } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
-import { Goals, GoalsDoc, formatOpenGoals } from "../src/goals.ts";
+import { Goals, GoalsDoc, formatOpenGoals } from "../src/core/agents/goals.ts";
 import {
   callTools,
   cleanup,

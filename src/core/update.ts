@@ -11,7 +11,7 @@ Installs a release of the global monchu command with npm: the newest build of ma
 version such as 1.2.0. Quit Monchu first; start it again when the install finishes.`;
 
 /** The package this command runs from: an installed release, or a checkout that `npm link` or a source run points at. */
-const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
+const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
 
 interface UpdateIo {
   home: string;

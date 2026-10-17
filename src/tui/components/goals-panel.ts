@@ -7,7 +7,7 @@ import {
   type Component,
   type Focusable,
 } from "@earendil-works/pi-tui";
-import type { Goal } from "../../goals.ts";
+import type { Goal } from "../../core/agents/goals.ts";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
 import { age } from "./agents-panel.ts";
 

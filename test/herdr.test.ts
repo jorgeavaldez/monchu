@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHerdr, type HerdrHost } from "../src/herdr.ts";
+import { createHerdr, type HerdrHost } from "../src/core/tools/herdr.ts";
 import { callTools, cleanup, context, open, route, setup, toolResults } from "./support.ts";
 
 afterEach(cleanup);

@@ -2,11 +2,11 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultConfig, loadConfig, resolveSettings, saveRole } from "../src/config.ts";
-import { loadMcpConfig, validateMcpServer } from "../src/mcp-config.ts";
+import { defaultConfig, loadConfig, resolveSettings, saveRole } from "../src/core/config.ts";
+import { loadMcpConfig, validateMcpServer } from "../src/core/mcp/config.ts";
 
 const codex = defaultConfig();
-import { harnessSettings } from "../src/context.ts";
+import { harnessSettings } from "../src/core/context.ts";
 import { setup, cleanup } from "./support.ts";
 
 const directories: string[] = [];

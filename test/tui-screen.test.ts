@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Monchu } from "../src/backend.ts";
-import { openDevMonchu } from "../src/dev-faux.ts";
-import { loadConfig } from "../src/config.ts";
-import { monchuHome } from "../src/home.ts";
+import { Monchu } from "../src/core/backend.ts";
+import { openDevMonchu } from "../src/core/dev-faux.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { monchuHome } from "../src/core/home.ts";
 import { runTerminal } from "../src/tui/app.ts";
 import {
   cleanup,

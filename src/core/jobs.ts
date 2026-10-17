@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { createHash } from "node:crypto";
 import type { ModelRole } from "./config.ts";
-import { messageWorker, reopenWorker, startWorker, WorkersDoc } from "./workers.ts";
+import { messageWorker, reopenWorker, startWorker, WorkersDoc } from "./agents/workers.ts";
 
 /** A job's worker: an existing worker under `parentId`, or none, and the job starts its own under the root. */
 type JobOwner = { parentId: ConversationId; worker: string };

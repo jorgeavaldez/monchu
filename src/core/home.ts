@@ -31,7 +31,7 @@ export async function monchuHome(smoke: boolean): Promise<string> {
  * The starter home shipped with Monchu: generic manuals, empty memories, and the runtime ignore file. That one is
  * stored as `gitignore` because npm drops `.gitignore` files from packages; it is seeded as `.gitignore`.
  */
-const TEMPLATE = fileURLToPath(new URL("../home-template/", import.meta.url));
+const TEMPLATE = fileURLToPath(new URL("../../home-template/", import.meta.url));
 const SEEDED_NAMES: Record<string, string> = { gitignore: ".gitignore" };
 
 async function files(directory: string): Promise<string[]> {

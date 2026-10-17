@@ -25,10 +25,10 @@ SOFTWARE.
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import type { McpSignInPrompt } from "./mcp-auth.ts";
-import { addMcpServer, removeMcpServer, usesOAuth, validateMcpServer } from "./mcp-config.ts";
-import { formatReports, mcpLogin, mcpLogout, mcpReports } from "./mcp-manage.ts";
-import { McpClients } from "./mcp.ts";
+import type { McpSignInPrompt } from "./auth.ts";
+import { addMcpServer, removeMcpServer, usesOAuth, validateMcpServer } from "./config.ts";
+import { formatReports, mcpLogin, mcpLogout, mcpReports } from "./manage.ts";
+import { McpClients } from "./index.ts";
 
 const HELP = `Usage:
   monchu mcp add <server> [options] -- <command> [args...]

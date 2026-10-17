@@ -8,7 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
-import type { McpOAuthConfig } from "./mcp-config.ts";
+import type { McpOAuthConfig } from "./config.ts";
 
 /** One server's sign-in, keyed by server name and bound to its URL and redirect URI. */
 type Stored = {

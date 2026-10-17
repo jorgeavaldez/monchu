@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { runUpdate } from "../src/update.ts";
+import { runUpdate } from "../src/core/update.ts";
 import { cleanup, setup } from "./support.ts";
 
 afterEach(cleanup);
