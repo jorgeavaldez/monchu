@@ -1,8 +1,9 @@
 import { createProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { Frame } from "@earendil-works/chord";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { UPLOAD_CHUNK_BYTES } from "../src/api/attachments.ts";
 import { connectRemote, OUTDATED_CORE } from "../src/api/connect.ts";
 import type { Principal } from "../src/api/contract.ts";
 import { Monchu } from "../src/core/backend.ts";
@@ -195,6 +196,59 @@ describe("wire", () => {
       await waitFor(() => labels.at(-1) === "back");
       expect(labels).toEqual(["first", "while away", "back"]);
       stop();
+      stopNotices();
+    } finally {
+      await close();
+      await core.close();
+    }
+  });
+
+  it("uploads an attachment through dropped connections, before it starts and between its chunks", async () => {
+    const core = await openCore();
+    const back = Promise.withResolvers<void>();
+    let cut: (() => void) | undefined;
+    const { client, close, links } = await attach(
+      core.host,
+      person("a"),
+      {
+        // The second chunk never arrives: the link drops under it, as a phone suspending the page does.
+        send: (frame) => {
+          if (cut === undefined || frame.t !== "call" || frame.member !== "upload") return frame;
+          const args = frame.args;
+          if (typeof args !== "object" || args === null || !("offset" in args) || args.offset === 0)
+            return frame;
+          queueMicrotask(cut);
+          cut = undefined;
+          return undefined;
+        },
+      },
+      back.promise,
+    );
+    try {
+      const root = client.root(await client.currentRoot());
+      const notices: string[] = [];
+      const stopNotices = client.onReport((message) => notices.push(message));
+      const bytes = new Uint8Array(UPLOAD_CHUNK_BYTES + 1000).map((_, index) => index % 251);
+      const stored = (attachment: { id: string }) =>
+        readFile(join(core.backend.home, "attachments", attachment.id));
+
+      // Picked while the connection is down: the upload waits for it instead of failing.
+      links[0]?.close("suspended");
+      await waitFor(() => notices.includes("connection to Monchu lost · reconnecting"));
+      const waiting = root.attach("picked.bin", bytes);
+      back.resolve();
+      await waitFor(() => notices.includes("reconnected to Monchu"));
+      const first = await waiting;
+      expect(first).toMatchObject({ name: "picked.bin", size: bytes.length });
+      expect((await stored(first)).equals(bytes)).toBe(true);
+
+      // Dropped between chunks: the chunk goes again once the core is back.
+      notices.length = 0;
+      cut = () => links.at(-1)?.close("suspended");
+      const second = root.attach("cut.bin", bytes);
+      await waitFor(() => notices.includes("reconnected to Monchu"));
+      expect(await second).toMatchObject({ name: "cut.bin", size: bytes.length });
+      expect((await stored(await second)).equals(bytes)).toBe(true);
       stopNotices();
     } finally {
       await close();

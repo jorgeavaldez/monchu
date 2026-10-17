@@ -64,7 +64,10 @@ class RemoteRoot implements RootClient {
     });
     return lasting.state((ref) => ref.view, true);
   }
-  /** Sends the file in chunks under the socket's message limit; a retried chunk writes the same bytes again. */
+  /**
+   * Sends the file in chunks under the socket's message limit. A chunk waits through a dropped connection, such as a
+   * phone's file picker suspending the page, and goes again once the core is back: a retried chunk writes the same bytes.
+   */
   async attach(name: string, data: Uint8Array) {
     if (data.length > ATTACHMENT_MAX_BYTES)
       throw new Error(
@@ -74,8 +77,8 @@ class RemoteRoot implements RootClient {
     for (let offset = 0; ; offset += UPLOAD_CHUNK_BYTES) {
       const done = offset + UPLOAD_CHUNK_BYTES >= data.length;
       const chunk = toBase64(data.subarray(offset, offset + UPLOAD_CHUNK_BYTES));
-      const stored = await this.run((root) =>
-        root.upload({ upload, name, offset, data: chunk, done }),
+      const stored = await this.client.outlast(async () =>
+        (await this.client.rootRef(this.id)).upload({ upload, name, offset, data: chunk, done }),
       );
       if (done) {
         if (stored === null) throw new Error(`Upload of ${name} did not finish`);
@@ -247,6 +250,19 @@ export class RemoteClient implements Client {
       return await call();
     } catch (error) {
       throw plain(error);
+    }
+  }
+
+  /** Runs a call that is safe to repeat, waiting while the core is out of reach and again after a drop cut it off. */
+  async outlast<T>(call: () => Promise<T>): Promise<T> {
+    for (;;) {
+      await this.live();
+      try {
+        return await call();
+      } catch (error) {
+        // The link closed under the call; anything else is the core's answer.
+        if (this.connected) throw plain(error);
+      }
     }
   }
 
