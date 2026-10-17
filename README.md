@@ -34,6 +34,7 @@ mise run check   # typecheck, lint, format, knip, tests
 mise run build
 npm link         # make `monchu` run this checkout's build
 mise run smoke   # offline TUI with scripted models
+mise run web:check  # the web client in a real browser: journeys, gates, metrics
 mise run pack    # the installable tarball CI attaches to releases
 ```
 

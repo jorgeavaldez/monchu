@@ -199,6 +199,20 @@ Run `/restart`: the app re-executes in the same terminal, restores the conversat
 Finish with `/quit` and check the shell's exit code is 0.
 This checks lifecycle/rendering with deterministic models, not live models or Android/Termux.
 
+## Web check
+
+```nu
+mise run web:check -- --baseline <an earlier out dir>
+```
+
+`scripts/web-check.ts` builds the web client, starts a loopback OpenID provider that approves every sign-in, and runs `serve --web` from source on a fresh `monchu-smoke-*` home with the faux models, so the server's real login path runs and no auth code is special to it.
+It drives journeys in a real browser through `agent-browser` (on PATH, in its own session) at `--viewport` (default 412x915): sign in and reload from the service worker, send a message until the reply settles, and `/mod` typeahead into the `/model` picker and out with Esc.
+Each screen gets an accessibility snapshot, a screenshot and an axe audit; clock times read `hh:mm` and the temp home and port are replaced, so two runs of the same code match.
+The out dir (`--out`, default `web-check/`) holds `report.json`, `summary.md`, and `<screen>.snapshot.txt` and `<screen>.png`.
+Hard gates (exit 1): the journeys' assertions, no page or console errors, no horizontal overflow, the build's size budget, and with a baseline no a11y violation its screen didn't have.
+Metrics (bundle bytes, load, reply and picker times, vitals, the page's own ready times) are compared with the baseline and marked `WORSE` past noise: times by 25% and 50 ms, bytes by 2%. A baseline also gives each screen its changed snapshot lines and changed pixel percentage. Compare runs from the same machine; fonts and speed differ between devices.
+CI's `web` job runs it on Linux with the newest successful `main` run's `web-check` artifact as the baseline and puts the summary on the run's page.
+
 ## Self reload
 
 `reload_extensions` is available to all roles, as is your `/reload` command. The core exposes `reload()` and `restart()`; only your `/restart` command calls the latter, after restoring the terminal, and `restart()` only closes the core: the entry point re-executes the process.

@@ -72,6 +72,11 @@ description = 'Run from source with isolated faux models'
 env = { MONCHU_DEV_FAUX = '1' }
 run = 'mise run dev'
 
+[tasks."web:check"]
+description = 'Drive the web client in a real browser (agent-browser): journeys, gates and metrics into web-check/'
+depends = ['install']
+run = 'node scripts/web-check.ts'
+
 [tasks.pack]
 description = 'Pack the built app as a tarball that npm installs globally'
 depends = ['build']

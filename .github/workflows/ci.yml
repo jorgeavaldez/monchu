@@ -32,6 +32,31 @@ jobs:
       - run: mise run check
       - run: mise run build
 
+  # The web client in a real browser, compared with the newest successful run on main.
+  web:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: npm install -g agent-browser@0.36.0 && agent-browser install --with-deps
+      - name: Baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="$(gh run list --workflow ci --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')"
+          if [ -n "$run" ]; then gh run download "$run" --name web-check --dir baseline || true; fi
+      - run: mise run web:check -- --baseline baseline
+      - if: always()
+        run: cat web-check/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-check
+          path: web-check
+
   package:
     needs: check
     runs-on: ubuntu-latest

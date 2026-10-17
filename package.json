@@ -80,7 +80,8 @@
   },
   "knip": {
     "ignoreBinaries": [
-      "jj"
+      "jj",
+      "agent-browser"
     ],
     "entry": [
       "src/web/main.tsx",
