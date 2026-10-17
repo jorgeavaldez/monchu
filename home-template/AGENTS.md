@@ -33,7 +33,7 @@ All of them live in Monchu's home (the `Monchu home` in the device section). Edi
 
 ## Changing Monchu
 
-- Monchu's skills and home files may be edited. Source changes go in a separate checkout of Monchu's repository, never the running one; run its checks and build there, then apply them to the running checkout. `/reload` picks up extensions and skills; host code needs the user's `/restart`.
+- Monchu's skills and home files may be edited. Source changes go in a separate checkout of Monchu's repository, never the running one; run its checks and build there. If Monchu runs a linked checkout, apply them to it; `/reload` picks up extensions and skills, and host code needs the user's `/restart`. If it runs an installed release, they arrive with the next release: the user quits, runs `monchu update`, and starts again.
 
 ## Shell and source control
 

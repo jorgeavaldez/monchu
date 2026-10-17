@@ -38,6 +38,14 @@ Installing is in the [README](../README.md). This page covers the first run, con
 
 Each device runs its own Monchu with its own logins and database. To share the home's editable files (manuals, memories, skills, and `config.json`), push the home repository to a **private** remote and clone it as the home on the other devices. The seeded `.gitignore` keeps credentials and runtime state out. Add each device to `DEVICES.md`.
 
+## Updating
+
+The `monchu` command runs either an installed release or a checkout linked with `npm link`; `npm ls -g monchu` shows a link as `monchu@<version> -> <checkout>`.
+
+- **Release.** Quit Monchu (`/quit`), run `monchu update` for the newest build of `main` or `monchu update 1.2.0` for a tagged release, then start `monchu` again. It refuses while a Monchu has the home open: npm would replace files under the running process. Rolling back is `monchu update <older version>`.
+- **Your checkout.** In a clone, run `mise run install`, `mise run build`, then `npm link`; `monchu` now runs that checkout's `dist`. To update, pull, then `mise run build` and `/reload` (extensions and skills) or `/restart` (everything else). `/reload` builds first when a source is newer than `dist`, so a build you made yourself is reused. Quit Monchu before `mise run install` or `npm ci` in it, since those replace `node_modules` under it. `monchu update` refuses to replace a link; to go back to releases, run the `npm install -g` command it prints.
+- `/restart` starts whatever `monchu` points to now, so after a rebuild it runs the new code. A release installed while Monchu runs is only safe to pick up by quitting first.
+
 ## Using it
 
 Type a message. The front answers or starts a worker, and reports and progress show up in the chat as `worker · <name>`.

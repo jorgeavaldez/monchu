@@ -16,7 +16,7 @@ npm install -g --allow-remote=root https://github.com/jorgeavaldez/monchu/releas
 monchu
 ```
 
-Run the install again to update. Tagged versions are on the [releases](https://github.com/jorgeavaldez/monchu/releases) page, and `npm uninstall -g monchu` removes the command but keeps the home.
+To update, quit Monchu and run `monchu update` (or `monchu update <version>` for a [tagged release](https://github.com/jorgeavaldez/monchu/releases)), then start it again. `npm uninstall -g monchu` removes the command but keeps the home. [docs/setup.md](docs/setup.md#updating) also covers running your own checkout with `npm link`.
 
 1. Monchu creates its home at `~/.monchu`. Set `MONCHU_HOME` to use a different directory.
 2. Run `/login` and pick Codex or Claude Code. Monchu uses that provider's models.
