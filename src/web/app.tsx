@@ -1,8 +1,19 @@
 /** The page: who's working, the shown conversation, its queue, and the editor or whatever answer it waits for. */
 import { useSignal } from "@preact/signals";
+import { useEffect, useRef } from "preact/hooks";
+import type { RootSummary } from "../api/client.ts";
+import {
+  ARCHIVE_HELP,
+  activeRoots,
+  listedRoots,
+  rootCounts,
+  rootIds,
+  rootLabel,
+} from "../ui/roots.ts";
 import { contextUsage, presentation } from "../ui/state.ts";
 import { Editor } from "./editor.tsx";
 import {
+  archiveRoot,
   ask,
   cancelLogin,
   choice,
@@ -10,18 +21,156 @@ import {
   connection,
   loginStatus,
   mode,
+  newRoot,
+  renameRoot,
+  rootId,
+  roots,
+  rootsMessage,
+  rootsOpen,
   show,
   shown,
+  switchRoot,
+  toggleRoots,
   view,
   workers,
 } from "./state.ts";
 import { Transcript } from "./transcript.tsx";
+
+const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idle" };
+
+/**
+ * The root indicator: one dot per active root (working, or done and not seen yet), the shown one underlined, and none
+ * at all while every root is idle. Its detail is the roots panel, which a tap opens.
+ */
+function RootDots() {
+  const active = activeRoots(roots.value);
+  if (active.length === 0) return null;
+  const summary = active
+    .map(
+      (root) => `${root.id === rootId.value ? "this root" : root.id} ${STATUS_TEXT[root.status]}`,
+    )
+    .join(", ");
+  return (
+    <button
+      class={`roots${rootsOpen.value ? " on" : ""}`}
+      aria-label={`roots: ${summary}`}
+      aria-expanded={rootsOpen.value}
+      title={summary}
+      onClick={() => toggleRoots()}
+    >
+      {active.map((root) => (
+        <span
+          key={root.id}
+          aria-hidden="true"
+          class={`dot ${root.status}${root.id === rootId.value ? " here" : ""}`}
+        >
+          ●
+        </span>
+      ))}
+    </button>
+  );
+}
+
+function RootRow({ root, ids }: { root: RootSummary; ids: ReturnType<typeof rootIds> }) {
+  const { unique, rest } = ids(root.id);
+  const here = root.id === rootId.value;
+  return (
+    <li class={here ? "here" : ""}>
+      <button class="open" onClick={() => void switchRoot(root.id)} aria-current={here}>
+        <span class="name">
+          <span aria-hidden="true" class={`dot ${root.status}`}>
+            {root.status === "idle" ? "○" : "●"}
+          </span>{" "}
+          <span class="id">
+            <b>{unique}</b>
+            {rest}
+          </span>{" "}
+          {rootLabel(root)}
+        </span>
+        <span class="help">
+          {[
+            STATUS_TEXT[root.status],
+            rootCounts(root),
+            root.archived ? "archived" : "",
+            here ? "shown" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+      </button>
+      <span class="actions">
+        <button onClick={() => void renameRoot(root.id)} aria-label={`rename ${root.id}`}>
+          rename
+        </button>
+        <button
+          onClick={() => void archiveRoot(root.id, !root.archived)}
+          aria-label={`${root.archived ? "unarchive" : "archive"} ${root.id}`}
+        >
+          {root.archived ? "unarchive" : "archive"}
+        </button>
+      </span>
+    </li>
+  );
+}
+
+/** `/roots`: every open root (archived ones on request) to switch to, start, rename or archive, in place of the transcript. */
+function RootsPanel() {
+  const archived = useSignal(false);
+  const all = roots.value;
+  const ids = rootIds(all);
+  const listed = listedRoots(all, archived.value);
+  const hidden = all.filter((root) => root.archived).length;
+  const message = rootsMessage.value;
+  const panel = useRef<HTMLElement>(null);
+  // Focus moves into the panel once when it opens, not on every update of the list.
+  useEffect(() => panel.current?.focus(), []);
+  return (
+    <main
+      class="rootsPanel"
+      tabIndex={-1}
+      ref={panel}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") toggleRoots(false);
+      }}
+    >
+      <header>
+        <h1>roots</h1>
+        <button onClick={() => void newRoot()}>new root</button>
+        <button onClick={() => toggleRoots(false)}>close</button>
+      </header>
+      {message === undefined ? null : (
+        <p role="status" class={message.failed ? "warning" : "help"}>
+          {message.text}
+        </p>
+      )}
+      <ul>
+        {listed.map((root) => (
+          <RootRow key={root.id} root={root} ids={ids} />
+        ))}
+      </ul>
+      {hidden === 0 && !archived.value ? null : (
+        <label class="help">
+          <input
+            type="checkbox"
+            checked={archived.value}
+            onChange={(event) => {
+              archived.value = event.currentTarget.checked;
+            }}
+          />{" "}
+          show archived ({hidden})
+        </label>
+      )}
+      <p class="help">{ARCHIVE_HELP}</p>
+    </main>
+  );
+}
 
 function Agents() {
   const root = view(undefined)?.value;
   const rootBusy = root === undefined ? false : presentation(root).busy;
   return (
     <nav class="agents">
+      <RootDots />
       <button class={shown.value === undefined ? "on" : ""} onClick={() => void show(undefined)}>
         {rootBusy ? "●" : "○"} root
       </button>
@@ -209,7 +358,9 @@ export function App() {
   return (
     <>
       <Agents />
-      {state === undefined ? (
+      {rootsOpen.value ? (
+        <RootsPanel />
+      ) : state === undefined ? (
         <main class="transcript">connecting…</main>
       ) : (
         <Transcript view={state} />

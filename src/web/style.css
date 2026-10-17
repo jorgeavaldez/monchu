@@ -7,6 +7,7 @@
   --accent: #6b2fb3;
   --yellow: #8a6d00;
   --red: #b00020;
+  --green: #1b7a2e;
   --card: #f2f2f2;
   font:
     14px/1.4 ui-monospace,
@@ -27,6 +28,7 @@
     --accent: #c79bff;
     --yellow: #e0c040;
     --red: #ff6b6b;
+    --green: #5fd36f;
     --card: #111;
   }
 }
@@ -257,4 +259,75 @@ pre {
 .footer > span {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.dot.working {
+  color: var(--accent);
+}
+.dot.done {
+  color: var(--green);
+}
+.agents .roots {
+  padding: 0 1ch;
+  letter-spacing: 0.3ch;
+}
+.agents .roots .here {
+  text-decoration: underline;
+}
+.rootsPanel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1ch;
+  outline: none;
+}
+.rootsPanel header {
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+}
+.rootsPanel h1 {
+  font-size: inherit;
+  margin: 0;
+  flex: 1;
+}
+.rootsPanel ul {
+  list-style: none;
+  margin: 0.5em 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.rootsPanel li {
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  padding: 0.3em 0;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+}
+.rootsPanel li.here {
+  border-left-color: var(--accent);
+}
+.rootsPanel .open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  border: none;
+  background: transparent;
+}
+.rootsPanel .open > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rootsPanel .id b {
+  color: var(--yellow);
+}
+.rootsPanel .actions {
+  display: flex;
+  gap: 0.5ch;
+  margin-left: auto;
+}
+.rootsPanel p {
+  margin: 0.5em 0;
 }

@@ -10,7 +10,7 @@ import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { escalationSummary, systemNoticeSummary, workerNotice } from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
-import { expandAll, notices, type Notice } from "./state.ts";
+import { expandAll, notices, rootId, type Notice } from "./state.ts";
 
 const PREVIEW_LINES = 4;
 
@@ -259,9 +259,11 @@ export function Transcript({ view }: { view: ConversationView }) {
             running={live.output.find((output) => output.id === call.id)?.text}
           />
         ))}
-      {notices.value.map((item) => (
-        <NoticeLine key={item.id} item={item} />
-      ))}
+      {notices.value
+        .filter((item) => item.root === undefined || item.root === rootId.value)
+        .map((item) => (
+          <NoticeLine key={item.id} item={item} />
+        ))}
       {live.status ? <div class="status">{live.status}</div> : null}
     </main>
   );

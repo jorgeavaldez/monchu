@@ -396,7 +396,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     );
     report.metrics["load.coldMs"] = ms(cold);
     const at = text((await browser("get", "url")).url);
-    check(at === url, `ended on ${at}, not ${url}`);
+    check(at.split("?")[0] === url, `ended on ${at}, not ${url}`);
     const vitals = await browser("vitals");
     const lcp = isData(vitals.lcp) ? number(vitals.lcp.startTime) : undefined;
     const cls = isData(vitals.cls) ? number(vitals.cls.score) : undefined;
@@ -472,6 +472,77 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     await browser("press", "Escape");
     await browser("wait", "--fn", `!document.querySelector(".pick")`);
     return "picker opened and closed";
+  });
+
+  await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
+    const shownRoot = async () =>
+      new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
+    const first = await shownRoot();
+    check(first !== "", "the address doesn't name the shown root");
+    await browser("fill", "textarea", "/roots");
+    await browser("press", "Enter");
+    await browser("wait", ".rootsPanel li");
+    await capture("roots-one", home, origin);
+    await page(`document.querySelector(".rootsPanel header button").click()`);
+    await browser(
+      "wait",
+      "--fn",
+      `!new URLSearchParams(location.search).get("root")?.startsWith(${JSON.stringify(first)})`,
+    );
+    const second = await shownRoot();
+    await browser(
+      "wait",
+      "--fn",
+      `!document.querySelector(".rootsPanel") && document.querySelector("textarea")`,
+    );
+    // A long message streams for a few seconds, long enough to leave the root while it works.
+    await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
+    await browser("press", "Enter");
+    await browser("wait", ".agents .roots .dot.working.here");
+    await page("history.back()");
+    await browser(
+      "wait",
+      "--fn",
+      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(first)}`,
+    );
+    await browser("wait", ".agents .roots .dot.done");
+    await capture("roots-dots", home, origin);
+    await page(`document.querySelector(".agents .roots").click()`);
+    await browser("wait", ".rootsPanel li");
+    check(
+      (await page(`document.querySelectorAll(".rootsPanel li").length`)) === 2,
+      "the panel doesn't list both roots",
+    );
+    await capture("roots", home, origin);
+    await page(`document.querySelector(".rootsPanel li:not(.here) .open").click()`);
+    await browser(
+      "wait",
+      "--fn",
+      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(second)}`,
+    );
+    await browser("wait", "--fn", `!document.querySelector(".agents .roots .dot.done")`);
+    await browser("reload");
+    await browser(
+      "wait",
+      "--fn",
+      `document.querySelector(".transcript")?.textContent.includes("second root")`,
+    );
+    check((await shownRoot()) === second, "the reload didn't come back to the same root");
+    await browser("fill", "textarea", "/roots");
+    await browser("press", "Enter");
+    await browser("wait", ".rootsPanel li");
+    await page(
+      `document.querySelector(".rootsPanel li:not(.here) .actions button:last-child").click()`,
+    );
+    await browser(
+      "wait",
+      "--fn",
+      `document.querySelector(".rootsPanel [role=status]")?.textContent.startsWith("archived") && document.querySelectorAll(".rootsPanel li").length === 1`,
+    );
+    await capture("roots-archived", home, origin);
+    await browser("press", "Escape");
+    await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
+    return "started a root, saw it working then done, switched, reloaded into it, archived the other";
   });
 
   const errors = list((await browser("errors")).errors);

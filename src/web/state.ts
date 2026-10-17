@@ -5,17 +5,26 @@
 import { batch, signal, type Signal } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import type { Client, ModelPick, RootClient, WorkerSummary } from "../api/client.ts";
+import type { Client, ModelPick, RootClient, RootSummary, WorkerSummary } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
+import { shortId } from "../api/ids.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
 import { help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
+import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
 import { presentation } from "../ui/state.ts";
 
-export type Notice = { id: number; at: number; text: string; kind: "system" | "warning" | "event" };
+/** A line under the transcript; one with a `root` shows only while that root is shown. */
+export type Notice = {
+  id: number;
+  at: number;
+  text: string;
+  kind: "system" | "warning" | "event";
+  root?: string;
+};
 
 /** A choice the user makes in place of the editor: a login prompt, a model, a thinking level, a worker. */
 export type Choice = {
@@ -37,6 +46,13 @@ export type Ask = {
 };
 
 export const connection = signal<"connecting" | "open" | "lost" | "gone">("connecting");
+/** Every root, archived ones included, as the core reports them. */
+export const roots = signal<readonly RootSummary[]>([]);
+/** The root this page shows, by full id. */
+export const rootId = signal<string | undefined>(undefined);
+/** Whether the roots panel is open in place of the transcript, and its last outcome. */
+export const rootsOpen = signal(false);
+export const rootsMessage = signal<{ text: string; failed: boolean } | undefined>(undefined);
 export const shown = signal<string | undefined>(undefined);
 export const workers = signal<readonly WorkerSummary[]>([]);
 export const notices = signal<Notice[]>([]);
@@ -53,6 +69,8 @@ export const draft = signal("");
 
 let core: Client | undefined;
 let current: RootClient | undefined;
+/** What the shown root's binding stops when another root is shown. */
+let unbind: (() => void)[] = [];
 /** Attached views by conversation; a signal itself, so a view attached later re-renders whoever asked for it. */
 const views = signal<ReadonlyMap<string, { state: Signal<ConversationView>; dispose(): void }>>(
   new Map(),
@@ -71,8 +89,17 @@ function root(): RootClient {
   return current;
 }
 
-export function notice(text: string, kind: Notice["kind"] = "system"): void {
-  notices.value = [...notices.value, { id: nextNotice++, at: Date.now(), text, kind }].slice(-200);
+/** A notice about the shown root, or with `home` one every root shows. */
+export function notice(text: string, kind: Notice["kind"] = "system", home = false): void {
+  rootNotice(text, kind, home ? undefined : rootId.value);
+}
+
+/** A notice that only `root` shows, or every root when undefined. */
+function rootNotice(text: string, kind: Notice["kind"], root: string | undefined): void {
+  notices.value = [
+    ...notices.value,
+    { id: nextNotice++, at: Date.now(), text, kind, ...(root === undefined ? {} : { root }) },
+  ].slice(-200);
 }
 
 /** The shown conversation's view, attached on first use and kept while the page lives. */
@@ -83,7 +110,10 @@ export function view(name: string | undefined): Signal<ConversationView> | undef
 async function attach(name: string | undefined): Promise<void> {
   const key = name ?? "";
   if (views.value.has(key)) return;
-  const attached = await root().viewState(name);
+  const from = root();
+  const attached = await from.viewState(name);
+  // Another root was shown meanwhile: this view belongs to none.
+  if (from !== current || views.value.has(key)) return attached.dispose();
   const state = signal(attached.value);
   const stop = attached.subscribe((value) => {
     state.value = value;
@@ -98,38 +128,64 @@ async function attach(name: string | undefined): Promise<void> {
 }
 
 async function refreshWorkers(): Promise<void> {
-  workers.value = await root().workers();
+  const from = root();
+  const list = await from.workers();
+  if (from === current) workers.value = list;
 }
 
-/** Bind to a connected client: attach the root, follow reports, assessments and job events. */
-export async function start(connected: Client): Promise<void> {
-  core = connected;
-  current = connected.root(await connected.currentRoot());
-  // The terminal's first screen: the header, the core's startup notes, then what still needs a login.
-  notice(`Monchu ${connected.release.version} · /help · home ${connected.home}`);
-  for (const line of connected.notes) notice(line);
-  let release = connected.release;
-  for (const line of releaseNotices(undefined, release)) notice(line);
-  connected.onRelease((next) => {
-    for (const line of releaseNotices(release, next)) notice(line);
-    release = next;
+/** The root a page load shows: the one in its address, else this tab's last, else the current root. */
+async function initialRoot(connected: Client): Promise<string> {
+  const asked = new URL(location.href).searchParams.get("root") ?? sessionStorage.getItem("root");
+  if (asked !== null && asked !== "")
+    try {
+      return await connected.findRoot(asked);
+    } catch (error) {
+      notice(error instanceof Error ? error.message : String(error), "warning", true);
+    }
+  return connected.currentRoot();
+}
+
+/**
+ * Show a root in this page: its front, crew, assessments and routing state, in place of the one shown. The address
+ * names it, so a reload comes back here; `push` adds a history entry, so Back returns to the root before.
+ */
+async function openRoot(id: string, push = false): Promise<void> {
+  const connected = client();
+  for (const stop of unbind.splice(0)) stop();
+  for (const each of views.value.values()) each.dispose();
+  views.value = new Map();
+  current = connected.root(id);
+  batch(() => {
+    rootId.value = id;
+    shown.value = undefined;
+    workers.value = [];
   });
-  for (const line of loginHints(await connected.loginNeeds(), true)) notice(line);
+  sessionStorage.setItem("root", id);
+  const url = new URL(location.href);
+  if (url.searchParams.get("root") !== id) {
+    url.searchParams.set("root", id);
+    if (push) history.pushState(null, "", url);
+    else history.replaceState(null, "", url);
+  }
+  const from = current;
   await attach(undefined);
   await refreshWorkers();
+  if (from !== current) return;
   let lastEntry = view(undefined)?.value.entries.at(-1)?.id;
-  const shownFront = views.value.get("");
-  shownFront?.state.subscribe((value) => {
-    const newest = value.entries.at(-1)?.id;
-    if (newest === lastEntry) return;
-    lastEntry = newest;
-    void refreshWorkers().catch(() => {});
-  });
-  connected.onReport((message) => notice(message, "warning"));
+  const front = views.value.get("");
+  if (front !== undefined)
+    unbind.push(
+      front.state.subscribe((value) => {
+        const newest = value.entries.at(-1)?.id;
+        if (newest === lastEntry) return;
+        lastEntry = newest;
+        void refreshWorkers().catch(() => {});
+      }),
+    );
   const shownAssessments = new Set<number>();
   const seen: { failure?: string } = {};
   let hydrated = false;
-  await root().watchAssessments((items) => {
+  const stopAssessments = await from.watchAssessments((items) => {
     for (const item of items) {
       if (item.result === null || shownAssessments.has(item.taskId)) continue;
       shownAssessments.add(item.taskId);
@@ -138,11 +194,61 @@ export async function start(connected: Client): Promise<void> {
     }
     hydrated = true;
   });
-  const routing = await root().routing();
-  if (routing.paused) notice(routingText(routing), "event");
-  await connected.watchJobEvents((await connected.jobs()).nextEvent - 1, (events) => {
-    for (const event of events) notice(formatJobEvent(event), "event");
+  if (from !== current) return stopAssessments();
+  unbind.push(stopAssessments);
+  const routing = await from.routing();
+  if (routing.paused && from === current) notice(routingText(routing), "event");
+}
+
+/** Show another root from the panel or a command, saying which one it is. */
+export async function switchRoot(id: string): Promise<void> {
+  rootsOpen.value = false;
+  if (id === rootId.value) return;
+  await openRoot(id, true);
+  const summary = roots.value.find((each) => each.id === id);
+  notice(`root · ${id}${summary === undefined ? "" : ` · ${rootLabel(summary)}`}`);
+}
+
+/** Bind to a connected client: attach the root, follow reports, assessments and job events. */
+export async function start(connected: Client): Promise<void> {
+  core = connected;
+  // The terminal's first screen: the header, the core's startup notes, then what still needs a login.
+  notice(`Monchu ${connected.release.version} · /help · home ${connected.home}`);
+  for (const line of connected.notes) notice(line);
+  let release = connected.release;
+  for (const line of releaseNotices(undefined, release)) notice(line);
+  connected.onRelease((next) => {
+    for (const line of releaseNotices(release, next)) notice(line, "system", true);
+    release = next;
   });
+  for (const line of loginHints(await connected.loginNeeds(), true)) notice(line);
+  await connected.watchRoots((list) => {
+    roots.value = list;
+  });
+  await openRoot(await initialRoot(connected));
+  // Back and Forward move between the roots this tab showed.
+  addEventListener("popstate", () => {
+    const id = new URL(location.href).searchParams.get("root");
+    if (id !== null && id !== rootId.value) void openRoot(id).catch(reportFailure);
+  });
+  connected.onReport((message) => notice(message, "warning", true));
+  await connected.watchJobEvents((await connected.jobs()).nextEvent - 1, (events) => {
+    // Each job event shows in its own root; an event from before roots belongs to the first.
+    const first = roots.value.reduce<RootSummary | undefined>(
+      (oldest, each) => (oldest === undefined || each.createdAt < oldest.createdAt ? each : oldest),
+      undefined,
+    );
+    for (const event of events)
+      rootNotice(
+        formatJobEvent(event),
+        "event",
+        event.rootId === undefined ? first?.id : shortId(event.rootId),
+      );
+  });
+}
+
+function reportFailure(error: unknown): void {
+  notice(error instanceof Error ? error.message : String(error), "warning");
 }
 
 export async function show(name: string | undefined): Promise<void> {
@@ -413,6 +519,85 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   );
 }
 
+/** A roots panel action; its outcome shows in the panel, which hides the transcript. */
+async function rootAction(run: () => Promise<string | undefined>): Promise<void> {
+  try {
+    const text = await run();
+    if (text !== undefined) rootsMessage.value = { text, failed: false };
+  } catch (error) {
+    rootsMessage.value = {
+      text: error instanceof Error ? error.message : String(error),
+      failed: true,
+    };
+  }
+}
+
+/** `/roots new`: start a root and show it; it names itself from its first message. */
+export function newRoot(): Promise<void> {
+  return rootAction(async () => {
+    await switchRoot(await client().createRoot(crypto.randomUUID()));
+    return undefined;
+  });
+}
+
+/** Name a root, asking for the label in place of the editor; an empty one names it from its next message again. */
+export function renameRoot(id: string): Promise<void> {
+  return rootAction(async () => {
+    const label = await prompted(
+      `Rename root ${id} · empty: name it from its next message · Esc cancels`,
+      false,
+      new AbortController().signal,
+      roots.value.find((each) => each.named && each.id === id)?.label,
+    ).catch(() => undefined);
+    if (label === undefined) return undefined;
+    await client().renameRoot(id, label.trim());
+    return label.trim() === ""
+      ? `root ${id} · named by its next message`
+      : `root ${id} · ${label.trim()}`;
+  });
+}
+
+/** Archive or unarchive a root; the core refuses while it works, and that reason shows as it is. */
+export function archiveRoot(id: string, archived: boolean): Promise<void> {
+  return rootAction(async () => {
+    await client().archiveRoot(id, archived);
+    return archived ? `archived · ${id} · show archived to find it again` : `unarchived · ${id}`;
+  });
+}
+
+/** `/roots`: the panel, or one of its actions by id prefix; the shown root when none is given. */
+async function runRoots(command: RootsCommand): Promise<void> {
+  const id = rootId.value;
+  switch (command.kind) {
+    case "list":
+      return toggleRoots(true);
+    case "new":
+      return await switchRoot(await client().createRoot(crypto.randomUUID()));
+    case "switch":
+      return await switchRoot(await client().findRoot(command.prefix));
+    case "rename":
+      if (id === undefined) return;
+      await client().renameRoot(id, command.label);
+      return notice(
+        command.label === "" ? "root · named by its next message" : `root · ${command.label}`,
+      );
+    case "archive": {
+      const target = command.prefix === undefined ? id : await client().findRoot(command.prefix);
+      if (target === undefined) return;
+      await client().archiveRoot(target, command.archived);
+      return notice(`${command.archived ? "archived" : "unarchived"} · ${target}`);
+    }
+  }
+}
+
+/** Open or close the roots panel. */
+export function toggleRoots(open = !rootsOpen.value): void {
+  batch(() => {
+    rootsOpen.value = open;
+    rootsMessage.value = undefined;
+  });
+}
+
 /** Esc: cancel a login in progress, else stop the shown front's run, putting the user's queued messages back in the editor. */
 export async function interrupt(): Promise<void> {
   if (login !== undefined) return cancelLogin();
@@ -446,6 +631,8 @@ export async function submit(raw: string): Promise<void> {
         else await root().messageWorker(name, text, crypto.randomUUID(), mode.value);
         return notice(`received · ${name ?? "root"}`);
       }
+      case "/roots":
+        return await runRoots(parseRootsCommand(input.text));
       case "/help":
         return notice(help);
       case "/quit":
