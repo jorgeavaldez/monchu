@@ -638,6 +638,86 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     return "signed in through the OpenID login; the reload came from the service worker";
   });
 
+  await journey(
+    "client: /client names this device's app, picks a theme, offers the install once",
+    async () => {
+      const manifestName = () =>
+        page(
+          `fetch("/manifest.webmanifest").then((response) => response.json()).then((value) => value.name)`,
+        );
+      // Chromium offers to install the page; the offer shows once, and a dismissal outlives a reload.
+      await browser("wait", ".offer");
+      await capture("install-offer", home, origin);
+      await page(`document.querySelector(".offer [aria-label=close]").click()`);
+      await browser("reload");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("/help")`,
+      );
+      check(
+        (await page(`document.querySelector(".offer") === null`)) === true,
+        "a dismissed install offer came back",
+      );
+      await browser("fill", "textarea", "/client");
+      await browser("press", "Enter");
+      await browser("wait", ".clientPanel li");
+      check(
+        (await page(
+          `document.querySelector(".clientPanel li:nth-child(2) .help")?.textContent.length > 0`,
+        )) === true,
+        "the install row doesn't say where installing stands",
+      );
+      await browser("fill", "#client-name", "Monchu check");
+      await page(`document.querySelector(".clientPanel [aria-label='save the name']").click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".clientPanel [role=status]")?.textContent.startsWith("named Monchu check")`,
+      );
+      check((await manifestName()) === "Monchu check", "the manifest doesn't carry the new name");
+      check(
+        (await page("document.title")) === "Monchu check",
+        "the tab title didn't follow the name",
+      );
+      await page(
+        `[...document.querySelectorAll(".clientPanel button")].find((each) => each.textContent === "dark").click()`,
+      );
+      check(
+        (await page("document.documentElement.dataset.theme")) === "dark",
+        "the dark theme didn't apply",
+      );
+      await capture("client", home, origin);
+      await browser("reload");
+      await browser(
+        "wait",
+        "--fn",
+        `document.title === "Monchu check" && document.documentElement.dataset.theme === "dark"`,
+      );
+      await browser("fill", "textarea", "/client");
+      await browser("press", "Enter");
+      await browser("wait", ".clientPanel li");
+      await browser("fill", "#client-name", "");
+      await page(`document.querySelector(".clientPanel [aria-label='save the name']").click()`);
+      await page(
+        `[...document.querySelectorAll(".clientPanel button")].find((each) => each.textContent === "system").click()`,
+      );
+      await browser(
+        "wait",
+        "--fn",
+        `document.title === "Monchu" && !document.documentElement.dataset.theme`,
+      );
+      check((await manifestName()) === "Monchu", "an empty name didn't go back to Monchu");
+      await browser("press", "Escape");
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".clientPanel") && document.querySelector("textarea")`,
+      );
+      return "offered the install once, renamed the app (manifest and title, kept over a reload), themed it dark, reset both";
+    },
+  );
+
   await journey("send: a message gets its streamed reply", async () => {
     await browser("fill", "textarea", "hello");
     const sent = performance.now();

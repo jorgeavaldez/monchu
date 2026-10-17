@@ -14,6 +14,7 @@ import {
   clearPending,
   readyAttachments,
 } from "./attachments.tsx";
+import { openClient } from "./client.tsx";
 import { Keys } from "./keys.tsx";
 import {
   attachFile,
@@ -33,6 +34,11 @@ const SIZES_ITSELF = CSS.supports("field-sizing", "content");
 
 type Suggestion = { value: string; usage: string; help: string };
 
+/** Commands only this page has, run here and never sent to the core. */
+const WEB_COMMANDS: Suggestion[] = [
+  { value: "/client", usage: "", help: "web only · this client: app name, install, theme" },
+];
+
 function suggestions(text: string): Suggestion[] {
   if (!text.startsWith("/") || /\s/.test(text)) return [];
   const all: Suggestion[] = [
@@ -41,6 +47,7 @@ function suggestions(text: string): Suggestion[] {
       usage,
       help,
     })),
+    ...WEB_COMMANDS,
     ...client()
       .skills()
       .map((skill) => ({
@@ -73,6 +80,10 @@ export function Editor() {
     const text = draft.value;
     closed.value = false;
     if (editing.value !== undefined) return endEdit(text);
+    if (text.trim() === "/client") {
+      draft.value = "";
+      return openClient();
+    }
     const attachments = readyAttachments();
     if (attachments === undefined) return notice("still uploading · send when the files are up");
     draft.value = "";

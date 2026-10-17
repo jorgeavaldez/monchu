@@ -4,6 +4,7 @@ import { webSocketLink, type Link, type WebSocketLike } from "@earendil-works/ch
 import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
+import { startClient } from "./client.tsx";
 import { cancelLogin, connection, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
 
@@ -56,6 +57,7 @@ let page: { client: RemoteClient; version: string } | undefined;
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (root === null) return;
+  startClient();
   render(<App />, root);
   // As in the terminal, Esc cancels a login wherever focus is, such as while a device code waits.
   addEventListener("keydown", (event) => {

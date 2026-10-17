@@ -1,5 +1,5 @@
 /**
- * Build the web client into dist/web: one hashed script and stylesheet, the shell, the manifest and the service worker
+ * Build the web client into dist/web: one hashed script and stylesheet, the shell, the icon and the service worker
  * that keeps them. The script's gzipped size has a budget; going over it fails the build.
  */
 import { build } from "esbuild";
@@ -44,9 +44,9 @@ const html = (await readFile(join(SOURCE, "index.html"), "utf8"))
   .replace("{{js}}", js)
   .replace("{{css}}", css);
 await writeFile(join(OUT, "index.html"), html);
-for (const name of ["manifest.webmanifest", "icon.svg"])
-  await copyFile(join(SOURCE, name), join(OUT, name));
-const shell = ["/", `/${js}`, `/${css}`, "/manifest.webmanifest", "/icon.svg"];
+await copyFile(join(SOURCE, "icon.svg"), join(OUT, "icon.svg"));
+// The manifest is the server's, named per device, so the offline shell never keeps a stale one.
+const shell = ["/", `/${js}`, `/${css}`, "/icon.svg"];
 const version = createHash("sha256").update(shell.join("\n")).digest("hex").slice(0, 12);
 await build({
   entryPoints: [join(SOURCE, "worker", "sw.ts")],

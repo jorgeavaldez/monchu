@@ -25,6 +25,8 @@ mcp-auth.json
 mcp-auth.json*
 # This device's web server: its host, port and login client.
 web.json
+# This device's web client settings, such as the installed app's name.
+web-client.json
 # Web sign-in sessions, by token hash.
 web-sessions.json
 web-sessions.json*

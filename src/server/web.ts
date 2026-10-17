@@ -4,7 +4,7 @@
  * be the configured public host or this port's localhost, and the WebSocket's Origin must match it.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -51,6 +51,71 @@ function send(
   response.end(body);
 }
 
+/** The app's name when this device hasn't named its own. */
+const DEFAULT_NAME = "Monchu";
+
+/**
+ * This device's client settings, in `<home>/web-client.json` beside `web.json`: per device, so each Monchu installed
+ * from its own host (the phone's, a dev box's) can carry its own name.
+ */
+type ClientSettings = { name?: string };
+
+function clientSettings(value: unknown): ClientSettings {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("Client settings must be an object");
+  const name = "name" in value ? value.name : undefined;
+  if (name === undefined) return {};
+  if (typeof name !== "string") throw new Error("The name must be text");
+  const trimmed = name.trim();
+  if (trimmed.length > 30) throw new Error("The name is longer than 30 characters");
+  // Control characters have no place in a home screen label.
+  if (/\p{Cc}/u.test(trimmed)) throw new Error("The name has control characters");
+  return trimmed === "" || trimmed === DEFAULT_NAME ? {} : { name: trimmed };
+}
+
+async function loadClientSettings(path: string): Promise<ClientSettings> {
+  const raw = await readFile(path, "utf8").catch(() => undefined);
+  if (raw === undefined) return {};
+  try {
+    return clientSettings(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+async function saveClientSettings(path: string, settings: ClientSettings): Promise<void> {
+  if (settings.name === undefined) return rm(path, { force: true });
+  const temporary = `${path}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`);
+  await rename(temporary, path);
+}
+
+/** The install manifest, named for this device. */
+function manifest(settings: ClientSettings): string {
+  const name = settings.name ?? DEFAULT_NAME;
+  return JSON.stringify({
+    id: "/",
+    name,
+    short_name: name,
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    background_color: "#000000",
+    theme_color: "#000000",
+    icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+  });
+}
+
+/** A request body, up to `limit` bytes. */
+async function body(request: IncomingMessage, limit: number): Promise<string> {
+  let text = "";
+  for await (const chunk of request) {
+    text += String(chunk);
+    if (text.length > limit) throw new Error("Too large");
+  }
+  return text;
+}
+
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
@@ -72,6 +137,7 @@ export async function serveWeb(
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const auth = new WebAuth(config, home, env);
+  const settingsPath = join(home, "web-client.json");
   const local = [`127.0.0.1:${config.port}`, `localhost:${config.port}`];
   const hosts = new Set([...(config.host === undefined ? [] : [config.host]), ...local]);
   const origins = new Set([
@@ -167,7 +233,37 @@ export async function serveWeb(
           "set-cookie": "monchu_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
         });
       }
-      if ((await guard(request, response)) === undefined) return;
+      const identities = await guard(request, response);
+      if (identities === undefined) return;
+      if (url.pathname === "/manifest.webmanifest" && request.method === "GET")
+        return send(response, 200, manifest(await loadClientSettings(settingsPath)), {
+          "content-type": "application/manifest+json",
+        });
+      if (url.pathname === "/client.json") {
+        const person = !identities.some((identity) => identity.startsWith("service:"));
+        if (request.method === "PUT") {
+          // Only the person's own page changes how this device's app is named.
+          if (!origins.has(header(request, "origin") ?? ""))
+            return send(response, 403, "Bad origin");
+          if (!person)
+            return send(response, 403, "Only a person's login can change client settings");
+          let settings;
+          try {
+            settings = clientSettings(JSON.parse(await body(request, 1024)));
+          } catch (error) {
+            return send(response, 400, error instanceof Error ? error.message : "Bad settings");
+          }
+          await saveClientSettings(settingsPath, settings);
+          log("info", "client settings saved");
+        } else if (request.method !== "GET") return send(response, 405, "Method not allowed");
+        const settings = await loadClientSettings(settingsPath);
+        return send(
+          response,
+          200,
+          JSON.stringify({ name: settings.name ?? DEFAULT_NAME, editable: person }),
+          { "content-type": "application/json" },
+        );
+      }
       if (request.method !== "GET" && request.method !== "HEAD")
         return send(response, 405, "Method not allowed");
       await asset(response, url.pathname);

@@ -32,16 +32,22 @@ function get(
   path: string,
   headers: Record<string, string>,
   method = "GET",
-): Promise<{ status: number; headers: Record<string, string | string[] | undefined> }> {
+  body?: string,
+): Promise<{
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  text: string;
+}> {
   return new Promise((done, fail) => {
     const call = httpRequest({ host: "127.0.0.1", port, path, method, headers }, (response) => {
-      response.resume();
+      let text = "";
+      response.on("data", (chunk: Buffer) => (text += chunk.toString()));
       response.on("end", () =>
-        done({ status: response.statusCode ?? 0, headers: response.headers }),
+        done({ status: response.statusCode ?? 0, headers: response.headers, text }),
       );
     });
     call.on("error", fail);
-    call.end();
+    call.end(body);
   });
 }
 
@@ -354,6 +360,77 @@ describe("web server", () => {
       expect((await get(port, "/", { ...local, cookie, accept: "application/json" })).status).toBe(
         401,
       );
+    } finally {
+      await site.close();
+      await core.close();
+      await backend.close();
+      await provider.close();
+    }
+  }, 30_000);
+
+  it("names this device's install manifest from client settings only a person's login changes", async () => {
+    const provider = await identityProvider();
+    const { home, backend, host: core } = await openCore();
+    const port = await freePort();
+    const site = await serveWeb(
+      ingress(core),
+      backend,
+      {
+        port,
+        host: "monchu.example.test",
+        access: { teamDomain: provider.issuer, audience: "aud-1", subjectClaim: "sub" },
+        oidc: undefined,
+        allow: ["sub:user-1", "service:svc-1"],
+      },
+      {},
+    );
+    try {
+      const person = {
+        host: "monchu.example.test",
+        "cf-access-jwt-assertion": await accessJwt(provider.privateKey, provider.issuer, {
+          sub: "user-1",
+        }),
+      };
+      const service = {
+        ...person,
+        "cf-access-jwt-assertion": await accessJwt(provider.privateKey, provider.issuer, {
+          common_name: "svc-1",
+        }),
+      };
+      const named = async (): Promise<unknown> =>
+        JSON.parse((await get(port, "/manifest.webmanifest", person)).text);
+      expect(await named()).toMatchObject({ name: "Monchu", short_name: "Monchu", id: "/" });
+      expect((await get(port, "/manifest.webmanifest", { host: person.host })).status).toBe(401);
+      expect(JSON.parse((await get(port, "/client.json", service)).text)).toEqual({
+        name: "Monchu",
+        editable: false,
+      });
+
+      const put = (
+        headers: Record<string, string>,
+        value: unknown,
+        origin = "https://monchu.example.test",
+      ) => get(port, "/client.json", { ...headers, origin }, "PUT", JSON.stringify(value));
+      expect((await put(service, { name: "Monchu svc" })).status).toBe(403);
+      expect((await put(person, { name: "Monchu evil" }, "https://evil.example.test")).status).toBe(
+        403,
+      );
+      expect((await put(person, { name: "x".repeat(31) })).status).toBe(400);
+      expect((await put(person, { name: "a\nb" })).status).toBe(400);
+      expect(await named()).toMatchObject({ name: "Monchu" });
+
+      const saved = await put(person, { name: "  Monchu dev " });
+      expect(saved.status).toBe(200);
+      expect(JSON.parse(saved.text)).toEqual({ name: "Monchu dev", editable: true });
+      expect(await named()).toMatchObject({ name: "Monchu dev", short_name: "Monchu dev" });
+      expect(JSON.parse(await readFile(join(home, "web-client.json"), "utf8"))).toEqual({
+        name: "Monchu dev",
+      });
+
+      // Empty goes back to the default, and leaves no file behind.
+      expect((await put(person, { name: "" })).status).toBe(200);
+      expect(await named()).toMatchObject({ name: "Monchu" });
+      await expect(stat(join(home, "web-client.json"))).rejects.toThrow();
     } finally {
       await site.close();
       await core.close();

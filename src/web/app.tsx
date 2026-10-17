@@ -12,6 +12,7 @@ import {
   rootLabel,
 } from "../ui/roots.ts";
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
+import { ClientPanel, clientOpen, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
 import {
   archiveRoot,
@@ -144,7 +145,7 @@ function RootsPanel() {
   useEffect(() => panel.current?.focus(), []);
   return (
     <main
-      class="rootsPanel"
+      class="panel rootsPanel"
       tabIndex={-1}
       ref={panel}
       onKeyDown={(event) => {
@@ -498,6 +499,8 @@ export function App() {
       <Agents />
       {rootsOpen.value ? (
         <RootsPanel />
+      ) : clientOpen.value ? (
+        <ClientPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…</main>
       ) : (
@@ -505,6 +508,7 @@ export function App() {
       )}
       <Queue />
       <Login />
+      <InstallOffer />
       {choice.value !== undefined ? <Pick /> : ask.value !== undefined ? <Ask /> : <Editor />}
       <Footer />
     </>

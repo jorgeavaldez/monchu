@@ -28,8 +28,9 @@
   color: var(--fg);
   background: var(--bg);
 }
+/* Dark follows the system unless /client picked a theme for this browser. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --fg: #e6e6e6;
     --bg: #000;
     --muted: #8a8a8a;
@@ -40,6 +41,21 @@
     --green: #5fd36f;
     --card: #111;
   }
+}
+:root[data-theme="dark"] {
+  --fg: #e6e6e6;
+  --bg: #000;
+  --muted: #8a8a8a;
+  --line: #e6e6e6;
+  --accent: #c79bff;
+  --yellow: #e0c040;
+  --red: #ff6b6b;
+  --green: #5fd36f;
+  --card: #111;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 * {
   box-sizing: border-box;
@@ -378,7 +394,7 @@ pre {
   outline: none;
 }
 .pick header,
-.rootsPanel header {
+.panel header {
   display: flex;
   align-items: center;
   gap: var(--s1);
@@ -387,13 +403,13 @@ pre {
 /* Header actions are cells on the header's edge, like the key bar's. */
 
 .pick .title,
-.rootsPanel h1 {
+.panel h1 {
   flex: 1;
   margin: 0;
   font-size: inherit;
 }
 .pick ul,
-.rootsPanel ul {
+.panel ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -404,7 +420,7 @@ pre {
   overflow-y: auto;
 }
 .pick li,
-.rootsPanel li {
+.panel li {
   display: flex;
   border-bottom: 1px solid var(--line);
 }
@@ -413,7 +429,7 @@ pre {
 }
 /* A menu row: the whole row taps, a › says it enters. */
 .pick .enter,
-.rootsPanel .open {
+.panel .open {
   flex: 1;
   min-width: 0;
   min-height: var(--row);
@@ -428,9 +444,9 @@ pre {
 }
 /* An action cell, in a menu's header or at a row's end: one pattern, a glyph when one is clear, else a short word. */
 .pick header button,
-.rootsPanel header button,
+.panel header button,
 .pick .alternate,
-.rootsPanel .actions button,
+.panel .actions button,
 .queue li button:not(.text) {
   min-width: var(--tap);
   min-height: var(--tap);
@@ -507,36 +523,67 @@ pre {
   padding: 0;
   background: none;
 }
-.rootsPanel {
+.panel {
   flex: 1;
   overflow-y: auto;
   outline: none;
 }
-.rootsPanel li {
+.panel li {
   border-left: 3px solid transparent;
 }
-.rootsPanel li.here {
+.panel li.here {
   border-left-color: var(--accent);
 }
-.rootsPanel .lines {
+.panel .lines {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.rootsPanel .lines > span {
+.panel .lines > span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.rootsPanel .id b {
+.panel .id b {
   color: var(--yellow);
 }
-.rootsPanel .actions {
+.panel .actions {
   display: flex;
 }
-.rootsPanel > p,
-.rootsPanel > label {
+.clientPanel .lines {
+  padding: var(--s0) var(--s1);
+}
+.clientPanel .lines input {
+  min-height: var(--tap);
+  margin: var(--s0) 0;
+  padding: 0 var(--s1);
+}
+.clientPanel .lines .name {
+  font-weight: bold;
+}
+.panel .actions [aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+/* The browser's install offer, once: one line over the editor. */
+.offer {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding-left: var(--s1);
+  border-top: 1px solid var(--line);
+}
+.offer span {
+  flex: 1;
+}
+.offer button {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  border-width: 0 0 0 1px;
+}
+.panel > p,
+.panel > label {
   display: block;
   margin: 0;
   padding: var(--s0) var(--s1);
