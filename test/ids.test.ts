@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { parseShortId, shortId } from "../src/api/ids.ts";
+import type { RootSummary } from "../src/api/client.ts";
 import { ShortIds } from "../src/ui/ids.ts";
+import {
+  activeRoots,
+  ARCHIVE_HELP,
+  listedRoots,
+  parseRootsCommand,
+  rootCounts,
+  rootIds,
+  rootLabel,
+} from "../src/ui/roots.ts";
 
 describe("short ids", () => {
   it("pins the encoding, since every client and stored reference depends on it", () => {
@@ -64,5 +74,69 @@ describe("short ids", () => {
       const { code, unique, rest } = ids.split(id);
       expect([unique + rest, unique.length]).toEqual([code, expected(code)]);
     }
+  });
+});
+
+describe("roots in clients", () => {
+  const root = (id: string, change: Partial<RootSummary> = {}): RootSummary => ({
+    id,
+    label: "",
+    named: false,
+    createdAt: 0,
+    lastInputAt: null,
+    archived: false,
+    status: "idle",
+    workers: { open: 0, busy: 0 },
+    jobs: 0,
+    ...change,
+  });
+
+  it("highlights each root's unique prefix among all roots, archived ones included", () => {
+    const split = rootIds([root("kqxy"), root("kqzz", { archived: true }), root("mnop")]);
+    expect(split("kqxy")).toEqual({ unique: "kqx", rest: "y" });
+    expect(split("mnop")).toEqual({ unique: "m", rest: "nop" });
+  });
+
+  it("shows a dot only for open roots that work or finished unseen, and lists newest input first", () => {
+    const roots = [
+      root("kkkk", { status: "working", createdAt: 1 }),
+      root("llll", { status: "done", createdAt: 2, lastInputAt: 9 }),
+      root("mmmm", { status: "idle", createdAt: 3, lastInputAt: 5 }),
+      root("nnnn", { status: "done", archived: true, createdAt: 4 }),
+    ];
+    expect(activeRoots(roots)).toEqual([
+      { id: "kkkk", status: "working" },
+      { id: "llll", status: "done" },
+    ]);
+    expect(listedRoots(roots, false).map((each) => each.id)).toEqual(["llll", "mmmm", "kkkk"]);
+    expect(listedRoots(roots, true)).toHaveLength(4);
+    expect(rootLabel(root("kkkk"))).toBe("new root");
+    expect(rootCounts(root("kkkk", { workers: { open: 3, busy: 2 }, jobs: 1 }))).toBe(
+      "2/3 workers busy · 1 bg",
+    );
+    expect(rootCounts(root("kkkk", { workers: { open: 1, busy: 0 } }))).toBe("1 worker");
+    expect(ARCHIVE_HELP).toContain("Nothing is deleted");
+  });
+
+  it("parses /roots without ever taking a subcommand for an id", () => {
+    expect(parseRootsCommand("")).toEqual({ kind: "list" });
+    expect(parseRootsCommand("kq")).toEqual({ kind: "switch", prefix: "kq" });
+    expect(parseRootsCommand("new")).toEqual({ kind: "new" });
+    expect(parseRootsCommand("rename the  garden")).toEqual({
+      kind: "rename",
+      label: "the  garden",
+    });
+    expect(parseRootsCommand("archive")).toEqual({
+      kind: "archive",
+      prefix: undefined,
+      archived: true,
+    });
+    expect(parseRootsCommand("unarchive kq")).toEqual({
+      kind: "archive",
+      prefix: "kq",
+      archived: false,
+    });
+    for (const invalid of ["new x", "unarchive", "archive a b", "kq x", "abc"])
+      expect(() => parseRootsCommand(invalid)).toThrow("Usage: /roots");
   });
 });

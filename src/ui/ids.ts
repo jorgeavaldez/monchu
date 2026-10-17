@@ -32,7 +32,11 @@ export class ShortIds {
 
   /** Adds an entry's short id; returns the ids whose prefix changed, the new one included. Adding twice is a no-op. */
   add(id: number): string[] {
-    const code = shortId(id);
+    return this.addCode(shortId(id));
+  }
+
+  /** `add` for an id already written as its short id, such as a root's. */
+  addCode(code: string): string[] {
     const index = this.search(code);
     if (this.sorted[index] === code) return [];
     const neighbours = [this.sorted[index - 1], this.sorted[index]].filter(

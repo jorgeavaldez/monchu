@@ -21,6 +21,7 @@ type Input =
         | "/cd"
         | "/stop"
         | "/agents"
+        | "/roots"
         | "/model"
         | "/mcp"
         | "/logs"
@@ -41,6 +42,10 @@ export const commands: Record<
   "/agents": {
     usage: "[name|root]",
     help: "show the root or a worker; messages go to the one shown",
+  },
+  "/roots": {
+    usage: "[id|new|rename|archive]",
+    help: "roots: switch, start, rename, archive; each has its own crew",
   },
   "/goals": { usage: "", help: "ongoing projects and commitments" },
   "/jobs": {
@@ -126,6 +131,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/new":
     case "/compact":
     case "/agents":
+    case "/roots":
     case "/model":
     case "/mcp":
     case "/stop":

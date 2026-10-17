@@ -4,13 +4,14 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { ProcessTerminal, setCapabilityOverrides, type Terminal } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
-import type { Client, ModelPick, RootClient } from "../api/client.ts";
+import type { Client, ModelPick, RootClient, RootSummary } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { releaseNotices } from "../api/release.ts";
 import { commands, help, LOGIN_PROVIDERS, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
+import { listedRoots, parseRootsCommand, rootCounts, rootIds, rootLabel } from "../ui/roots.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets, type PickTarget } from "../ui/login.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -517,6 +518,33 @@ export async function runTerminal(
         view.openAgents(agentRows(), selected ?? "", (name) => {
           inputs = inputs.then(() => switchTo(name || undefined)).catch(fail);
         });
+        break;
+      }
+      case "/roots": {
+        // The list only for now; switching and the menu come with the root indicator.
+        if (parseRootsCommand(input.text).kind !== "list") {
+          view.notice("roots · only the list so far; monchu new and monchu resume <id> open roots");
+          break;
+        }
+        let roots: readonly RootSummary[] = [];
+        (await backend.watchRoots((next) => (roots = next)))();
+        const split = rootIds(roots);
+        view.notice(
+          [
+            `roots · ${roots.filter((each) => !each.archived).length} open`,
+            ...listedRoots(roots, false).map((each) => {
+              const { unique, rest } = split(each.id);
+              return [
+                `${unique}${rest}${each.id === rootId ? " (shown)" : ""}`,
+                rootLabel(each),
+                each.status,
+                rootCounts(each),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+            }),
+          ].join("\n"),
+        );
         break;
       }
       case "/logs": {
