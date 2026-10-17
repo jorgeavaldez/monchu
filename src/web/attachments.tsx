@@ -109,12 +109,12 @@ export function AttachButton(props: { onFiles: (files: File[]) => void }) {
     <>
       <button
         type="button"
-        class="attach-button"
+        class="attach-button icon"
         title="attach files or images (or paste, or drop)"
         aria-label="attach files"
         onClick={() => input.current?.click()}
       >
-        + attach
+        +
       </button>
       <input
         ref={(element) => {

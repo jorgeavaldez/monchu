@@ -1,19 +1,4 @@
 /* The attach button, the tray of files waiting for the next message, and a sent message's images and files. */
-/* A tab on the editor's top edge, at the right, so it never covers what is typed; the typeahead hides it. */
-.attach-button {
-  position: absolute;
-  right: -1px;
-  bottom: 100%;
-  height: 2em;
-  padding: 0 1ch;
-  font-weight: bold;
-  border: 1px solid var(--line);
-  border-bottom: none;
-  background: var(--bg);
-}
-.editor:has(.typeahead) .attach-button {
-  display: none;
-}
 .attach-tray {
   display: flex;
   flex-wrap: wrap;

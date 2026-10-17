@@ -10,10 +10,14 @@
   --red: #b00020;
   --green: #1b7a2e;
   --card: #f2f2f2;
-  /* Spacing on an 8 px scale; a tap target is five steps tall on a touch screen. */
+  /* The design tokens; the rules are in docs/internals.md#Web design. Spacing is an 8 px scale with a 4 px half step. */
+  --s0: 4px;
   --s1: 8px;
   --s2: 16px;
-  --tap: 40px;
+  /* One line of text plus a half step above and below: tabs, menu rows, the status bar. */
+  --row: calc(1.4em + 2 * var(--s0));
+  /* The key bar's buttons and every icon button: past WCAG's 24 px minimum, compact. */
+  --tap: 32px;
   font:
     14px/1.4 ui-monospace,
     SFMono-Regular,
@@ -69,6 +73,24 @@ button {
   cursor: pointer;
   padding: 0 var(--s1);
 }
+button:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* An icon button: one glyph, square, named by its aria-label. */
+.icon {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0;
+  text-align: center;
+  /* Symbol glyphs draw small beside the monospace text; one size for all of them. */
+  font-size: 1.15em;
+  line-height: 1;
+}
 pre {
   margin: 0;
   white-space: pre-wrap;
@@ -86,6 +108,8 @@ pre {
   overflow-x: auto;
 }
 .agents button {
+  min-height: var(--row);
+  padding: 0 var(--s1);
   border: none;
   border-right: 1px solid var(--line);
   white-space: nowrap;
@@ -93,6 +117,31 @@ pre {
 .agents .on {
   background: var(--fg);
   color: var(--bg);
+}
+.agents .roots {
+  flex: none;
+  max-width: 50%;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+.agents .roots .dots {
+  letter-spacing: 0.3ch;
+}
+.agents .roots .here {
+  text-decoration: underline;
+}
+.agents .roots .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dot.working {
+  color: var(--accent);
+}
+.dot.done {
+  color: var(--green);
 }
 .transcript {
   flex: 1;
@@ -162,81 +211,41 @@ pre {
 }
 .queue {
   margin: 0;
-  padding: 0 1ch;
+  padding: 0;
   list-style: none;
   border-top: 1px solid var(--line);
 }
 .queue li {
   display: flex;
-  align-items: center;
+  min-height: var(--row);
   border-left: 3px solid var(--yellow);
-  padding-left: var(--s1);
   white-space: nowrap;
+}
+.queue li.followUp {
+  border-left-color: var(--muted);
 }
 .queue li.here {
   border-left-color: var(--accent);
 }
+.queue li.write {
+  align-items: center;
+  padding: 0 var(--s1);
+}
 .queue .text {
   flex: 1;
   min-width: 0;
+  padding: 0 var(--s1);
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
   border: none;
-  padding: 0;
   background: transparent;
+}
+.queue span.text {
+  align-self: center;
 }
 .queue li button:not(.text) {
   border-width: 0 0 0 1px;
-  padding: 0 var(--s1);
-}
-button:disabled {
-  cursor: default;
-  color: var(--muted);
-}
-.keys {
-  display: flex;
-  border-top: 1px solid var(--line);
-}
-.keys button {
-  border: none;
-  border-right: 1px solid var(--line);
-  padding: 0 var(--s2);
-  white-space: nowrap;
-}
-.keys button[aria-pressed="true"] {
-  background: var(--fg);
-  color: var(--bg);
-}
-.keys .wide {
-  margin-left: auto;
-  border-left: 1px solid var(--line);
-  border-right: none;
-  font-weight: bold;
-}
-.close,
-.enter {
-  min-width: var(--tap);
-}
-@media (pointer: coarse) {
-  .keys button,
-  .queue li button,
-  .pick button,
-  .ask button,
-  .rootsPanel button,
-  .agents button,
-  .typeahead li {
-    min-height: var(--tap);
-  }
-  .typeahead li {
-    line-height: var(--tap);
-  }
-  .keys .wide {
-    min-width: calc(var(--tap) * 2);
-  }
-  .pick .hint {
-    display: none;
-  }
 }
 .editor {
   position: relative;
@@ -256,6 +265,32 @@ button:disabled {
 .editor textarea.steer {
   box-shadow: inset 3px 0 0 var(--yellow);
 }
+.keys {
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+.keys button {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  border: none;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.keys button[aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+.keys .mode.steer {
+  background: var(--yellow);
+  color: var(--bg);
+}
+.keys .send {
+  margin-left: auto;
+  min-width: calc(var(--tap) * 2);
+  border-left: 1px solid var(--line);
+  border-right: none;
+  font-weight: bold;
+}
 .typeahead {
   position: absolute;
   bottom: 100%;
@@ -269,66 +304,103 @@ button:disabled {
   max-height: 40vh;
   overflow-y: auto;
 }
+/* Command and help in two aligned columns; the help wraps to two lines at most. */
 .typeahead li {
+  display: grid;
+  grid-template-columns: var(--command, 10ch) 1fr;
+  gap: var(--s1);
   padding: 0 var(--s1);
   cursor: pointer;
-  white-space: nowrap;
+}
+.typeahead li b {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .typeahead .help {
-  margin-left: var(--s2);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .typeahead .selected,
 .pick .selected .enter {
   background: var(--fg);
   color: var(--bg);
 }
+.typeahead .selected .help,
+.typeahead .selected .usage,
+.pick .selected .help {
+  color: inherit;
+}
 .pick,
 .ask,
 .login {
   border-top: 1px solid var(--line);
-  padding: var(--s1);
   outline: none;
 }
-.pick header {
+.pick header,
+.rootsPanel header {
   display: flex;
-  gap: var(--s1);
   align-items: center;
+  gap: var(--s1);
+  padding-left: var(--s1);
 }
-.pick .title {
+/* Header actions are cells on the header's edge, like the key bar's. */
+.pick header button,
+.rootsPanel header button {
+  min-height: var(--tap);
+  border-width: 0 0 0 1px;
+}
+.pick .title,
+.rootsPanel h1 {
   flex: 1;
+  margin: 0;
+  font-size: inherit;
 }
-.pick ul {
+.pick ul,
+.rootsPanel ul {
   list-style: none;
-  margin: var(--s1) 0 0;
+  margin: 0;
   padding: 0;
-  max-height: 40vh;
-  overflow-y: auto;
   border-top: 1px solid var(--line);
 }
-.pick li {
+.pick ul {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.pick li,
+.rootsPanel li {
   display: flex;
   border-bottom: 1px solid var(--line);
 }
-.pick li .enter {
+.pick li:last-child {
+  border-bottom: none;
+}
+/* A menu row: the whole row taps, a › says it enters. */
+.pick .enter,
+.rootsPanel .open {
   flex: 1;
+  min-width: 0;
+  min-height: var(--row);
   display: flex;
   gap: var(--s1);
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  padding: var(--s0) var(--s1);
   text-align: left;
   border: none;
-  padding: 0 var(--s1);
+  background: transparent;
 }
-.pick .alternate {
+.pick .alternate,
+.rootsPanel .actions button {
   border-width: 0 0 0 1px;
-  padding: 0 var(--s1);
 }
 .ask {
   display: flex;
-  gap: var(--s1);
   align-items: flex-end;
+  gap: var(--s1);
+  padding: var(--s0) 0 0 var(--s1);
 }
 .ask label {
   flex: 1;
@@ -336,30 +408,36 @@ button:disabled {
 .ask input {
   display: block;
   width: 100%;
-  margin-top: var(--s1);
-  padding: 0 var(--s1);
   min-height: var(--tap);
+  margin-top: var(--s0);
+  padding: 0 var(--s1);
 }
 .ask button {
-  min-height: var(--tap);
+  border-width: 1px 0 0 1px;
 }
 .login {
   display: flex;
   flex-wrap: wrap;
-  gap: 1ch;
+  gap: var(--s1);
   align-items: baseline;
+  padding: var(--s0) var(--s1);
 }
 .login code {
   font-weight: bold;
   border: 1px solid var(--line);
-  padding: 0 1ch;
+  padding: 0 var(--s1);
 }
+/* The status bar; its top border is the context meter, filled to the shown conversation's use. */
 .footer {
   display: flex;
   justify-content: space-between;
-  gap: 1ch;
-  padding: 0 1ch;
+  align-items: center;
+  gap: var(--s1);
+  min-height: var(--row);
+  padding: 0 var(--s1) env(safe-area-inset-bottom);
   border-top: 1px solid var(--line);
+  background: linear-gradient(var(--meter, var(--fg)), var(--meter, var(--fg))) top left /
+    var(--fill, 0%) 3px no-repeat;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -368,73 +446,23 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dot.working {
-  color: var(--accent);
+.footer .cwd {
+  direction: rtl;
+  text-align: left;
 }
-.dot.done {
-  color: var(--green);
-}
-.agents .roots {
-  flex: none;
-  max-width: 45%;
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-  padding: 0 var(--s1);
-  border-right: none;
-  border-left: 1px solid var(--line);
-}
-.agents .roots .dots {
-  letter-spacing: 0.3ch;
-}
-.agents .roots .here {
-  text-decoration: underline;
-}
-.agents .roots .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.footer .lost {
+  color: var(--red);
 }
 .rootsPanel {
   flex: 1;
   overflow-y: auto;
-  padding: var(--s1);
   outline: none;
 }
-.rootsPanel header {
-  display: flex;
-  gap: var(--s1);
-  align-items: center;
-}
-.rootsPanel h1 {
-  font-size: inherit;
-  margin: 0;
-  flex: 1;
-}
-.rootsPanel ul {
-  list-style: none;
-  margin: var(--s1) 0;
-  padding: 0;
-  border-top: 1px solid var(--line);
-}
 .rootsPanel li {
-  display: flex;
-  align-items: stretch;
-  border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;
 }
 .rootsPanel li.here {
   border-left-color: var(--accent);
-}
-.rootsPanel .open {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  gap: var(--s1);
-  align-items: center;
-  padding: var(--s1);
-  text-align: left;
-  border: none;
-  background: transparent;
 }
 .rootsPanel .lines {
   flex: 1;
@@ -453,18 +481,23 @@ button:disabled {
 .rootsPanel .actions {
   display: flex;
 }
-.rootsPanel .actions button {
-  border-width: 0 0 0 1px;
-  padding: 0 var(--s1);
-}
-.rootsPanel p {
-  margin: var(--s1) 0;
+.rootsPanel > p,
+.rootsPanel > label {
+  display: block;
+  margin: 0;
+  padding: var(--s0) var(--s1);
 }
 @media (pointer: coarse) {
-  /* No arrow keys to move a selection on a touch screen: every row is just a tap. */
+  /* Desktop key hints and a keyboard selection mean nothing on a touch screen: every row is just a tap. */
+  .pick .hint {
+    display: none;
+  }
   .pick .selected .enter {
     background: transparent;
     color: inherit;
+  }
+  .pick .selected .help {
+    color: var(--muted);
   }
 }
 /* Shown while the reader is scrolled back and more arrived; a tap returns to the end. */

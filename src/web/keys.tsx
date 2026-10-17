@@ -1,7 +1,7 @@
 /**
- * The key bar: every editor key the terminal binds, as a tap target for a touch keyboard that has no Esc, Alt or
- * Ctrl. There, the keyboard's Enter adds a line and the bar's send sends. Each button names its desktop key in its title; the keys keep working. Buttons keep the editor's focus, so the
- * on-screen keyboard stays up.
+ * The key bar: every editor key the terminal binds, as a tap for a touch keyboard that has no Esc, Alt or Ctrl. There,
+ * the keyboard's Enter adds a line and the bar's send sends. Each button shows its state rather than explaining it,
+ * names its desktop key in its title, and keeps the editor's focus so the on-screen keyboard stays up.
  */
 import type { ComponentChildren, RefObject } from "preact";
 import { presentation } from "../ui/state.ts";
@@ -18,17 +18,19 @@ import {
 } from "./state.ts";
 
 function Key(props: {
+  label: string;
   title: string;
+  class?: string;
   pressed?: boolean;
-  wide?: boolean;
   onPress: () => void;
   children: ComponentChildren;
 }) {
   return (
     <button
       type="button"
+      class={props.class}
+      aria-label={props.label}
       title={props.title}
-      class={props.wide ? "wide" : undefined}
       {...(props.pressed === undefined ? {} : { "aria-pressed": props.pressed })}
       // A tap must not take focus from the editor, or the keyboard closes.
       onMouseDown={(event) => event.preventDefault()}
@@ -39,47 +41,65 @@ function Key(props: {
   );
 }
 
+/** The bar; `children` go after the editing keys, before send (the attach button). */
 export function Keys({
   area,
   send,
+  children,
 }: {
   area: RefObject<HTMLTextAreaElement | null>;
   send: () => void;
+  children?: ComponentChildren;
 }) {
   const root = view(undefined)?.value;
   const stoppable = shown.value === undefined && root !== undefined && presentation(root).busy;
   const edit = editing.value !== undefined;
-  const text = draft.value;
+  const steer = mode.value === "steer";
   return (
     <div class="keys" role="toolbar" aria-label="keys">
       {edit ? (
-        <Key title="Esc: leave the edit, unsaved" onPress={() => endEdit()}>
-          ✕ edit
+        <Key
+          class="icon"
+          label="leave the edit"
+          title="leave the edit, unsaved (Esc)"
+          onPress={() => endEdit()}
+        >
+          ✕
         </Key>
       ) : stoppable ? (
-        <Key title="Esc: stop the root's run" onPress={() => void interrupt()}>
-          stop
+        <Key
+          class="icon"
+          label="stop"
+          title="stop the root's run (Esc)"
+          onPress={() => void interrupt()}
+        >
+          ■
         </Key>
       ) : null}
       <Key
-        title="Alt+S: busy messages steer the run, else follow up after it"
-        pressed={mode.value === "steer"}
+        class={`mode${steer ? " steer" : ""}`}
+        label={steer ? "steer" : "follow-up"}
+        title={`${steer ? "steer: joins a busy run" : "follow-up: waits for a busy run"} · tap to switch (Alt+S)`}
         onPress={toggleMode}
       >
-        steer
+        {steer ? "↯ steer" : "⇢ follow-up"}
       </Key>
       <Key
-        title="Ctrl+O: expand every card"
+        class="icon"
+        label="expand all"
+        title="expand every card (Ctrl+O)"
         pressed={expandAll.value}
         onPress={() => {
           expandAll.value = !expandAll.value;
         }}
       >
-        expand
+        {expandAll.value ? "⊟" : "⊞"}
       </Key>
-      {text === "" ? (
+      {draft.value === "" ? (
         <Key
-          title="/: commands"
+          class="icon"
+          label="commands"
+          title="commands (/)"
           onPress={() => {
             draft.value = "/";
             area.current?.focus();
@@ -88,8 +108,14 @@ export function Keys({
           /
         </Key>
       ) : null}
-      <Key title={edit ? "Enter: save the queued message" : "Enter: send"} wide onPress={send}>
-        {edit ? "save" : "send"}
+      {children}
+      <Key
+        class="icon send"
+        label={edit ? "save" : "send"}
+        title={edit ? "save the queued message (Enter)" : "send (Enter)"}
+        onPress={send}
+      >
+        {edit ? "✓" : "➤"}
       </Key>
     </div>
   );

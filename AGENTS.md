@@ -38,6 +38,7 @@ Providers cache each request's prefix (tools, system prompt, then messages). Any
 - **Extensions.** A module under `src/core/` exports one `defineExtension` named `monchu.<module>`: a constant, or a `create<Name>(inputs)` factory returning the extension, or `{ extension, ..., warnings }`. Register it in `build()` in `src/core/extensions.ts`, the facet `/reload` swaps; what outlives a reload comes in through `BuildInputs` (`src/core/build.ts`).
 - **Types.** No `any`, casts, non-null assertions, or `@ts-` comments. A lint disable needs a same-line reason.
 - **No compatibility shims.** When you change an API, update every caller and delete the old shape. Stored-shape changes get a migration only when the maintainer asks for one.
+- **Web UI.** Follow `docs/internals.md#Web design`: the tokens in `src/web/style.css`, one icon set, state shown rather than explained, and `mise run web:check` for every visible change.
 - **Tests.** Use real Durable Harnesses on SQLite in temp dirs with Pi's faux providers, through public seams. No `vi` mocks, spies, or fake timers. Helpers live only in `test/support.ts`. Call `setup()` and `cleanup()`, and never touch the real home. Tests pass on Windows and Linux.
 
 ## Delivery

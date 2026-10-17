@@ -800,7 +800,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
 
         const value = () => page(`document.querySelector("textarea").value`);
         const key = (label: string) =>
-          `[...document.querySelectorAll(".keys button")].find((item) => item.textContent === ${JSON.stringify(label)})`;
+          `[...document.querySelectorAll(".keys button")].find((item) => item.getAttribute("aria-label") === ${JSON.stringify(label)})`;
         const tap = async (expression: string) => {
           check((await page(`!!(${expression})`)) === true, `nothing to tap at ${expression}`);
           await page(`(${expression}).click()`);
@@ -816,7 +816,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         await browser("press", "Enter");
         check((await value()) === "a\n", "Enter on a touch screen didn't add a line");
         await browser("fill", "textarea", "");
-        await tap(key("/"));
+        await tap(key("commands"));
         check((await value()) === "/", "the / key didn't start a command");
         await browser("fill", "textarea", "/mod");
         await browser("click", "[role=option]");
@@ -829,22 +829,23 @@ async function journeys(url: string, home: string, origin: string): Promise<void
           "the picker shows desktop key hints",
         );
         await capture("touch-pick", home, origin);
-        await tap(`document.querySelector(".pick .close")`);
+        await tap(`document.querySelector(".pick header .icon")`);
         await browser("wait", "--fn", `!document.querySelector(".pick")`);
 
-        await tap(key("steer"));
+        // The mode key shows the mode it's in, and a tap switches it.
+        await tap(key("follow-up"));
         check(
-          (await page(`${key("steer")}.getAttribute("aria-pressed")`)) === "true" &&
+          (await page(`!!(${key("steer")})`)) === true &&
             (await page(`document.querySelector("textarea").classList.contains("steer")`)) === true,
-          "the steer key didn't switch to steer",
+          "the mode key didn't switch to steer",
         );
         await tap(key("steer"));
-        await tap(key("expand"));
+        await tap(key("expand all"));
         check(
-          (await page(`${key("expand")}.getAttribute("aria-pressed")`)) === "true",
+          (await page(`${key("expand all")}.getAttribute("aria-pressed")`)) === "true",
           "the expand key didn't expand",
         );
-        await tap(key("expand"));
+        await tap(key("expand all"));
 
         // A long reply keeps the root busy while the queue fills.
         await browser("fill", "textarea", `busy ${"x".repeat(1600)}`);
@@ -855,7 +856,10 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         await browser("wait", ".queue li .text");
         await tap(`document.querySelector(".queue li .text")`);
         check((await value()) === "queued one", "tapping the queued message didn't open it");
-        check((await page(`!!(${key("✕ edit")}) && !!(${key("save")})`)) === true, "no edit keys");
+        check(
+          (await page(`!!(${key("leave the edit")}) && !!(${key("save")})`)) === true,
+          "no edit keys",
+        );
         await capture("touch-edit", home, origin);
         await browser("fill", "textarea", "queued two");
         await tap(key("save"));
@@ -865,7 +869,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
           `document.querySelector(".queue li")?.textContent.includes("queued two")`,
         );
         check((await value()) === "", "saving the edit didn't bring the draft back");
-        await tap(`document.querySelector(".queue li button[aria-label^='make it']")`);
+        await tap(`document.querySelector(".queue li button[aria-label*='make it']")`);
         await browser("wait", ".queue li.steer");
         await tap(`document.querySelector(".queue li button[aria-label='delete it']")`);
         await browser("wait", "--fn", `!document.querySelector(".queue")`);

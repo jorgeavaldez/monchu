@@ -97,7 +97,15 @@ export function Editor() {
       }}
     >
       {list.value.length > 0 ? (
-        <ul class="typeahead" role="listbox">
+        <ul
+          class="typeahead"
+          role="listbox"
+          aria-label="commands"
+          // The command column fits the longest shown, up to half the row.
+          style={{
+            "--command": `min(${Math.max(...list.value.map((item) => item.value.length))}ch, 50%)`,
+          }}
+        >
           {list.value.map((item, index) => (
             <li
               key={item.value}
@@ -109,14 +117,16 @@ export function Editor() {
                 accept(item);
               }}
             >
-              <b>{item.value}</b> <span class="usage">{item.usage}</span>
-              <span class="help">{item.help}</span>
+              <b>{item.value}</b>
+              <span class="help">
+                {item.usage ? <span class="usage">{item.usage} </span> : null}
+                {item.help}
+              </span>
             </li>
           ))}
         </ul>
       ) : null}
       <AttachmentTray />
-      <AttachButton onFiles={attach} />
       <textarea
         ref={area}
         onPaste={(event) => {
@@ -129,11 +139,7 @@ export function Editor() {
         class={mode.value === "steer" ? "steer" : ""}
         rows={1}
         value={draft.value}
-        placeholder={
-          editing.value === undefined
-            ? `message · ${mode.value === "steer" ? "steer" : "follow-up"} · / for commands`
-            : "queued message · Enter saves · Esc leaves"
-        }
+        placeholder={editing.value === undefined ? "message" : "queued message"}
         autofocus
         onInput={(event) => {
           draft.value = event.currentTarget.value;
@@ -182,7 +188,9 @@ export function Editor() {
           }
         }}
       />
-      <Keys area={area} send={send} />
+      <Keys area={area} send={send}>
+        <AttachButton onFiles={attach} />
+      </Keys>
     </div>
   );
 }

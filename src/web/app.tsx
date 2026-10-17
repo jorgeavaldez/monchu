@@ -24,7 +24,6 @@ import {
   editing,
   editQueued,
   loginStatus,
-  mode,
   newRoot,
   renameRoot,
   rootId,
@@ -78,6 +77,7 @@ function RootTab() {
         </span>
       )}
       <span class="name">{name}</span>
+      <span aria-hidden="true">▾</span>
     </button>
   );
 }
@@ -149,7 +149,9 @@ function RootsPanel() {
     >
       <header>
         <h1>roots</h1>
-        <button onClick={() => void newRoot()}>new root</button>
+        <button class="icon" aria-label="new root" title="new root" onClick={() => void newRoot()}>
+          +
+        </button>
         <Close label="close" onClose={() => toggleRoots(false)} />
       </header>
       {message === undefined ? null : (
@@ -208,7 +210,7 @@ function Close({ label, onClose }: { label: string; onClose: () => void }) {
   return (
     <button
       type="button"
-      class="close"
+      class="icon"
       aria-label={label}
       title={`${label} (Esc)`}
       onClick={onClose}
@@ -307,7 +309,7 @@ function Ask() {
         {current.title}
         {current.secret ? <input type="password" {...input} /> : <input type="text" {...input} />}
       </label>
-      <button type="submit" class="enter" aria-label="ok">
+      <button type="submit" class="icon" aria-label="ok" title="ok (Enter)">
         ›
       </button>
       <Close label="cancel" onClose={() => current.cancel()} />
@@ -348,39 +350,38 @@ function Footer() {
       usage.context === undefined || window === undefined ? undefined : usage.context / window;
     return { usage, fill };
   };
-  const shownMeter = meter(state);
-  const percent = shownMeter.fill === undefined ? "?" : `${Math.round(shownMeter.fill * 100)}%`;
+  const { fill } = meter(state);
+  const level = fill === undefined ? "" : fill > 0.9 ? "red" : fill > 0.7 ? "yellow" : "";
+  const name = live.provider === undefined ? live.model : `${live.provider}/${live.model}`;
   return (
-    <footer class="footer">
-      <span>
-        {shown.value ?? "root"} · {mode.value === "steer" ? "steer" : "follow-up"}
-        {live.cwd === undefined ? "" : ` · ${live.cwd}`}
+    <footer
+      class="footer"
+      style={{
+        "--fill": `${Math.round(Math.min(1, fill ?? 0) * 100)}%`,
+        "--meter": level === "" ? "var(--muted)" : `var(--${level})`,
+      }}
+    >
+      <span class="cwd" title={live.cwd}>
+        <bdi>{live.cwd ?? ""}</bdi>
       </span>
       <span>
-        <span
-          class={
-            shownMeter.fill !== undefined && shownMeter.fill > 0.9
-              ? "red"
-              : shownMeter.fill !== undefined && shownMeter.fill > 0.7
-                ? "yellow"
-                : ""
-          }
-        >
-          {percent}
+        <span class={level} title="context used">
+          {fill === undefined ? "?" : `${Math.round(fill * 100)}%`}
         </span>
         {shown.value !== undefined && root !== undefined
           ? ` · root ${Math.round((contextUsage(root).context ?? 0) / 1000)}k`
           : ""}
         {" · "}
-        {live.provider === undefined ? live.model : `${live.provider}/${live.model}`}
+        <span title={name}>{live.model}</span>
         {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""}
-        {connection.value === "open" ? "" : ` · ${connection.value}`}
+        {connection.value === "open" ? null : <span class="lost"> · ⚠ {connection.value}</span>}
       </span>
     </footer>
   );
 }
 
-const MODE_TEXT = { steer: "steer", followUp: "follow-up", write: "write" };
+/** A busy mode as the key bar and the queue show it. */
+const MODE_ICON = { steer: "↯", followUp: "⇢" };
 
 /**
  * One queued message. The terminal's Alt+Q panel, in place: a tap opens it in the editor, and its buttons switch its
@@ -392,8 +393,9 @@ function QueueRow({ item }: { item: QueuedItem }) {
     item.mode !== "write" &&
     escalationSummary(item.text) === undefined &&
     systemNoticeSummary(item.text) === undefined;
-  const line = `${MODE_TEXT[item.mode]} · ${item.text.split("\n")[0]}`;
-  if (item.mode === "write") return <li class={item.mode}>{line}</li>;
+  const line = item.text.split("\n")[0] ?? "";
+  if (item.mode === "write") return <li class={item.mode}>write · {line}</li>;
+  const other = item.mode === "steer" ? "follow-up" : "steer";
   return (
     <li class={`${item.mode}${open ? " here" : ""}`}>
       {editable ? (
@@ -409,8 +411,9 @@ function QueueRow({ item }: { item: QueuedItem }) {
         <span class="text">{line}</span>
       )}
       <button
-        aria-label={`make it ${item.mode === "steer" ? "follow-up" : "steer"}`}
-        title="Alt+S in the terminal's queue"
+        class="icon"
+        aria-label={`${item.mode === "steer" ? "steer" : "follow-up"}, make it ${other}`}
+        title={`${item.mode === "steer" ? "steer" : "follow-up"} · tap for ${other}`}
         onClick={() =>
           void editQueued(item.id, {
             kind: "mode",
@@ -418,11 +421,12 @@ function QueueRow({ item }: { item: QueuedItem }) {
           })
         }
       >
-        {item.mode === "steer" ? "follow" : "steer"}
+        {MODE_ICON[item.mode]}
       </button>
       <button
+        class="icon"
         aria-label="delete it"
-        title="Del in the terminal's queue"
+        title="delete it (Del in the terminal's queue)"
         disabled={open}
         onClick={() => void editQueued(item.id, { kind: "delete" })}
       >
