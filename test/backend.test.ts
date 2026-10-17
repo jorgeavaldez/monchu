@@ -70,7 +70,8 @@ describe("backend", () => {
                 PI_OFFLINE: "1",
               },
               stdio: ["ignore", "pipe", "pipe"],
-              timeout: 15000,
+              // A cold Windows runner type-strips every source module first; it takes 13-15 s there.
+              timeout: 40000,
             },
           );
           let output = "";
@@ -102,7 +103,7 @@ describe("backend", () => {
         });
       }
     },
-    20000,
+    45000,
   );
 
   it("owns auth independently of a decoy Pi directory and uses private provider login", async () => {
