@@ -15,6 +15,7 @@ import { configuredRoles, openModels } from "../src/core/models/index.ts";
 import { Extensions } from "../src/core/reload.ts";
 import {
   allEntries,
+  bareToolCalls,
   claudeResponse,
   cleanup,
   context,
@@ -170,6 +171,108 @@ describe("Claude Code subscription provider", () => {
         CLAUDE_CODE_MAX_RETRIES: "0",
       },
     });
+  });
+
+  it("lets the model answer again after Claude Code rejects a tool name it doesn't declare, up to twice", async () => {
+    const value = await setup();
+    // Claude Code answers the bare name "No such tool" itself and asks the model again.
+    const slip = () =>
+      bareToolCalls(
+        claudeResponse(
+          [
+            { type: "text", text: "checking" },
+            fauxToolCall("codemode", { code: "1" }, { id: "bare" }),
+          ],
+          "tool_use",
+        ),
+      );
+    let slips = 1;
+    const script = scriptedClaude(value.directory, config, async function* () {
+      for (let i = 0; i < slips; i++) yield* slip();
+      yield* claudeResponse([
+        { type: "thinking", thinking: "use the full name" },
+        { type: "text", text: "done" },
+      ]);
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const ask = async () => {
+      const stream = models.streamSimple(
+        model,
+        { messages: [{ role: "user", content: "check", timestamp: 1 }] },
+        { sessionId: `slip-${slips}` },
+      );
+      const events: string[] = [];
+      for await (const event of stream) events.push(event.type);
+      return { events, result: await stream.result() };
+    };
+    const { events, result } = await ask();
+    expect(events.filter((type) => type === "start")).toHaveLength(1);
+    expect(result).toMatchObject({
+      stopReason: "stop",
+      content: [
+        { type: "text", text: "checking" },
+        { type: "text", text: "done" },
+      ],
+      // The first message's cache read; the retry adds only its new input and its output.
+      usage: {
+        input: 20,
+        output: 14,
+        cacheRead: 20,
+        cacheWrite: 60,
+        reasoning: 6,
+        totalTokens: 114,
+      },
+    });
+    slips = 3;
+    const failed = (await ask()).result;
+    expect(failed.stopReason).toBe("error");
+    expect(failed.errorMessage).toContain("requested an undeclared tool codemode");
+  });
+
+  it("leaves a bare tool call beside a declared one to Claude Code and runs only the declared one", async () => {
+    const value = await setup();
+    await writeFile(join(value.directory, "known.txt"), "durable-owned file");
+    const script = scriptedClaude(value.directory, config, async function* (input) {
+      const server = input.options?.mcpServers?.monchu;
+      assert(server?.type === "sdk");
+      const client = new Client({ name: "script", version: "1" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        yield* bareToolCalls(
+          claudeResponse(
+            [
+              fauxToolCall("read", { path: "known.txt" }, { id: "read_1" }),
+              fauxToolCall("codemode", { code: "1" }, { id: "bare" }),
+            ],
+            "tool_use",
+          ),
+        );
+        await client.callTool({
+          name: "read",
+          arguments: {},
+          _meta: { "claudecode/toolUseId": "read_1" },
+        });
+        yield* claudeResponse([{ type: "text", text: "read it" }]);
+      } finally {
+        await client.close();
+      }
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const { harness, root } = await open({ ...value, models });
+    try {
+      await root.configure({ model: role, thinkingLevel: role.thinkingLevel }, context);
+      await (await root.submit({ type: "input", content: "read it" }, context)).wait(context);
+      expect((await toolResults(root)).map((result) => result.toolCallId)).toEqual(["read_1"]);
+      expect(JSON.stringify(await allEntries(root))).not.toContain('"bare"');
+      expect(JSON.stringify(await allEntries(root))).toContain("read it");
+      expect(script.requests).toHaveLength(1);
+    } finally {
+      await harness.close(context);
+    }
   });
 
   it("parks one query across Durable tool rounds, pairs out-of-order MCP calls, and resumes Claude's own session after restart", async () => {

@@ -100,7 +100,7 @@ const oneMillion = new Set([
  * without it.
  */
 const TOOL_NAMES_NOTE =
-  "Your tools are declared as `mcp__monchu__<name>`, but that prefix belongs to the declaration only. Everywhere else, including a codemode script's `tools.<name>(...)`, `searchTools()`, `describeTool()`, `tool_search` and these instructions, a tool goes by `<name>` without the prefix: `mcp__monchu__close_worker` is `tools.close_worker`.";
+  "Your tools are declared as `mcp__monchu__<name>`: call them by that full name. Everywhere else, including a codemode script's `tools.<name>(...)`, `searchTools()`, `describeTool()`, `tool_search` and these instructions, a tool goes by `<name>` without the prefix: `mcp__monchu__close_worker` is `tools.close_worker`.";
 
 const efforts: Partial<Record<ModelThinkingLevel, EffortLevel>> = {
   minimal: "low",
@@ -323,13 +323,33 @@ export function createClaudeCodeProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     };
+    // A retried response (see `rejected` below) spans several Claude messages. The first one's cache read says
+    // whether the prompt cache held; a later one re-reads what the earlier just wrote, so only its new input counts.
+    let earlier: AssistantMessage["usage"] | undefined;
+    let current: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      reasoning?: number;
+    } = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const nextMessageUsage = () => {
+      earlier = { ...output.usage };
+      current = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    };
     const updateUsage = (usage: ClaudeUsage) => {
-      output.usage.input = usage.input_tokens ?? output.usage.input;
-      output.usage.output = usage.output_tokens ?? output.usage.output;
-      output.usage.cacheRead = usage.cache_read_input_tokens ?? output.usage.cacheRead;
-      output.usage.cacheWrite = usage.cache_creation_input_tokens ?? output.usage.cacheWrite;
+      current.input = usage.input_tokens ?? current.input;
+      current.output = usage.output_tokens ?? current.output;
+      current.cacheRead = usage.cache_read_input_tokens ?? current.cacheRead;
+      current.cacheWrite = usage.cache_creation_input_tokens ?? current.cacheWrite;
       if (usage.output_tokens_details !== undefined && usage.output_tokens_details !== null)
-        output.usage.reasoning = usage.output_tokens_details.thinking_tokens;
+        current.reasoning = usage.output_tokens_details.thinking_tokens;
+      output.usage.input = (earlier?.input ?? 0) + current.input;
+      output.usage.output = (earlier?.output ?? 0) + current.output;
+      output.usage.cacheRead = earlier?.cacheRead ?? current.cacheRead;
+      output.usage.cacheWrite = (earlier?.cacheWrite ?? 0) + current.cacheWrite;
+      if (current.reasoning !== undefined)
+        output.usage.reasoning = (earlier?.reasoning ?? 0) + current.reasoning;
       output.usage.totalTokens =
         output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
     };
@@ -765,6 +785,13 @@ export function createClaudeCodeProvider(
           state.history = keys;
         }
         const blocks = new Map<number, { contentIndex: number; json: string }>();
+        // A call to a name Claude Code doesn't declare (a bare `codemode`) gets Claude Code's own "No such tool"
+        // error, and the model answers again in a new message; this response continues there. Durable's copy holds
+        // neither the call nor that message's thinking: rebuilt, thinking after text is a shape Claude never sends.
+        const skipped = new Set<number>();
+        let rejected: string | undefined;
+        let retries = 0;
+        let retrying = false;
         let started = false;
         let sawResult = false;
         for await (const item of live.events) {
@@ -800,16 +827,25 @@ export function createClaudeCodeProvider(
             throw new Error("Claude Code started an unexpected subagent");
           const event: SDKPartialAssistantMessage["event"] = message.event;
           if (event.type === "message_start") {
-            if (started) throw new Error("Claude Code restarted the response internally");
-            started = true;
+            if (started && !retrying)
+              throw new Error("Claude Code restarted the response internally");
+            if (retrying) nextMessageUsage();
             output.responseId = event.message.id;
             output.responseModel = event.message.model;
             updateUsage(event.message.usage);
-            stream.push({ type: "start", partial: output });
+            if (!started) stream.push({ type: "start", partial: output });
+            started = true;
+            retrying = false;
+            skipped.clear();
+            rejected = undefined;
           } else if (!started) throw new Error("Claude Code streamed content before message_start");
           else if (event.type === "content_block_start") {
             const block = event.content_block;
             const contentIndex = output.content.length;
+            if (block.type === "thinking" && retries > 0) {
+              skipped.add(event.index);
+              continue;
+            }
             if (block.type === "text") {
               output.content.push({ type: "text", text: "" });
               stream.push({ type: "text_start", contentIndex, partial: output });
@@ -831,8 +867,11 @@ export function createClaudeCodeProvider(
               stream.push({ type: "thinking_start", contentIndex, partial: output });
             } else if (block.type === "tool_use") {
               const tool = tools.find((tool) => `mcp__monchu__${tool.name}` === block.name);
-              if (tool === undefined)
-                throw new Error(`Claude Code requested an undeclared tool ${block.name}`);
+              if (tool === undefined) {
+                skipped.add(event.index);
+                rejected = block.name;
+                continue;
+              }
               live.toolIds.add(block.id);
               output.content.push({
                 type: "toolCall",
@@ -844,6 +883,7 @@ export function createClaudeCodeProvider(
             } else throw new Error(`Claude Code returned unsupported content ${block.type}`);
             blocks.set(event.index, { contentIndex, json: "" });
           } else if (event.type === "content_block_delta" || event.type === "content_block_stop") {
+            if (skipped.has(event.index)) continue;
             const state = blocks.get(event.index);
             const block = state === undefined ? undefined : output.content[state.contentIndex];
             if (state === undefined || block === undefined)
@@ -920,6 +960,15 @@ export function createClaudeCodeProvider(
             // Worded as a premature stream end, which Durable's retry policy retries.
             if (blocks.size)
               throw new Error("Claude Code stream ended without completing its content blocks");
+            if (
+              rejected !== undefined &&
+              !output.content.some((block) => block.type === "toolCall")
+            ) {
+              if (++retries > 2)
+                throw new Error(`Claude Code requested an undeclared tool ${rejected}`);
+              retrying = true;
+              continue;
+            }
             if (
               output.content.some((block) => block.type === "toolCall") !==
               (output.stopReason === "toolUse")

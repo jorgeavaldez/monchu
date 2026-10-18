@@ -568,6 +568,27 @@ export async function openClaudeModels(
   return models;
 }
 
+/** The model dropping the mcp__monchu__ prefix: tool calls whose ID starts with `bare` stream their bare name. */
+export function bareToolCalls(messages: SDKMessage[]): SDKMessage[] {
+  return messages.map((message) =>
+    message.type === "stream_event" &&
+    message.event.type === "content_block_start" &&
+    message.event.content_block.type === "tool_use" &&
+    message.event.content_block.id.startsWith("bare")
+      ? {
+          ...message,
+          event: {
+            ...message.event,
+            content_block: {
+              ...message.event.content_block,
+              name: message.event.content_block.name.replace(/^mcp__monchu__/, ""),
+            },
+          },
+        }
+      : message,
+  );
+}
+
 /** SDK frames, not faux Pi events: exercise streaming, signed thinking and tool argument assembly. */
 export function claudeResponse(
   content: AssistantMessage["content"],
