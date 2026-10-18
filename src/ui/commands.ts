@@ -26,6 +26,7 @@ type Input =
         | "/model"
         | "/mcp"
         | "/logs"
+        | "/browsers"
         | "/clef"
         | "/update"
         | "/attach";
@@ -54,6 +55,7 @@ export const commands: Record<
     usage: "",
     help: "every job (agent, command, bg) and recent job events",
   },
+  "/browsers": { usage: "[id]", help: "browsers" },
   "/logs": {
     usage: "[severity|scope]",
     help: "recent log records: warnings, timings, model replies, connections",
@@ -161,6 +163,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/mcp":
     case "/stop":
     case "/logs":
+    case "/browsers":
     case "/attach":
       return { command, text: rest };
     case "/clef":

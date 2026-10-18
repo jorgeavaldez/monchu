@@ -743,6 +743,10 @@ export async function runTerminal(
         );
         break;
       }
+      case "/browsers": {
+        view.notice(await backend.browsers(input.text));
+        break;
+      }
       case "/jobs": {
         const { jobs, events, listing } = await backend.jobs();
         view.notice(

@@ -63,6 +63,8 @@ import {
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
+import { Closed, Farm, FARM_FILE, loadFarmConfig, Sessions } from "./browser/farm.ts";
+import { formatSession } from "./browser/tool.ts";
 import { Vault, type SecretInput, type SecretStore } from "./secrets/vault.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -749,6 +751,33 @@ export class Monchu implements Client {
         this.reloading = undefined;
       });
     return this.reloading;
+  }
+
+  /** `/browsers [session]`: every session on the device's browser farm, after closing the one named (anyone's). */
+  async browsers(args: string): Promise<string> {
+    const close = args.trim() === "" ? undefined : args.trim();
+    if (close !== undefined && !/^\S+$/.test(close)) throw new Error("Usage: /browsers [session]");
+    const config = await loadFarmConfig(this.home);
+    if (config === undefined) return `browsers · no farm on this device (${FARM_FILE})`;
+    const farm = new Farm(config, this.vault);
+    const use = { tool: "/browsers", conversation: "user" };
+    const lead: string[] = [];
+    if (close !== undefined) {
+      const closed = await farm.call(
+        "DELETE",
+        `/v1/sessions/${encodeURIComponent(close)}?force=1`,
+        Closed,
+        { use },
+      );
+      lead.push(`closed ${closed.session ?? close}`);
+    }
+    const { sessions } = await farm.call("GET", "/v1/sessions", Sessions, { use });
+    return [
+      ...lead,
+      `browsers · ${sessions.length} at ${config.url}`,
+      ...sessions.map(formatSession),
+      ...(sessions.length === 0 ? [] : ["/browsers <session> closes one"]),
+    ].join("\n");
   }
 
   /** The newest log records, oldest first. */

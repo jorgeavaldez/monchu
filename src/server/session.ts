@@ -364,6 +364,7 @@ export default defineFacet<Principal>(
         mcpReconnect: () => monchu().mcpReconnect(),
         reload: async () => [...(await monchu().reload())],
         logs: ({ query }) => monchu().logs(query),
+        browsers: ({ text }) => monchu().browsers(text),
         record: ({ scope, body, attributes }) => monchu().record(scope, body, attributes),
         restart: () => monchu().requestRestart(),
         update: async ({ release }) => {

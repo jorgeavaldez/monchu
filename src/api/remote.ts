@@ -450,6 +450,9 @@ export class RemoteClient implements Client {
   logs(query: Parameters<Client["logs"]>[0]) {
     return this.run(() => this.session.ref.logs({ query }));
   }
+  browsers(text: string) {
+    return this.run(() => this.session.ref.browsers({ text }));
+  }
   record(scope: "tui" | "web", body: string, attributes?: Parameters<Client["record"]>[2]): void {
     // Telemetry is best effort: a lost record never fails the client.
     void this.run(() =>
