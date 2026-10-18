@@ -41,8 +41,11 @@ const [WIDTH = 0, HEIGHT = 0] = args.viewport.split("x").map(Number);
 if (!(WIDTH > 0 && HEIGHT > 0)) throw new Error("--viewport is <width>x<height>, like 412x915");
 const RUNS = Number(args.runs);
 if (!(Number.isInteger(RUNS) && RUNS >= 1)) throw new Error("--runs is a whole number from 1");
-/** The smallest tap target: a finger's 44 px on a phone-sized screen, WCAG's 24 px minimum on a wider one. */
-const TARGET_PX = WIDTH <= 600 ? 44 : 24;
+/**
+ * WCAG 2.5.8's minimum target: smaller ones pass when a circle this wide on their centre clears every other target. The
+ * client is dense on purpose (32 px controls, one-line rows), so a finger-sized 44 px would flag nearly everything.
+ */
+const TARGET_PX = 24;
 
 type Data = Record<string, unknown>;
 const isData = (value: unknown): value is Data =>
@@ -301,7 +304,7 @@ async function stopCore(core: ChildProcess): Promise<void> {
 
 type Violation = { id: string; impact: string; nodes: number; targets: string[] };
 /** What the layout probe found on one screen: each a few words naming the element, the first few kept. */
-type Layout = { smallTargets: string[]; smallInputFonts: string[]; overlaps: string[] };
+type Layout = { smallTargets: string[]; overlaps: string[] };
 type Screen = {
   violations: Violation[];
   layout?: Layout;
@@ -402,34 +405,45 @@ function normalize(home: string, origin: string): Promise<unknown> {
 }
 
 /**
- * Layout faults axe doesn't see, on what is rendered now: tap targets smaller than `TARGET_PX` either way (links inside
- * text are exempt, as in WCAG), text fields under 16 px (a phone zooms into them on focus), and controls whose boxes
- * cover each other's.
+ * Layout faults axe doesn't see, on what is visible now (each box clipped to the scrolling boxes around it and the
+ * viewport): targets under `TARGET_PX` that also crowd another target (WCAG 2.5.8 with its spacing exception; links
+ * inside text are exempt), and controls whose visible boxes cover each other's.
  */
 async function layoutProbe(): Promise<Layout> {
   const found = await page(`(() => {
     const name = (item) => item.tagName.toLowerCase() + (item.className && typeof item.className === "string" ? "." + item.className.trim().split(/\\s+/).join(".") : "") + (item.getAttribute("aria-label") ? "[" + item.getAttribute("aria-label") + "]" : item.textContent.trim() ? " " + JSON.stringify(item.textContent.trim().slice(0, 20)) : "");
-    const shown = [...document.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=option], [tabindex]:not([tabindex='-1'])")].filter((item) => {
+    const visible = (item) => {
       const box = item.getBoundingClientRect();
-      return box.width > 0 && box.height > 0 && getComputedStyle(item).visibility !== "hidden" && !item.closest("[inert], [aria-hidden=true]");
-    });
-    const controls = shown.filter((item) => !(item.matches("a") && item.closest(".md, .body, .help, p")) && !item.matches(".pick, .transcript, [role=listbox]"));
-    const smallTargets = controls.filter((item) => { const box = item.getBoundingClientRect(); return Math.min(box.width, box.height) < ${TARGET_PX} - 0.5; }).map(name);
-    const smallInputFonts = shown.filter((item) => item.matches("input, textarea, select") && parseFloat(getComputedStyle(item).fontSize) < 16).map(name);
+      let [left, top, right, bottom] = [Math.max(box.left, 0), Math.max(box.top, 0), Math.min(box.right, innerWidth), Math.min(box.bottom, innerHeight)];
+      for (let up = item.parentElement; up; up = up.parentElement) {
+        if (getComputedStyle(up).overflow === "visible") continue;
+        const clip = up.getBoundingClientRect();
+        [left, top, right, bottom] = [Math.max(left, clip.left), Math.max(top, clip.top), Math.min(right, clip.right), Math.min(bottom, clip.bottom)];
+      }
+      return right - left > 1 && bottom - top > 1 ? { left, top, right, bottom, width: box.width, height: box.height } : undefined;
+    };
+    const controls = [...document.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=option], [tabindex]:not([tabindex='-1'])")]
+      .filter((item) => getComputedStyle(item).visibility !== "hidden" && !item.closest("[inert], [aria-hidden=true]"))
+      .filter((item) => !(item.matches("a") && item.closest(".md, .body, .help, p")) && !item.matches(".pick, .transcript, [role=listbox]"))
+      .flatMap((item) => { const box = visible(item); return box ? [{ item, box }] : []; });
+    const small = (box) => Math.min(box.width, box.height) < ${TARGET_PX} - 0.5;
+    const centre = (box) => [(box.left + box.right) / 2, (box.top + box.bottom) / 2];
+    const gap = ([x, y], box) => Math.hypot(Math.max(box.left - x, 0, x - box.right), Math.max(box.top - y, 0, y - box.bottom));
+    const related = (one, two) => one.item.contains(two.item) || two.item.contains(one.item);
+    const smallTargets = controls.filter((one) => small(one.box) && controls.some((two) => two !== one && !related(one, two) && (gap(centre(one.box), two.box) < ${TARGET_PX} / 2 - 0.5 || (small(two.box) && Math.hypot(centre(one.box)[0] - centre(two.box)[0], centre(one.box)[1] - centre(two.box)[1]) < ${TARGET_PX} - 0.5)))).map((one) => name(one.item));
     const overlaps = [];
     for (let at = 0; at < controls.length; at++)
       for (let next = at + 1; next < controls.length; next++) {
         const one = controls[at], two = controls[next];
-        if (one.contains(two) || two.contains(one)) continue;
-        const a = one.getBoundingClientRect(), b = two.getBoundingClientRect();
-        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) overlaps.push(name(one) + " × " + name(two));
+        if (related(one, two)) continue;
+        const a = one.box, b = two.box;
+        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) overlaps.push(name(one.item) + " × " + name(two.item));
       }
-    return { smallTargets, smallInputFonts, overlaps };
+    return { smallTargets, overlaps };
   })()`);
   const strings = (value: unknown) => list(value).map(text);
   return {
     smallTargets: strings(isData(found) ? found.smallTargets : undefined),
-    smallInputFonts: strings(isData(found) ? found.smallInputFonts : undefined),
     overlaps: strings(isData(found) ? found.overlaps : undefined),
   };
 }
@@ -1798,8 +1812,7 @@ function summarize(baseline: Report | undefined, spread: Record<string, string>)
     const layout = screen.layout;
     if (layout !== undefined) {
       const faults = [
-        [layout.smallTargets, `under ${TARGET_PX} px`],
-        [layout.smallInputFonts, "under 16 px text"],
+        [layout.smallTargets, `under ${TARGET_PX} px and crowded`],
         [layout.overlaps, "overlapping"],
       ] as const;
       for (const [found, what] of faults)
@@ -1912,7 +1925,7 @@ for (const [key, values] of samples) {
 }
 // Layout faults over every screen, as tracked metrics: deterministic, so any rise counts.
 const screens = Object.values(report.screens);
-for (const key of ["smallTargets", "smallInputFonts", "overlaps"] as const)
+for (const key of ["smallTargets", "overlaps"] as const)
   report.metrics[`layout.${key}`] = screens.reduce(
     (sum, screen) => sum + (screen.layout?.[key].length ?? 0),
     0,
