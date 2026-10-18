@@ -142,8 +142,10 @@ export function Editor() {
   };
 
   return (
-    <div
+    // A landmark, so the editor, its key bar and any menu over it are a named region of the page.
+    <section
       class="editor"
+      aria-label="editor"
       onDragOver={(event) => {
         if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
       }}
@@ -303,6 +305,6 @@ export function Editor() {
           <AttachButton onFiles={attach} />
         </Keys>
       )}
-    </div>
+    </section>
   );
 }
