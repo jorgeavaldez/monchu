@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   defaultConfig,
   loadConfig,
+  loadStartupConfig,
   loadWebConfig,
   resolveSettings,
   saveRole,
@@ -177,7 +178,9 @@ describe("config", () => {
       return directory;
     };
     expect(await loadWebConfig(await home({}))).toBeUndefined();
-    await expect(loadConfig(await home({ web: {} }))).rejects.toThrow("move them to web.json");
+    expect((await loadConfig(await home({ web: {} }))).warnings).toEqual([
+      expect.stringContaining('"web" is ignored: web settings are per device now, in web.json'),
+    ]);
     expect(
       await loadWebConfig(
         await webHome({
@@ -280,12 +283,7 @@ describe("config", () => {
   });
 
   it.each([
-    [{ bogus: 1 }, "unknown fields: bogus"],
     [{ front: { provider: "p", modelId: "m", thinkingLevel: "huge" } }, "front.thinkingLevel"],
-    [
-      { cloudflareAccountId: "0123456789abcdef0123456789abcdef" },
-      "unknown fields: cloudflareAccountId",
-    ],
     [{ plugins: [] }, "plugins must be a JSON object"],
     [{ plugins: { Bad: 1 } }, "plugins.Bad"],
     [{ settings: { retry: { enabled: "yes" } } }, "settings.retry.enabled"],
@@ -297,15 +295,61 @@ describe("config", () => {
     [{ settings: { defaultTools: "read" } }, "string array"],
     [{ front: { provider: "p", modelId: "m", thinkingLevel: null } }, "front.thinkingLevel"],
     [{ settings: { theme: "missing" } }, "settings.theme"],
-    [{ settings: { retry: { typo: 1 } } }, "unknown fields: typo"],
     [{ settings: { terminal: { images: true } } }, "settings.terminal.images"],
-    [{ front: { provider: "p", modelId: "m", key: "secret" } }, "unknown fields: key"],
     [{ profiles: [] }, "profiles must be an object"],
     [{ profiles: { Quick: { provider: "p", modelId: "m", use: "u" } } }, "profiles.Quick: names"],
     [{ profiles: { quick: { provider: "p", modelId: "m" } } }, "profiles.quick.use"],
-    [{ profiles: { quick: { provider: "p", modelId: "m", use: "u", x: 1 } } }, "unknown fields: x"],
   ])("rejects %j", async (config, message) => {
     await expect(loadConfig(await home(config))).rejects.toThrow(message);
+  });
+
+  // Another version's file, a setting that moved, or a typo: never a reason to refuse the rest of the file.
+  it.each([
+    [{ bogus: 1 }, '"bogus"'],
+    [{ cloudflareAccountId: "0123456789abcdef0123456789abcdef" }, '"cloudflareAccountId"'],
+    [{ settings: { retry: { typo: 1 } } }, '"settings.retry.typo"'],
+    [{ front: { provider: "p", modelId: "m", key: "secret" } }, '"front.key"'],
+    [
+      { profiles: { quick: { provider: "p", modelId: "m", use: "u", x: 1 } } },
+      '"profiles.quick.x"',
+    ],
+  ])("ignores what it doesn't know in %j, with a warning", async (config, key) => {
+    const loaded = await loadConfig(
+      await home({ ...config, worker: { provider: "w", modelId: "m" } }),
+    );
+    expect(loaded.warnings).toEqual([
+      expect.stringContaining(`ignored ${key}, which this version of Monchu doesn't know`),
+    ]);
+    expect(loaded.worker).toMatchObject({ provider: "w", modelId: "m" });
+  });
+
+  it("opens with every valid field of a broken file, each invalid one on its default", async () => {
+    const directory = await home({
+      front: { provider: "p", modelId: "m" },
+      worker: { provider: "w" },
+      settings: { theme: "missing" },
+      moved: true,
+    });
+    await expect(loadConfig(directory)).rejects.toThrow("worker.modelId must be a string");
+    const loaded = await loadStartupConfig(directory);
+    expect(loaded.front).toEqual({ provider: "p", modelId: "m", thinkingLevel: "low" });
+    expect(loaded.worker).toEqual(codex.worker);
+    expect(loaded.settings).toEqual({});
+    expect(loaded.chosen).toEqual({ front: true, worker: false });
+    expect(loaded.warnings).toEqual([
+      expect.stringContaining(
+        "worker.modelId must be a string. Using its default until it is fixed",
+      ),
+      expect.stringContaining("settings.theme"),
+      expect.stringContaining('ignored "moved"'),
+    ]);
+    // Not JSON at all: the defaults, saying why.
+    await writeFile(join(directory, "config.json"), "{not json");
+    const unreadable = await loadStartupConfig(directory);
+    expect(unreadable.front).toEqual(codex.front);
+    expect(unreadable.warnings).toEqual([
+      expect.stringContaining("Using the built-in defaults until it is fixed"),
+    ]);
   });
 
   it("saves one role default atomically, keeping every other field and filling the role from its effective value", async () => {
@@ -357,11 +401,11 @@ describe("config", () => {
 
   it("never rewrites an invalid file or writes a role that fails validation or the caller's check", async () => {
     const accept = () => {};
-    const invalid = await home({ bogus: 1 });
+    const invalid = await home({ settings: { theme: "missing" } });
     const before = await readFile(join(invalid, "config.json"), "utf8");
     await expect(
       saveRole(invalid, "front", { thinkingLevel: "low" }, accept, codex.front),
-    ).rejects.toThrow("unknown fields: bogus");
+    ).rejects.toThrow("settings.theme");
     expect(await readFile(join(invalid, "config.json"), "utf8")).toBe(before);
     const valid = await home({});
     await expect(saveRole(valid, "worker", { modelId: " " }, accept, codex.worker)).rejects.toThrow(

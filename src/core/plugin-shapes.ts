@@ -155,11 +155,16 @@ const record = (value: unknown): Record<string, unknown> =>
     ? Object.fromEntries(Object.entries(value))
     : {};
 
-/** Durable hooks over a plugin's Pi-shaped handlers, in registration order. */
+/**
+ * Durable hooks over a plugin's Pi-shaped handlers, in registration order. A `tool_call` or `tool_result` handler that
+ * throws fails closed, except on a call that `repairs` names: Monchu's way to fix that plugin, which a broken handler
+ * must never take away.
+ */
 export function durableHooks(
   handlers: Handlers,
   guard: Guard,
   ui: (id: ConversationId, context: Context) => PluginUI,
+  repairs: (toolName: string, input: Record<string, unknown>) => boolean,
 ): HookRegistration[] {
   const hooks: HookRegistration[] = [];
   const { tool_call, tool_result, context, message_end, turn_end, agent_before_settle } = handlers;
@@ -181,8 +186,10 @@ export function durableHooks(
                   const decision = await guard("tool_call", () =>
                     handler(event, contextOf(api, ctx, ui)),
                   );
-                  if (decision === "failed")
+                  if (decision === "failed") {
+                    if (repairs(call.name, record(call.arguments))) continue;
                     return { block: "A plugin's tool_call guard failed, so the call is blocked." };
+                  }
                   if (decision?.block === true)
                     return { block: decision.reason ?? "Blocked by a plugin." };
                 }
@@ -216,7 +223,8 @@ export function durableHooks(
                   const change = await guard("tool_result", () =>
                     handler(event, contextOf(api, ctx, ui)),
                   );
-                  if (change === "failed")
+                  if (change === "failed") {
+                    if (repairs(call.name, record(call.arguments))) continue;
                     return {
                       output: [
                         {
@@ -226,6 +234,7 @@ export function durableHooks(
                       ],
                       isError: true,
                     };
+                  }
                   if (change === undefined) continue;
                   // As in Pi: new content without new structured content drops the old, which may no longer match.
                   const { structuredOutput: _dropped, ...kept } = current;

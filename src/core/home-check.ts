@@ -90,7 +90,9 @@ async function problems(inputs: HomeCheckInputs): Promise<string[]> {
   try {
     found.push(...(await loadMcpConfig(inputs.home)).errors);
   } catch (error) {
-    found.push(`${message(error)}. /reload refuses it, and the next start fails`);
+    found.push(
+      `${message(error)}. /reload refuses it, and the next start runs without MCP servers`,
+    );
   }
   const owned = new Set(running.owned);
   const own = running.extensions.filter((extension) => !owned.has(extension.name));

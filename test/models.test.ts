@@ -203,8 +203,15 @@ describe("Monchu models", () => {
     const value = await setup();
     const path = join(value.directory, "auth.json");
     await writeFile(path, raw);
-    await expect(openModels(value.directory)).rejects.toThrow(/^Invalid Monchu auth.json/);
-    await expect(openModels(value.directory)).rejects.not.toThrow("test-secret");
+    // Monchu opens, saying so; every use of the file fails the same way, and nothing saves over it.
+    const warnings: string[] = [];
+    const models = await openModels(value.directory, undefined, undefined, (warning) =>
+      warnings.push(warning),
+    );
+    expect(warnings).toEqual([expect.stringMatching(/^Invalid Monchu auth.json/)]);
+    expect(warnings.join("\n")).not.toContain("test-secret");
+    await expect(models.getAuth("openai-codex")).rejects.toThrow("Credential store read failed");
+    await expect(models.getAuth("openai-codex")).rejects.not.toThrow("test-secret");
     expect(await readFile(path, "utf8")).toBe(raw);
     expect((await readdir(value.directory)).filter((name) => name.startsWith("auth.json"))).toEqual(
       ["auth.json"],

@@ -496,13 +496,13 @@ export default () => {
     const value = await setup();
     const home = join(value.directory, "broken");
     await mkdir(home, { recursive: true });
-    await writeFile(join(home, "config.json"), JSON.stringify({ front: fauxRole, bogus: 1 }));
+    await writeFile(join(home, "config.json"), "{not json");
     prepareHome(home);
     const backend = await Monchu.open(home, value.faux.provider);
     const warnings: string[] = [];
     const unsubscribe = backend.onReport((message) => warnings.push(message));
     try {
-      expect(warnings.join("\n")).toContain("unknown fields: bogus. Using the built-in defaults");
+      expect(warnings.join("\n")).toContain("Using the built-in defaults until it is fixed");
       // No role is chosen, so logging in to either default provider is enough.
       expect(await backend.loginNeeds()).toEqual({
         chat: ["openai-codex", "claude-code"],
@@ -529,9 +529,14 @@ export default () => {
     try {
       await writeFile(
         join(home, "config.json"),
-        JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null }, bogus: 1 }),
+        JSON.stringify({
+          front: fauxRole,
+          worker: fauxRole,
+          plugins: { clef: null },
+          settings: { theme: "missing" },
+        }),
       );
-      await expect(backend.reload()).rejects.toThrow("unknown fields: bogus");
+      await expect(backend.reload()).rejects.toThrow("settings.theme");
       // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
       expect(await logText(home)).toContain("Reload failed: Invalid");
       expect(warnings.filter((message) => message.includes("Reload failed"))).toEqual([]);

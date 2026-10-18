@@ -24,10 +24,18 @@ export async function openModels(
   home: string,
   devProvider?: Provider,
   claude: ClaudeConfig = { executable: undefined, plan: "pro", longContextExtraUsage: false },
+  report: (warning: string) => void = () => {},
 ): Promise<MutableModels> {
   const credentials = new FileCredentials(join(home, "auth.json"));
-  // Validate existing credentials and initialize a fresh store before opening Durable.
-  await credentials.list();
+  // Validate existing credentials and initialize a fresh store before opening Durable. A broken file never keeps Monchu
+  // from opening: each use of it fails with the same error, and nothing saves over it.
+  await credentials
+    .list()
+    .catch((error: unknown) =>
+      report(
+        `${error instanceof Error ? error.message : String(error)} in ${home}: requests that need a login fail, and /login can't save one, until it is fixed or removed`,
+      ),
+    );
   const models = createModels({ credentials });
   models.setProvider(createCodexProvider());
   models.setProvider(Cloudflare);

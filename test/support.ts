@@ -48,10 +48,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Codemode } from "../src/core/tools/codemode.ts";
 import {
@@ -867,4 +869,62 @@ export function memoryCore(open: () => Promise<Monchu>): CoreProcess & { readonl
     },
     onStatus: (listener) => void listeners.add(listener),
   };
+}
+
+/**
+ * A home for Monchu's real entry point in smoke mode (faux models, secrets in memory), with `plugins` written as
+ * `plugins/<name>/index.js`. Removed at `cleanup`.
+ */
+export async function smokeHome(plugins: Record<string, string> = {}): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
+  directories.add(home);
+  for (const [name, source] of Object.entries(plugins)) {
+    await mkdir(join(home, "plugins", name), { recursive: true });
+    await writeFile(join(home, "plugins", name, "index.js"), source);
+  }
+  return home;
+}
+
+/** A running entry point: `seen` resolves once its output contains the awaited text, `exited` when it ends. */
+export type EntryRun = {
+  readonly seen: Promise<void>;
+  readonly exited: Promise<{ code: number | null; output: string }>;
+  output(): string;
+};
+
+/**
+ * Run Monchu's real source entry point (`src/main.ts`) as its own process on the smoke `home`; `until` resolves
+ * `seen` once its output contains that text.
+ */
+export function runEntry(home: string, args: string[], until?: string): EntryRun {
+  const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+  const child = spawn(process.execPath, [entry, ...args], {
+    // The suite's sandboxed HOME stays: smoke mode never reads it.
+    env: {
+      ...process.env,
+      MONCHU_DEV_FAUX: "1",
+      MONCHU_DEV_HOME: home,
+      PI_OFFLINE: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    // A cold Windows runner type-strips every source module first; it takes 13-15 s there, for each process.
+    timeout: 240_000,
+  });
+  let output = "";
+  const seen = Promise.withResolvers<void>();
+  const read = (data: Buffer) => {
+    output += data.toString();
+    if (until !== undefined && output.includes(until)) seen.resolve();
+  };
+  child.stdout.on("data", read);
+  child.stderr.on("data", read);
+  const exited = new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => {
+      seen.reject(new Error(`exited before "${until}":\n${output}`));
+      resolve({ code, output });
+    });
+  });
+  seen.promise.catch(() => {});
+  return { seen: seen.promise, exited, output: () => output };
 }

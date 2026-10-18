@@ -229,7 +229,11 @@ export type InputChangeEvent = {
   readonly messages: ContextView["messages"];
 };
 
-/** Events by Pi's names. A throwing `tool_call` handler blocks the call and a throwing `tool_result` handler withholds the result: guards fail closed. Others are reported and treated as returning nothing. */
+/**
+ * Events by Pi's names. A throwing `tool_call` handler blocks the call and a throwing `tool_result` handler withholds the
+ * result: guards fail closed, except on Monchu's way to fix a plugin (reloads, and its files by absolute path). Others
+ * are reported and treated as returning nothing.
+ */
 export type PluginEvents = {
   /** Before a tool runs: `block` refuses it with `reason`. Change arguments by mutating `event.input`. */
   tool_call: Handler<ToolCallEvent, { readonly block?: boolean; readonly reason?: string }>;

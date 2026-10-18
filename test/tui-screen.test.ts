@@ -118,12 +118,11 @@ it("shows reload errors, retains settings on failure, and recovers on the next r
     await writeFile(
       path,
       JSON.stringify({
-        settings: { theme: "light" },
-        bogus: 1,
+        settings: { theme: "light", httpIdleTimeoutMs: 0.5 },
       }),
     );
     send(screen, "/reload");
-    await visible(screen, "unknown fields: bogus");
+    await visible(screen, "settings.httpIdleTimeoutMs");
     expect(backend.settings).toBe(settings);
     expect(backend.settings.theme).toBe("dark");
     await writeFile(path, original);

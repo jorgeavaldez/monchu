@@ -47,10 +47,8 @@ import {
   type RootRecord,
 } from "./agents/roots.ts";
 import {
-  defaultConfig,
   isThinkingLevel,
-  loadConfig,
-  type MonchuConfig,
+  loadStartupConfig,
   thinkingLevels,
   type ModelRole,
   type Settings,
@@ -72,7 +70,7 @@ import {
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
-import { Vault, type SecretInput, type SecretStore } from "./secrets/vault.ts";
+import { redact, Vault, type SecretInput, type SecretStore } from "./secrets/vault.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -161,11 +159,14 @@ export class Monchu implements Client {
     });
   }
 
-  /** `secretStore` replaces fnox, for tests and the offline smoke home only. */
+  /**
+   * `secretStore` replaces fnox, for tests and the offline smoke home only. `safe` opens without home plugins, as the
+   * server's supervisor asks once a core with them failed.
+   */
   static async open(
     home: string,
     devProvider?: Provider,
-    options: { secretStore?: SecretStore } = {},
+    options: { secretStore?: SecretStore; safe?: boolean } = {},
   ): Promise<Monchu> {
     home = resolve(home);
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -198,18 +199,12 @@ export class Monchu implements Client {
         phases[name] = Math.round(now - phaseStart);
         phaseStart = now;
       };
-      // A broken config.json must not keep Monchu from opening: the defaults apply and the warning says why.
-      let written: MonchuConfig;
-      try {
-        written = await loadConfig(home);
-      } catch (error) {
-        written = defaultConfig();
-        reports.report(
-          `${error instanceof Error ? error.message : String(error)}. Using the built-in defaults until it is fixed`,
-        );
-      }
+      // A broken config.json must not keep Monchu from opening: what is invalid keeps its default, and says why.
+      const written = await loadStartupConfig(home);
       phase("config");
-      const models = await openModels(home, devProvider, written.claude);
+      const models = await openModels(home, devProvider, written.claude, (warning) =>
+        reports.report(warning),
+      );
       const { config, warnings } = await configuredRoles(models, written);
       for (const warning of warnings) reports.report(warning);
       // Renders start once the harness resumes, after the backend below takes over.
@@ -234,6 +229,7 @@ export class Monchu implements Client {
               reason: error instanceof Error ? error.message : String(error),
             }),
           vault,
+          safe: options.safe ?? false,
         },
       );
       extensions = loaded;
@@ -898,10 +894,10 @@ export class Monchu implements Client {
   }
 
   /** A system notice to the current root's front, after any home check notice before it. */
-  private tellFront(summary: string, text: string): void {
+  private tellFront(summary: string, text: string, requestId?: string): void {
     if (this.closing !== undefined) return;
     this.homeWork = this.homeWork
-      .then(() => this.submitFront(systemNoticeText(summary, text)))
+      .then(() => this.submitFront(systemNoticeText(summary, text), requestId))
       .catch((error: unknown) =>
         this.reports.report(
           `Notice failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -909,7 +905,7 @@ export class Monchu implements Client {
       );
   }
 
-  private async submitFront(content: string): Promise<void> {
+  private async submitFront(content: string, requestId?: string): Promise<void> {
     const current = currentRoot(await this.records());
     if (current === undefined) return;
     const front = await this.root(shortId(current.id)).conversation();
@@ -917,7 +913,7 @@ export class Monchu implements Client {
       {
         type: "input",
         content,
-        requestId: `home-check:${Date.now()}:${++this.homeNotices}`,
+        requestId: requestId ?? `home-check:${Date.now()}:${++this.homeNotices}`,
         whenBusy: "followUp",
       },
       context,
@@ -990,6 +986,26 @@ export class Monchu implements Client {
   /** The entry point's word on the update this process came back from. */
   updated(outcome: string): void {
     this.setRelease({ outcome });
+  }
+
+  /**
+   * The server started this core again after the last one failed (`src/server/process.ts`): every client shows why,
+   * and the current front hears it as a system notice, so it can have the cause fixed. `at` names the failure, so each
+   * core started for the same one sends the same request.
+   */
+  recovered(recovery: { safe: boolean; reason: string; at: number }): void {
+    void (async () => {
+      // A crash's output holds whatever its code printed: stored secrets never reach the front or a client.
+      const reason = redact(recovery.reason, await this.vault.known().catch(() => []));
+      const summary = recovery.safe
+        ? "Monchu restarted in safe mode, without home plugins"
+        : "Monchu's core crashed and restarted";
+      const text = recovery.safe
+        ? `The last core failed: ${reason}\nThis one runs without home plugins (plugins/ and plugins/local/), so no plugin code runs. Work it had accepted resumes. Fix the cause, then a person's /restart loads the plugins again; if they still fail, Monchu comes back in safe mode.`
+        : `The last core failed: ${reason}\nWork it had accepted resumes. Another crash within 10 minutes restarts it in safe mode, without home plugins.`;
+      this.reports.report(`${summary}: ${reason.split("\n")[0] ?? ""}`);
+      this.tellFront(summary, text, `core-recovery:${recovery.at}`);
+    })();
   }
 
   /** A newer edge build, at open and then daily; a failed check is logged, never reported, since it only feeds a hint. */

@@ -62,7 +62,32 @@ export async function runServer(options: {
         code: exit.code ?? -1,
         signal: exit.signal ?? "",
       }),
+    // Work the core accepted waits in its store: the next core resumes it, whether or not a client is there.
+    onCrash: (crash) => {
+      const { restartIn } = crash;
+      log.write("error", "server.process", "core crashed", {
+        reason: crash.reason,
+        safe: crash.safe,
+        restartIn: restartIn ?? -1,
+      });
+      if (restartIn === undefined) {
+        options.say("the core keeps crashing: the next client that needs it starts it");
+        return;
+      }
+      const timer = setTimeout(() => {
+        restarts.delete(timer);
+        // Not while the server stops or installs an update.
+        if (reason !== undefined || updating) return;
+        void server.startCore().catch((error: unknown) =>
+          log.write("error", "server.process", "core restart failed", {
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }, restartIn);
+      restarts.add(timer);
+    },
   });
+  const restarts = new Set<ReturnType<typeof setTimeout>>();
   let site: { url: string; close(): Promise<void> } | undefined;
   let opening: Promise<string> | undefined;
   const openWeb = async (): Promise<string> => {
@@ -160,6 +185,7 @@ export async function runServer(options: {
     clearInterval(idle);
     return end;
   } finally {
+    for (const timer of restarts) clearTimeout(timer);
     // Clients first, so none starts the core again; then the core closes gracefully.
     await site?.close().catch(() => {});
     for (const close of closers.toReversed()) await close().catch(() => {});

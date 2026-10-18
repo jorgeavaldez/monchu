@@ -30,8 +30,8 @@ import {
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { registerHooks } from "node:module";
-import { hostname, userInfo } from "node:os";
-import { join } from "node:path";
+import { homedir, hostname, userInfo } from "node:os";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shortId } from "../api/ids.ts";
 import { noticeText, systemNoticeText } from "../api/notices.ts";
@@ -53,6 +53,7 @@ import {
 import { GoalsDoc } from "./agents/goals.ts";
 import { messageWorker, parentOf, reopenWorker, WorkersDoc } from "./agents/workers.ts";
 import { replaceFile, type MonchuConfig } from "./config.ts";
+import { RELOAD_TOOLS } from "./build.ts";
 import { durableHooks, durableTool, rootUi, type Guard } from "./plugin-shapes.ts";
 import { fillPlaceholders, redacting } from "./secrets/tool.ts";
 import type { Vault } from "./secrets/vault.ts";
@@ -468,6 +469,20 @@ async function withTimeout<T>(
 }
 
 /** The plugins this home and this copy of Monchu hold, and the modules they last loaded. Lives as long as the core. */
+/**
+ * Whether a tool call is part of Monchu's way to fix a broken plugin: a reload, or reading, writing or editing a home
+ * plugin's files or the device's deny list by absolute path. A plugin's handler that throws can't block these.
+ */
+function repairs(home: string, toolName: string, input: Record<string, unknown>): boolean {
+  if (RELOAD_TOOLS.includes(toolName)) return true;
+  if (!["read", "write", "edit"].includes(toolName) || typeof input.path !== "string") return false;
+  const raw = input.path.startsWith("~/") ? join(homedir(), input.path.slice(2)) : input.path;
+  if (!isAbsolute(raw)) return false;
+  const path = resolve(raw);
+  const plugins = join(resolve(home), "plugins");
+  return path === join(resolve(home), LOCAL_FILE) || path.startsWith(plugins + sep);
+}
+
 export class Plugins {
   private readonly home: string;
   private readonly report: (warning: string) => void;
@@ -501,6 +516,9 @@ export class Plugins {
   /** The home's store, once open: `ctx.ui` writes to it. */
   private harness: Harness | undefined;
 
+  /** Safe mode: no home plugin runs, since a core with them failed (see `src/server/process.ts`). */
+  private readonly safe: boolean;
+
   constructor(options: {
     home: string;
     report: (warning: string) => void;
@@ -516,6 +534,7 @@ export class Plugins {
     /** A plugin's fault for the front, beyond the warning every client shows. */
     onFault?: (summary: string, text: string) => void;
     bundledDir?: string;
+    safe?: boolean;
   }) {
     this.home = options.home;
     this.report = options.report;
@@ -525,6 +544,7 @@ export class Plugins {
     this.onFault = options.onFault ?? (() => {});
     this.own = new Set(options.models.getProviders().map((provider) => provider.id));
     this.bundledDir = options.bundledDir ?? fileURLToPath(new URL("../plugins/", import.meta.url));
+    this.safe = options.safe ?? false;
     tellers.add(this);
   }
 
@@ -562,7 +582,7 @@ export class Plugins {
     // A device's own plugin replaces a synced one of the same name, which replaces a bundled one.
     for (const plugin of [...bundled, ...home, ...own]) found.set(plugin.name, plugin);
     const device = await this.local(warnings);
-    const disabled = device.disabled;
+    const disabled = this.safe ? "all" : device.disabled;
     const contributions: Contribution[] = [];
     const instances = new Set<Instance>();
     const ordered = [...found.values()].sort(
@@ -572,7 +592,12 @@ export class Plugins {
     );
     for (const plugin of ordered) {
       if (disabled === "all" ? plugin.source !== "bundled" : disabled.has(plugin.name)) {
-        status.push({ name: plugin.name, source: plugin.source, state: "disabled" });
+        status.push({
+          name: plugin.name,
+          source: plugin.source,
+          state: "disabled",
+          ...(this.safe ? { error: "safe mode" } : {}),
+        });
         continue;
       }
       const loaded = await this.loadOne(
@@ -1022,7 +1047,9 @@ export class Plugins {
     const extension = defineExtension({
       name: found.source === "bundled" ? `monchu.${found.name}` : `${PLUGIN_PREFIX}${found.name}`,
       tools: tools.filter((entry) => entry.exposure === "direct").map((entry) => entry.tool),
-      hooks: durableHooks(handlers, guard, ui),
+      hooks: durableHooks(handlers, guard, ui, (toolName, input) =>
+        repairs(this.home, toolName, input),
+      ),
       tasks,
     });
     try {

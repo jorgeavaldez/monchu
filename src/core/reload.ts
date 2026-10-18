@@ -159,6 +159,8 @@ export class Extensions {
       tellHome?: (problems: readonly string[], from?: ConversationId) => void;
       /** A system notice for the front, such as a plugin's fault. */
       tellFront?: (summary: string, text: string) => void;
+      /** Safe mode: no home plugin runs. */
+      safe?: boolean;
     } = {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
@@ -188,6 +190,7 @@ export class Extensions {
         return extensions.savePluginSettings(name, value, where);
       },
       onFault: (summary, text) => options.tellFront?.(summary, text),
+      safe: options.safe ?? false,
     });
     const registry = createRegistry();
     const host = createHost<Principal>({
@@ -229,6 +232,7 @@ export class Extensions {
       vault,
       plugins,
       homeCheck,
+      startup: () => extensions === undefined,
       validate: (list) => validateExtensions(registry, list),
     };
     host.serve(

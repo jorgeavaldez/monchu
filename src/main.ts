@@ -35,16 +35,21 @@ try {
     // The server's child: it owns the store. Seeding happens here, so its notes reach every client's first screen.
     const seeded = await seedHome(home);
     const { runCore } = await import("./server/child.ts");
+    // Set by the server when the last core failed: safe mode opens without home plugins.
+    const { readRecovery } = await import("./server/process.ts");
+    const recovery = readRecovery(process.env);
+    const safe = recovery?.safe ?? false;
     await runCore(async () => {
       const { Monchu } = await import("./core/backend.ts");
       const backend =
         process.env.MONCHU_DEV_FAUX === "1"
-          ? await (await import("./core/dev-faux.ts")).openDevMonchu(home)
-          : await Monchu.open(home);
+          ? await (await import("./core/dev-faux.ts")).openDevMonchu(home, { safe })
+          : await Monchu.open(home, undefined, { safe });
       backend.addNotes(...seeded);
       // Left by the server this one came back from after /update.
       const updated = process.env.MONCHU_UPDATE_OUTCOME;
       if (updated) backend.updated(updated);
+      if (recovery !== undefined) backend.recovered(recovery);
       return backend;
     });
   } else {

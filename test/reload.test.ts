@@ -362,11 +362,10 @@ describe("in-process reload", () => {
       JSON.stringify({
         ...initial,
         chosen: undefined,
-        settings: { theme: "light", defaultTools: ["fffind"] },
-        bogus: 1,
+        settings: { theme: "light", defaultTools: ["fffind"], httpIdleTimeoutMs: 0.5 },
       }),
     );
-    await expect(extensions.reload()).rejects.toThrow("unknown fields: bogus");
+    await expect(extensions.reload()).rejects.toThrow("settings.httpIdleTimeoutMs");
     expect(extensions.registry.snapshot()).toBe(registry);
     expect(extensions.settings).toBe(settings);
     expect(extensions.config).toBe(initial);

@@ -59,8 +59,8 @@ export default function (monchu: PluginApi) {
 `;
 
 /**
- * Handlers that throw, each reported once: a guard that throws fails closed (the call is blocked, the result withheld);
- * any other handler counts as returning nothing.
+ * Handlers that throw, each reported once: a guard that throws fails closed (the call is blocked, the result withheld),
+ * except for Monchu's way to fix the plugin; any other handler counts as returning nothing.
  */
 const THROWER = `
 export default function (monchu) {
@@ -106,6 +106,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       count: { tool: "note_count", args: {} },
       shell: { tool: "bash", args: { command: "echo hi" } },
       file: { tool: "read", args: { path: "AGENTS.md" } },
+      fix: { tool: "read", args: { path: join(home, "plugins", "thrower", "index.js") } },
       reload: { tool: "reload_extensions", args: {} },
     });
     route(value.faux, (request) => {
@@ -166,6 +167,8 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       expect(await turn(backend, "file")).toContain(
         "A plugin's tool_call guard failed, so the call is blocked.",
       );
+      // A broken guard never blocks the way to fix it: its own files, and the reload below.
+      expect(await turn(backend, "fix")).toContain("call boom");
       const warnings = await logText(home);
       for (const event of ["tool_call", "tool_result", "context", "section broken"])
         expect(warnings.split(`its ${event} handler failed`).length - 1).toBe(1);

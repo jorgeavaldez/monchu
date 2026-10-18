@@ -35,6 +35,11 @@ export type BuildInputs = {
   plugins: Plugins;
   /** The home's last check, which every conversation's tool calls and final answers run. */
   homeCheck: HomeCheck;
+  /**
+   * Whether this is the build Monchu opens with. A home file it can't read falls back then, with a warning, so Monchu
+   * always opens; a reload refuses it instead and keeps what runs.
+   */
+  startup: () => boolean;
   /** Throws when `extensions` could not replace the installed ones, so a failing build changes nothing. */
   validate: (extensions: readonly Extension[]) => void;
 };

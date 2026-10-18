@@ -278,7 +278,9 @@ function object(
 ): asserts value is Record<string, unknown> {
   if (!isObject(value)) throw new Error(`${field} must be an object`);
   const unknown = Object.keys(value).filter((key) => !keys.includes(key));
-  if (unknown.length) throw new Error(`${field}: unknown fields: ${unknown.join(", ")}`);
+  if (unknown.length === 0) return;
+  if (ignoring === undefined) throw new Error(`${field}: unknown fields: ${unknown.join(", ")}`);
+  for (const key of unknown) ignoring.add(`${field}.${key}`);
 }
 
 function integer(value: unknown, field: string, min = 0): number {
@@ -519,11 +521,33 @@ export async function loadWebConfig(home: string): Promise<WebConfig | undefined
   }
 }
 
-/** A missing file means defaults. Invalid content fails startup instead of guessing. */
+/**
+ * A missing file means defaults. An invalid field throws, so a reload refuses it and keeps what runs; unknown keys are
+ * ignored with a warning.
+ */
 export async function loadConfig(home: string): Promise<MonchuConfig> {
   const path = join(home, "config.json");
   const raw = await readRaw(path);
   return raw === undefined ? defaults : parseConfig(parseJson(raw, path), path);
+}
+
+/**
+ * `config.json` as Monchu opens with it, which never throws: a field that is invalid keeps its default and the rest of
+ * the file applies; a file that can't be read or isn't JSON means the defaults. Each says why in `warnings`.
+ */
+export async function loadStartupConfig(home: string): Promise<MonchuConfig> {
+  const path = join(home, "config.json");
+  try {
+    const raw = await readRaw(path);
+    return raw === undefined ? defaults : parseConfig(parseJson(raw, path), path, true);
+  } catch (error) {
+    return {
+      ...defaults,
+      warnings: [
+        `${error instanceof Error ? error.message : String(error)}. Using the built-in defaults until it is fixed`,
+      ],
+    };
+  }
 }
 
 /**
@@ -591,42 +615,90 @@ export async function replaceFile(path: string, value: unknown): Promise<void> {
   }
 }
 
-function parseConfig(value: unknown, path: string): MonchuConfig {
-  try {
-    if (!isObject(value)) throw new Error("expected a JSON object");
-    if ("web" in value) throw new Error("web settings are per device now: move them to web.json");
+/**
+ * Keys `config.json` has that this version doesn't know, collected while `parseConfig` runs: a file another version
+ * of Monchu wrote, one with a setting that moved, or a typo. They are ignored with a warning, never an error, so a
+ * change to the file's shape can't stop any device from reading it.
+ */
+let ignoring: Set<string> | undefined;
 
-    const known = ["front", "worker", "profiles", "plugins", "classifier", "settings", "claude"];
-    const unknown = Object.keys(value).filter((key) => !known.includes(key));
-    if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
-    let claude = defaults.claude;
-    if (value.claude !== undefined) {
-      object(value.claude, "claude", ["executable", "plan", "longContextExtraUsage"]);
-      const plan = value.claude.plan ?? defaults.claude.plan;
-      if (plan !== "pro" && plan !== "max") throw new Error("claude.plan must be pro or max");
-      claude = {
-        executable:
-          value.claude.executable === undefined
-            ? undefined
-            : text(value.claude.executable, "claude.executable"),
-        plan,
-        longContextExtraUsage:
-          value.claude.longContextExtraUsage === undefined
-            ? false
-            : boolean(value.claude.longContextExtraUsage, "claude.longContextExtraUsage"),
-      };
-    }
-    const worker = modelRole(value.worker, "worker", defaults.worker);
+/** `claude`: settings the Claude Code host reads at startup. */
+function claudeConfig(value: unknown): ClaudeConfig {
+  if (value === undefined) return defaults.claude;
+  object(value, "claude", ["executable", "plan", "longContextExtraUsage"]);
+  const plan = value.plan ?? defaults.claude.plan;
+  if (plan !== "pro" && plan !== "max") throw new Error("claude.plan must be pro or max");
+  return {
+    executable:
+      value.executable === undefined ? undefined : text(value.executable, "claude.executable"),
+    plan,
+    longContextExtraUsage:
+      value.longContextExtraUsage === undefined
+        ? false
+        : boolean(value.longContextExtraUsage, "claude.longContextExtraUsage"),
+  };
+}
+
+/**
+ * Read `config.json`'s value. Unknown keys are ignored with a warning. An invalid field throws, unless `fallback`: then
+ * it keeps its default with a warning, and the rest of the file still applies, as at startup.
+ */
+function parseConfig(value: unknown, path: string, fallback = false): MonchuConfig {
+  if (!isObject(value)) {
+    if (!fallback) throw new Error(`Invalid ${path}: expected a JSON object`);
     return {
-      claude,
-      front: modelRole(value.front, "front", defaults.front),
-      worker,
-      profiles: profiles(value.profiles, worker),
-      ...movedClassifier(value.classifier, pluginSettings(value.plugins)),
-      settings: runSettings(value.settings),
-      chosen: { front: value.front !== undefined, worker: value.worker !== undefined },
+      ...defaults,
+      warnings: [
+        `Invalid ${path}: expected a JSON object. Using the built-in defaults until it is fixed`,
+      ],
     };
-  } catch (error) {
-    throw new Error(`Invalid ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const invalid: string[] = [];
+  /** One field of the file: its default when it is invalid. */
+  const field = <T>(parse: () => T, otherwise: T): { value: T; valid: boolean } => {
+    try {
+      return { value: parse(), valid: true };
+    } catch (error) {
+      invalid.push(error instanceof Error ? error.message : String(error));
+      return { value: otherwise, valid: false };
+    }
+  };
+  const known = ["front", "worker", "profiles", "plugins", "classifier", "settings", "claude"];
+  const warnings: string[] = [];
+  if ("web" in value)
+    warnings.push(`${path}: "web" is ignored: web settings are per device now, in web.json`);
+  ignoring = new Set(Object.keys(value).filter((key) => key !== "web" && !known.includes(key)));
+  try {
+    const claude = field(() => claudeConfig(value.claude), defaults.claude);
+    const worker = field(() => modelRole(value.worker, "worker", defaults.worker), defaults.worker);
+    const front = field(() => modelRole(value.front, "front", defaults.front), defaults.front);
+    const workerProfiles = field(() => profiles(value.profiles, worker.value), {});
+    const plugins = field(() => movedClassifier(value.classifier, pluginSettings(value.plugins)), {
+      plugins: {},
+    });
+    const settings = field(() => runSettings(value.settings), {});
+    if (invalid.length > 0 && !fallback) throw new Error(`Invalid ${path}: ${invalid.join("; ")}`);
+    for (const problem of invalid)
+      warnings.push(`Invalid ${path}: ${problem}. Using its default until it is fixed`);
+    if (ignoring.size > 0)
+      warnings.push(
+        `${path}: ignored ${[...ignoring].map((key) => `"${key}"`).join(", ")}, which this version of Monchu doesn't know`,
+      );
+    warnings.push(...(plugins.value.warnings ?? []));
+    return {
+      claude: claude.value,
+      front: front.value,
+      worker: worker.value,
+      profiles: workerProfiles.value,
+      plugins: plugins.value.plugins,
+      settings: settings.value,
+      chosen: {
+        front: value.front !== undefined && front.valid,
+        worker: value.worker !== undefined && worker.valid,
+      },
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+  } finally {
+    ignoring = undefined;
   }
 }
