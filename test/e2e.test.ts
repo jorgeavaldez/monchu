@@ -162,6 +162,27 @@ async function ok(tool: string, args: object): Promise<string> {
   return result.text;
 }
 
+/**
+ * A person's /restart, back once the client reaches the new core: calls fail until it holds its root there again
+ * (`src/api/lasting.ts`), as the wire contract says.
+ */
+async function restart(): Promise<void> {
+  const reconnects = monchu.reports.filter((report) => report === "reconnected to Monchu").length;
+  await monchu.client.restart();
+  await waitFor(
+    () => monchu.reports.filter((report) => report === "reconnected to Monchu").length > reconnects,
+    60_000,
+  );
+  await waitFor(
+    () =>
+      monchu.root.workers().then(
+        () => true,
+        () => false,
+      ),
+    30_000,
+  );
+}
+
 /** What the front's model was given: its tools and prompt section names. */
 async function prompt() {
   const [tools = "", sections = ""] = (await ask("prompt", "Faux prompt")).split("\n");
@@ -393,8 +414,7 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     await ok("request_restart", { reason: "e2e asks" });
     expect(await section("restart_request")).toContain("Restart requested: e2e asks");
     const before = texts().length;
-    await monchu.client.restart();
-    await waitFor(() => monchu.reports.includes("reconnected to Monchu"), 60_000);
+    await restart();
     // The same view goes on: what was there stays, and the new core answers into it.
     expect(texts().length).toBeGreaterThanOrEqual(before);
     await ask("after restart");
@@ -481,8 +501,7 @@ describe.skipIf(!installed("fnox"))(
       expect(used).toContain("matched");
       expect(used).toContain("[secret FNOX_E2E]");
       // A new core reads it back from fnox: nothing held it in memory.
-      await monchu.client.restart();
-      await waitFor(() => monchu.reports.includes("reconnected to Monchu"), 60_000);
+      await restart();
       expect(await ok("bash", { command: check })).toContain("matched");
       expect(await ok("secret", { action: "list" })).toContain("FNOX_E2E");
       expect(JSON.stringify(monchu.messages())).not.toContain(value);
