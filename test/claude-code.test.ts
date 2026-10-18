@@ -169,6 +169,7 @@ describe("Claude Code subscription provider", () => {
         CLAUDE_CONFIG_DIR: join(value.directory, "claude"),
         CLAUDE_CODE_OAUTH_TOKEN: token,
         CLAUDE_CODE_MAX_RETRIES: "0",
+        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: "1",
       },
     });
   });

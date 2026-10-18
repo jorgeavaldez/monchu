@@ -569,6 +569,8 @@ export function createClaudeCodeProvider(
             CLAUDE_CODE_REFUSAL_FALLBACK_CATCH_ALL: "0",
             CLAUDE_CODE_MAX_RETRIES: "0",
             CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES: "0",
+            // A failed stream would otherwise be re-sent without streaming: no stream events, only heartbeat pings.
+            CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: "1",
             CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(options.maxTokens ?? model.maxTokens),
           });
           if (options.timeoutMs !== undefined) env.API_TIMEOUT_MS = String(options.timeoutMs);
@@ -754,8 +756,15 @@ export function createClaudeCodeProvider(
                   throw new Error("Claude Code attempted internal compaction; request stopped");
                 if (message.type === "system" && message.subtype === "model_refusal_fallback")
                   throw new Error("Claude Code attempted a fallback model; request stopped");
-                if (message.type === "assistant" && message.error !== undefined)
-                  throw new Error(`Claude Code rejected the request: ${message.error}`);
+                if (message.type === "assistant" && message.error !== undefined) {
+                  // The text names the cause ("API Error: Connection to the API was lost"), which Durable's retry reads.
+                  const text = message.message.content
+                    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                    .join(" ");
+                  throw new Error(
+                    `Claude Code rejected the request: ${message.error}${text ? `: ${text}` : ""}`,
+                  );
+                }
                 if (message.type === "result") endInput();
                 events.push({ message });
               }

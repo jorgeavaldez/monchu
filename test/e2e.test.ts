@@ -696,9 +696,10 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
   () => {
     afterAll(cleanup);
 
-    it("survives a bare tool name: Claude Code says No such tool, the model retries in the same reply", async () => {
+    it("survives a dropped stream and a bare tool name: Durable retries the first, Claude Code answers the second in the same reply", async () => {
       const home = await smokeHome();
       const seen: { tools: string[]; last: string }[] = [];
+      let dropped = false;
       const api = createServer((request, response) => {
         let body = "";
         request.on("data", (chunk: Buffer) => (body += chunk.toString()));
@@ -723,6 +724,13 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
           if (!names.includes("mcp__monchu__codemode"))
             return streamed(response, [{ type: "text", text: "side" }], "end_turn");
           seen.push({ tools: names, last });
+          // The connection drops once after the headers: Claude Code must not re-send it without streaming.
+          if (!dropped) {
+            dropped = true;
+            response.writeHead(200, { "content-type": "text/event-stream" }).flushHeaders();
+            setTimeout(() => response.destroy(), 100);
+            return;
+          }
           if (last.includes("toolu_full"))
             return streamed(response, [{ type: "text", text: "bare retry done" }], "end_turn");
           if (last.includes("toolu_bare"))
@@ -798,7 +806,15 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
         const rejected = seen.find((each) => each.last.includes("toolu_bare"))?.last ?? "";
         console.log(`Claude Code's own answer to the bare call: ${rejected}`);
         expect(rejected).toMatch(/No such tool available: codemode/);
-        // Durable ran the full-name call once, and nothing in the transcript is an error.
+        // The dropped stream came back as Claude Code's own retryable error, which Durable retried.
+        const errors = all().flatMap((message) =>
+          message.role === "assistant" && message.stopReason === "error"
+            ? [message.errorMessage ?? ""]
+            : [],
+        );
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toMatch(/rejected the request: server_error: API Error: Connection/);
+        // Durable ran the full-name call once, and no other transcript entry is an error.
         const runs = all().filter(
           (message): message is ToolResultMessage =>
             message.role === "toolResult" && message.toolName === "codemode",
