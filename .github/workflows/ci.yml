@@ -34,10 +34,19 @@ jobs:
 
   # The web client in a real browser, compared with the newest successful run on main.
   web:
+    name: web (${{ matrix.screen }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - screen: phone
+            viewport: 412x915
+          - screen: desktop
+            viewport: 1280x800
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
@@ -47,14 +56,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run="$(gh run list --workflow ci --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')"
-          if [ -n "$run" ]; then gh run download "$run" --name web-check --dir baseline || true; fi
-      - run: mise run web:check -- --baseline baseline
+          if [ -n "$run" ]; then gh run download "$run" --name web-check-${{ matrix.screen }} --dir baseline || true; fi
+      - run: mise run web:check -- --baseline baseline --viewport ${{ matrix.viewport }} --runs 3
       - if: always()
         run: cat web-check/summary.md >> "$GITHUB_STEP_SUMMARY" || true
       - if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: web-check
+          name: web-check-${{ matrix.screen }}
           path: web-check
 
   package:

@@ -4,8 +4,9 @@
  * out dir: `report.json`, `summary.md`, and per screen an accessibility snapshot and a screenshot. Hard gates fail the
  * run; with `--baseline <dir>` (an earlier run's out dir) it also compares metrics, snapshots and pixels.
  *
- *   node scripts/web-check.ts [--out web-check] [--baseline <dir>] [--viewport 412x915] [--only <journey>]
+ *   node scripts/web-check.ts [--out web-check] [--baseline <dir>] [--viewport 412x915] [--runs 1] [--only <journey>]
  *
+ * `--runs` repeats every journey on a fresh core and reports each metric's median; a gate fails if any run failed it.
  * `--only` runs the load journey and the ones whose name starts with it, for working on one.
  *
  * Needs `agent-browser` on PATH with a browser it can launch. Nothing here touches a real home or a model provider.
@@ -31,12 +32,17 @@ const { values: args } = parseArgs({
     baseline: { type: "string" },
     viewport: { type: "string", default: "412x915" },
     only: { type: "string" },
+    runs: { type: "string", default: "1" },
   },
 });
 const OUT = resolve(args.out);
 const BASELINE = args.baseline === undefined ? undefined : resolve(args.baseline);
 const [WIDTH = 0, HEIGHT = 0] = args.viewport.split("x").map(Number);
 if (!(WIDTH > 0 && HEIGHT > 0)) throw new Error("--viewport is <width>x<height>, like 412x915");
+const RUNS = Number(args.runs);
+if (!(Number.isInteger(RUNS) && RUNS >= 1)) throw new Error("--runs is a whole number from 1");
+/** The smallest tap target: a finger's 44 px on a phone-sized screen, WCAG's 24 px minimum on a wider one. */
+const TARGET_PX = WIDTH <= 600 ? 44 : 24;
 
 type Data = Record<string, unknown>;
 const isData = (value: unknown): value is Data =>
@@ -249,7 +255,14 @@ async function startCore(home: string, port: number, issuer: string): Promise<Ch
     JSON.stringify({ port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] }),
   );
   const core = spawn(process.execPath, [join(ROOT, "src", "main.ts"), "serve", "--web"], {
-    env: { ...process.env, MONCHU_DEV_FAUX: "1", MONCHU_DEV_HOME: home },
+    // None of the Monchu this runs under: an update's outcome or a home it names would show in the page.
+    env: {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.startsWith("MONCHU_")),
+      ),
+      MONCHU_DEV_FAUX: "1",
+      MONCHU_DEV_HOME: home,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -282,8 +295,11 @@ async function stopCore(core: ChildProcess): Promise<void> {
 }
 
 type Violation = { id: string; impact: string; nodes: number; targets: string[] };
+/** What the layout probe found on one screen: each a few words naming the element, the first few kept. */
+type Layout = { smallTargets: string[]; smallInputFonts: string[]; overlaps: string[] };
 type Screen = {
   violations: Violation[];
+  layout?: Layout;
   mismatchPct?: number;
   added?: string[];
   removed?: string[];
@@ -291,6 +307,7 @@ type Screen = {
 type Report = {
   version: 1;
   viewport: string;
+  runs: number;
   gates: { name: string; ok: boolean; detail: string }[];
   metrics: Record<string, number>;
   screens: Record<string, Screen>;
@@ -299,6 +316,7 @@ type Report = {
 const report: Report = {
   version: 1,
   viewport: `${WIDTH}x${HEIGHT}`,
+  runs: RUNS,
   gates: [],
   metrics: {},
   screens: {},
@@ -336,7 +354,14 @@ async function readBaseline(): Promise<Report | undefined> {
           : [],
       ),
     };
-  return { version: 1, viewport: text(parsed.viewport), gates: [], metrics, screens };
+  return {
+    version: 1,
+    viewport: text(parsed.viewport),
+    runs: number(parsed.runs) ?? 1,
+    gates: [],
+    metrics,
+    screens,
+  };
 }
 
 /** Lines in one text and not the other, counted as multisets, so moved lines don't count. */
@@ -370,10 +395,46 @@ function normalize(home: string, origin: string): Promise<unknown> {
   })()`);
 }
 
+/**
+ * Layout faults axe doesn't see, on what is rendered now: tap targets smaller than `TARGET_PX` either way (links inside
+ * text are exempt, as in WCAG), text fields under 16 px (a phone zooms into them on focus), and controls whose boxes
+ * cover each other's.
+ */
+async function layoutProbe(): Promise<Layout> {
+  const found = await page(`(() => {
+    const name = (item) => item.tagName.toLowerCase() + (item.className && typeof item.className === "string" ? "." + item.className.trim().split(/\\s+/).join(".") : "") + (item.getAttribute("aria-label") ? "[" + item.getAttribute("aria-label") + "]" : item.textContent.trim() ? " " + JSON.stringify(item.textContent.trim().slice(0, 20)) : "");
+    const shown = [...document.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=option], [tabindex]:not([tabindex='-1'])")].filter((item) => {
+      const box = item.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && getComputedStyle(item).visibility !== "hidden" && !item.closest("[inert], [aria-hidden=true]");
+    });
+    const controls = shown.filter((item) => !(item.matches("a") && item.closest(".md, .body, .help, p")) && !item.matches(".pick, .transcript, [role=listbox]"));
+    const smallTargets = controls.filter((item) => { const box = item.getBoundingClientRect(); return Math.min(box.width, box.height) < ${TARGET_PX} - 0.5; }).map(name);
+    const smallInputFonts = shown.filter((item) => item.matches("input, textarea, select") && parseFloat(getComputedStyle(item).fontSize) < 16).map(name);
+    const overlaps = [];
+    for (let at = 0; at < controls.length; at++)
+      for (let next = at + 1; next < controls.length; next++) {
+        const one = controls[at], two = controls[next];
+        if (one.contains(two) || two.contains(one)) continue;
+        const a = one.getBoundingClientRect(), b = two.getBoundingClientRect();
+        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) overlaps.push(name(one) + " × " + name(two));
+      }
+    return { smallTargets, smallInputFonts, overlaps };
+  })()`);
+  const strings = (value: unknown) => list(value).map(text);
+  return {
+    smallTargets: strings(isData(found) ? found.smallTargets : undefined),
+    smallInputFonts: strings(isData(found) ? found.smallInputFonts : undefined),
+    overlaps: strings(isData(found) ? found.overlaps : undefined),
+  };
+}
+
 /** Snapshot, screenshot, accessibility audit and layout check of what the page shows now. */
 async function capture(name: string, home: string, origin: string): Promise<void> {
   await normalize(home, origin);
-  const snapshot = text((await browser("snapshot", "-c")).snapshot).replace(/ \[ref=e\d+\]/g, "");
+  const snapshot = text((await browser("snapshot", "-c")).snapshot).replace(
+    / \[ref=e\d+\]|, ref=e\d+/g,
+    "",
+  );
   await writeFile(join(OUT, `${name}.snapshot.txt`), snapshot);
   await browser("screenshot", join(OUT, `${name}.png`));
   const audit = await browser("a11y");
@@ -394,6 +455,7 @@ async function capture(name: string, home: string, origin: string): Promise<void
         : [],
     ),
   };
+  screen.layout = await layoutProbe();
   report.screens[name] = screen;
   const overflow = number(await page("document.documentElement.scrollWidth - innerWidth")) ?? 0;
   gate(`${name}: no horizontal overflow`, overflow <= 0, `${overflow} px wider than the viewport`);
@@ -803,7 +865,8 @@ async function journeys(url: string, home: string, origin: string): Promise<void
       );
       check(
         (await page(
-          `(({ scrollWidth, clientWidth }) => scrollWidth > clientWidth)(${reply}.querySelector("pre.code"))`,
+          // Each line of code on one line, and a scrollbar for what is wider than the screen: at any width.
+          `((pre) => { const code = pre.querySelector("code") ?? pre, style = getComputedStyle(pre); const lines = code.textContent.replace(/\\n$/, "").split("\\n").length; return code.getBoundingClientRect().height <= lines * parseFloat(style.lineHeight) + 1 && ["auto", "scroll"].includes(style.overflowX); })(${reply}.querySelector("pre.code"))`,
         )) === true,
         "a wide code block wraps instead of scrolling",
       );
@@ -1325,6 +1388,100 @@ async function journeys(url: string, home: string, origin: string): Promise<void
   );
 
   await journey(
+    "worker: a delegated worker gets a tab, its report a card, its view a tap",
+    async () => {
+      await browser("fill", "textarea", "work reader check the docs");
+      await browser("press", "Enter");
+      const card = `[...document.querySelectorAll(".card.report")].find((item) => item.querySelector("header b")?.textContent === "reader")`;
+      await browser("wait", "--fn", `!!(${card}) && !document.querySelector(".live")`);
+      check(
+        (await page(`${card}.textContent.includes("Faux worker result")`)) === true,
+        "the report card doesn't carry the worker's result",
+      );
+      check(
+        (await page(`!!${card}.querySelector("header .stamp .prefix")`)) === true,
+        "the report card has no short id",
+      );
+      const tab = `[...document.querySelectorAll(".agents .tabs button")].find((item) => item.textContent.includes("reader"))`;
+      check((await page(`!!(${tab})`)) === true, "no tab for the worker");
+      await capture("worker-report", home, origin);
+      const opened = performance.now();
+      await page(`(${tab}).click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `(${tab}).classList.contains("on") && document.querySelector(".transcript")?.textContent.includes("check the docs")`,
+      );
+      report.metrics["worker.viewMs"] = ms(opened);
+      await capture("worker-view", home, origin);
+      await page(`document.querySelector(".agents .tabs button").click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".agents .tabs button").classList.contains("on") && !!(${card})`,
+      );
+      return "a tab for reader, its report folded into a card with its id, its own view and back";
+    },
+  );
+
+  await journey(
+    "login: /login lists the providers and Esc cancels without signing in",
+    async () => {
+      await browser("fill", "textarea", "/login");
+      await browser("press", "Enter");
+      if ((await page(`!!document.querySelector(".pick li")`)) !== true)
+        await browser("press", "Enter");
+      await browser("wait", ".pick li");
+      check(
+        (await page(`document.querySelector(".pick header").textContent.includes("provider")`)) ===
+          true,
+        "the picker doesn't ask for a provider",
+      );
+      const providers = Number(await page(`document.querySelectorAll(".pick li").length`));
+      check(providers > 1, `only ${providers} provider to pick`);
+      await capture("login", home, origin);
+      await browser("press", "Escape");
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".pick") && !document.querySelector(".login") && document.querySelector("textarea")`,
+      );
+      return `${providers} providers offered; Esc left with no sign-in started`;
+    },
+  );
+
+  await journey(
+    "restart: /restart brings the page back connected on the same transcript",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const sent = Number(await page(replies));
+      await browser("fill", "textarea", "before restart");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `${replies} > ${sent} && !document.querySelector(".live")`);
+      const asked = performance.now();
+      await browser("fill", "textarea", "/restart");
+      await browser("press", "Enter");
+      if ((await page(`document.querySelector("textarea").value`)) !== "")
+        await browser("press", "Enter");
+      await browser("wait", "--fn", `document.querySelector(".link")?.dataset.state !== "live"`);
+      await browser("wait", "--fn", `document.querySelector(".link")?.dataset.state === "live"`);
+      report.metrics["restart.backMs"] = ms(asked);
+      check(
+        (await page(
+          `document.querySelector(".transcript").textContent.includes("before restart")`,
+        )) === true,
+        "the transcript before the restart is gone",
+      );
+      const before = Number(await page(replies));
+      await browser("fill", "textarea", "after restart");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      await capture("restart", home, origin);
+      return `back and answering in ${report.metrics["restart.backMs"]} ms`;
+    },
+  );
+
+  await journey(
     "typing: keystrokes keep up on a long transcript, also while a reply streams",
     typing,
   );
@@ -1355,8 +1512,11 @@ function worse(key: string, before: number, after: number): boolean {
   return after > before + 0.01;
 }
 
-function summarize(baseline: Report | undefined): string {
-  const lines = [`# web-check · ${report.viewport}`, ""];
+function summarize(baseline: Report | undefined, spread: Record<string, string>): string {
+  const lines = [
+    `# web-check · ${report.viewport}${report.runs > 1 ? ` · median of ${report.runs} runs` : ""}`,
+    "",
+  ];
   const failed = report.gates.filter((item) => !item.ok);
   lines.push(
     failed.length === 0
@@ -1368,14 +1528,15 @@ function summarize(baseline: Report | undefined): string {
   lines.push("", baseline === undefined ? "metrics:" : "metrics (baseline → now):");
   for (const [key, value] of Object.entries(report.metrics)) {
     const before = baseline?.metrics[key];
-    if (before === undefined) lines.push(`- ${key} ${value}`);
+    const range = spread[key] === undefined ? "" : ` [${spread[key]}]`;
+    if (before === undefined) lines.push(`- ${key} ${value}${range}`);
     else {
       const change =
         before === 0
           ? ""
           : ` (${value >= before ? "+" : ""}${Math.round(((value - before) / before) * 100)}%)`;
       lines.push(
-        `- ${key} ${before} → ${value}${change}${worse(key, before, value) ? " WORSE" : ""}`,
+        `- ${key} ${before} → ${value}${change}${range}${worse(key, before, value) ? " WORSE" : ""}`,
       );
     }
   }
@@ -1391,6 +1552,19 @@ function summarize(baseline: Report | undefined): string {
     if (screen.mismatchPct !== undefined) parts.push(`pixels ${screen.mismatchPct}% changed`);
     if (screen.added !== undefined && screen.removed !== undefined)
       parts.push(`snapshot +${screen.added.length} −${screen.removed.length}`);
+    const layout = screen.layout;
+    if (layout !== undefined) {
+      const faults = [
+        [layout.smallTargets, `under ${TARGET_PX} px`],
+        [layout.smallInputFonts, "under 16 px text"],
+        [layout.overlaps, "overlapping"],
+      ] as const;
+      for (const [found, what] of faults)
+        if (found.length > 0)
+          parts.push(
+            `${found.length} ${what}: ${found.slice(0, 4).join(", ")}${found.length > 4 ? ", …" : ""}`,
+          );
+    }
     lines.push(`- ${name}: ${parts.join(" · ")}`);
     for (const line of (screen.removed ?? []).slice(0, 12)) lines.push(`  - \`− ${line.trim()}\``);
     for (const line of (screen.added ?? []).slice(0, 12)) lines.push(`  - \`+ ${line.trim()}\``);
@@ -1423,24 +1597,78 @@ await mkdir(OUT, { recursive: true });
 const baseline = await readBaseline();
 if (BASELINE !== undefined && baseline === undefined)
   console.log(`web-check · no report in ${BASELINE}; running without a baseline`);
-const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
-const idp = await identityProvider();
-let core: ChildProcess | undefined;
+
+/** One pass of every journey on a fresh home and core, adding its gates and metrics to the report. */
+async function run(): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
+  const idp = await identityProvider();
+  let core: ChildProcess | undefined;
+  try {
+    const port = await freePort();
+    core = await startCore(home, port, idp.issuer);
+    await journeys(`http://127.0.0.1:${port}/`, home, `127.0.0.1:${port}`);
+  } catch (error) {
+    gate("run", false, error instanceof Error ? error.message : String(error));
+  } finally {
+    await browser("close").catch(() => undefined);
+    if (core !== undefined) await stopCore(core);
+    idp.server.close();
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+const median = (values: number[]) => {
+  const sorted = values.toSorted((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[middle] ?? 0)
+    : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+};
+
 try {
   await bundle();
-  const port = await freePort();
-  core = await startCore(home, port, idp.issuer);
-  await journeys(`http://127.0.0.1:${port}/`, home, `127.0.0.1:${port}`);
 } catch (error) {
-  gate("run", false, error instanceof Error ? error.message : String(error));
-} finally {
-  await browser("close").catch(() => undefined);
-  if (core !== undefined) await stopCore(core);
-  idp.server.close();
-  await rm(home, { recursive: true, force: true });
+  gate(
+    "web build within its budget",
+    false,
+    error instanceof Error ? error.message : String(error),
+  );
 }
+// Every run's gates, merged by name: one fails if any run failed it. Screens keep the last run's captures.
+const built = { gates: report.gates, metrics: report.metrics };
+const gates = new Map(built.gates.map((item) => [item.name, item]));
+const samples = new Map<string, number[]>();
+if (built.gates.every((item) => item.ok))
+  for (let at = 1; at <= RUNS; at++) {
+    report.gates = [];
+    report.metrics = {};
+    await run();
+    for (const item of report.gates) {
+      const seen = gates.get(item.name);
+      const where = RUNS > 1 ? ` (run ${at} of ${RUNS})` : "";
+      if (seen === undefined)
+        gates.set(item.name, { ...item, detail: item.detail + (item.ok ? "" : where) });
+      else if (seen.ok && !item.ok) gates.set(item.name, { ...item, detail: item.detail + where });
+    }
+    for (const [key, value] of Object.entries(report.metrics))
+      samples.set(key, [...(samples.get(key) ?? []), value]);
+  }
+report.gates = [...gates.values()];
+report.metrics = { ...built.metrics };
+const spread: Record<string, string> = {};
+for (const [key, values] of samples) {
+  report.metrics[key] = Math.round(median(values) * 1000) / 1000;
+  if (values.length > 1) spread[key] = `${Math.min(...values)}–${Math.max(...values)}`;
+}
+// Layout faults over every screen, as tracked metrics: deterministic, so any rise counts.
+const screens = Object.values(report.screens);
+for (const key of ["smallTargets", "smallInputFonts", "overlaps"] as const)
+  report.metrics[`layout.${key}`] = screens.reduce(
+    (sum, screen) => sum + (screen.layout?.[key].length ?? 0),
+    0,
+  );
 auditGates(baseline);
-const summary = summarize(baseline);
+const summary = summarize(baseline, spread);
 await writeFile(join(OUT, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
 await writeFile(join(OUT, "summary.md"), summary);
 process.stdout.write(summary);
