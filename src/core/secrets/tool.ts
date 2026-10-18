@@ -6,6 +6,9 @@
 import type { Context } from "@earendil-works/chord";
 import { isJsonValue, type JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import {
   defineExtension,
   defineTool,
@@ -124,7 +127,9 @@ export async function fillPlaceholders(
   for (const key of keys) {
     const owner = await vault.owner(key);
     if (owner === undefined)
-      throw new Error(`No secret ${key}: ask the user for it with the secret tool (request)`);
+      throw new Error(
+        `No secret ${key}: import it from a file or ask the user for it with the secret tool`,
+      );
     owners.push(owner);
   }
   const sited = owners.filter((owner) => owner.site !== undefined);
@@ -204,8 +209,40 @@ async function asker(api: ToolExecutionApi, context: Context): Promise<string> {
   }, context);
 }
 
+/** Largest file `import` reads: a token or key file, or a `.env`, not a document. */
+const IMPORT_MAX_BYTES = 65_536;
+
+/** `KEY=value` in a dotenv-style file, optionally after `export`; quotes around the value are dropped. */
+function dotenvValue(text: string, key: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(line);
+    if (match?.[1] !== key) continue;
+    const raw = (match[2] ?? "").trim();
+    const quoted = /^(["'])(.*)\1$/.exec(raw);
+    return quoted?.[2] ?? raw;
+  }
+  return undefined;
+}
+
+/**
+ * The value `import` stores: the whole file without its trailing newline, or one `key` of a dotenv-style file. Errors
+ * name the path and key, never the file's contents.
+ */
+async function importedValue(path: string, key: string | undefined): Promise<string> {
+  const resolved = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+  if (!isAbsolute(resolved)) throw new Error("import needs an absolute path (or one under ~/)");
+  const size = (await stat(resolved)).size;
+  if (size > IMPORT_MAX_BYTES)
+    throw new Error(`${path} is ${size} bytes; import reads at most ${IMPORT_MAX_BYTES}`);
+  const text = await readFile(resolved, "utf8");
+  if (key === undefined) return text.replace(/\r?\n$/, "");
+  const value = dotenvValue(text, key);
+  if (value === undefined) throw new Error(`${path} has no ${key}= line`);
+  return value;
+}
+
 const DESCRIPTION =
-  "Credentials by name, never by value. `request` asks the user for a secret (an API key or token: kind value; a site's username and password: kind login) in their signed-in Monchu client and returns at once: you get a notice when it is set or declined, so carry on with other work or end your turn meanwhile. `list` shows stored names, pending requests and last use. To use a secret, write `$NAME` in a bash command (`$env:NAME` in powershell): Monchu puts that secret in the command's environment only. A login NAME gives NAME_USERNAME and NAME_PASSWORD. In agent_browser arguments write `{{secret:NAME}}`; a login with a site fills only on that site. Values never reach you: output containing one shows [secret NAME]. Never ask the user to paste a secret into chat.";
+  "Credentials by name, never by value. `import` stores a value that is already in a local file without you or the user seeing it: the whole file, or with `key` one KEY=value line of a .env-style file; use it before asking the user for anything you can find on disk. `request` asks the user for a secret (an API key or token: kind value; a site's username and password: kind login) in their signed-in Monchu client and returns at once: you get a notice when it is set or declined, so carry on with other work or end your turn meanwhile. `list` shows stored names, pending requests and last use. To use a secret, write `$NAME` in a bash command (`$env:NAME` in powershell): Monchu puts that secret in the command's environment only. A login NAME gives NAME_USERNAME and NAME_PASSWORD. In agent_browser arguments write `{{secret:NAME}}`; a login with a site fills only on that site. Values never reach you: output containing one shows [secret NAME]. Never ask the user to paste a secret into chat.";
 
 /** The `secret` tool and the redaction of every tool result. */
 export function createSecrets(vault: Vault) {
@@ -217,12 +254,31 @@ export function createSecrets(vault: Vault) {
         description: DESCRIPTION,
         parameters: Type.Object(
           {
-            action: Type.Union([Type.Literal("request"), Type.Literal("list")]),
+            action: Type.Union([
+              Type.Literal("request"),
+              Type.Literal("import"),
+              Type.Literal("list"),
+            ]),
             name: Type.Optional(
-              Type.String({ description: "For request: env-var shaped, such as GITHUB_TOKEN" }),
+              Type.String({
+                description: "For request and import: env-var shaped, such as GITHUB_TOKEN",
+              }),
             ),
             reason: Type.Optional(
-              Type.String({ description: "For request: what it is for, as the user will read it" }),
+              Type.String({
+                description:
+                  "For request: what it is for, as the user will read it. For import: an optional description",
+              }),
+            ),
+            path: Type.Optional(
+              Type.String({
+                description: "For import: the file holding the value, absolute or ~/",
+              }),
+            ),
+            key: Type.Optional(
+              Type.String({
+                description: "For import: read only this KEY=value line of a .env-style file",
+              }),
             ),
             kind: Type.Optional(Type.Union([Type.Literal("value"), Type.Literal("login")])),
             site: Type.Optional(
@@ -263,8 +319,25 @@ export function createSecrets(vault: Vault) {
           const name = args.name ?? "";
           if (!SECRET_NAME.test(name))
             throw new Error(
-              "request needs a name: A-Z, 0-9 and _, starting with a letter, at most 64",
+              `${args.action} needs a name: A-Z, 0-9 and _, starting with a letter, at most 64`,
             );
+          if (args.action === "import") {
+            if (args.path === undefined || args.path === "")
+              throw new Error("import needs the path of the file holding the value");
+            if ((args.kind ?? "value") !== "value")
+              throw new Error("import stores a value; a login comes in with request");
+            const value = await importedValue(args.path, args.key);
+            const description = args.reason?.trim();
+            await vault.set({
+              name,
+              kind: "value",
+              value,
+              ...(description === undefined || description === "" ? {} : { description }),
+            });
+            return text(
+              `Stored ${name} from ${args.path}${args.key === undefined ? "" : ` (${args.key})`}. Use it as $${name}. The file still holds the value: delete it only if you made it or the user says so.`,
+            );
+          }
           const reason = args.reason?.trim() ?? "";
           if (reason === "") throw new Error("request needs a reason the user will read");
           const kind = args.kind ?? "value";

@@ -1,6 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -208,6 +208,47 @@ describe("secrets in tools", () => {
     expect(outputs[1]).toContain('"name":"API_TOKEN"');
     expect(outputs.join("\n")).not.toContain(secret);
     expect(await storeBytes(value.directory)).not.toContain(secret);
+  });
+
+  it("imports a value from a file or one line of a .env, never showing it", async () => {
+    const value = await setup();
+    value.registry.install(createSecrets(value.vault));
+    const files = await mkdtemp(join(tmpdir(), "monchu-import-"));
+    await writeFile(join(files, "token"), "file-token-value\n");
+    await writeFile(join(files, ".env"), 'OTHER=x\nexport API_KEY="env-key-value"\n');
+    const outputs = script(value, [
+      fauxToolCall("secret", { action: "import", name: "FILE_TOKEN", path: join(files, "token") }),
+      fauxToolCall("secret", {
+        action: "import",
+        name: "API_KEY",
+        path: join(files, ".env"),
+        key: "API_KEY",
+      }),
+      fauxToolCall("secret", {
+        action: "import",
+        name: "MISSING",
+        path: join(files, ".env"),
+        key: "NOPE",
+      }),
+      fauxToolCall("bash", { command: 'printf "%s|%s" "$FILE_TOKEN" "$API_KEY"' }),
+    ]);
+    const { harness, root } = await open(value);
+    try {
+      for (const content of ["file", "env", "missing", "use"])
+        await (await root.submit({ type: "input", content }, context)).wait(context);
+    } finally {
+      await harness.close(context);
+      await rm(files, { recursive: true, force: true });
+    }
+    expect(outputs[0]).toMatch(/^Stored FILE_TOKEN from /);
+    expect(outputs[1]).toMatch(/^Stored API_KEY from .* \(API_KEY\)/);
+    expect(outputs[2]).toContain("has no NOPE= line");
+    expect(outputs[3]).toBe("[secret FILE_TOKEN]|[secret API_KEY]");
+    expect(
+      await value.vault.resolve(["FILE_TOKEN", "API_KEY"], { tool: "t", conversation: "c" }),
+    ).toEqual({ FILE_TOKEN: "file-token-value", API_KEY: "env-key-value" });
+    expect(outputs.join("\n")).not.toMatch(/file-token-value|env-key-value/);
+    expect(await storeBytes(value.directory)).not.toMatch(/file-token-value|env-key-value/);
   });
 
   it("asks for a secret without waiting, and tells whoever asked once it is set", async () => {
