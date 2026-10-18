@@ -177,3 +177,17 @@ export function contextUsage(view: ConversationView): ContextUsage {
   usages.set(view.entries, usage);
   return usage;
 }
+
+/** A duration compactly: 40s, 12m, 3h, 5d. */
+export function span(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+/** Time since a change, compactly: 40s, 12m, 3h, 5d. */
+export function age(since: number): string {
+  return span(Date.now() - since);
+}

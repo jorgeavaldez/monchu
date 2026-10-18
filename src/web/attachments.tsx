@@ -156,7 +156,7 @@ export function AttachmentTray() {
   );
 }
 
-/** A sent message's images and files: images as thumbnails that open full size on a tap, files by name. */
+/** A sent message's or tool result's images and files: images as thumbnails that open full size on a tap, files by name. */
 export function UserAttachments(props: {
   files: readonly AttachedFile[];
   images: readonly ImageContent[];

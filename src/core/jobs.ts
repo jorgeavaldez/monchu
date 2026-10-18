@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { jobNoticeText } from "../api/notices.ts";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
 import {
   chooseRole,
@@ -267,12 +268,11 @@ function served(state: Readonly<JobsState>, name: string, taskId: TaskId): Job |
 }
 
 function message(job: Job, header: string, body: string): string {
-  return [
-    `[Job ${job.name} · ${header}] This comes from a background job, not from the user.`,
-    ...(job.prompt ? [job.prompt] : []),
-    ...(body ? [body] : []),
-    `Your answer reaches the front only if its first line starts with "NEEDS USER"; start it that way only when the user must decide or act. Manage the job with the job tool when it is done.`,
-  ].join("\n\n");
+  return jobNoticeText({
+    name: job.name,
+    header,
+    text: [job.prompt, body].filter(Boolean).join("\n\n"),
+  });
 }
 
 /** The last `chars` characters of a file, reading only its tail; empty when it is missing. */

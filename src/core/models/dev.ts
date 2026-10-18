@@ -76,6 +76,11 @@ export function createDevProvider(): Provider {
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",
         });
+      // `read <path>` reads that file, so an image shows as a tool's result.
+      if (/^read \S+$/.test(text))
+        return fauxAssistantMessage([fauxToolCall("read", { path: text.slice(5) })], {
+          stopReason: "toolUse",
+        });
       // `work <name> <task>` starts a worker through the front, as a real front delegates.
       if (/^work \S+ \S/.test(text)) {
         const [, name = "", task = ""] = /^work (\S+) ([\s\S]+)$/.exec(text) ?? [];
@@ -101,6 +106,20 @@ export function createDevProvider(): Provider {
           {
             stopReason: "toolUse",
           },
+        );
+      // `job` schedules a daily command job, whose first run at once only takes a baseline.
+      if (text === "job")
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("job", {
+              action: "create",
+              type: "command",
+              name: "smoke-job",
+              schedule: "@daily",
+              command: "echo smoke",
+            }),
+          ],
+          { stopReason: "toolUse" },
         );
       if (text === "goal waiting")
         return fauxAssistantMessage(

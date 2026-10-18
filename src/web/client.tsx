@@ -3,9 +3,9 @@
  * server, which names its install manifest with it; the theme is this browser's. The install offer is here too: a
  * browser's own prompt, offered once and kept in the menu, since no page can install itself.
  */
-import { effect, signal, useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
-import { rootsOpen } from "./state.ts";
+import { signal, useSignal } from "@preact/signals";
+import { Close, Panel } from "./panel.tsx";
+import { panel } from "./state.ts";
 
 /** What Chrome hands a page it would install: its prompt, and how the person answered. */
 type InstallPrompt = Event & {
@@ -22,7 +22,6 @@ const THEMES: readonly Theme[] = ["system", "light", "dark"];
 const THEME_KEY = "monchu.theme";
 const OFFER_KEY = "monchu.install";
 
-export const clientOpen = signal(false);
 /** The app's name on this device, and whether this sign-in may change it (a service token may not). */
 const appName = signal("Monchu");
 const editable = signal(false);
@@ -34,11 +33,6 @@ const offerDismissed = signal(false);
 
 /** The menu's last outcome. */
 const message = signal<{ text: string; failed: boolean } | undefined>(undefined);
-
-/** Opening the roots panel puts this one away; they take the same place. */
-effect(() => {
-  if (rootsOpen.value) clientOpen.value = false;
-});
 
 function applyTheme(value: Theme): void {
   theme.value = value;
@@ -73,9 +67,9 @@ export function startClient(): void {
 }
 
 export function openClient(open = true): void {
-  clientOpen.value = open;
+  if (open) panel.value = "client";
+  else if (panel.value === "client") panel.value = undefined;
   message.value = undefined;
-  if (open) rootsOpen.value = false;
 }
 
 async function install(): Promise<void> {
@@ -125,14 +119,6 @@ function installState(): string {
   if (!("onbeforeinstallprompt" in window))
     return "no install prompt in this browser: its menu's Add to Home Screen, where it has one";
   return "not offered: installed already, or the browser hasn't offered yet; its menu's Install app works too";
-}
-
-function Close({ onClose }: { onClose: () => void }) {
-  return (
-    <button type="button" class="icon" aria-label="close" title="close (Esc)" onClick={onClose}>
-      ✕
-    </button>
-  );
 }
 
 function NameRow() {
@@ -185,27 +171,8 @@ function NameRow() {
 
 /** The menu, in place of the transcript like `/roots`. */
 export function ClientPanel() {
-  const panel = useRef<HTMLElement>(null);
-  useEffect(() => panel.current?.focus(), []);
-  const status = message.value;
   return (
-    <main
-      class="panel clientPanel"
-      tabIndex={-1}
-      ref={panel}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") openClient(false);
-      }}
-    >
-      <header>
-        <h1>client</h1>
-        <Close onClose={() => openClient(false)} />
-      </header>
-      {status === undefined ? null : (
-        <p role="status" class={status.failed ? "warning" : "help"}>
-          {status.text}
-        </p>
-      )}
+    <Panel name="client" status={message.value}>
       <ul>
         <NameRow />
         <li>
@@ -244,13 +211,18 @@ export function ClientPanel() {
           </span>
         </li>
       </ul>
-    </main>
+    </Panel>
   );
 }
 
 /** The browser's install offer, once: a line over the editor until it's taken or dismissed. */
 export function InstallOffer() {
-  if (offer.value === undefined || installed.value || offerDismissed.value || clientOpen.value)
+  if (
+    offer.value === undefined ||
+    installed.value ||
+    offerDismissed.value ||
+    panel.value === "client"
+  )
     return null;
   return (
     <div class="offer" role="status">
@@ -258,7 +230,7 @@ export function InstallOffer() {
       <button type="button" onClick={() => void install()}>
         install
       </button>
-      <Close onClose={dismissOffer} />
+      <Close label="close" onClose={dismissOffer} />
     </div>
   );
 }

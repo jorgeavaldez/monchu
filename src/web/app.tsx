@@ -1,6 +1,5 @@
 /** The page: who's working, the shown conversation, its queue, and the editor or whatever answer it waits for. */
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
 import type { RootSummary } from "../api/client.ts";
 import { systemNoticeSummary } from "../api/notices.ts";
 import {
@@ -12,9 +11,11 @@ import {
   rootLabel,
 } from "../ui/roots.ts";
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
-import { ClientPanel, clientOpen, InstallOffer } from "./client.tsx";
+import { ClientPanel, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
-import { entering, SecretForm, SecretRequests, SecretsPanel, secretsOpen } from "./secrets.tsx";
+import { GoalsPanel, JobsPanel } from "./lists.tsx";
+import { Close, Panel } from "./panel.tsx";
+import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
 import {
   archiveRoot,
   ask,
@@ -32,7 +33,7 @@ import {
   rootId,
   roots,
   rootsMessage,
-  rootsOpen,
+  panel,
   show,
   shown,
   switchRoot,
@@ -61,9 +62,9 @@ function RootTab() {
     .join(", ");
   return (
     <button
-      class={`roots${rootsOpen.value ? " on" : ""}`}
+      class={`roots${panel.value === "roots" ? " on" : ""}`}
       aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
-      aria-expanded={rootsOpen.value}
+      aria-expanded={panel.value === "roots"}
       title={summary ? `${name} · ${summary}` : name}
       onClick={() => toggleRoots()}
     >
@@ -141,31 +142,16 @@ function RootsPanel() {
   const ids = rootIds(all);
   const listed = listedRoots(all, archived.value);
   const hidden = all.filter((root) => root.archived).length;
-  const message = rootsMessage.value;
-  const panel = useRef<HTMLElement>(null);
-  // Focus moves into the panel once when it opens, not on every update of the list.
-  useEffect(() => panel.current?.focus(), []);
   return (
-    <main
-      class="panel rootsPanel"
-      tabIndex={-1}
-      ref={panel}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") toggleRoots(false);
-      }}
-    >
-      <header>
-        <h1>roots</h1>
+    <Panel
+      name="roots"
+      status={rootsMessage.value}
+      actions={
         <button class="icon" aria-label="new root" title="new root" onClick={() => void newRoot()}>
           +
         </button>
-        <Close label="close" onClose={() => toggleRoots(false)} />
-      </header>
-      {message === undefined ? null : (
-        <p role="status" class={message.failed ? "warning" : "help"}>
-          {message.text}
-        </p>
-      )}
+      }
+    >
       <ul>
         {listed.map((root) => (
           <RootRow key={root.id} root={root} ids={ids} />
@@ -184,7 +170,7 @@ function RootsPanel() {
         </label>
       )}
       <p class="help">{ARCHIVE_HELP}</p>
-    </main>
+    </Panel>
   );
 }
 
@@ -212,21 +198,6 @@ function Agents() {
       </div>
       <RootTab />
     </nav>
-  );
-}
-
-/** A menu's way out, the touch Esc. */
-function Close({ label, onClose }: { label: string; onClose: () => void }) {
-  return (
-    <button
-      type="button"
-      class="icon"
-      aria-label={label}
-      title={`${label} (Esc)`}
-      onClick={onClose}
-    >
-      ✕
-    </button>
   );
 }
 
@@ -497,12 +468,16 @@ export function App() {
   return (
     <>
       <Agents />
-      {rootsOpen.value ? (
+      {panel.value === "roots" ? (
         <RootsPanel />
-      ) : clientOpen.value ? (
+      ) : panel.value === "client" ? (
         <ClientPanel />
-      ) : secretsOpen.value ? (
+      ) : panel.value === "secrets" ? (
         <SecretsPanel />
+      ) : panel.value === "goals" ? (
+        <GoalsPanel />
+      ) : panel.value === "jobs" ? (
+        <JobsPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (

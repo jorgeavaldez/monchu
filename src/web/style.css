@@ -722,3 +722,89 @@ p.offer {
   border: 1px solid var(--line);
   background: var(--bg);
 }
+/* /goals and /jobs: a row per item, a tap opens its fields under it. */
+.listPanel li.row {
+  flex-direction: column;
+}
+.listPanel h1 .help {
+  font-weight: normal;
+}
+.listPanel .mark {
+  color: var(--muted);
+}
+.listPanel .active .mark {
+  color: var(--accent);
+}
+.listPanel .waiting .mark,
+.listPanel .waiting .name,
+.listPanel .paused .mark {
+  color: var(--yellow);
+}
+.listPanel .done .mark {
+  color: var(--green);
+}
+.listPanel .failed .mark {
+  color: var(--red);
+}
+.listPanel .fresh {
+  color: var(--accent);
+}
+.listPanel .detail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 var(--s1);
+  margin: 0;
+  padding: 0 var(--s1) var(--s0) calc(var(--s1) + 2ch);
+}
+.listPanel dt {
+  color: var(--muted);
+}
+.listPanel dd {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.listPanel h2 {
+  margin: 0;
+  padding: var(--s1) var(--s1) var(--s0);
+  font-size: inherit;
+}
+.listPanel .events {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--s1) var(--s1);
+}
+.listPanel .events li {
+  display: block;
+  border: none;
+  overflow-wrap: anywhere;
+}
+.listPanel .events .time {
+  color: var(--muted);
+}
+/* A job's event or wake message: grey, in a dotted box, folded to one line like a tool row. */
+.job {
+  border: 1px dotted var(--muted);
+  background: var(--card);
+  color: var(--muted);
+  padding: 0 var(--s1);
+  min-width: 0;
+}
+.job .row {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.job pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -9,7 +9,12 @@ import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageParts } from "../api/attachments.ts";
-import { skillInvocation, systemNoticeSummary, workerNotice } from "../api/notices.ts";
+import {
+  parseJobNotice,
+  skillInvocation,
+  systemNoticeSummary,
+  workerNotice,
+} from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
@@ -117,7 +122,8 @@ function argSummary(args: unknown): string {
 
 /**
  * A tool call and its result, folded to one line as in the terminal: its name, its arguments in a few words, and the
- * output's first line (the newest one while it runs). A tap, or expand all, shows the arguments and all the output.
+ * output's first line (the newest one while it runs), and any images it returned. A tap, or expand all, shows the
+ * arguments and all the output.
  */
 function ToolCard(props: {
   name: string;
@@ -131,6 +137,11 @@ function ToolCard(props: {
   const lines = output.split("\n").filter((line) => line.trim());
   const line = props.result === undefined ? lines.at(-1) : lines[0];
   const error = props.result?.isError === true;
+  // An image a tool returned (a screenshot, a read picture) shows under its row, folded or not, as a sent one does.
+  const images =
+    typeof props.result?.content === "string"
+      ? []
+      : (props.result?.content ?? []).filter((part) => part.type === "image");
   return (
     <section class={`tool${error ? " error" : ""}${props.result === undefined ? " running" : ""}`}>
       <button
@@ -154,6 +165,38 @@ function ToolCard(props: {
             </pre>
           ) : null}
         </>
+      ) : null}
+      <UserAttachments files={[]} images={images} />
+    </section>
+  );
+}
+
+/**
+ * A job's event, or the message it wakes a worker with: a grey box folded to one line under a ⏱, which a tap opens to
+ * its whole text. Its dotted box sets it apart from tool rows and workers' cards.
+ */
+function JobBox(props: { name: string; what: string; text: string; at: ComponentChildren }) {
+  const open = useSignal<boolean | undefined>(undefined);
+  const expanded = open.value ?? expandAll.value;
+  const line = props.text.split("\n").find((each) => each.trim());
+  return (
+    <section class="job">
+      <button
+        type="button"
+        class="row"
+        aria-expanded={expanded}
+        onClick={() => {
+          open.value = !expanded;
+        }}
+      >
+        <span aria-hidden="true">{expanded ? "▾" : "▸"} ⏱</span> {props.at} <b>{props.name}</b>{" "}
+        {props.what}
+        {line === undefined || expanded ? null : <span class="out"> · {line}</span>}
+      </button>
+      {expanded && props.text ? (
+        <pre>
+          <Text text={props.text} />
+        </pre>
       ) : null}
     </section>
   );
@@ -232,6 +275,9 @@ function entryNode(
     const { text, files, images } = messageParts(message.content);
     const system = systemNoticeSummary(text);
     if (system !== undefined) return <div class="system">system · {system}</div>;
+    const job = parseJobNotice(text);
+    if (job !== undefined)
+      return <JobBox name={job.name} what={job.header} text={job.text} at={shown} />;
     // A skill's instructions stay folded under its name; what the user typed with it shows as usual.
     const skill = skillInvocation(text);
     if (skill !== undefined)
@@ -276,9 +322,19 @@ const cache = new WeakMap<EntryRecord, { results: string; node: VNode | null }>(
 const shortIds = new Map<ConversationView["conversation"]["id"], ShortIds>();
 
 function NoticeLine({ item }: { item: Notice }) {
+  const clock = <span class="time">{new Date(item.at).toTimeString().slice(0, 5)} </span>;
+  if (item.job !== undefined)
+    return (
+      <JobBox
+        name={item.job.job}
+        what={`${item.job.kind}${item.job.worker === undefined ? "" : ` → ${item.job.worker}`}`}
+        text={item.job.text}
+        at={clock}
+      />
+    );
   return (
     <pre class={`notice ${item.kind}`}>
-      <span class="time">{new Date(item.at).toTimeString().slice(0, 5)} </span>
+      {clock}
       <Text text={item.text} />
     </pre>
   );

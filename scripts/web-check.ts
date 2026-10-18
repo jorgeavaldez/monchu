@@ -379,7 +379,7 @@ function lineChanges(before: string, after: string): { added: string[]; removed:
 }
 
 /**
- * Freeze what differs between runs: clock times in the page's time and stamp elements read `hh:mm`, and the temp home
+ * Freeze what differs between runs: clock times in the page's time and stamp elements read `hh:mm`, ages (`12m`) `n`, and the temp home
  * and port are spelled as placeholders. Short ids stay, since a fresh store gives the same ones every run.
  */
 function normalize(home: string, origin: string): Promise<unknown> {
@@ -389,6 +389,7 @@ function normalize(home: string, origin: string): Promise<unknown> {
       let value = node.nodeValue.split(${JSON.stringify(home)}).join("<home>")
         .split(${JSON.stringify(origin)}).join("127.0.0.1:<port>");
       if (node.parentElement?.closest(".time, .stamp")) value = value.replace(/\\d{1,2}:\\d{2}/g, "hh:mm");
+      if (node.parentElement?.closest(".age")) value = value.replace(/\\b\\d+[smhd]\\b/g, "n");
       if (value !== node.nodeValue) node.nodeValue = value;
     }
     return true;
@@ -1095,7 +1096,7 @@ async function journeys(url: string, home: string, origin: string): Promise<void
   });
 
   await journey(
-    "tool: a call folds to one line at the text's rhythm, and a tap opens it",
+    "tool: a call folds to one line at the text's rhythm, a tap opens it, a returned image shows",
     async () => {
       await browser("fill", "textarea", "read");
       await browser("press", "Enter");
@@ -1122,7 +1123,22 @@ async function journeys(url: string, home: string, origin: string): Promise<void
       check((await page(`!!${tool}.querySelector("pre")`)) === true, "a tap doesn't open the call");
       await page(`${tool}.querySelector(".row").click()`);
       check((await page(`!${tool}.querySelector("pre")`)) === true, "a second tap doesn't fold it");
-      return "folded to one line, aligned with the messages, opened and folded by tap";
+      // An image a tool returns, a screenshot say, shows under its folded row.
+      const image = join(home, "tool-check.png");
+      await writeFile(image, await gradientPng(240, 140));
+      await browser("fill", "textarea", `read ${image}`);
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".transcript .tool .attached img")].some((img) => img.complete && img.naturalWidth === 240)`,
+      );
+      check(
+        (await page(`!document.querySelector(".transcript .tool:has(.attached) pre")`)) === true,
+        "the image's call isn't folded",
+      );
+      await capture("tool-image", home, origin);
+      return "folded to one line, aligned with the messages, opened and folded by tap; a returned image shows under its row";
     },
   );
 
@@ -1280,6 +1296,83 @@ async function journeys(url: string, home: string, origin: string): Promise<void
       await page(`document.querySelector(".secretsPanel header [aria-label=close]").click()`);
       await browser("wait", "--fn", `!document.querySelector(".secretsPanel")`);
       return "a request line, its masked form, the notice to the asker, and /secrets by name; the value never stays in the page";
+    },
+  );
+
+  await journey(
+    "lists: /goals and /jobs open as panels, a row opens its fields; job events fold",
+    async () => {
+      for (const ask of ["goal", "job"]) {
+        const before = await page(`document.querySelectorAll(".assistant:not(.live)").length`);
+        await browser("fill", "textarea", ask);
+        await browser("press", "Enter");
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelectorAll(".assistant:not(.live)").length > ${String(before)} && !document.querySelector(".tool.running")`,
+        );
+      }
+      const open = async (command: string, selector: string) => {
+        await browser("fill", "textarea", command);
+        await browser("press", "Enter");
+        // The first Enter may take the typeahead's suggestion.
+        if ((await page(`!!document.querySelector("${selector}")`)) !== true)
+          await browser("press", "Enter");
+        await browser("wait", `${selector} li.row`);
+      };
+      await open("/goals", ".goalsPanel");
+      const goal = `document.querySelector(".goalsPanel li.row")`;
+      check(
+        (await page(`${goal}.textContent.includes("Smoke goal")`)) === true,
+        "/goals doesn't list the goal",
+      );
+      await page(`${goal}.querySelector("button.open").click()`);
+      await browser("wait", ".goalsPanel dl");
+      check(
+        (await page(
+          `${goal}.querySelector("dl").textContent.includes("second step") && !${goal}.querySelector(".fresh")`,
+        )) === true,
+        "an opened goal doesn't show its next steps, or still shows as changed",
+      );
+      await capture("goals", home, origin);
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".goalsPanel")`);
+      await open("/jobs", ".jobsPanel");
+      const job = `document.querySelector(".jobsPanel li.row")`;
+      check(
+        (await page(
+          `${job}.textContent.includes("smoke-job") && ${job}.textContent.includes("@daily")`,
+        )) === true,
+        "/jobs doesn't list the job with its schedule",
+      );
+      await page(`${job}.querySelector("button.open").click()`);
+      await browser("wait", ".jobsPanel dl");
+      check(
+        (await page(
+          `${job}.querySelector("dl").textContent.includes("echo smoke") && document.querySelector(".jobsPanel .events").textContent.includes("smoke-job")`,
+        )) === true,
+        "an opened job doesn't show its command, or no recent events",
+      );
+      await capture("jobs", home, origin);
+      await page(`document.querySelector(".jobsPanel header [aria-label=close]").click()`);
+      await browser("wait", "--fn", `!document.querySelector(".jobsPanel")`);
+      // Its events sit in the transcript as grey boxes folded to one line; a tap opens one.
+      const box = `document.querySelector(".transcript .job")`;
+      await browser("wait", ".transcript .job");
+      check(
+        (await page(
+          `!${box}.querySelector("pre") && ${box}.textContent.includes("smoke-job") && ${box}.textContent.includes("▸")`,
+        )) === true,
+        "a job's event isn't a folded box",
+      );
+      await capture("job-events", home, origin);
+      await page(`${box}.querySelector(".row").click()`);
+      check(
+        (await page(`!!${box}.querySelector("pre")`)) === true,
+        "a tap doesn't open the job box",
+      );
+      await page(`${box}.querySelector(".row").click()`);
+      return "listed the goal and the job, opened each, closed by Esc and ✕; its events fold in the transcript";
     },
   );
 

@@ -3,11 +3,11 @@
  * to list, replace and delete them by name. A value goes to the core once, in `setSecret`, and is dropped from the page
  * as it goes; nothing ever sends one back.
  */
-import { effect, signal, useSignal } from "@preact/signals";
+import { signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { Client, SecretInput, SecretsState } from "../api/client.ts";
-import { clientOpen } from "./client.tsx";
-import { client, rootsOpen } from "./state.ts";
+import { Close, Panel } from "./panel.tsx";
+import { client, panel } from "./state.ts";
 
 type Kind = SecretInput["kind"];
 
@@ -15,15 +15,9 @@ type Kind = SecretInput["kind"];
 type Entry = { name?: string; kind: Kind; site?: string; reason?: string; by?: string };
 
 const state = signal<SecretsState>({ secrets: [], requests: [] });
-export const secretsOpen = signal(false);
 export const entering = signal<Entry | undefined>(undefined);
 /** The last outcome, shown in the panel and over the editor. */
 const message = signal<{ text: string; failed: boolean } | undefined>(undefined);
-
-/** The roots and client panels take the same place. */
-effect(() => {
-  if (rootsOpen.value || clientOpen.value) secretsOpen.value = false;
-});
 
 export async function startSecrets(connected: Client): Promise<void> {
   await connected.watchSecrets((next) => {
@@ -32,12 +26,9 @@ export async function startSecrets(connected: Client): Promise<void> {
 }
 
 export function openSecrets(open = true): void {
-  secretsOpen.value = open;
+  if (open) panel.value = "secrets";
+  else if (panel.value === "secrets") panel.value = undefined;
   message.value = undefined;
-  if (open) {
-    rootsOpen.value = false;
-    clientOpen.value = false;
-  }
 }
 
 /** Opens the form for a pending request. */
@@ -70,20 +61,6 @@ async function remove(name: string): Promise<void> {
 
 const when = (time: number) =>
   new Date(time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
-
-function Close({ label, onClose }: { label: string; onClose: () => void }) {
-  return (
-    <button
-      type="button"
-      class="icon"
-      aria-label={label}
-      title={`${label} (Esc)`}
-      onClick={onClose}
-    >
-      ✕
-    </button>
-  );
-}
 
 /** Each pending request, one line over the editor: who asks, for what, and why. */
 export function SecretRequests() {
@@ -251,20 +228,11 @@ export function SecretForm() {
 
 /** `/secrets`: stored secrets by name, in place of the transcript; pending requests stay over the editor. */
 export function SecretsPanel() {
-  const panel = useRef<HTMLElement>(null);
-  useEffect(() => panel.current?.focus(), []);
   const { secrets } = state.value;
   return (
-    <main
-      class="panel secretsPanel"
-      tabIndex={-1}
-      ref={panel}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") openSecrets(false);
-      }}
-    >
-      <header>
-        <h1>secrets</h1>
+    <Panel
+      name="secrets"
+      actions={
         <button
           type="button"
           class="icon"
@@ -277,8 +245,8 @@ export function SecretsPanel() {
         >
           +
         </button>
-        <Close label="close" onClose={() => openSecrets(false)} />
-      </header>
+      }
+    >
       <ul>
         {secrets.map((info) => (
           <li key={info.name}>
@@ -329,6 +297,6 @@ export function SecretsPanel() {
       ) : (
         <p class="help">agents use these by name; values never reach them or the transcript</p>
       )}
-    </main>
+    </Panel>
   );
 }

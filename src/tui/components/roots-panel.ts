@@ -11,7 +11,7 @@ import {
 import type { RootSummary } from "../../api/client.ts";
 import { ARCHIVE_HELP, listedRoots, rootCounts, rootIds, rootLabel } from "../../ui/roots.ts";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
-import { age } from "./agents-panel.ts";
+import { age } from "../../ui/state.ts";
 import { rootIdText, rootMark } from "./footer.ts";
 
 /** What the panel asks of its owner; each rejects with the reason it was refused. */

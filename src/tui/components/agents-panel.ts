@@ -7,19 +7,11 @@ import {
   type Focusable,
 } from "@earendil-works/pi-tui";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
+import { age } from "../../ui/state.ts";
 import { meterText, shortPath, type Meter } from "./footer.ts";
 
 /** Running now, or not. */
 export type AgentStatus = "working" | "idle";
-
-/** Time since a change, compactly: 40s, 12m, 3h, 5d. */
-export function age(since: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 
 /** One conversation in the agents panel: the root, value `""`, or a worker by name. */
 export type AgentRow = {

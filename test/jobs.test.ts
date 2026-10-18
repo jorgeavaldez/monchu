@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
-import { workerNotice } from "../src/api/notices.ts";
+import { parseJobNotice, workerNotice } from "../src/api/notices.ts";
 import { WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   allEntries,
@@ -208,8 +208,11 @@ describe("jobs", () => {
     const changed = await waitForEvent(harness, 3);
     expect(changed[2]).toMatchObject({ kind: "changed", worker: "job-pr" });
     await waitFor(() => value.jobMessages.length === 1);
-    expect(value.jobMessages[0]).toContain("check the PR");
-    expect(value.jobMessages[0]).toContain("approved");
+    // Clients fold it to the job's name and what woke it, the prompt and output under them.
+    const notice = parseJobNotice(value.jobMessages[0] ?? "");
+    expect(notice).toMatchObject({ name: "pr", header: "change" });
+    expect(notice?.text).toContain("check the PR");
+    expect(notice?.text).toContain("approved");
     const worker = await conversationOf(
       harness,
       (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.conversationId ?? root.id,

@@ -8,6 +8,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Attachment } from "../api/attachments.ts";
 import type {
   Client,
+  JobEvent,
   ModelPick,
   QueueChange,
   RootClient,
@@ -34,6 +35,8 @@ export type Notice = {
   text: string;
   kind: "system" | "warning" | "event";
   root?: string;
+  /** A job's event, which shows as a folded job box instead of a line. */
+  job?: JobEvent;
   /** Per attached conversation, the newest entry it showed when this was posted (-1 for none); it follows that entry. */
   after: ReadonlyMap<ConversationView["conversation"]["id"], number>;
 };
@@ -63,8 +66,11 @@ export const connection = signal<Connection | "connecting">("connecting");
 export const roots = signal<readonly RootSummary[]>([]);
 /** The root this page shows, by full id. */
 export const rootId = signal<string | undefined>(undefined);
-/** Whether the roots panel is open in place of the transcript, and its last outcome. */
-export const rootsOpen = signal(false);
+/** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
+export const panel = signal<"roots" | "client" | "secrets" | "goals" | "jobs" | undefined>(
+  undefined,
+);
+/** The roots panel's last outcome. */
 export const rootsMessage = signal<{ text: string; failed: boolean } | undefined>(undefined);
 export const shown = signal<string | undefined>(undefined);
 export const workers = signal<readonly WorkerSummary[]>([]);
@@ -77,6 +83,8 @@ export const ask = signal<Ask | undefined>(undefined);
 export const loginStatus = signal<{ message: string; url?: string; code?: string } | undefined>(
   undefined,
 );
+/** The newest job event this page heard, so the jobs panel lists them afresh. */
+export const jobEvent = signal(0);
 /** Bumped when the user sends a message, so the transcript goes back to its end and follows it. */
 export const following = signal(0);
 /** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
@@ -101,7 +109,7 @@ export function client(): Client {
 }
 
 /** The root this page shows. */
-function root(): RootClient {
+export function root(): RootClient {
   if (current === undefined) throw new Error("Not connected");
   return current;
 }
@@ -112,7 +120,12 @@ export function notice(text: string, kind: Notice["kind"] = "system", home = fal
 }
 
 /** A notice that only `root` shows, or every root when undefined. */
-function rootNotice(text: string, kind: Notice["kind"], root: string | undefined): void {
+function rootNotice(
+  text: string,
+  kind: Notice["kind"],
+  root: string | undefined,
+  job?: JobEvent,
+): void {
   const after = new Map<ConversationView["conversation"]["id"], number>();
   for (const each of views.value.values()) {
     const value = each.state.value;
@@ -127,6 +140,7 @@ function rootNotice(text: string, kind: Notice["kind"], root: string | undefined
       kind,
       after,
       ...(root === undefined ? {} : { root }),
+      ...(job === undefined ? {} : { job }),
     },
   ].slice(-200);
 }
@@ -238,7 +252,7 @@ async function openRoot(id: string, push = false): Promise<void> {
 
 /** Show another root from the panel or a command, saying which one it is. */
 export async function switchRoot(id: string): Promise<void> {
-  rootsOpen.value = false;
+  if (panel.value === "roots") panel.value = undefined;
   if (id === rootId.value) return;
   await openRoot(id, true);
   const summary = roots.value.find((each) => each.id === id);
@@ -275,11 +289,13 @@ export async function start(connected: Client): Promise<void> {
       (oldest, each) => (oldest === undefined || each.createdAt < oldest.createdAt ? each : oldest),
       undefined,
     );
+    jobEvent.value = Math.max(jobEvent.value, ...events.map((event) => event.id));
     for (const event of events)
       rootNotice(
         formatJobEvent(event),
         "event",
         event.rootId === undefined ? first?.id : shortId(event.rootId),
+        event,
       );
   });
 }
@@ -638,9 +654,10 @@ async function runRoots(command: RootsCommand): Promise<void> {
 }
 
 /** Open or close the roots panel. */
-export function toggleRoots(open = !rootsOpen.value): void {
+export function toggleRoots(open = panel.value !== "roots"): void {
   batch(() => {
-    rootsOpen.value = open;
+    if (open) panel.value = "roots";
+    else if (panel.value === "roots") panel.value = undefined;
     rootsMessage.value = undefined;
   });
 }
@@ -829,31 +846,12 @@ async function runInput(
       return notice(
         `installing ${input.text} · reconnects when Monchu is back, on it or on this version if npm fails`,
       );
-    case "/jobs": {
-      const { jobs, events, listing } = await client().jobs();
-      return notice(
-        [
-          `jobs · ${jobs.length}`,
-          listing,
-          ...(events.length === 0 ? [] : ["recent:", ...events.slice(-8).map(formatJobEvent)]),
-        ].join("\n"),
-      );
-    }
-    case "/goals": {
-      const goals = await root().goals();
-      const open = goals.filter((goal) => goal.status === "active" || goal.status === "waiting");
-      return notice(
-        open.length === 0
-          ? "goals · none open"
-          : [
-              `goals · ${open.length}`,
-              ...open.map(
-                (goal) =>
-                  `${goal.changed ? "• " : "  "}${goal.status} ${goal.id} · ${goal.title}\n    now: ${goal.workstream}\n    next: ${goal.next}`,
-              ),
-            ].join("\n"),
-      );
-    }
+    case "/jobs":
+      panel.value = "jobs";
+      return;
+    case "/goals":
+      panel.value = "goals";
+      return;
     case "/queue": {
       const state = view(name)?.value;
       const queue = state === undefined ? [] : presentation(state).queue;

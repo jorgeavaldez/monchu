@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Goal } from "../../api/client.ts";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
-import { age } from "./agents-panel.ts";
+import { age } from "../../ui/state.ts";
 
 /** A goal as the panel lists it: `changed` since the user last opened it. */
 export type GoalRow = Goal & { changed: boolean };

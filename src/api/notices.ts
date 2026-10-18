@@ -75,6 +75,28 @@ export function parseRootNotice(content: string): RootNotice | undefined {
   };
 }
 
+/** What a background job tells the worker it wakes: which job, why (`slot …`, `run now`, `change`, an exit), and the rest. */
+export type JobNotice = { name: string; header: string; text: string };
+
+const JOB_LABEL = /^\[Job (\S+) · (.+)\] This comes from a background job, not from the user\.$/;
+const JOB_GUIDANCE = `Your answer reaches the front only if its first line starts with "NEEDS USER"; start it that way only when the user must decide or act. Manage the job with the job tool when it is done.`;
+
+export function jobNoticeText(notice: JobNotice): string {
+  return [
+    `[Job ${notice.name} · ${notice.header}] This comes from a background job, not from the user.`,
+    ...(notice.text ? [notice.text] : []),
+    JOB_GUIDANCE,
+  ].join("\n\n");
+}
+
+/** The job notice an input's text carries, for clients that fold it; `undefined` for any other text. */
+export function parseJobNotice(content: string): JobNotice | undefined {
+  const [label = "", ...rest] = content.split("\n\n");
+  const [, name, header] = JOB_LABEL.exec(label) ?? [];
+  if (name === undefined || header === undefined || rest.at(-1) !== JOB_GUIDANCE) return undefined;
+  return { name, header, text: rest.slice(0, -1).join("\n\n") };
+}
+
 const SYSTEM_PREFIX = "[System notice: ";
 const SYSTEM_SUFFIX = ". Not a new user instruction.]";
 
