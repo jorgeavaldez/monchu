@@ -39,7 +39,8 @@ export const principalKey = (principal: Principal): string =>
 
 /**
  * The server process every client connects to, and the core process it runs. `serve` keeps the core running;
- * `background` was started by a client and exits once no client has been connected for a while.
+ * `background` was started by a client and exits once no client has been connected for a while, unless it serves the
+ * web client, whose pages drop their sockets whenever a phone puts them away.
  */
 export type ServerStatus = {
   mode: "serve" | "background";
@@ -51,6 +52,8 @@ export type ServerStatus = {
   };
   /** Clients connected now: terminals and web pages. */
   clients: number;
+  /** The web client's URL while the server serves it. */
+  web: string | null;
 };
 
 /** What a client needs before it can render: replaced after each reload. */
@@ -272,7 +275,14 @@ export const Server = remote("monchu.server", {
   input: Type.Object({}),
   host: hostNamed("server"),
   variants: {
-    owner: { state: { state: trusted<ServerStatus>() }, methods: { stop: method() } },
+    owner: {
+      state: { state: trusted<ServerStatus>() },
+      methods: {
+        stop: method(),
+        /** Serve the web client too, as `--web` asks of a running server; answers its URL. */
+        web: method(Type.Object({}), trusted<string>()),
+      },
+    },
     viewer: { state: { state: trusted<ServerStatus>() } },
     core: {
       state: { state: trusted<ServerStatus>() },

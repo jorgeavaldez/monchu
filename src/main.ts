@@ -60,9 +60,10 @@ try {
       const updated = process.env.MONCHU_UPDATE_OUTCOME;
       delete process.env.MONCHU_UPDATE_OUTCOME;
       const say = (line: string) => console.log(`monchu · ${line}`);
-      const stopped = new Promise<void>((done) => {
+      const stopped = new Promise<string>((done) => {
         // A closed terminal (SIGHUP) stops it as cleanly as Ctrl-C or a service manager.
-        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, done);
+        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+          process.once(signal, () => done(signal));
       });
       const { runServer } = await import("./server/server.ts");
       const end = await runServer({
@@ -117,19 +118,29 @@ try {
       const { mkdirSync, openSync } = await import("node:fs");
       const { join } = await import("node:path");
       const attached = await attachOrStart(path, () => {
-        // Detached, so it outlives this terminal; its output goes to the run directory.
+        // Detached, so it outlives this terminal; its output goes to the run directory, after the last one's, so a
+        // crash's stack outlasts the next start.
         mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
-        const output = openSync(join(home, "run", "server.log"), "w", 0o600);
+        const output = openSync(join(home, "run", "server.log"), "a", 0o600);
         spawn(
           process.execPath,
           [...process.execArgv, process.argv[1] ?? "", "server", ...(web ? ["--web"] : [])],
           { detached: true, stdio: ["ignore", output, output], windowsHide: true },
         ).unref();
       });
-      if (attached.started === false && web)
-        notes.push(
-          "--web applies only when a terminal starts Monchu; this one attached to a running one",
-        );
+      // A running server serves the web client too once `--web` asks it.
+      if (attached.started === false && web) {
+        const { Server } = await import("./api/contract.ts");
+        const server = await attached.client.host.get(Server, {}).catch(() => undefined);
+        try {
+          if (server?.variant !== "owner") throw new Error("the running server can't start it");
+          notes.push(`web · ${await server.web({})}`);
+        } catch (error) {
+          notes.push(`web is off: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          server?.release();
+        }
+      }
       const { runTerminal } = await import("./tui/app.ts");
       const { herdrAgent } = await import("./tui/herdr-agent.ts");
       try {

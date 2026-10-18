@@ -2,7 +2,8 @@
  * The server process: what every terminal and web page connects to, one per home. It holds no store: it runs the core
  * as its child (`process.ts`) and relays clients to it, so a `/restart` replaces the core while clients keep their
  * sockets. `serve` runs the core from the start and keeps it; a server a client started (`background`) lets the core
- * close once no client has been connected for `IDLE_MS`, then exits.
+ * close once no client has been connected for `IDLE_MS`, then exits, unless it serves the web client: a phone drops a
+ * page's socket whenever it puts the page away, and a page can't start a server again.
  */
 import { processLock } from "@earendil-works/chord/node";
 import { loadWebConfig } from "../core/config.ts";
@@ -33,8 +34,8 @@ export async function runServer(options: {
   /** What the first core is told, such as the outcome of the update this server came back from. */
   firstCoreEnv: Record<string, string>;
   env: Readonly<Record<string, string | undefined>>;
-  /** Resolves when a signal asks the server to stop. */
-  signal: Promise<void>;
+  /** Resolves with the signal's name when one asks the server to stop. */
+  signal: Promise<string>;
   say(line: string): void;
 }): Promise<ServerEnd> {
   const { home } = options;
@@ -43,6 +44,13 @@ export async function runServer(options: {
   });
   const log = new Log(home);
   const ended = Promise.withResolvers<ServerEnd>();
+  // Why it ends, in the log: a server that is gone without a reason there was killed.
+  let reason: string | undefined;
+  const stop = (why: string) => {
+    if (reason === undefined)
+      log.write("info", "server.process", "stopping", { reason: (reason = why) });
+    ended.resolve({ kind: "stopped" });
+  };
   const coreEnv = { ...options.firstCoreEnv };
   const core = forkedCore({
     home,
@@ -55,6 +63,30 @@ export async function runServer(options: {
         signal: exit.signal ?? "",
       }),
   });
+  let site: { url: string; close(): Promise<void> } | undefined;
+  let opening: Promise<string> | undefined;
+  const openWeb = async (): Promise<string> => {
+    const config = await loadWebConfig(home);
+    if (config === undefined) throw new Error(`no web.json in ${home}`);
+    site = await (
+      await import("./web.ts")
+    ).serveWeb(server.ingress, { home, log }, config, options.env);
+    options.say(
+      `web · ${site.url}${config.host === undefined ? "" : ` · public host ${config.host}`}`,
+    );
+    return site.url;
+  };
+  const web = {
+    get url() {
+      return site?.url ?? null;
+    },
+    // Once: a failed start (a port in use) may be asked again.
+    start: () =>
+      (opening ??= openWeb().catch((error: unknown) => {
+        opening = undefined;
+        throw error;
+      })),
+  };
   let updating = false;
   const update = async (plan: UpdatePlan) => {
     // No client starts the core again while npm replaces its files.
@@ -82,14 +114,15 @@ export async function runServer(options: {
     {
       mode: options.mode,
       log,
-      stop: () => ended.resolve({ kind: "stopped" }),
+      stop: () => stop("monchu stop"),
       update: (plan) =>
         void update(plan).catch((error: unknown) => {
           log.write("error", "server.process", "update failed", {
             reason: error instanceof Error ? error.message : String(error),
           });
-          ended.resolve({ kind: "stopped" });
+          stop("update failed");
         }),
+      web,
     },
   );
   // Only the first core hears what the server came back from.
@@ -102,21 +135,16 @@ export async function runServer(options: {
   try {
     closers.push((await serveSocket(server.ingress, log, path)).close);
     options.say(`serving ${home} on ${path}`);
-    if (options.web) {
-      try {
-        const config = await loadWebConfig(home);
-        if (config === undefined) throw new Error(`no web.json in ${home}`);
-        const site = await (
-          await import("./web.ts")
-        ).serveWeb(server.ingress, { home, log }, config, options.env);
-        closers.push(site.close);
-        options.say(
-          `web · ${site.url}${config.host === undefined ? "" : ` · public host ${config.host}`}`,
-        );
-      } catch (error) {
+    if (options.web)
+      await web.start().catch((error: unknown) => {
         options.say(`web is off: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+      });
+    log.write("info", "server.process", "started", {
+      mode: options.mode,
+      pid: process.pid,
+      version: VERSION,
+      web: site?.url ?? "",
+    });
     if (options.mode === "serve") {
       await server.startCore();
       options.say(`core ready · pid ${server.status.core.pid ?? "?"}`);
@@ -124,15 +152,16 @@ export async function runServer(options: {
     let idleSince = Date.now();
     const idle = setInterval(() => {
       if (options.mode !== "background") return;
-      if (server.status.clients > 0) idleSince = Date.now();
-      else if (Date.now() - idleSince > IDLE_MS) ended.resolve({ kind: "stopped" });
+      if (server.status.clients > 0 || site !== undefined) idleSince = Date.now();
+      else if (Date.now() - idleSince > IDLE_MS) stop("idle");
     }, 1000);
-    void options.signal.then(() => ended.resolve({ kind: "stopped" }));
+    void options.signal.then(stop);
     const end = await ended.promise;
     clearInterval(idle);
     return end;
   } finally {
     // Clients first, so none starts the core again; then the core closes gracefully.
+    await site?.close().catch(() => {});
     for (const close of closers.toReversed()) await close().catch(() => {});
     await core.stop().catch(() => {});
     await server.close();

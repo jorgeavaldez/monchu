@@ -39,11 +39,18 @@ async function openServer(opened: (backend: Monchu) => void = () => {}) {
     return backend;
   });
   let stops = 0;
+  let url: string | null = null;
   const server = openServerHost(core, {
     mode: "background",
     log: new Log(home),
     stop: () => stops++,
     update: () => {},
+    web: {
+      get url() {
+        return url;
+      },
+      start: async () => (url = "http://127.0.0.1:7420/"),
+    },
   });
   const attach = async (principal: Principal) => {
     const dialer = memoryDial(server.host, principal);
@@ -167,17 +174,24 @@ describe("server", () => {
     }
   }, 30_000);
 
-  it("tells clients the server's state, lets a person stop it, and a service login only look", async () => {
+  it("tells clients the server's state, lets a person start its web and stop it, and a service login only look", async () => {
     const { attach, stops, close } = await openServer();
     try {
       const person = await attach({ kind: "client", connection: "a", person: true });
       const service = await attach({ kind: "client", connection: "b", person: false });
       await person.client.currentRoot();
       const owner = await person.client.host.get(Server, {});
-      expect(owner.state.value).toMatchObject({ mode: "background", core: { state: "running" } });
+      expect(owner.state.value).toMatchObject({
+        mode: "background",
+        core: { state: "running" },
+        web: null,
+      });
       const viewer = await service.client.host.get(Server, {});
       expect(viewer.variant).toBe("viewer");
       if (owner.variant !== "owner") throw new Error("A person's server is the owner's");
+      // `monchu --web` on a running server: it serves the web client from then on, and every client sees it.
+      expect(await owner.web({})).toBe("http://127.0.0.1:7420/");
+      await waitFor(() => viewer.state.value.web === "http://127.0.0.1:7420/");
       await owner.stop();
       await waitFor(() => stops() === 1);
       owner.release();

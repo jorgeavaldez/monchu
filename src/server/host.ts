@@ -124,7 +124,7 @@ export type ServerHost = {
 
 /**
  * The server's host over a core process. `stop` is what a person's `monchu stop` asks for: the caller stops the core
- * and exits.
+ * and exits. `web` serves the web client, once, when a person asks for it.
  */
 export function openServerHost(
   core: CoreProcess,
@@ -133,6 +133,7 @@ export function openServerHost(
     log: Log;
     stop(): void;
     update(plan: UpdatePlan): void;
+    web: { readonly url: string | null; start(): Promise<string> };
   },
 ): ServerHost {
   const host = createHost<Principal>({
@@ -164,6 +165,7 @@ export function openServerHost(
     pid: process.pid,
     core: core.status,
     clients,
+    web: options.web.url,
   });
   const changed = () => {
     const now = status();
@@ -203,6 +205,11 @@ export function openServerHost(
       variant: "owner",
       state,
       stop: () => void setTimeout(() => options.stop(), 0),
+      web: async () => {
+        const url = await options.web.start();
+        changed();
+        return url;
+      },
     };
   });
   host.serve(Reloads, (_input, principal) => {
