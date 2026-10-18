@@ -386,4 +386,38 @@ describe("roots", () => {
       await backend.close();
     }
   });
+
+  it("gives every root's front the soul and the front manual, and their workers neither", async () => {
+    const value = await setup();
+    const homes = new Map<string, string>();
+    route(value.faux, (request) => {
+      homes.set(
+        textOf(lastMessage(request.messages)),
+        sectionTexts(request.messages, "home").at(-1) ?? "",
+      );
+      return fauxAssistantMessage("ok");
+    });
+    const { home, backend } = await openBackend(value);
+    await mkdir(join(home, "memories"), { recursive: true });
+    for (const file of ["SOUL.md", "AGENTS.md", "FRONT.md", "DEVICES.md"])
+      await writeFile(join(home, file), `CONTENT ${file}`);
+    try {
+      const a = backend.root(await backend.currentRoot());
+      const b = backend.root(await backend.createRoot("create:b"));
+      await a.submit("to a", "to-a", "followUp");
+      await b.submit("to b", "to-b", "followUp");
+      await idle(a);
+      await idle(b);
+      for (const message of ["to a", "to b"]) {
+        expect(homes.get(message)).toContain("CONTENT SOUL.md");
+        expect(homes.get(message)).toContain("CONTENT FRONT.md");
+      }
+      await b.startWorker("w", "worker brief", "start:w");
+      await waitFor(() => homes.has("worker brief"));
+      expect(homes.get("worker brief")).toContain("CONTENT AGENTS.md");
+      expect(homes.get("worker brief")).not.toMatch(/SOUL\.md|FRONT\.md/);
+    } finally {
+      await backend.close();
+    }
+  });
 });

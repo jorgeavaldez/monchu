@@ -1,12 +1,15 @@
+import type { Context } from "@earendil-works/chord";
 import {
   defineDoc,
   defineExtension,
-  ROOT_CONVERSATION_ID,
   section,
+  type ConversationId,
+  type DocumentReader,
 } from "@earendil-works/pi-durable";
 import { readFile } from "node:fs/promises";
 import { homedir, hostname, release, type, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { rootRecord, RootsDoc } from "./agents/roots.ts";
 
 /**
  * Character budgets of the home files every request loads. Nothing is ever truncated: every file loads in full, and a
@@ -141,8 +144,18 @@ async function projectContextFiles(
   }
 }
 
+/** Every root is a front, not only Durable's reserved one; a worker is never a root. */
+async function isFront(
+  read: DocumentReader,
+  id: ConversationId,
+  context: Context,
+): Promise<boolean> {
+  const roots = await read.snapshot(RootsDoc, context);
+  return roots !== undefined && rootRecord(roots, id) !== undefined;
+}
+
 /**
- * Home files are reread for every request. Every agent gets the shared manual (`AGENTS.md`); only the front gets
+ * Home files are reread for every request. Every agent gets the shared manual (`AGENTS.md`); only fronts (every root) get
  * the soul and its front-only manual (`FRONT.md`). Workers also get the context files of their execution directory.
  * Every render measures all budgeted files and passes their levels to `observeBudget`.
  */
@@ -154,18 +167,17 @@ export function createIdentity(
   return defineExtension({
     name: "monchu.identity",
     sections: [
-      section("home", async (input) => {
-        const files =
-          input.conversationId === ROOT_CONVERSATION_ID
-            ? [
-                "SOUL.md",
-                "AGENTS.md",
-                "FRONT.md",
-                "DEVICES.md",
-                "memories/USER.md",
-                "memories/MEMORY.md",
-              ]
-            : ["AGENTS.md", "DEVICES.md", "memories/USER.md", "memories/MEMORY.md"];
+      section("home", async (input, context) => {
+        const files = (await isFront(input.read, input.conversationId, context))
+          ? [
+              "SOUL.md",
+              "AGENTS.md",
+              "FRONT.md",
+              "DEVICES.md",
+              "memories/USER.md",
+              "memories/MEMORY.md",
+            ]
+          : ["AGENTS.md", "DEVICES.md", "memories/USER.md", "memories/MEMORY.md"];
         const contents: string[] = [];
         const sizes: { file: string; size: number }[] = [];
         for (const file of Object.keys(BUDGETS)) {
@@ -186,8 +198,11 @@ export function createIdentity(
         observeBudget(budgetLevels(sizes));
         return contents.length === 0 ? undefined : contents.join("\n\n");
       }),
-      section("project", async (input) => {
-        if (input.conversationId === ROOT_CONVERSATION_ID || input.env?.cwd === undefined)
+      section("project", async (input, context) => {
+        if (
+          input.env?.cwd === undefined ||
+          (await isFront(input.read, input.conversationId, context))
+        )
           return undefined;
         // Never undefined for a worker: a section that appears later re-sends every section after it.
         const files = await projectContextFiles(

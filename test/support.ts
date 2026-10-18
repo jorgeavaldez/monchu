@@ -68,6 +68,7 @@ import { FffFinders } from "../src/core/tools/fff.ts";
 import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import { MemoryStore, Vault } from "../src/core/secrets/vault.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
+import { rootRecord, RootsDoc } from "../src/core/agents/roots.ts";
 import type { Client, RootClient } from "../src/api/client.ts";
 import type { Principal } from "../src/api/contract.ts";
 import type { CoreHost, CoreProcess } from "../src/server/host.ts";
@@ -311,6 +312,12 @@ export async function open(
   const root = await harness.root(context, {
     agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: value.directory },
   });
+  // Like the backend, the reserved root is recorded as a root, which makes it a front.
+  await harness.commit(async (tx) => {
+    const state = await tx.doc(RootsDoc);
+    if (rootRecord(state, root.id) === undefined)
+      state.roots.push({ id: root.id, label: "", named: false, createdAt: Date.now() });
+  }, context);
   harness.resume();
   return { harness, root };
 }
