@@ -859,15 +859,63 @@ describe("worker lifecycle", () => {
     await harness.close(context);
   });
 
-  it("refuses close_worker while a sub-worker is busy, then closes and lists through the front's tools", async () => {
+  it("closes workers in a batch as soon as their reports arrive, reporting each name", async () => {
     const value = await setup();
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const calls: Record<string, { tool: string; args: Record<string, string | boolean> }> = {
+    route(value.faux, async (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (text === "hold front") await held;
+      // The front closes both workers the moment the second report starts its turn.
+      if (last?.role === "user" && text.includes("answered b"))
+        return fauxAssistantMessage(
+          [fauxToolCall("close_workers", { names: ["a", "b", "missing"] })],
+          { stopReason: "toolUse" },
+        );
+      return fauxAssistantMessage([fauxText(`answered ${text.split("\n", 1)[0]}`)]);
+    });
+    const { harness, root } = await open(value);
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "a", "a", value.directory, "start:a", fauxRole),
+      context,
+    );
+    await waitFor(async () => (await reports(root)).length === 1);
+    await root.waitForIdle(context);
+    // b reports while the front is busy, so its delivery is still posting when the report starts the front's next turn.
+    await root.submit({ type: "input", content: "hold front", requestId: "hold" }, context);
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "b", "b", value.directory, "start:b", fauxRole),
+      context,
+    );
+    await waitFor(
+      async () => ((await harness.snapshot(InboxDoc, root.id, context))?.items.length ?? 0) > 0,
+    );
+    release();
+    await waitFor(async () => (await toolResults(root)).length === 1);
+    const result = (await toolResults(root))[0];
+    expect(result?.isError).toBe(true);
+    expect(textOf(result)).toContain("Closed a.\nClosed b.\nmissing: No worker named missing");
+    expect(await listWorkers(harness, root.id, context)).toEqual([]);
+    await settle(harness, root);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
+  it("refuses close_workers while a sub-worker is busy, then closes and lists through the front's tools", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: Record<
+      string,
+      { tool: string; args: Record<string, string | boolean | string[]> }
+    > = {
       spawn: { tool: "start_worker", args: { name: "child", task: "hold child" } },
-      close: { tool: "close_worker", args: { name: "w" } },
+      close: { tool: "close_workers", args: { names: ["w"] } },
       status: { tool: "worker_status", args: { include_closed: true } },
       reopen: { tool: "reopen_worker", args: { name: "w" } },
     };

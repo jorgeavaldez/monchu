@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import {
   cleanupSessionResources,
   getSupportedThinkingLevels,
@@ -118,7 +118,8 @@ async function busyTree(
   const live = await tx.doc(LiveDoc, worker.conversationId);
   const inbox = await tx.doc(InboxDoc, worker.conversationId);
   if (live.run !== undefined || inbox.items.length > 0) return true;
-  if (await pendingDelivery(state, worker.name, (id) => tx.task(id))) return true;
+  // Moving a worker whose report is still posting would orphan that delivery's records in the old parent.
+  if (await pendingDelivery(state, worker.name, (id) => tx.task(id), true)) return true;
   const children = await tx.doc(WorkersDoc, worker.conversationId);
   for (const child of children.workers) if (await busyTree(tx, children, child)) return true;
   return false;
@@ -141,15 +142,31 @@ export async function workerConversationId(
     .conversationId;
 }
 
-/** Whether the worker has a delivery that has not finished. */
+/**
+ * Whether the worker has a delivery that has not finished. A delivery that only posts the worker's answer to its parent
+ * leaves the worker idle, so it counts only with `reporting`: the parent reads the report before that post finishes.
+ */
 async function pendingDelivery(
   state: WorkerRecords,
   name: string,
-  task: (id: TaskId) => Promise<{ readonly state: { readonly status: string } } | undefined>,
+  task: (
+    id: TaskId,
+  ) => Promise<
+    { readonly state: { readonly status: string; readonly checkpoint?: JsonValue } } | undefined
+  >,
+  reporting = false,
 ): Promise<boolean> {
   for (const delivery of state.deliveries.filter((item) => item.name === name)) {
     const record = await task(delivery.taskId);
-    if (record !== undefined && record.state.status !== "terminal") return true;
+    if (record === undefined || record.state.status === "terminal") continue;
+    const { checkpoint } = record.state;
+    const answered =
+      record.state.status === "completing" ||
+      (typeof checkpoint === "object" &&
+        checkpoint !== null &&
+        !Array.isArray(checkpoint) &&
+        checkpoint.phase === "report");
+    if (reporting || !answered) return true;
   }
   return false;
 }
@@ -670,6 +687,21 @@ async function busySubWorkers(
   return busy;
 }
 
+/** Close the calling conversation's worker `name` and release its providers; the line to report for it. */
+async function closeNamed(
+  api: Pick<ToolExecutionApi, "conversationId" | "commit" | "snapshot" | "getTask">,
+  name: string,
+  context: Context,
+): Promise<string> {
+  const workerId = await workerConversationId(api, api.conversationId, name, context);
+  // Sub-workers start only from the worker's own runs, which the closing commit rules out.
+  const busy = await busySubWorkers(api, workerId, context);
+  if (busy.length > 0) throw new Error(`${name} has busy sub-workers: ${busy.join(", ")}`);
+  const closed = await api.commit((tx) => closeWorker(tx, api.conversationId, name), context);
+  await releaseProviders(api, workerId, context);
+  return closed ? `Closed ${name}.` : `${name} was already closed.`;
+}
+
 /** A worker's model choice as tools take it: a profile name, or a model and thinking level, each optional. */
 type ModelChoice = {
   profile?: string;
@@ -858,31 +890,27 @@ export function createWorkerTools(
         },
       }),
       defineTool({
-        name: "close_worker",
+        name: "close_workers",
         description:
-          "Retire an idle worker: its line of work is done, the user asks, or it has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A reused worker past the cache window pays to rewrite its whole context either way. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. Only an idle worker with no pending deliveries or busy sub-workers closes. Tell the user in one line which workers you closed.",
-        parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
+          "Retire idle workers, any number in one call: a worker whose line of work is done, the user asks, or that has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A reused worker past the cache window pays to rewrite its whole context either way. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. A worker closes once it has answered, even while its report is still arriving; one that is running, has queued messages, or has busy sub-workers stays open. Each name is closed or refused on its own. Tell the user in one line which workers you closed.",
+        parameters: Type.Object({
+          names: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
+        }),
         // Closing a closed worker changes nothing, and releasing provider resources again is harmless.
         replay: "safe",
         execute: async (args, api, context) => {
-          const workerId = await workerConversationId(api, api.conversationId, args.name, context);
-          // Sub-workers start only from the worker's own runs, which the closing commit rules out.
-          const busy = await busySubWorkers(api, workerId, context);
-          if (busy.length > 0)
-            throw new Error(`${args.name} has busy sub-workers: ${busy.join(", ")}`);
-          const closed = await api.commit(
-            (tx) => closeWorker(tx, api.conversationId, args.name),
-            context,
-          );
-          await releaseProviders(api, workerId, context);
-          return {
-            output: [
-              {
-                type: "text",
-                text: closed ? `Closed ${args.name}.` : `${args.name} was already closed.`,
-              },
-            ],
-          };
+          const lines: string[] = [];
+          let refused = false;
+          for (const name of args.names) {
+            try {
+              lines.push(await closeNamed(api, name, context));
+            } catch (error) {
+              refused = true;
+              lines.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          if (refused) throw new Error(lines.join("\n"));
+          return { output: [{ type: "text", text: lines.join("\n") }] };
         },
       }),
       defineTool({

@@ -41,7 +41,7 @@ const ROUTING_TOOLS = new Set([
   "start_worker",
   "message_worker",
   "reopen_worker",
-  "close_worker",
+  "close_workers",
   "stop_worker",
   "list_goals",
   "update_goal",

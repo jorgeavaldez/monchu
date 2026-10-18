@@ -96,9 +96,12 @@ export function createDevProvider(): Provider {
           { stopReason: "toolUse" },
         );
       if (text.startsWith("close "))
-        return fauxAssistantMessage([fauxToolCall("close_worker", { name: text.slice(6) })], {
-          stopReason: "toolUse",
-        });
+        return fauxAssistantMessage(
+          [fauxToolCall("close_workers", { names: text.slice(6).split(" ") })],
+          {
+            stopReason: "toolUse",
+          },
+        );
       if (text === "goal waiting")
         return fauxAssistantMessage(
           [fauxToolCall("update_goal", { id: "smoke", status: "waiting" })],

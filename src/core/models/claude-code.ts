@@ -100,7 +100,7 @@ const oneMillion = new Set([
  * without it.
  */
 const TOOL_NAMES_NOTE =
-  "Your tools are declared as `mcp__monchu__<name>`: call them by that full name. Everywhere else, including a codemode script's `tools.<name>(...)`, `searchTools()`, `describeTool()`, `tool_search` and these instructions, a tool goes by `<name>` without the prefix: `mcp__monchu__close_worker` is `tools.close_worker`.";
+  "Your tools are declared as `mcp__monchu__<name>`: call them by that full name. Everywhere else, including a codemode script's `tools.<name>(...)`, `searchTools()`, `describeTool()`, `tool_search` and these instructions, a tool goes by `<name>` without the prefix: `mcp__monchu__close_workers` is `tools.close_workers`.";
 
 const efforts: Partial<Record<ModelThinkingLevel, EffortLevel>> = {
   minimal: "low",

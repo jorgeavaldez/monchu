@@ -760,7 +760,7 @@ describe("Claude Code subscription provider", () => {
       expect(frontPrompt).not.toContain("PROJECT RULES");
       // Declared tools are prefixed; scripts and instructions name them without it.
       for (const prompt of [frontPrompt, worker])
-        expect(prompt).toContain("`mcp__monchu__close_worker` is `tools.close_worker`");
+        expect(prompt).toContain("`mcp__monchu__close_workers` is `tools.close_workers`");
       expect(worker).toContain(
         `<project_instructions path="${join(project, "AGENTS.md")}">
 PROJECT RULES
