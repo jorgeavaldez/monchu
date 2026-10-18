@@ -194,11 +194,12 @@ export class FileCredentials implements CredentialStore {
       } catch (error) {
         signal?.throwIfAborted();
         const remaining = deadline - Date.now();
-        if (
-          !(error instanceof Error && "code" in error && error.code === "ELOCKED") ||
-          remaining <= 0
-        )
-          throw error;
+        // On Windows, creating the lock directory while another caller removes it fails with EPERM: also contention.
+        const busy =
+          error instanceof Error &&
+          "code" in error &&
+          (error.code === "ELOCKED" || (process.platform === "win32" && error.code === "EPERM"));
+        if (!busy || remaining <= 0) throw error;
         await sleep(Math.min(10 * 2 ** retry++, 1000, remaining), undefined, { signal });
       }
     }
