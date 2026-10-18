@@ -148,7 +148,17 @@ While the front is busy, the report queues until its current answer, then starts
 Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
 Stopping the front withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
 Non-fatal runtime failures appear as `system · warning` and are logged under `logs/`.
-Reports do not authorize new actions.
+
+### Home check
+
+What Monchu loads from its home (`config.json`, `mcp.json`, `plugins.local.json`, `skills/`, `plugins/`) is checked as a build would meet it, so a broken home is seen when it breaks, not at the next start (`src/core/home-check.ts`). The check runs the real loaders, plugins included (imported and run, then retired; the running build's keep going), without installing anything, and only when a fingerprint of those files (sizes and times) changed. Checks and reloads run one at a time.
+
+- **At open:** problems reach the current root's front as a `system ·` notice.
+- **After a tool call** (not a nested one) that changed the home: its result gets an `error` diagnostic listing every problem, or an `info` one when it fixed them.
+- **At that agent's final answer**, while what it broke stays broken, it is sent back once with the list. If it still finishes with the home broken, the front gets a notice naming the worker. A front that broke the home was already told.
+- **A change outside any tool call** (another device's sync, an editor) is found at the next tool call anywhere and told to the front; so is the home passing again.
+- `/reload` and `reload_extensions` list every warning of the reload in their result.
+  Reports do not authorize new actions.
 
 `~/.monchu` is the default home and execution directory, independent of launch cwd.
 Each conversation stores its own cwd.
@@ -300,6 +310,7 @@ Folders follow systems. Lint enforces the arrows: only `src/main.ts` imports `sr
   - `home.ts`: home resolution before SDK imports, including isolated smoke homes.
   - `context.ts`: home/bundled skill metadata as a prompt section, the config-backed in-memory settings snapshot, and Durable run policy.
   - `identity.ts`: per-request home-file and device sections, and the front's instructions.
+  - `home-check.ts`: the home check: the real loaders dry-run on each home change, problems in the tool result that made them, the agent sent back at its final answer, the front told the rest.
   - `reload.ts`: the core's Chord host and the extension registry: loading facets, the reload (alone or through the server), installing each committed build, the reload tool, and durable restart requests. `extensions.ts` is the facet that builds every extension, and `build.ts` what the two share.
   - `jobs.ts`: background jobs: the store-wide jobs document and event stream, cron, the replay-safe runner tasks, and the `job` tool.
   - `update.ts`: `/update` and `monchu update`: checking a release, installing it with npm into the running package's prefix, and the daily newer-edge hint.

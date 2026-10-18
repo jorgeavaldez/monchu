@@ -19,8 +19,10 @@ import { fileURLToPath } from "node:url";
 import { principalKey, type Principal } from "../api/contract.ts";
 import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.ts";
 import { FffFinders } from "./tools/fff.ts";
+import { HomeCheck } from "./home-check.ts";
 import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
@@ -92,7 +94,13 @@ export class Extensions {
   private readonly plugins: Plugins;
   private readonly report: (warning: string) => void;
   private readonly facets: string[];
+  /** The home's last check; see `home-check.ts`. */
+  readonly homeCheck: HomeCheck;
   private current: Build;
+  /** The warnings of the last load or reload. */
+  private warned: readonly string[] = [];
+  /** Reloads and home checks, one at a time: both run the plugins. */
+  private turn: Promise<unknown> = Promise.resolve();
   /** The config a running reload read, which its build applies. */
   private pending: MonchuConfig | undefined;
   /** A running reload waiting for its commit to publish the build. */
@@ -114,7 +122,9 @@ export class Extensions {
     registry: Registry,
     host: Host<Principal>,
     facets: string[],
+    homeCheck: HomeCheck,
   ) {
+    this.homeCheck = homeCheck;
     this.plugins = plugins;
     this.registry = registry;
     this.host = host;
@@ -141,6 +151,8 @@ export class Extensions {
       onError?: (error: unknown) => void;
       /** The home's secrets; by default fnox under `<home>/secrets`. */
       vault?: Vault;
+      /** The home check's problems for the front (none: they are gone), and the agent that left them. */
+      tellHome?: (problems: readonly string[], from?: ConversationId) => void;
     } = {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
@@ -169,6 +181,19 @@ export class Extensions {
     });
     // Builds only run once their inputs are served; until construction they apply the startup config.
     let extensions: Extensions | undefined;
+    const homeCheck = new HomeCheck({
+      home,
+      models,
+      plugins,
+      finders,
+      vault,
+      running: () => {
+        if (extensions === undefined) throw new Error("Monchu is still opening");
+        return extensions.current;
+      },
+      exclusive: (work) => (extensions === undefined ? work() : extensions.exclusive(work)),
+      tell: (problems, from) => options.tellHome?.(problems, from),
+    });
     const first = Promise.withResolvers<Build>();
     host.registry(Builds).subscribe((table) => {
       const build = table.get(BUILD)?.value;
@@ -187,6 +212,7 @@ export class Extensions {
       clients,
       vault,
       plugins,
+      homeCheck,
       validate: (list) => validateExtensions(registry, list),
     };
     host.serve(
@@ -224,7 +250,9 @@ export class Extensions {
       registry,
       host,
       facets,
+      homeCheck,
     );
+    extensions.warned = build.warnings;
     for (const warning of build.warnings) report(warning);
     return extensions;
   }
@@ -244,6 +272,19 @@ export class Extensions {
     return () => {
       if (this.coordinator === coordinator) this.coordinator = undefined;
     };
+  }
+
+  /** Run `work` once no reload or home check runs, and hold them off until it ends. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    if (this.stopping.signal.aborted) return Promise.reject(new Error("Monchu is closing"));
+    const run = this.turn.then(work);
+    this.turn = run.catch(() => {});
+    return run;
+  }
+
+  /** The warnings of the last load or successful reload, as it reported them. */
+  get warnings(): readonly string[] {
+    return this.warned;
   }
 
   /** A committed reload's build: install it; the build validated it while the reload prepared. */
@@ -357,7 +398,7 @@ export class Extensions {
    * prepare leaves the running code, installed definitions and settings unchanged.
    */
   reload(applyConfig?: (config: MonchuConfig) => Promise<void>): Promise<readonly string[]> {
-    this.reloading ??= (async () => {
+    this.reloading ??= this.exclusive(async () => {
       await this.saving?.catch(() => {});
       if (this.stopping.signal.aborted) throw new Error("Monchu is closing");
       await buildForReload();
@@ -387,9 +428,10 @@ export class Extensions {
         this.plugins.settle(this.current.plugins);
       }
       await applyConfig?.(config);
-      for (const warning of [...roles.warnings, ...this.current.warnings]) this.report(warning);
+      this.warned = [...roles.warnings, ...this.current.warnings];
+      for (const warning of this.warned) this.report(warning);
       return this.facets.map((url) => basename(fileURLToPath(url)).replace(/\.[^.]+$/, ""));
-    })().finally(() => {
+    }).finally(() => {
       this.reloading = undefined;
     });
     return this.reloading;
@@ -430,10 +472,11 @@ export class Extensions {
     await this.clients.close();
   }
 
-  /** Resolves once no reload or role save is running, whether or not it succeeded. */
+  /** Resolves once no reload, home check or role save is running, whether or not it succeeded. */
   async settled(): Promise<void> {
     while (this.reloading !== undefined || this.saving !== undefined)
       await Promise.allSettled([this.reloading, this.saving]);
+    await this.turn;
   }
 }
 
@@ -507,6 +550,7 @@ export const RestartRequest = defineDoc<{
 export function createReloadControls(
   reload: () => Promise<readonly string[]>,
   plugins: () => readonly PluginStatus[] = () => [],
+  warnings: () => readonly string[] = () => [],
 ) {
   return defineExtension({
     name: "monchu.reload",
@@ -526,16 +570,29 @@ export function createReloadControls(
           "Reload Monchu config, extensions and home/bundled skills in process. Model roles and run settings apply to subsequent requests; running calls finish on old code. Home files are read on every request. Host code changes require request_restart and the user's /restart.",
         parameters: Type.Object({}),
         replay: "unsafe",
-        execute: async () => ({
-          output: [
-            {
-              type: "text",
-              text: [`Reloaded: ${(await reload()).join(", ")}`, formatPluginStatus(plugins())]
-                .filter(Boolean)
-                .join("\n"),
-            },
-          ],
-        }),
+        execute: async () => {
+          const reloaded = await reload();
+          const warned = warnings();
+          return {
+            output: [
+              {
+                type: "text",
+                text: [
+                  `Reloaded: ${reloaded.join(", ")}`,
+                  formatPluginStatus(plugins()),
+                  ...(warned.length
+                    ? [
+                        `${warned.length === 1 ? "1 warning" : `${warned.length} warnings`}; fix them now:`,
+                        ...warned.map((warning) => `- ${warning}`),
+                      ]
+                    : []),
+                ]
+                  .filter(Boolean)
+                  .join("\n"),
+              },
+            ],
+          };
+        },
       }),
       defineTool({
         name: "request_restart",

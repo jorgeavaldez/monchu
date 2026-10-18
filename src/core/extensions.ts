@@ -15,6 +15,7 @@ import { Roots } from "./agents/roots.ts";
 import { createWorkerTools } from "./agents/workers.ts";
 import { BUILD, BuildHost, Builds, RELOAD_TOOLS, type Build, type BuildInputs } from "./build.ts";
 import { createContext } from "./context.ts";
+import { createHomeCheck } from "./home-check.ts";
 import { createIdentity } from "./identity.ts";
 import { createJobs } from "./jobs.ts";
 import { loadMcpConfig } from "./mcp/config.ts";
@@ -24,7 +25,7 @@ import { Codemode } from "./tools/codemode.ts";
 import { createHerdr } from "./tools/herdr.ts";
 import { createPiTools } from "./tools/pi-tools.ts";
 import { createSecrets } from "./secrets/tool.ts";
-import { createPluginSections } from "./plugins.ts";
+import { createPluginSections, reservedTasks } from "./plugins.ts";
 import { createToolSearch, groupExtensionName } from "./tools/tool-search.ts";
 
 /** Build every extension from this copy of the code, reading config, skills and MCP listings anew. */
@@ -44,22 +45,31 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const jobs = (preload: readonly string[]) =>
     createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
   const herdr = createHerdr({ command: { executable: "herdr", args: [] }, env: process.env });
-  // Tool names the plugins may not take: every core tool, whatever the preload, and the reload controls.
-  const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
-  const reserved = new Set([
-    ...[...core, memory, identity, herdr, mcp.extension, secrets].flatMap((extension) =>
-      (extension.tools ?? []).map((tool) => tool.name),
-    ),
-    ...[...mcp.groups, browser].flatMap((group) => group.tools.map((tool) => tool.name)),
-    ...RELOAD_TOOLS,
-    "tool_search",
-  ]);
-  const plugins = loaded.use(reserved);
-  const search = createToolSearch([...mcp.groups, browser, ...plugins.groups]);
   const assessment =
     config.classifier === null
       ? undefined
       : createEffortAssessment(inputs.models, config.classifier, { profiles: config.profiles });
+  // Tool and task names the plugins may not take: every core one, whatever the preload, and the reload controls.
+  const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
+  const own = [
+    ...core,
+    memory,
+    identity,
+    herdr,
+    mcp.extension,
+    secrets,
+    ...(assessment === undefined ? [] : [assessment.extension]),
+  ];
+  const plugins = loaded.use({
+    tools: new Set([
+      ...own.flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name)),
+      ...[...mcp.groups, browser].flatMap((group) => group.tools.map((tool) => tool.name)),
+      ...RELOAD_TOOLS,
+      "tool_search",
+    ]),
+    tasks: reservedTasks(own),
+  });
+  const search = createToolSearch([...mcp.groups, browser, ...plugins.groups]);
   const extensions = [
     context.extension,
     tools.extension,
@@ -70,6 +80,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
     Goals,
     memory,
     identity,
+    createHomeCheck(inputs.homeCheck),
     // Bundled plugins keep the place jj had before it became one, so every conversation's tools stay in order.
     ...plugins.bundled,
     herdr,

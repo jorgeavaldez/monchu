@@ -48,7 +48,9 @@ import {
   type ModelRole,
   type Settings,
 } from "./config.ts";
+import { parentOf, WorkersDoc } from "./agents/workers.ts";
 import { harnessSettings } from "./context.ts";
+import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
 import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
@@ -105,6 +107,9 @@ export class Monchu implements Client {
   /** The budget levels last observed, so an unchanged render costs no commit; budget notices go out one at a time. */
   private budgetSeen = "";
   private budgetWork: Promise<void> = Promise.resolve();
+  /** Home check notices go out one at a time, in order. */
+  private homeWork: Promise<void> = Promise.resolve();
+  private homeNotices = 0;
   private readonly envs: ExecutionEnvs;
   /** The home's secrets: values in fnox, names here. */
   private readonly vault: Vault;
@@ -203,6 +208,7 @@ export class Monchu implements Client {
       for (const warning of warnings) reports.report(warning);
       // Renders start once the harness resumes, after the backend below takes over.
       let observeBudget = (_levels: BudgetLevel[]) => {};
+      let tellHome = (_problems: readonly string[], _from?: ConversationId) => {};
       const loaded = await Extensions.load(
         models,
         config,
@@ -210,6 +216,7 @@ export class Monchu implements Client {
         (warning) => reports.report(warning),
         {
           observeBudget: (levels) => observeBudget(levels),
+          tellHome: (problems, from) => tellHome(problems, from),
           onError: (error) =>
             log.write("warn", "core.chord", "background failure", {
               reason: error instanceof Error ? error.message : String(error),
@@ -256,6 +263,7 @@ export class Monchu implements Client {
       );
       log.write("info", "core.open", "opened", phases);
       observeBudget = (levels) => backend.observeBudget(levels);
+      tellHome = (problems, from) => backend.tellHome(problems, from);
       // A failed storage call closes the Session for good, and every later call rejects: say why, once.
       void harness.closed.then((end) => {
         if (end.reason !== "failed") return;
@@ -268,10 +276,13 @@ export class Monchu implements Client {
         createReloadControls(
           () => backend.reload(),
           () => loaded.pluginStatus,
+          () => loaded.warnings,
         ),
       );
       // Every definition is installed; pending work resumes whether or not a client is attached.
       harness.resume();
+      // The first home check: what this start could not load reaches the front, not only the log.
+      void loaded.homeCheck.check();
       backend.watchEdge();
       return backend;
     } catch (error) {
@@ -837,6 +848,57 @@ export class Monchu implements Client {
     }, context);
   }
 
+  /**
+   * The home check's problems, or that they are gone, as a follow-up system notice to the current root's front, and in
+   * the log. A front that left them was already sent back to fix them.
+   */
+  private tellHome(problems: readonly string[], from?: ConversationId): void {
+    if (this.closing !== undefined) return;
+    this.homeWork = this.homeWork
+      .then(() => this.noticeHome(problems, from))
+      .catch((error: unknown) =>
+        this.reports.report(
+          `Home check notice failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+  }
+
+  private async noticeHome(problems: readonly string[], from?: ConversationId): Promise<void> {
+    void this.reports.log(
+      problems.length === 0
+        ? "Home check passes"
+        : `Home check: ${problems.length} problems: ${problems.join("; ")}`,
+    );
+    const records = await this.records();
+    const current = currentRoot(records);
+    if (current === undefined) return;
+    if (from !== undefined && records.some((record) => record.id === from)) return;
+    const name =
+      from === undefined
+        ? undefined
+        : await this.harness.commit(async (tx) => {
+            const parent = await parentOf(tx, from);
+            if (parent === undefined) return undefined;
+            const worker = (await tx.doc(WorkersDoc, parent)).workers.find(
+              (each) => each.conversationId === from,
+            );
+            return worker === undefined ? undefined : `Worker ${worker.name}`;
+          }, context);
+    const front = await this.root(shortId(current.id)).conversation();
+    await front.submit(
+      {
+        type: "input",
+        content: homeNotice(
+          problems,
+          name ?? (from === undefined ? undefined : `Agent ${shortId(from)}`),
+        ),
+        requestId: `home-check:${Date.now()}:${++this.homeNotices}`,
+        whenBusy: "followUp",
+      },
+      context,
+    );
+  }
+
   /** A non-fatal failure from outside the core, such as its socket server: logged and shown like the core's own. */
   report(message: string): void {
     this.reports.report(message);
@@ -961,6 +1023,8 @@ export class Monchu implements Client {
       // Clients' views and the build go first; a failed reload must not prevent storage from closing.
       await this.extensions.closeHost();
       await this.reloading?.catch(() => {});
+      // A home check notice in flight still reaches the store before it closes.
+      await this.homeWork;
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
       await this.extensions.close();

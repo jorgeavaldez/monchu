@@ -9,6 +9,7 @@ import type { Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { EffortAssessment } from "./agents/classifier.ts";
 import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
+import type { HomeCheck } from "./home-check.ts";
 import type { BudgetLevel } from "./identity.ts";
 import type { McpClients } from "./mcp/index.ts";
 import type { PluginBuild, Plugins } from "./plugins.ts";
@@ -32,6 +33,8 @@ export type BuildInputs = {
   vault: Vault;
   /** Bundled and home plugins, with the modules they last loaded. */
   plugins: Plugins;
+  /** The home's last check, which every conversation's tool calls and final answers run. */
+  homeCheck: HomeCheck;
   /** Throws when `extensions` could not replace the installed ones, so a failing build changes nothing. */
   validate: (extensions: readonly Extension[]) => void;
 };

@@ -8,6 +8,7 @@ import {
   type Extension,
   type HarnessSettings,
 } from "@earendil-works/pi-durable";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveSettings, type RunSettings, type Settings } from "./config.ts";
@@ -71,8 +72,10 @@ export function createContext(
   pluginSkills: readonly string[] = [],
 ) {
   home = resolve(home);
+  // A home without a skills folder has no skills; that is no problem to report.
+  const homeSkills = join(home, "skills");
   const { skills, diagnostics } = loadSkills([
-    join(home, "skills"),
+    ...(existsSync(homeSkills) ? [homeSkills] : []),
     ...pluginSkills,
     fileURLToPath(new URL("../../skills/", import.meta.url)),
   ]);

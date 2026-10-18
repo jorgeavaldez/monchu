@@ -87,8 +87,11 @@ type Contribution = {
 type PluginLoad = {
   /** Skill folders shipped by the loaded plugins, read like home skills. */
   readonly skills: readonly string[];
-  /** Drop plugins whose tools collide with `reserved` or an earlier plugin, and assemble the build's parts. */
-  use(reserved: ReadonlySet<string>): PluginBuild;
+  /**
+   * Drop plugins whose tool or task names collide with `reserved` or an earlier plugin, and assemble the build's parts:
+   * a taken task name would keep the whole build from installing, and Monchu from starting.
+   */
+  use(reserved: { tools: ReadonlySet<string>; tasks: ReadonlySet<string> }): PluginBuild;
 };
 
 export type PluginBuild = {
@@ -122,6 +125,18 @@ export function formatPluginStatus(status: readonly PluginStatus[]): string {
   ] as const;
   const shown = parts.filter(([, list]) => list.length > 0);
   return shown.map(([label, list]) => `${label}: ${list.join(", ")}`).join("; ");
+}
+
+/** Task names plugins may not take: Durable's built-in tasks and those of `extensions`. */
+export function reservedTasks(extensions: readonly Extension[]): ReadonlySet<string> {
+  return new Set(
+    [
+      GenerationTask,
+      ToolTask,
+      CompactionTask,
+      ...extensions.flatMap((each) => each.tasks ?? []),
+    ].map((task) => task.definition.name),
+  );
 }
 
 /**
@@ -249,13 +264,17 @@ function device(): PluginApi["device"] {
   return { hostname: hostname(), platform: process.platform, arch: process.arch, user };
 }
 
-async function withTimeout(work: void | Promise<void>, ms: number): Promise<void> {
+async function withTimeout<T>(
+  work: T | Promise<T>,
+  ms: number,
+  what = "it did not finish",
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    await Promise.race([
+    return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`it did not finish within ${ms / 1000} s`)), ms);
+        timer = setTimeout(() => reject(new Error(`${what} within ${ms / 1000} s`)), ms);
       }),
     ]);
   } finally {
@@ -335,13 +354,21 @@ export class Plugins {
     return {
       skills: contributions.flatMap((contribution) => contribution.skills ?? []),
       use: (reserved) => {
-        const taken = new Map([...reserved].map((name) => [name, "Monchu"]));
+        const taken = new Map([...reserved.tools].map((name) => [name, "Monchu"]));
+        const tasks = new Map([...reserved.tasks].map((name) => [name, "Monchu"]));
         const used: Contribution[] = [];
         for (const contribution of contributions) {
-          const clash = contribution.tools.find((name) => taken.has(name));
+          const names = (contribution.extension?.tasks ?? []).map((task) => task.definition.name);
+          const tool = contribution.tools.find((name) => taken.has(name));
+          const task = names.find((name) => tasks.has(name));
+          const clash =
+            tool !== undefined
+              ? { kind: "tool", name: tool, owner: taken.get(tool) }
+              : task !== undefined
+                ? { kind: "task", name: task, owner: tasks.get(task) }
+                : undefined;
           if (clash !== undefined) {
-            const owner = taken.get(clash);
-            const error = `tool ${clash} is already defined by ${owner === "Monchu" ? "Monchu" : `plugin ${owner}`}`;
+            const error = `${clash.kind} ${clash.name} is already defined by ${clash.owner === "Monchu" ? "Monchu" : `plugin ${clash.owner}`}`;
             warnings.push(`Plugin ${contribution.found.name} was not loaded: ${error}`);
             const at = status.findIndex((entry) => entry.name === contribution.found.name);
             status[at] = {
@@ -355,6 +382,7 @@ export class Plugins {
             continue;
           }
           for (const name of contribution.tools) taken.set(name, contribution.found.name);
+          for (const name of names) tasks.set(name, contribution.found.name);
           used.push(contribution);
         }
         return {
@@ -475,7 +503,12 @@ export class Plugins {
       const print = await fingerprint(found.dir);
       let cached = this.modules.get(found.entry);
       if (cached?.fingerprint !== print) {
-        const plugin = await importFresh(found).catch((failure: unknown) =>
+        // A module that never finishes loading must not hold up the build, and Monchu's start with it.
+        const plugin = await withTimeout(
+          importFresh(found),
+          SETUP_TIMEOUT_MS,
+          "its module did not finish loading",
+        ).catch((failure: unknown) =>
           failure instanceof Error ? failure : new Error(String(failure)),
         );
         cached = { fingerprint: print, plugin };

@@ -105,7 +105,8 @@ Handlers use Pi's event names with Durable's arguments, run in plugin then regis
 
 ## Loading, reload and failures
 
-- At startup each plugin loads on its own. One that fails to import, run or validate is skipped with a warning that names its file, and Monchu starts anyway.
+- At startup each plugin loads on its own. One that fails to import, run or validate, whose module doesn't finish loading within 10 seconds, or that takes a tool or task name Monchu or an earlier plugin has, is skipped with a warning that names its file, and Monchu starts anyway.
+- The home check (see `docs/internals.md`) runs the same loading after every tool call that changed the home, so a plugin that would fail shows up in that call's result, not at the next reload.
 - `/reload` (or the `reload_extensions` tool) imports a fresh copy of a plugin only when one of its files changed. A plugin whose new code fails keeps its last good code; the rest of the reload goes ahead. The reload tool's result names each plugin's state.
 - A removed or disabled plugin leaves every conversation at the next reload, which re-caches conversations that had its tools.
 - Old module copies stay in memory until `/restart` (Node can't unload ES modules).
