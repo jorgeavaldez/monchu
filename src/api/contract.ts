@@ -172,7 +172,6 @@ const sessionMethods = {
   mcpReconnect: method(undefined, trusted<McpReport>()),
   reload: method(undefined, trusted<string[]>()),
   logs: method(Type.Object({ query: logQuery }), trusted<LogRecord[]>()),
-  browsers: method(Type.Object({ text }), trusted<string>()),
   record: method(
     Type.Object({
       scope: Type.Union([Type.Literal("tui"), Type.Literal("web")]),

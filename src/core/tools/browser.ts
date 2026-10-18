@@ -75,7 +75,7 @@ export const createBrowser = (vault: Vault): ToolGroup => ({
   name: "browser",
   preload: true,
   summary:
-    "the default browser: drive a real browser with agent-browser: open pages, snapshot, click, fill, screenshot. For pages that need interaction or JavaScript; use web search and scrape for reading. Stop at explicit boundaries; ask before purchases, account or security changes and destructive actions; never bypass CAPTCHAs or drive public search-engine forms",
+    "drive a real browser with agent-browser: open pages, snapshot, click, fill, screenshot. For pages that need interaction or JavaScript; use web search and scrape for reading. Stop at explicit boundaries; ask before purchases, account or security changes and destructive actions; never bypass CAPTCHAs or drive public search-engine forms",
   tools: [
     redacting(
       defineTool({

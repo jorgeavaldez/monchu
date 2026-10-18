@@ -225,8 +225,6 @@ export interface Client {
   update(release: string): Promise<void>;
   /** The newest records of the core's structured log, oldest first. */
   logs(query: LogQuery): Promise<LogRecord[]>;
-  /** `/browsers [session]`: every session on this device's browser farm, after closing the one named (anyone's). */
-  browsers(args: string): Promise<string>;
   /** This client's own telemetry, such as its render timings, into the core's log; never content. */
   record(scope: "tui" | "web", body: string, attributes?: LogAttributes): void;
   /** Successful reloads; returns an unsubscribe function. */

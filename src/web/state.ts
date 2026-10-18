@@ -839,8 +839,6 @@ async function runInput(
           : [`logs · ${records.length}`, ...records.map(formatRecord)].join("\n"),
       );
     }
-    case "/browsers":
-      return notice(await client().browsers(input.text));
     case "/login":
       return await runLogin();
     case "/mcp":

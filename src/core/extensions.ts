@@ -26,8 +26,6 @@ import { createPiTools } from "./tools/pi-tools.ts";
 import { createSecrets } from "./secrets/tool.ts";
 import { createPluginSections } from "./plugins.ts";
 import { createToolSearch, groupExtensionName } from "./tools/tool-search.ts";
-import { Farm, loadFarmConfig } from "./browser/farm.ts";
-import { createRemoteBrowser } from "./browser/tool.ts";
 
 /** Build every extension from this copy of the code, reading config, skills and MCP listings anew. */
 async function build(inputs: BuildInputs): Promise<Build> {
@@ -40,19 +38,6 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const mcpConfig = await loadMcpConfig(inputs.home);
   const mcp = await createMcpTools(mcpConfig.servers, inputs.clients);
   const browser = createBrowser(inputs.vault);
-  const farmFile = await loadFarmConfig(inputs.home).then(
-    (config) => ({ config, warning: undefined }),
-    (error: unknown) => ({
-      config: undefined,
-      warning: error instanceof Error ? error.message : String(error),
-    }),
-  );
-  const remote = createRemoteBrowser(
-    farmFile.config === undefined ? undefined : new Farm(farmFile.config, inputs.vault),
-    inputs.vault,
-  );
-  // Only a device with a farm offers the remote browser; every device keeps its handoff waiters.
-  const browsers = farmFile.config === undefined ? [browser] : [browser, remote.group];
   const secrets = createSecrets(inputs.vault);
   const workers = (preload: readonly string[]) =>
     createWorkerTools(inputs.workerRole, config.profiles, preload);
@@ -65,14 +50,12 @@ async function build(inputs: BuildInputs): Promise<Build> {
     ...[...core, memory, identity, herdr, mcp.extension, secrets].flatMap((extension) =>
       (extension.tools ?? []).map((tool) => tool.name),
     ),
-    ...[...mcp.groups, browser, remote.group].flatMap((group) =>
-      group.tools.map((tool) => tool.name),
-    ),
+    ...[...mcp.groups, browser].flatMap((group) => group.tools.map((tool) => tool.name)),
     ...RELOAD_TOOLS,
     "tool_search",
   ]);
   const plugins = loaded.use(reserved);
-  const search = createToolSearch([...mcp.groups, ...browsers, ...plugins.groups]);
+  const search = createToolSearch([...mcp.groups, browser, ...plugins.groups]);
   const assessment =
     config.classifier === null
       ? undefined
@@ -94,7 +77,6 @@ async function build(inputs: BuildInputs): Promise<Build> {
     search.extension,
     // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.
     secrets,
-    remote.extension,
     ...search.groups,
     ...(assessment === undefined ? [] : [assessment.extension]),
     createPluginSections(plugins.sections),
@@ -121,7 +103,6 @@ async function build(inputs: BuildInputs): Promise<Build> {
       ...mcpConfig.errors,
       ...mcp.warnings,
       ...plugins.warnings,
-      ...(farmFile.warning === undefined ? [] : [farmFile.warning]),
     ],
   };
 }
