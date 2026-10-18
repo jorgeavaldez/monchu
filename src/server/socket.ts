@@ -44,10 +44,11 @@ export async function serveSocket(
         clients: sockets.clients.size,
       });
       const principal = { kind: "client" as const, connection: `s${next++}`, person: true };
-      void ingress.accept(connection, principal).then(() =>
+      void ingress.accept(connection, principal).then((reason) =>
         log.write("info", "server.socket", "client left", {
           clients: sockets.clients.size,
           ms: Math.round(performance.now() - attached),
+          reason,
         }),
       );
     });

@@ -300,11 +300,12 @@ export async function serveWeb(
         const token = sessionToken(request);
         if (token !== undefined)
           signedIn.set(token, (signedIn.get(token) ?? new Set()).add(principal.connection));
-        void ingress.accept(connection, principal).then(() => {
+        void ingress.accept(connection, principal).then((reason) => {
           if (token !== undefined) signedIn.get(token)?.delete(principal.connection);
           log("info", "client left", {
             clients: sockets.clients.size,
             ms: Math.round(performance.now() - attached),
+            reason,
           });
         });
       });

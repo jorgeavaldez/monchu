@@ -203,3 +203,30 @@ describe("server", () => {
     }
   });
 });
+
+describe("server after a lost core link", () => {
+  it("replaces a core whose link closed, so a new client still reaches one", async () => {
+    const { core, attach, close } = await openServer();
+    try {
+      const first = await attach({ kind: "client", connection: "a", person: true });
+      await first.client.currentRoot();
+      await first.close();
+      // Android froze both processes past the ping timeout: the link closes, the core process runs on.
+      (await core.start()).close("ping timeout");
+      const second = await attach({ kind: "client", connection: "b", person: true });
+      expect(core.starts).toBe(2);
+      const root = await front(second.client);
+      const view = await root.viewState();
+      await root.submit("after", "server:lost", "followUp");
+      await waitFor(() =>
+        view.value.entries.some((entry) =>
+          (entry.model ?? []).some((message) => textOf(message) === "echo: after"),
+        ),
+      );
+      view.dispose();
+      await second.close();
+    } finally {
+      await close();
+    }
+  }, 30_000);
+});

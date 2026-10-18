@@ -43,6 +43,13 @@ export const Reloads = remote("monchu.reloads", {
   },
 });
 
+/**
+ * The server and its core are processes on one machine, and the IPC channel says when either goes. A phone that froze
+ * both for longer than Chord's 45 second ping timeout would otherwise close their link when they wake, leaving a
+ * running core no client can reach.
+ */
+const LOCAL_PING_TIMEOUT = Number.POSITIVE_INFINITY;
+
 const failures = (log: Log) => (error: unknown) =>
   log.write("warn", "server.chord", "background failure", {
     reason: error instanceof Error ? error.message : String(error),
@@ -54,7 +61,8 @@ const failures = (log: Log) => (error: unknown) =>
  */
 export async function openCoreHost(backend: Monchu, upstream?: Link): Promise<CoreHost> {
   const host = backend.host;
-  if (upstream !== undefined) host.connect(upstream, { principal: { kind: "server" } });
+  if (upstream !== undefined)
+    host.connect(upstream, { principal: { kind: "server" }, pingTimeout: LOCAL_PING_TIMEOUT });
   host.serve(
     Core,
     (_input, _principal, self) => ({
@@ -144,11 +152,28 @@ export function openServerHost(
   });
   // Each new core is admitted as soon as it runs, before a client needs it: an unanswered link times out.
   const admitted = new WeakSet<Link>();
+  let replacing: Promise<void> | undefined;
   const reach = async () => {
-    const link = await core.start();
+    let link = await core.start();
+    if (link.closed) {
+      // A closed link never opens again, and the core behind it runs on: only a new core answers clients.
+      replacing ??= (async () => {
+        options.log.write("warn", "server.process", "core link lost", {
+          pid: core.status.pid ?? -1,
+        });
+        await core.replace();
+      })().finally(() => (replacing = undefined));
+      await replacing;
+      link = await core.start();
+    }
     if (!admitted.has(link)) {
       admitted.add(link);
-      host.accept(link, { principal: { kind: "core" }, kind: "host", name: "core" });
+      host.accept(link, {
+        principal: { kind: "core" },
+        kind: "host",
+        name: "core",
+        pingTimeout: LOCAL_PING_TIMEOUT,
+      });
     }
     return link;
   };
