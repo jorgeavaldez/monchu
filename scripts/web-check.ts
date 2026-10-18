@@ -132,14 +132,30 @@ async function touchScreen(): Promise<WebSocket> {
   return socket;
 }
 
-/** A real mouse wheel over a point of the page; agent-browser's own wheel always lands at the top-left corner. */
+/**
+ * A real mouse wheel over a point of the page; agent-browser's own wheel always lands at the top-left corner. Resolves
+ * once the scroll it starts has landed: the browser applies a wheel after the dispatch returns, later on a slower one.
+ */
 async function wheel(x: number, y: number, deltaY: number): Promise<void> {
+  await page(`window.wheelLanded = new Promise((landed) => {
+    const listening = new AbortController();
+    const done = (value) => (listening.abort(), landed(value));
+    let last = 0;
+    const settle = () => (performance.now() - last > 100 ? done(true) : requestAnimationFrame(settle));
+    addEventListener("scroll", () => (last || requestAnimationFrame(settle), (last = performance.now())), {
+      capture: true,
+      passive: true,
+      signal: listening.signal,
+    });
+    setTimeout(() => done(false), 5000);
+  }), true`);
   const { socket, send } = await devTools();
   try {
     await send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
   } finally {
     socket.close();
   }
+  check((await page("window.wheelLanded")) === true, "the wheel scrolled nothing");
 }
 
 function check(condition: boolean, message: string): void {
@@ -909,6 +925,16 @@ async function journeys(url: string, home: string, origin: string): Promise<void
         if (!isData(value)) throw new Error("no scroll position read");
         return { top: number(value.top) ?? 0, gap: number(value.gap) ?? 0 };
       };
+      // Reading back needs more transcript than the view holds, whatever this browser's fonts make of the journeys
+      // before; /help is answered here at once, with no model.
+      const room = `(({ scrollHeight, clientHeight }) => scrollHeight - clientHeight)(document.querySelector(".transcript"))`;
+      for (let tries = 0; (number(await page(room)) ?? 0) < 600; tries += 1) {
+        check(tries < 5, `the transcript has only ${String(await page(room))} px to scroll back`);
+        const notices = Number(await page(`document.querySelectorAll(".notice").length`));
+        await browser("fill", "textarea", "/help");
+        await browser("press", "Enter");
+        await browser("wait", "--fn", `document.querySelectorAll(".notice").length > ${notices}`);
+      }
       // The faux model echoes the message, so a long one streams for a few seconds.
       await browser("fill", "textarea", `read back ${"y".repeat(400)}`);
       await browser("press", "Enter");
@@ -1200,7 +1226,9 @@ async function journeys(url: string, home: string, origin: string): Promise<void
       const touch = await touchScreen();
       try {
         await browser("reload");
+        // Connected, so the roots are in: the key bar shows before them.
         await browser("wait", ".keys");
+        await browser("wait", ".link[data-state=live]");
         check(
           (await page(`matchMedia("(pointer: coarse)").matches`)) === true,
           `no coarse pointer (${String(await page("navigator.maxTouchPoints"))} touch points)`,

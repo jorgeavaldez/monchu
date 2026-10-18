@@ -6,6 +6,7 @@
  */
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import type { Client } from "../api/client.ts";
 import { clientCommands } from "../ui/commands.ts";
 import {
   addFiles,
@@ -48,22 +49,19 @@ const WEB_COMMANDS: Suggestion[] = [
   },
 ];
 
-function suggestions(text: string): Suggestion[] {
+/** What completes `text`: the core's commands and skills once a client is there, this page's own commands always. */
+function suggestions(text: string, core: Client | undefined): Suggestion[] {
   if (!text.startsWith("/") || /\s/.test(text)) return [];
   const all: Suggestion[] = [
-    ...clientCommands("web", client().commands()).map(([command, { usage, help }]) => ({
-      value: command,
-      usage,
-      help,
-    })),
+    ...(core === undefined ? [] : clientCommands("web", core.commands())).map(
+      ([command, { usage, help }]) => ({ value: command, usage, help }),
+    ),
     ...WEB_COMMANDS,
-    ...client()
-      .skills()
-      .map((skill) => ({
-        value: `/skill:${skill.name}`,
-        usage: "[text]",
-        help: skill.description,
-      })),
+    ...(core?.skills() ?? []).map((skill) => ({
+      value: `/skill:${skill.name}`,
+      usage: "[text]",
+      help: skill.description,
+    })),
   ];
   return all.filter((item) => item.value.startsWith(text)).slice(0, 12);
 }
@@ -72,7 +70,12 @@ export function Editor() {
   const selected = useSignal(0);
   const closed = useSignal(false);
   const area = useRef<HTMLTextAreaElement>(null);
-  const list = useComputed(() => (closed.value ? [] : suggestions(draft.value)));
+  // Typing (or a draft kept over a reload) can come before the page connects: then only this page's commands complete.
+  const list = useComputed(() =>
+    closed.value
+      ? []
+      : suggestions(draft.value, connection.value === "connecting" ? undefined : client()),
+  );
   // Back from a pick or a prompt, typing goes to the editor again.
   useEffect(() => area.current?.focus(), []);
   // The box grows with its text up to the stylesheet's max-height, then scrolls: by itself where the browser sizes a
