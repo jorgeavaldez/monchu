@@ -36,7 +36,7 @@ import { noteInput, rootRecord, RootsDoc, sendHandOff, type RootRecord } from ".
 import {
   DELETED_FROM_QUEUE,
   hasPendingDelivery,
-  listWorkers,
+  listWorkersWithActivity,
   messageWorker,
   startWorker,
   stopWorker,
@@ -511,7 +511,7 @@ export class Front implements RootClient {
   }
 
   async workers() {
-    return listWorkers(this.host.harness, (await this.conversation()).id, context);
+    return listWorkersWithActivity(this.host.harness, (await this.conversation()).id, context);
   }
 
   /** Moves an idle worker, with its jobs, to another root; that root's front is told. */

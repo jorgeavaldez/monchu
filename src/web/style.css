@@ -422,90 +422,122 @@ pre {
   border-right: none;
   font-weight: bold;
 }
-.typeahead {
+/* A menu over the editor, commands or a pick, the editor's box under it never moving; the menu takes what it needs. */
+.menu {
   position: absolute;
   bottom: 100%;
   left: 0;
   right: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 40vh;
   border-top: 1px solid var(--line);
   background: var(--bg);
-  max-height: 40vh;
-  overflow-y: auto;
 }
-/* Command and help in two aligned columns; the help wraps to two lines at most. */
-.typeahead li {
-  display: grid;
-  grid-template-columns: var(--command, 10ch) 1fr;
-  gap: var(--s1);
-  padding: 0 var(--s1);
-  cursor: pointer;
-}
-.typeahead li b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.typeahead .help {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-.typeahead .selected,
-.pick .selected .enter {
-  background: var(--fg);
-  color: var(--bg);
-}
-.typeahead .selected .help,
-.typeahead .selected .usage,
-.pick .selected .help {
-  color: inherit;
-}
-.pick,
-.ask,
-.login {
-  border-top: 1px solid var(--line);
-  outline: none;
-}
-.pick header,
+.menu header,
 .panel header {
   display: flex;
   align-items: center;
   gap: var(--s1);
   padding-left: var(--s1);
 }
-/* Header actions are cells on the header's edge, like the key bar's. */
-
-.pick .title,
+.menu header {
+  border-bottom: 1px solid var(--line);
+}
+.menu .title,
 .panel h1 {
   flex: 1;
   margin: 0;
   font-size: inherit;
 }
-.pick ul,
+.menu ul {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
 .panel ul {
   list-style: none;
   margin: 0;
   padding: 0;
   border-top: 1px solid var(--line);
 }
-.pick ul {
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.pick li,
+.menu li,
 .panel li {
   display: flex;
+}
+.panel li {
   border-bottom: 1px solid var(--line);
 }
-.pick li:last-child {
-  border-bottom: none;
+.menu .empty {
+  padding: var(--s0) var(--s1);
+}
+/* A row: the label in a column that fits the longest, then its colored tags and muted detail, two lines at most. */
+.menu .enter {
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--row);
+  display: grid;
+  grid-template-columns: var(--label, 10ch) 1fr;
+  gap: var(--s1);
+  align-items: center;
+  padding: 0 var(--s1);
+  text-align: left;
+  border: none;
+  background: transparent;
+}
+.menu .enter b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu .more {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.menu .hit {
+  color: inherit;
+  background: none;
+  text-decoration: underline;
+}
+.tag.accent {
+  color: var(--accent);
+  font-weight: bold;
+}
+.tag.green {
+  color: var(--green);
+}
+.tag.yellow {
+  color: var(--yellow);
+  font-weight: bold;
+}
+.tag.red {
+  color: var(--red);
+  font-weight: bold;
+}
+.tag.muted {
+  color: var(--muted);
+}
+/* The row Enter takes, inverted; its colors give way to the inversion. */
+.menu .selected .enter {
+  background: var(--fg);
+  color: var(--bg);
+}
+.menu .selected .help,
+.menu .selected .usage,
+.menu .selected .tag {
+  color: inherit;
+}
+.ask,
+.login {
+  border-top: 1px solid var(--line);
+  outline: none;
 }
 /* A menu row: the whole row taps, a › says it enters. */
-.pick .enter,
 .panel .open {
   flex: 1;
   min-width: 0;
@@ -520,9 +552,8 @@ pre {
   background: transparent;
 }
 /* An action cell, in a menu's header or at a row's end: one pattern, a glyph when one is clear, else a short word. */
-.pick header button,
+.menu header button,
 .panel header button,
-.pick .alternate,
 .panel .actions button,
 .queue li button:not(.text) {
   min-width: var(--tap);
@@ -735,16 +766,9 @@ p.offer {
   padding: var(--s0) var(--s1);
 }
 @media (pointer: coarse) {
-  /* Desktop key hints and a keyboard selection mean nothing on a touch screen: every row is just a tap. */
+  /* Desktop key hints mean nothing on a touch screen. */
   .pick .hint {
     display: none;
-  }
-  .pick .selected .enter {
-    background: transparent;
-    color: inherit;
-  }
-  .pick .selected .help {
-    color: var(--muted);
   }
 }
 /* Shown while the reader is scrolled back and more arrived; a tap returns to the end. */

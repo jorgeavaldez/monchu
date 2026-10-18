@@ -203,64 +203,6 @@ function Agents() {
   );
 }
 
-function Pick() {
-  const current = choice.value;
-  const selected = useSignal(0);
-  if (current === undefined) return null;
-  return (
-    <div
-      class="pick"
-      tabIndex={0}
-      ref={(element) => element?.focus()}
-      onKeyDown={(event) => {
-        const count = current.options.length;
-        if (event.key === "Escape") return current.cancel();
-        if (event.key === "ArrowDown") selected.value = (selected.value + 1) % count;
-        if (event.key === "ArrowUp") selected.value = (selected.value + count - 1) % count;
-        const option = current.options[selected.value];
-        if (event.key === "Enter" && option !== undefined) current.choose(option.id, false);
-        if (
-          event.key === "s" &&
-          event.ctrlKey &&
-          option !== undefined &&
-          current.alternate !== undefined
-        ) {
-          event.preventDefault();
-          current.choose(option.id, true);
-        }
-      }}
-    >
-      <header>
-        <span class="title">
-          {current.title}
-          <span class="hint">
-            {current.alternate === undefined ? "" : ` · Ctrl+S ${current.alternate}`} · Esc cancels
-          </span>
-        </span>
-        <Close label="cancel" onClose={() => current.cancel()} />
-      </header>
-      <ul>
-        {current.options.map((option, index) => (
-          <li key={option.id} class={index === selected.value ? "selected" : ""}>
-            <button class="enter" onClick={() => current.choose(option.id, false)}>
-              <span>
-                {option.label}
-                {option.detail === undefined ? null : <span class="help"> {option.detail}</span>}
-              </span>
-              <span aria-hidden="true">›</span>
-            </button>
-            {current.alternate === undefined ? null : (
-              <button class="alternate" onClick={() => current.choose(option.id, true)}>
-                {current.alternate}
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function Ask() {
   const current = ask.value;
   const value = useSignal("");
@@ -548,11 +490,10 @@ export function App() {
       <Login />
       <InstallOffer />
       <SecretRequests />
-      {choice.value !== undefined ? (
-        <Pick />
-      ) : ask.value !== undefined ? (
+      {/* A pick opens over the editor, which stays to filter it. */}
+      {choice.value === undefined && ask.value !== undefined ? (
         <Ask />
-      ) : entering.value !== undefined ? (
+      ) : choice.value === undefined && entering.value !== undefined ? (
         <SecretForm />
       ) : (
         <Editor />

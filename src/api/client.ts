@@ -13,7 +13,7 @@ import type {
 import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
 import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
-import type { listWorkers } from "../core/agents/workers.ts";
+import type { listWorkersWithActivity } from "../core/agents/workers.ts";
 import type { ModelRole, Settings } from "../core/config.ts";
 import type { JobEvent, JobsState } from "../core/jobs.ts";
 import type { InboxItem, InboxKind } from "../core/inbox.ts";
@@ -61,8 +61,8 @@ export type QueueChange =
   | { kind: "mode"; mode: WhenBusy }
   | { kind: "delete" };
 
-/** One worker as clients list it. */
-export type WorkerSummary = Awaited<ReturnType<typeof listWorkers>>[number];
+/** One worker as clients list it, with when it last did something and its context size. */
+export type WorkerSummary = Awaited<ReturnType<typeof listWorkersWithActivity>>[number];
 
 /** What a model or thinking-level picker offers: the current pick, its role's default, and the models with credentials. */
 export type ModelChoice = {

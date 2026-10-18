@@ -1233,19 +1233,33 @@ async function journeys(
       (await page(`document.querySelector("textarea").value`)) === "/model ",
       "Enter didn't take the suggestion",
     );
+    const box = `Math.round(document.querySelector("textarea").getBoundingClientRect().top)`;
+    const top = await page(box);
     const opened = performance.now();
     await browser("press", "Enter");
     await browser("wait", ".pick li");
     report.metrics["model.pickerMs"] = ms(opened);
+    check((await page(box)) === top, "the editor's box moved when the picker opened");
     check(
       (await page(`document.querySelector(".pick header").textContent.includes("Esc cancels")`)) ===
         true,
       "the picker has no header",
     );
     await capture("model", home, origin);
+    // The editor's box filters the pick in place, and the draft waits under it.
+    const rows = `document.querySelectorAll(".pick [role=option]").length`;
+    const all = Number(await page(rows));
+    await browser("fill", "textarea", "zzzz");
+    await browser("wait", ".pick .empty");
+    await browser("fill", "textarea", "");
+    check(Number(await page(rows)) === all, "clearing the filter didn't bring every model back");
     await browser("press", "Escape");
     await browser("wait", "--fn", `!document.querySelector(".pick")`);
-    return "picker opened and closed";
+    check(
+      (await page(`document.querySelector("textarea").value`)) === "",
+      "the draft didn't come back after the picker",
+    );
+    return "picker opened over a still box, filtered, and closed";
   });
 
   await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
@@ -1616,7 +1630,22 @@ async function journeys(
         "--fn",
         `document.querySelector(".agents .tabs button").classList.contains("on") && !!(${card})`,
       );
-      return "a tab for reader, its report folded into a card with its id, its own view and back";
+      // /agents lists it with its state, idle time and context.
+      await browser("fill", "textarea", "/agents");
+      await browser("press", "Enter");
+      const row = `[...document.querySelectorAll(".pick [role=option]")].find((item) => item.querySelector("b")?.textContent === "reader")`;
+      await browser("wait", "--fn", `!!(${row})`);
+      const tags = text(
+        await page(`[...(${row}).querySelectorAll(".tag")].map((tag) => tag.textContent).join("")`),
+      );
+      check(
+        /idle \d+[smhd]/.test(tags) && /\d+%/.test(tags),
+        `/agents row lacks idle time or context: ${tags}`,
+      );
+      await capture("agents", home, origin);
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      return "a tab for reader, its report folded into a card with its id, its own view and back; /agents shows it idle with its context";
     },
   );
 

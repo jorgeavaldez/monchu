@@ -651,9 +651,10 @@ export default () => {
       expect(await (await front(backend)).changeDirectory(project)).toBe(project);
       // A new worker starts in the root's directory.
       await (await front(backend)).startWorker("w", "hold", "start:w");
-      expect(await (await front(backend)).workers()).toMatchObject([
-        { name: "w", cwd: project, busy: true },
-      ]);
+      // A busy worker has no idle time; a stopped one counts from its last message.
+      const [busy] = await (await front(backend)).workers();
+      expect(busy).toMatchObject({ name: "w", cwd: project, busy: true });
+      expect(busy?.activeAt).toBeUndefined();
       await expect((await front(backend)).changeDirectory(value.directory, "w")).rejects.toThrow(
         "idle",
       );
@@ -662,7 +663,9 @@ export default () => {
       );
 
       await (await front(backend)).stopWorker("w");
-      expect(await (await front(backend)).workers()).toMatchObject([{ name: "w", busy: false }]);
+      const [stopped] = await (await front(backend)).workers();
+      expect(stopped).toMatchObject({ name: "w", busy: false });
+      expect(typeof stopped?.activeAt).toBe("number");
       expect(await (await front(backend)).changeDirectory(value.directory, "w")).toBe(
         value.directory,
       );

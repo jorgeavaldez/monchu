@@ -27,8 +27,9 @@ import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
-import { presentation, type QueuedItem } from "../ui/state.ts";
+import { age, contextUsage, lastActive, presentation, type QueuedItem } from "../ui/state.ts";
 import { clearPending, openPicker } from "./attachments.tsx";
+import type { MenuItem, Tone } from "./menu.tsx";
 
 /** A line under the transcript; one with a `root` shows only while that root is shown. */
 export type Notice = {
@@ -43,10 +44,12 @@ export type Notice = {
   after: ReadonlyMap<ConversationView["conversation"]["id"], number>;
 };
 
-/** A choice the user makes in place of the editor: a login prompt, a model, a thinking level, a worker. */
+/** A choice the user makes over the editor, typing to filter: a login prompt, a model, a thinking level, a worker. */
 export type Choice = {
   title: string;
-  options: { id: string; label: string; detail?: string }[];
+  options: MenuItem[];
+  /** What the filter starts with, such as `/model`'s search. */
+  query?: string;
   choose(id: string, alternate: boolean): void;
   cancel(): void;
   /** The alternate action's label (Ctrl+S or a second button), such as saving a model as the default. */
@@ -355,12 +358,14 @@ function pick(
   title: string,
   options: Choice["options"],
   alternate?: string,
+  query?: string,
 ): Promise<{ id: string; alternate: boolean } | undefined> {
   return new Promise((resolve) => {
     choice.value = {
       title,
       options,
       ...(alternate === undefined ? {} : { alternate }),
+      ...(query ? { query } : {}),
       choose: (id, second) => {
         choice.value = undefined;
         resolve({ id, alternate: second });
@@ -578,7 +583,18 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   if (thinking) {
     const picked = await pick(
       `Thinking level · ${name} (now ${current.thinkingLevel}, default ${current.defaults.thinkingLevel})`,
-      current.thinkingLevels.map((level) => ({ id: level, label: level })),
+      current.thinkingLevels.map((level) => ({
+        id: level,
+        label: level,
+        tags: [
+          ...(level === current.thinkingLevel
+            ? [{ text: "current", tone: "accent" as const }]
+            : []),
+          ...(level === current.defaults.thinkingLevel
+            ? [{ text: "default", tone: "green" as const }]
+            : []),
+        ],
+      })),
       alternate,
     );
     const level = current.thinkingLevels.find((each) => each === picked?.id);
@@ -591,28 +607,33 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   const now =
     current.model === undefined ? undefined : key(current.model.provider, current.model.id);
   const fallback = key(current.defaults.provider, current.defaults.modelId);
-  // The current model first and the role default second, as the terminal lists them.
-  const models = current.models
-    .filter((model) =>
-      `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(search.toLowerCase()),
-    )
-    .toSorted((x, y) => {
-      const rank = (model: (typeof current.models)[number]) =>
-        key(model.provider, model.id) === now
-          ? 0
-          : key(model.provider, model.id) === fallback
-            ? 1
-            : 2;
-      return rank(x) - rank(y);
-    });
+  // The current model first and the role default second, as the terminal lists them; the search starts the filter.
+  const models = current.models.toSorted((x, y) => {
+    const rank = (model: (typeof current.models)[number]) =>
+      key(model.provider, model.id) === now
+        ? 0
+        : key(model.provider, model.id) === fallback
+          ? 1
+          : 2;
+    return rank(x) - rank(y);
+  });
   const picked = await pick(
     `Model · ${name}`,
     models.map((model) => ({
       id: key(model.provider, model.id),
       label: key(model.provider, model.id),
-      detail: `${model.name}${key(model.provider, model.id) === now ? " · current" : ""}${key(model.provider, model.id) === fallback ? " · default" : ""}`,
+      detail: model.name,
+      tags: [
+        ...(key(model.provider, model.id) === now
+          ? [{ text: "current", tone: "accent" as const }]
+          : []),
+        ...(key(model.provider, model.id) === fallback
+          ? [{ text: "default", tone: "green" as const }]
+          : []),
+      ],
     })),
     alternate,
+    search.trim(),
   );
   const model = models.find((each) => key(each.provider, each.id) === picked?.id);
   if (picked === undefined || model === undefined) return;
@@ -814,6 +835,59 @@ export async function submit(
   }
 }
 
+/** Context used as a percent, colored as the status bar's meter: yellow past 70, red past 90; `?%` while unknown. */
+function contextTag(tokens: number | undefined, model: string | undefined) {
+  const slash = model?.indexOf("/") ?? -1;
+  const window =
+    model === undefined || slash < 0
+      ? undefined
+      : client().model({ provider: model.slice(0, slash), modelId: model.slice(slash + 1) })
+          ?.contextWindow;
+  if (window === undefined) return [];
+  // Unknown until a reply measures it, as after a compaction or /new.
+  if (tokens === undefined) return [{ text: "?%", tone: "muted" as const }];
+  const fill = tokens / window;
+  const tone: Tone | undefined = fill > 0.9 ? "red" : fill > 0.7 ? "yellow" : undefined;
+  return [{ text: `${Math.round(fill * 100)}%`, ...(tone === undefined ? {} : { tone }) }];
+}
+
+/** `/agents`: the root and each worker, working ones first, with its state, idle time, context and model. */
+function agentRows(): MenuItem[] {
+  const status = (busy: boolean, at: number | undefined) =>
+    busy
+      ? { text: "● working", tone: "accent" as const }
+      : { text: `○ idle${at === undefined ? "" : ` ${age(at)}`}`, tone: "muted" as const };
+  const here = (name: string | undefined) =>
+    shown.value === name ? [{ text: "shown", tone: "green" as const }] : [];
+  const front = view(undefined)?.value;
+  const live = front === undefined ? undefined : presentation(front);
+  const rootModel = live?.provider === undefined ? undefined : `${live.provider}/${live.model}`;
+  return [
+    {
+      id: "",
+      label: "root",
+      tags: [
+        status(live?.busy === true, front === undefined ? undefined : lastActive(front)),
+        ...contextTag(front === undefined ? undefined : contextUsage(front).context, rootModel),
+        ...here(undefined),
+      ],
+      detail: [rootModel, live?.thinkingLevel].filter(Boolean).join(" "),
+    },
+    ...workers.value
+      .toSorted((x, y) => Number(y.busy) - Number(x.busy))
+      .map((worker) => ({
+        id: worker.name,
+        label: worker.name,
+        tags: [
+          status(worker.busy, worker.activeAt),
+          ...contextTag(worker.contextTokens, worker.model),
+          ...here(worker.name),
+        ],
+        detail: [worker.model, worker.thinking].filter(Boolean).join(" "),
+      })),
+  ];
+}
+
 /** Runs one parsed submission; true when a message went. */
 async function runInput(
   input: NonNullable<ReturnType<typeof parseInput>>,
@@ -851,14 +925,7 @@ async function runInput(
       if (input.text) return await show(input.text === "root" ? undefined : input.text);
       {
         await refreshWorkers();
-        const picked = await pick("Show", [
-          { id: "", label: "root" },
-          ...workers.value.map((worker) => ({
-            id: worker.name,
-            label: worker.name,
-            detail: `${worker.busy ? "working" : "idle"}${worker.model === undefined ? "" : ` · ${worker.model}`}`,
-          })),
-        ]);
+        const picked = await pick("Agents", agentRows());
         if (picked !== undefined) await show(picked.id || undefined);
       }
       return;

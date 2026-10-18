@@ -680,6 +680,27 @@ export async function listWorkers(
   );
 }
 
+/**
+ * `listWorkers`, each with when it last did something (`activeAt`, undefined while busy) and the context size its
+ * newest reply reported.
+ */
+export async function listWorkersWithActivity(
+  reader: Pick<Harness, "snapshot" | "getTask" | "commit">,
+  parentId: ConversationId,
+  context: Context,
+  includeClosed = false,
+) {
+  const workers = await listWorkers(reader, parentId, context, includeClosed);
+  const activity = await reader.commit(
+    (tx) => Promise.all(workers.map((worker) => lastActivity(tx, worker.conversationId))),
+    context,
+  );
+  return workers.map((worker, index) => {
+    const { at, contextTokens } = activity[index] ?? {};
+    return { ...worker, activeAt: worker.busy ? undefined : at, contextTokens };
+  });
+}
+
 /** Names of open sub-workers at any depth below `workerId` that are running or have a pending delivery. */
 async function busySubWorkers(
   reader: Pick<Harness, "snapshot" | "getTask">,
@@ -863,33 +884,25 @@ export function createWorkerTools(
         parameters: Type.Object({ include_closed: Type.Optional(Type.Boolean()) }),
         replay: "safe",
         execute: async (args, api, context) => {
-          const workers = await listWorkers(
+          const workers = await listWorkersWithActivity(
             api,
             api.conversationId,
             context,
             args.include_closed === true,
           );
           const now = Date.now();
-          const activity = await api.commit(
-            (tx) => Promise.all(workers.map((worker) => lastActivity(tx, worker.conversationId))),
-            context,
-          );
           return {
             output: [
               {
                 type: "text",
                 text: JSON.stringify(
-                  workers.map((worker, index) => {
-                    const { at, contextTokens } = activity[index] ?? {};
-                    return {
-                      ...worker,
-                      idleMinutes:
-                        worker.busy || at === undefined
-                          ? undefined
-                          : Math.max(0, Math.floor((now - at) / 60_000)),
-                      contextTokens,
-                    };
-                  }),
+                  workers.map(({ activeAt, ...worker }) => ({
+                    ...worker,
+                    idleMinutes:
+                      activeAt === undefined
+                        ? undefined
+                        : Math.max(0, Math.floor((now - activeAt) / 60_000)),
+                  })),
                 ),
               },
             ],
