@@ -45,6 +45,8 @@ main() {
   if [ "$target" = "-" ]; then
     jj new --quiet main@origin
     jj file list | xargs -d '\n' rm -f
+    # A directory a previous run left empty (a plugin dir, say) changes what the tests load.
+    find . -mindepth 1 \( -name .jj -o -name .git -o -name node_modules \) -prune -o -type d -empty -delete
     tar -xf -
     target="stdin working copy"
   else
