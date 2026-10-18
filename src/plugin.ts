@@ -425,6 +425,32 @@ export interface PluginAgents {
   /** The worker profiles in `config.json`, by name, as of this load. */
   readonly profiles: Readonly<Record<string, WorkerProfile>>;
   /**
+   * Opens an ask in the user's inbox for something only they can do, such as taking over a browser, pushed to the
+   * browsers that want asks. It joins the front's stream beside the notice the plugin sends the front with `requestId`
+   * as its request ID, tied to the goal of the worker it is `from` (or `goal`), and opens `url` from a push. Opening a
+   * key again changes nothing, so a replayed call is safe. Close it with `closeAsk` when it no longer waits. False when
+   * `front` is not a root's front (a sub-worker's parent): only fronts have an inbox.
+   */
+  ask(
+    tx: Tx,
+    front: ConversationId,
+    ask: {
+      readonly key: string;
+      readonly requestId: string;
+      readonly headline: string;
+      readonly url?: string;
+      readonly from?: string;
+      readonly goal?: string | null;
+    },
+  ): Promise<boolean>;
+  /** Closes an ask by its key: `answered` when the user did it, `closed` when it no longer waits. False when unknown. */
+  closeAsk(
+    tx: Tx,
+    front: ConversationId,
+    key: string,
+    state: "answered" | "closed",
+  ): Promise<boolean>;
+  /**
    * Labels a front's message in the user's inbox (see `front_reply`): its kind and goal id (`null` for none), with the
    * classifier's probability. False when the inbox has no such message, or the front labeled it itself.
    */

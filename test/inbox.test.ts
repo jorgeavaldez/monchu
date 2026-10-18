@@ -6,12 +6,15 @@ import { UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { shortId } from "../src/api/ids.ts";
 import { Monchu } from "../src/core/backend.ts";
-import { headlineOf, type InboxItem } from "../src/core/inbox.ts";
+import { closeAsk, headlineOf, openAsk, type InboxItem } from "../src/core/inbox.ts";
+import { GoalsDoc } from "../src/core/agents/goals.ts";
+import { noticeText } from "../src/api/notices.ts";
 import { encrypt, Pusher } from "../src/core/push.ts";
 import { parseInput } from "../src/ui/commands.ts";
 import {
   allEntries,
   cleanup,
+  context,
   fauxRole,
   lastMessage,
   prepareHome,
@@ -88,6 +91,98 @@ describe("inbox", () => {
       const quoted = `[The user answers your message #${shortId(item.entry)} (ask): "Monchu inbox: ship it now, or after a review?"]\nship it`;
       await waitFor(async () => (await typed()).includes(quoted));
       await expect(front.answer("zzzzzzz", "x", "r5", "followUp")).rejects.toThrow(/No message/);
+      stop();
+    } finally {
+      await backend.close();
+    }
+  });
+
+  it("files a plugin's ask beside the notice it sent, tied to the worker's goal, until the plugin closes it", async () => {
+    const value = await setup();
+    const home = join(value.directory, "home");
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+    );
+    prepareHome(home);
+    const sections: string[] = [];
+    route(value.faux, (request) => {
+      sections.push(sectionTexts(request.messages).join("\n"));
+      return fauxAssistantMessage("ok");
+    });
+    const backend = await Monchu.open(home, value.faux.provider);
+    try {
+      const front = backend.root(await backend.currentRoot());
+      const conversation = await front.conversation();
+      let items: readonly InboxItem[] = [];
+      const stop = await front.watchInbox((next) => {
+        items = next;
+      });
+      await conversation.commit(async (tx) => {
+        (await tx.doc(GoalsDoc, conversation.id)).goals.push({
+          id: "taxes",
+          title: "File the taxes",
+          kind: "endeavor",
+          status: "active",
+          workstream: "logging in to the portal",
+          workers: ["browser"],
+          next: "upload",
+          updatedAt: 0,
+        });
+        await openAsk(tx, conversation.id, {
+          key: "handoff:k3",
+          requestId: "asked:k3",
+          headline: "browser needs you in the browser: solve the CAPTCHA",
+          url: "https://farm.example.test/h/k3",
+          from: "browser",
+        });
+        // A replay opens nothing new.
+        await openAsk(tx, conversation.id, {
+          key: "handoff:k3",
+          requestId: "asked:k3",
+          headline: "again",
+        });
+      }, context);
+      await conversation.submit(
+        {
+          type: "input",
+          content: noticeText({ name: "browser", status: "update", text: "needs the user" }),
+          whenBusy: "followUp",
+          requestId: "asked:k3",
+        },
+        context,
+      );
+      await waitFor(() => items.some((item) => item.key === "handoff:k3"));
+      expect(items.filter((item) => item.key === "handoff:k3")).toMatchObject([
+        {
+          kind: "ask",
+          goal: "taxes",
+          by: "plugin",
+          state: "open",
+          from: "browser",
+          url: "https://farm.example.test/h/k3",
+          headline: "browser needs you in the browser: solve the CAPTCHA",
+        },
+      ]);
+      const item = items.find((each) => each.key === "handoff:k3");
+      const entry = (await allEntries(conversation)).find((each) => each.id === item?.entry);
+      expect(textOf(entry?.model?.[0])).toContain("needs the user");
+
+      await front.submit("next", "r1", "followUp");
+      await waitFor(() => sections.some((text) => text.includes("solve the CAPTCHA")));
+      expect(
+        await conversation.commit(
+          (tx) => closeAsk(tx, conversation.id, "handoff:k3", "answered"),
+          context,
+        ),
+      ).toBe(true);
+      await waitFor(() =>
+        items.some((each) => each.key === "handoff:k3" && each.state === "answered"),
+      );
+      expect(
+        await conversation.commit((tx) => closeAsk(tx, conversation.id, "nope", "closed"), context),
+      ).toBe(false);
       stop();
     } finally {
       await backend.close();

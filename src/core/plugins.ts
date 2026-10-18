@@ -54,7 +54,7 @@ import {
   type ToolNamespace,
 } from "../plugin.ts";
 import { GoalsDoc } from "./agents/goals.ts";
-import { labelItem } from "./inbox.ts";
+import { closeAsk, labelItem, openAsk } from "./inbox.ts";
 import { messageWorker, parentOf, reopenWorker, rootOf, WorkersDoc } from "./agents/workers.ts";
 import { replaceFile, type MonchuConfig } from "./config.ts";
 import { RELOAD_TOOLS } from "./build.ts";
@@ -1233,6 +1233,8 @@ const agents = (config: MonchuConfig): PluginApi["agents"] => ({
     })),
   profiles: config.profiles,
   labelReply: (tx, front, entry, label) => labelItem(tx, front, entry, { ...label, by: "clef" }),
+  ask: openAsk,
+  closeAsk,
 });
 
 /** The plugins' front events, in plugin then registration order. */

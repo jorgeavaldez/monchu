@@ -169,7 +169,11 @@ export class Monchu implements Client {
       telemetry(publication);
       if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
       for (const change of publication.changes)
-        if (change.type === "entry" && replyText(change.value) !== "")
+        // A reply with text joins its root's inbox, as does input carrying a plugin's ask.
+        if (
+          change.type === "entry" &&
+          (replyText(change.value) !== "" || change.value.kind === "pi.user")
+        )
           this.inboxLater(change.value.conversationId, () =>
             this.noteReplies(change.value.conversationId),
           );
@@ -516,17 +520,41 @@ export class Monchu implements Client {
       item.pushed !== true &&
       (item.labeledAt ?? 0) > now - 15 * 60_000 &&
       (await this.pusher.wants(item.kind));
-    const items = (await this.harness.snapshot(InboxItemsDoc, id, context))?.items ?? [];
+    const snapshot = await this.harness.snapshot(InboxItemsDoc, id, context);
+    const items = snapshot?.items ?? [];
+    // A plugin's open ask goes out before its notice reaches the transcript: the front may be busy for a while.
+    const asks = (snapshot?.pending ?? []).filter(
+      (ask) => ask.state === "open" && ask.pushed !== true && ask.at > now - 15 * 60_000,
+    );
     const pending: EntryId[] = [];
     for (const item of items.slice(-20)) if (await due(item)) pending.push(item.entry);
-    if (pending.length === 0) return;
+    const keys = (await this.pusher.wants("ask")) ? asks.map((ask) => ask.key) : [];
+    if (pending.length === 0 && keys.length === 0) return;
     const sent = await this.harness.commit(async (tx) => {
       const doc = await tx.doc(InboxItemsDoc, id);
       const marked = doc.items.filter(
-        (item) => pending.includes(item.entry) && item.pushed !== true,
+        (item) => pending.includes(item.entry) && item.pushed !== true && item.state !== "closed",
       );
-      for (const item of marked) item.pushed = true;
-      return marked.map((item) => ({ ...item }));
+      const early = (doc.pending ?? []).filter(
+        (ask) => keys.includes(ask.key) && ask.pushed !== true && ask.state === "open",
+      );
+      for (const each of [...marked, ...early]) each.pushed = true;
+      return [
+        ...marked.map((item) => ({
+          kind: item.kind,
+          goal: item.goal,
+          headline: item.headline,
+          url: item.url ?? `/?root=${shortId(id)}#m-${shortId(item.entry)}`,
+          tag: item.key ?? shortId(item.entry),
+        })),
+        ...early.map((ask) => ({
+          kind: "ask" as const,
+          goal: ask.goal,
+          headline: ask.headline,
+          url: ask.url ?? `/?root=${shortId(id)}`,
+          tag: ask.key,
+        })),
+      ];
     }, context);
     const goals = (await this.harness.snapshot(GoalsDoc, id, context))?.goals ?? [];
     for (const item of sent) {
@@ -536,8 +564,8 @@ export class Monchu implements Client {
         {
           title: `${item.kind === "ask" ? "needs you" : "done"}${goal === undefined ? "" : ` · ${goal.title}`}`,
           body: item.headline,
-          url: `/?root=${shortId(id)}#m-${shortId(item.entry)}`,
-          tag: shortId(item.entry),
+          url: item.url,
+          tag: item.tag,
         },
         item.kind,
       );

@@ -35,8 +35,8 @@ export type InboxItem = {
   kind?: InboxKind;
   /** The goal's id, `null` when it belongs to none; absent until labeled. */
   goal?: string | null;
-  /** Who set the label, with the classifier's probability for its kind; the front's label is final. */
-  by?: "clef" | "front";
+  /** Who set the label, with the classifier's probability for its kind; the front's and a plugin's are final. */
+  by?: "clef" | "front" | "plugin";
   probability?: number;
   labeledAt?: number;
   /** An ask's state: open until the user answers or the front closes it. */
@@ -45,12 +45,46 @@ export type InboxItem = {
   answer?: string;
   /** Pushed to devices once, when it was first labeled one of their kinds. */
   pushed?: boolean;
+  /** A plugin's ask: its key, to close it by, the page where the user acts, and the worker it is for. */
+  key?: string;
+  url?: string;
+  from?: string;
+};
+
+/**
+ * An ask a plugin opened, until the notice it sent the front (by `request`, the submission's request ID) is in the
+ * front's transcript; it is pushed at once all the same, since the front may be busy for a while.
+ */
+export type PendingAsk = {
+  key: string;
+  request: string;
+  at: number;
+  headline: string;
+  url?: string;
+  from?: string;
+  goal: string | null;
+  state: "open" | "answered" | "closed";
+  pushed?: boolean;
+};
+
+/** What a plugin opens an ask with; see `PluginAgents.ask`. */
+export type AskInput = {
+  readonly key: string;
+  readonly requestId: string;
+  readonly headline: string;
+  readonly url?: string;
+  readonly from?: string;
+  readonly goal?: string | null;
 };
 
 /** Items kept per front, newest last. */
 const KEPT = 500;
 
-export const InboxItemsDoc = defineDoc<{ cursor?: EntryId; items: InboxItem[] }>({
+export const InboxItemsDoc = defineDoc<{
+  cursor?: EntryId;
+  items: InboxItem[];
+  pending?: PendingAsk[];
+}>({
   kind: "monchu.inbox",
   version: 1,
   scope: "conversation",
@@ -126,9 +160,82 @@ export async function noteReplies(tx: Tx, front: ConversationId): Promise<InboxI
       if (last !== undefined) doc.cursor = last.id;
     }
   }
+  // Plugins' asks join beside the notice they sent, once it is in the transcript.
+  const waiting = doc.pending ?? [];
+  for (const ask of waiting.slice()) {
+    const submission = await tx.submissionByRequest(front, ask.request);
+    if (submission?.type !== "input" || submission.entry === undefined) continue;
+    waiting.splice(waiting.indexOf(ask), 1);
+    doc.items.push({
+      entry: submission.entry,
+      at: ask.at,
+      headline: ask.headline,
+      kind: "ask",
+      goal: ask.goal,
+      by: "plugin",
+      labeledAt: ask.at,
+      state: ask.state,
+      key: ask.key,
+      ...(ask.url === undefined ? {} : { url: ask.url }),
+      ...(ask.from === undefined ? {} : { from: ask.from }),
+      ...(ask.pushed === true ? { pushed: true } : {}),
+    });
+  }
+  if (doc.pending !== undefined && waiting.length === 0) delete doc.pending;
   doc.items.push(...fresh);
   doc.items.splice(0, Math.max(0, doc.items.length - KEPT));
   return fresh;
+}
+
+/**
+ * Opens a plugin's ask, inside a commit: the user's to answer or act on, tied to `from`'s goal unless `goal` is given.
+ * Opening a key again changes nothing, so a replayed call is safe. False for a conversation that isn't a root's front,
+ * such as a sub-worker's parent: only fronts have an inbox.
+ */
+export async function openAsk(tx: Tx, front: ConversationId, ask: AskInput): Promise<boolean> {
+  if (rootRecord(await tx.doc(RootsDoc), front) === undefined) return false;
+  const doc = await tx.doc(InboxItemsDoc, front);
+  if ([...doc.items, ...(doc.pending ?? [])].some((each) => each.key === ask.key)) return true;
+  const goals = (await tx.doc(GoalsDoc, front)).goals;
+  const goal =
+    ask.goal !== undefined
+      ? ask.goal
+      : ask.from === undefined
+        ? null
+        : (goals.find(
+            (each) =>
+              (each.status === "active" || each.status === "waiting") &&
+              each.workers.includes(ask.from ?? ""),
+          )?.id ?? null);
+  // Assigned first, then pushed through the document: a push into the plain array would be lost.
+  doc.pending ??= [];
+  doc.pending.push({
+    key: ask.key,
+    request: ask.requestId,
+    at: Date.now(),
+    headline: ask.headline.replace(/\s+/g, " ").trim().slice(0, 200),
+    goal,
+    state: "open",
+    ...(ask.url === undefined ? {} : { url: ask.url }),
+    ...(ask.from === undefined ? {} : { from: ask.from }),
+  });
+  doc.pending.splice(0, Math.max(0, doc.pending.length - 50));
+  return true;
+}
+
+/** Closes a plugin's ask by its key, inside a commit; false when the inbox has no such ask. */
+export async function closeAsk(
+  tx: Tx,
+  front: ConversationId,
+  key: string,
+  state: "answered" | "closed",
+): Promise<boolean> {
+  if (rootRecord(await tx.doc(RootsDoc), front) === undefined) return false;
+  const doc = await tx.doc(InboxItemsDoc, front);
+  const ask = [...doc.items, ...(doc.pending ?? [])].find((each) => each.key === key);
+  if (ask === undefined) return false;
+  ask.state = state;
+  return true;
 }
 
 /** What labels an item: a kind, a goal id or `null` for none, and who says so. */
@@ -147,7 +254,8 @@ export async function labelItem(
   label: InboxLabel,
 ): Promise<boolean> {
   const item = (await tx.doc(InboxItemsDoc, front)).items.find((each) => each.entry === entry);
-  if (item === undefined || (label.by === "clef" && item.by === "front")) return false;
+  if (item === undefined || (label.by === "clef" && item.by !== undefined && item.by !== "clef"))
+    return false;
   if (label.kind !== undefined) {
     if (label.kind === "ask" && item.kind !== "ask") item.state = "open";
     if (label.kind !== "ask") delete item.state;

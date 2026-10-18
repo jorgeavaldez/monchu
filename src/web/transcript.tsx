@@ -87,7 +87,8 @@ function Card(props: {
     <section
       class={`card ${props.kind}${props.error === true ? " error" : ""}`}
       onClick={(event) => {
-        if (!long || (event.target instanceof HTMLElement && event.target.closest("a"))) return;
+        if (!long || (event.target instanceof HTMLElement && event.target.closest("a, button")))
+          return;
         open.value = !expanded;
       }}
     >
@@ -291,8 +292,8 @@ function entryNode(
 ): VNode | null {
   const shown = addressable(entry) ? <Stamp entry={entry} ids={ids} /> : undefined;
   const notice = workerNotice(entry);
-  if (notice !== undefined)
-    return (
+  if (notice !== undefined) {
+    const card = (
       <Card
         kind={notice.status === "update" ? "update" : "report"}
         header={
@@ -301,10 +302,22 @@ function entryNode(
             {notice.status === "failed" ? <span class="failed"> · failed</span> : null}
           </>
         }
-        stamp={shown}
+        stamp={
+          item === undefined ? (
+            shown
+          ) : (
+            <>
+              {shown}
+              <Label item={item} code={ids.split(entry.id).code} />
+            </>
+          )
+        }
         body={notice.text}
       />
     );
+    // A plugin's ask on a worker's notice, such as a browser handoff, is boxed like the front's own.
+    return item?.kind === "ask" ? <div class={`ask ${item.state ?? ""}`}>{card}</div> : card;
+  }
   const message = entry.model?.[0];
   if (entry.kind === "pi.user" && message?.role === "user") {
     const { text, files, images } = messageParts(message.content);
