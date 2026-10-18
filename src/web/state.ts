@@ -201,10 +201,23 @@ async function openRoot(id: string, push = false): Promise<void> {
   await refreshWorkers();
   if (from !== current) return;
   let lastEntry = view(undefined)?.value.entries.at(-1)?.id;
+  let lastHead = view(undefined)?.value.entries[0]?.id;
   const front = views.value.get("");
   if (front !== undefined)
     unbind.push(
       front.state.subscribe((value) => {
+        // A compaction commits a new head marker, far above the reader; one shown on opening is not news.
+        const head = value.entries[0];
+        if (head !== undefined && head.id !== lastHead) {
+          lastHead = head.id;
+          if (head.kind === "pi.compaction") {
+            const reason =
+              typeof head.data === "object" && head.data !== null && "reason" in head.data
+                ? head.data.reason
+                : undefined;
+            notice(`context compacted${typeof reason === "string" ? ` · ${reason}` : ""}`);
+          }
+        }
         const newest = value.entries.at(-1)?.id;
         if (newest === lastEntry) return;
         lastEntry = newest;
