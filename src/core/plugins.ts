@@ -496,8 +496,8 @@ export class Plugins {
   /** Live instances whose build ran: only these get `session_shutdown`. */
   private readonly ran = new Set<Instance>();
   private readonly onFault: (summary: string, text: string) => void;
-  /** Faults already told, by plugin and message. */
-  private readonly faults = new Set<string>();
+  /** Faults since each plugin's code last changed, by plugin: only the first is told. */
+  private readonly faults = new Map<string, number>();
   /** The home's store, once open: `ctx.ui` writes to it. */
   private harness: Harness | undefined;
 
@@ -528,12 +528,15 @@ export class Plugins {
     tellers.add(this);
   }
 
-  /** Tell a plugin's uncaught failure (see `containPluginFault`), once per plugin and message. */
+  /**
+   * Tell a plugin's uncaught failure (see `containPluginFault`): only its first until its code changes, since a failing
+   * timer fails again with every tick, and each notice costs the front a turn.
+   */
   fault(name: string, error: string): void {
-    const key = `${name}\0${error}`;
-    if (this.faults.has(key)) return;
-    this.faults.add(key);
-    const text = `Plugin ${name} threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: ${error}. Fix it, or turn it off in plugins.local.json.`;
+    const count = (this.faults.get(name) ?? 0) + 1;
+    this.faults.set(name, count);
+    if (count > 1) return;
+    const text = `Plugin ${name} threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: ${error}. Fix it, or turn it off in plugins.local.json. Its later failures aren't told until its code changes.`;
     this.report(text);
     this.onFault(`Plugin ${name} failed`, text);
   }
@@ -543,8 +546,13 @@ export class Plugins {
     this.harness = harness;
   }
 
-  /** Find, import and run every enabled plugin with `config`. Never throws for a plugin's fault. */
-  async load(config: MonchuConfig): Promise<PluginLoad> {
+  /**
+   * Find, import and run every enabled plugin with `config`. Never throws for a plugin's fault. A `dry` load (the home
+   * check's) changes nothing a build relies on: what plugins report is in its warnings, not told, and a plugin that runs
+   * doesn't become its last good code.
+   */
+  async load(config: MonchuConfig, options: { dry?: boolean } = {}): Promise<PluginLoad> {
+    const dry = options.dry === true;
     const warnings: string[] = [];
     const status: PluginStatus[] = [];
     const found = new Map<string, Found>();
@@ -576,9 +584,11 @@ export class Plugins {
             ? { value: device.settings[plugin.name] ?? null }
             : undefined,
         ),
+        dry,
+        dry ? (warning) => warnings.push(warning) : this.report,
       );
       if ("error" in loaded) {
-        const kept = loaded.contribution !== undefined;
+        const kept = loaded.contribution !== undefined || loaded.keeps === true;
         warnings.push(
           kept
             ? `Plugin ${plugin.name} failed to load and keeps its last good code: ${loaded.error} (${plugin.entry})`
@@ -773,7 +783,15 @@ export class Plugins {
     found: Found,
     config: MonchuConfig,
     settings: JsonValue | undefined,
-  ): Promise<{ contribution: Contribution } | { error: string; contribution?: Contribution }> {
+    /** A dry load keeps the last good code as it is. */
+    dry: boolean,
+    /** Where the plugin's reports go: a dry load's are its warnings. */
+    sink: (warning: string) => void,
+  ): Promise<
+    | { contribution: Contribution }
+    /** `keeps`: a dry load's failure that a build would answer with the last good code. */
+    | { error: string; contribution?: Contribution; keeps?: boolean }
+  > {
     let error: string;
     try {
       // A plugin that says which API versions it works with loads only on a Monchu that has one, before any import.
@@ -795,18 +813,23 @@ export class Plugins {
         );
         cached = { fingerprint: print, plugin };
         this.modules.set(found.entry, cached);
+        // New code: its first failure is told again.
+        this.faults.delete(found.name);
       }
       if (cached.plugin instanceof Error) throw cached.plugin;
-      const contribution = await this.run(found, cached.plugin, config, settings);
-      this.good.set(found.entry, cached.plugin);
+      const contribution = await this.run(found, cached.plugin, config, settings, sink);
+      if (!dry) this.good.set(found.entry, cached.plugin);
       return { contribution };
     } catch (failure) {
       error = message(failure);
     }
     const good = this.good.get(found.entry);
+    // A dry load only says what a build would do: it runs no other code.
+    if (dry)
+      return { error, keeps: good !== undefined && good !== this.modules.get(found.entry)?.plugin };
     if (good === undefined || good === this.modules.get(found.entry)?.plugin) return { error };
     try {
-      return { error, contribution: await this.run(found, good, config, settings) };
+      return { error, contribution: await this.run(found, good, config, settings, sink) };
     } catch {
       return { error };
     }
@@ -818,6 +841,7 @@ export class Plugins {
     plugin: Plugin,
     config: MonchuConfig,
     settings: JsonValue | undefined,
+    sink: (warning: string) => void,
   ): Promise<Contribution> {
     const instance: Instance = { controller: new AbortController(), shutdown: [] };
     this.live.add(instance);
@@ -845,7 +869,7 @@ export class Plugins {
       if (!open) throw new Error("Plugins register only while their function runs");
     };
     const reported = new Set<string>();
-    const report = (warning: string) => this.report(`Plugin ${found.name}: ${warning}`);
+    const report = (warning: string) => sink(`Plugin ${found.name}: ${warning}`);
     /** A handler's failure, told once per instance and event; the caller decides what a failure means. */
     const guard: Guard = async (event, run) => {
       try {

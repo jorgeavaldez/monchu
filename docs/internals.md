@@ -150,10 +150,10 @@ Non-fatal runtime failures appear as `system · warning` and are logged under `l
 
 ### Home check
 
-What Monchu loads from its home (`config.json`, `mcp.json`, `plugins.local.json`, `skills/`, `plugins/`) is checked as a build would meet it, so a broken home is seen when it breaks, not at the next start (`src/core/home-check.ts`). The check runs the real loaders, plugins included (imported and run, then retired; the running build's keep going), without installing anything, and only when a fingerprint of those files (sizes and times) changed. Checks and reloads run one at a time.
+What Monchu loads from its home (`config.json`, `mcp.json`, `plugins.local.json`, `skills/`, `plugins/`) is checked as a build would meet it, so a broken home is seen when it breaks, not at the next start (`src/core/home-check.ts`). The check runs the real loaders, plugins included (imported and run, then retired; the running build's keep going), without installing anything, and only when a fingerprint of those files (sizes and times) changed. What a plugin reports while the check runs it (such as bad settings) is one of the check's problems, never told to clients, and code the check ran never becomes the plugin's last good code. Checks and reloads run one at a time.
 
 - **At open:** problems reach the current root's front as a `system ·` notice.
-- **After a tool call** (not a nested one) that changed the home: its result gets an `error` diagnostic listing the problems it added, or an `info` one naming those it fixed. A problem the home already had is never blamed on a later call.
+- **After a tool call** (not a nested one) that changed the home: what it added is measured against the home as that call found it, so a problem that was already there is never blamed on it. When no other call ran beside it, or a problem names the file its `path` wrote, its result gets an `error` diagnostic listing them; any other new problem may be another call's, so the result gets a `warn` one and the front is told. A call that only fixed problems gets an `info` one.
 - **At that agent's final answer**, while what it added stays broken, it is sent back once with the list. If it still finishes with the home broken, the front gets a notice naming the worker. A front that broke the home was already told.
 - **A change outside any tool call** (another device's sync, an editor) is found at the next tool call anywhere and told to the front; so is the home passing again.
 - `/reload` and `reload_extensions` list every warning of the reload in their result.

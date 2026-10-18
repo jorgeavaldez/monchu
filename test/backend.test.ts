@@ -4,6 +4,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
+import { existsSync } from "node:fs";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -59,9 +60,14 @@ describe("backend", () => {
       await mkdir(join(home, "plugins", "faulty"), { recursive: true });
       await writeFile(
         join(home, "plugins", "faulty", "index.js"),
-        `export default () => {
+        `import { writeFileSync } from "node:fs";
+export default () => {
   setTimeout(() => { throw new Error("timer boom"); }, 50);
-  setTimeout(() => void Promise.reject(new Error("promise boom")), 50);
+  setTimeout(() => {
+    void Promise.reject(new Error("promise boom"));
+    // Written only by a core that outlived both.
+    setTimeout(() => writeFileSync(${JSON.stringify(join(home, "survived"))}, "yes"), 50);
+  }, 100);
 };
 `,
       );
@@ -108,14 +114,16 @@ describe("backend", () => {
       // `serve` runs the server, which forks the core; `stop` closes both.
       const serve = run(["serve"], "core ready");
       await serve.seen;
-      await waitFor(async () => {
-        const log = await logText(home);
-        return ["timer boom", "promise boom"].every((boom) =>
-          log.includes(
-            `Plugin faulty threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: ${boom}`,
+      // Only its first failure is told.
+      await waitFor(
+        async () =>
+          existsSync(join(home, "survived")) &&
+          (await logText(home)).includes(
+            "Plugin faulty threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: timer boom",
           ),
-        );
-      }, 30_000);
+        30_000,
+      );
+      expect(await logText(home)).not.toContain("promise boom");
       const stop = await run(["stop"]).exited;
       expect(stop, stop.output).toMatchObject({ code: 0 });
       expect(stop.output).toContain("stopped the Monchu of");

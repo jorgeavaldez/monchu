@@ -16,7 +16,7 @@ import {
   type ToolExecutionResult,
 } from "@earendil-works/pi-durable";
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { systemNoticeText } from "../api/notices.ts";
 import { RELOAD_TOOLS, type Build } from "./build.ts";
 import { loadConfig } from "./config.ts";
@@ -94,7 +94,7 @@ async function problems(inputs: HomeCheckInputs): Promise<string[]> {
   }
   const owned = new Set(running.owned);
   const own = running.extensions.filter((extension) => !owned.has(extension.name));
-  const loaded = await inputs.plugins.load(config);
+  const loaded = await inputs.plugins.load(config, { dry: true });
   try {
     const plugins = loaded.use({
       tools: new Set([
@@ -137,6 +137,17 @@ export function homeNotice(found: readonly string[], from?: string): string {
   );
 }
 
+/** A running tool call as the home check follows it. */
+type Call = {
+  /** The home as it stood when the call started. */
+  print: string;
+  problems: readonly string[];
+  /** The home file it names: a write or edit's `path`. */
+  path?: string;
+  /** Another call ran beside it, so a change it saw may be that one's. */
+  overlapped: boolean;
+};
+
 /** The home's last check, kept as long as the core, across reloads. */
 export class HomeCheck {
   private readonly inputs: HomeCheckInputs;
@@ -146,8 +157,8 @@ export class HomeCheck {
   private running: Promise<readonly string[]> | undefined;
   /** What the front was last told. */
   private told: readonly string[] = [];
-  /** Each tool call's fingerprint before it ran, by tool task. */
-  private readonly before = new Map<string, string>();
+  /** Each running tool call, by tool task. */
+  private readonly calls = new Map<string, Call>();
   /** Agents whose tool calls broke the home: the problems they added, and whether they were sent back. */
   private readonly editors = new Map<
     ConversationId,
@@ -199,52 +210,92 @@ export class HomeCheck {
     this.inputs.tell(this.found, from);
   }
 
-  /** Remember where the home stood when a tool call started. */
-  async beforeTool(taskId: string): Promise<void> {
-    this.before.set(taskId, await homeFingerprint(this.inputs.home));
+  /** Remember where the home stood when a tool call started, and which home file it names. */
+  async beforeTool(taskId: string, path: unknown): Promise<void> {
+    const call: Call = { print: "", problems: [], overlapped: this.calls.size > 0 };
+    for (const other of this.calls.values()) other.overlapped = true;
+    // Registered before the check, so a call starting meanwhile sees this one.
+    this.calls.set(taskId, call);
+    const had = this.found;
+    const { print, problems } = await this.refresh();
+    call.print = print;
+    call.problems = problems;
+    // Changed outside any tool call (another device's sync, an editor): unless a running call may have done it.
+    this.forget(problems);
+    if (key(problems) !== key(had) && this.calls.size === 1 && this.editors.size === 0) this.tell();
+    const named = typeof path === "string" && isAbsolute(path) ? resolve(path) : undefined;
+    if (named?.startsWith(join(this.inputs.home, sep)) === true) call.path = named;
   }
 
-  /** The call's result with the home's problems, when the home changed while it ran. */
+  /**
+   * The call's result with what changed in the home while it ran. A problem is the call's own when no other call ran
+   * beside it, or when it names the home file the call wrote: those send the agent back at its final answer. Any other
+   * new problem may be another call's, so the call is only warned, and the front is told.
+   */
   async afterTool(
     taskId: string,
     conversation: ConversationId,
     result: ToolExecutionResult,
   ): Promise<ToolExecutionResult | undefined> {
-    const before = this.before.get(taskId);
-    this.before.delete(taskId);
+    const call = this.calls.get(taskId);
+    this.calls.delete(taskId);
     const had = this.found;
     const { problems, print } = await this.refresh();
     this.forget(problems);
-    if (before === undefined || print === before) {
-      // Changed outside this call (another device's sync, an editor), or not at all.
+    if (call === undefined || print === call.print) {
+      // Changed outside any tool call (another device's sync, an editor), or not at all.
       if (key(problems) !== key(had) && this.editors.size === 0) this.tell();
       return undefined;
     }
-    // Only what this call broke is its own: a problem the home already had is not, nor one it fixed.
-    const old = new Set(had.map(normal));
+    const old = new Set(call.problems.map(normal));
     const added = problems.filter((problem) => !old.has(normal(problem)));
     const now = new Set(problems.map(normal));
-    const fixed = had.filter((problem) => !now.has(normal(problem)));
-    if (added.length === 0) {
-      if (fixed.length === 0) return undefined;
-      if (this.editors.size === 0) this.tell();
-      return withDiagnostic(
-        result,
-        "info",
-        problems.length === 0
-          ? "Monchu's home check passes now."
-          : `This call fixed:\n${list(fixed)}`,
-      );
+    const fixed = call.problems.filter((problem) => !now.has(normal(problem)));
+    const own = call.overlapped
+      ? added.filter(
+          (problem) => call.path !== undefined && names(problem, call.path, this.inputs.home),
+        )
+      : added;
+    // A problem another call already owns is that call's, not a possible one of this.
+    const owned = new Set([...this.editors.values()].flatMap((editor) => [...editor.caused]));
+    const others = added.filter((problem) => !own.includes(problem) && !owned.has(normal(problem)));
+    if (own.length > 0) {
+      const editor = this.editors.get(conversation) ?? {
+        caused: new Set<string>(),
+        sentBack: false,
+      };
+      for (const problem of own) editor.caused.add(normal(problem));
+      this.editors.set(conversation, editor);
     }
-    const editor = this.editors.get(conversation) ?? { caused: new Set<string>(), sentBack: false };
-    for (const problem of added) editor.caused.add(normal(problem));
-    this.editors.set(conversation, editor);
-    const others = problems.length - added.length;
-    return withDiagnostic(
-      result,
-      "error",
-      `This call broke what Monchu loads from its home: a reload or the next start runs without it. Fix it now:\n${list(added)}${others ? `\n(${others} other ${others === 1 ? "problem was" : "problems were"} there before this call.)` : ""}`,
-    );
+    if (others.length > 0 || (own.length === 0 && fixed.length > 0 && this.editors.size === 0))
+      this.tell();
+    const notes: { severity: "info" | "warn" | "error"; text: string }[] = [];
+    if (own.length > 0)
+      notes.push({
+        severity: "error",
+        text: `This call broke what Monchu loads from its home: a reload or the next start runs without it. Fix it now:\n${list(own)}`,
+      });
+    if (others.length > 0)
+      notes.push({
+        severity: "warn",
+        text: `What Monchu loads from its home broke while this call and others ran, so it may not be this call's doing. If it is, fix it now:\n${list(others)}`,
+      });
+    if (own.length === 0 && others.length === 0 && fixed.length > 0)
+      notes.push({
+        severity: "info",
+        text:
+          problems.length === 0
+            ? "Monchu's home check passes now."
+            : `Fixed while this call ran:\n${list(fixed)}`,
+      });
+    if (notes.length === 0) return undefined;
+    return {
+      ...result,
+      diagnostics: [
+        ...(result.diagnostics ?? []),
+        ...notes.map(({ severity, text }) => ({ severity, code: "home_check", message: text })),
+      ],
+    };
   }
 
   /** Drop the problems that are gone from what each agent caused, and agents with nothing left. */
@@ -280,6 +331,18 @@ export class HomeCheck {
   }
 }
 
+/** Whether `problem` names the home file `path`, or the skill or plugin folder it is in. */
+function names(problem: string, path: string, home: string): boolean {
+  const parts = relative(home, path).split(sep);
+  const folder =
+    parts[0] === "skills" || (parts[0] === "plugins" && parts[1] !== "local")
+      ? parts.slice(0, 2)
+      : parts[0] === "plugins"
+        ? parts.slice(0, 3)
+        : parts;
+  return problem.includes(join(home, ...folder)) || problem.includes(parts.join(sep));
+}
+
 /** A problem as compared across checks: a plugin's import generation changes with every fresh import. */
 function normal(problem: string): string {
   return problem.replace(/[?&]monchu-plugin=\d+/g, "");
@@ -287,17 +350,6 @@ function normal(problem: string): string {
 
 function key(found: readonly string[]): string {
   return JSON.stringify(found);
-}
-
-function withDiagnostic(
-  result: ToolExecutionResult,
-  severity: "info" | "error",
-  text: string,
-): ToolExecutionResult {
-  return {
-    ...result,
-    diagnostics: [...(result.diagnostics ?? []), { severity, code: "home_check", message: text }],
-  };
 }
 
 /** The home check in every conversation: around each tool call, and at each final answer. */
@@ -308,7 +360,8 @@ export function createHomeCheck(check: HomeCheck) {
       hook(ToolTask, {
         // A nested call is part of the call that made it, which reports.
         beforeTool: async (call, api, _context: Context) => {
-          if (call.parent === undefined) await check.beforeTool(String(api.taskId));
+          if (call.parent === undefined)
+            await check.beforeTool(String(api.taskId), call.arguments.path);
           return undefined;
         },
         afterTool: async (call, result, api, _context: Context) =>
