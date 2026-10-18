@@ -81,6 +81,8 @@ export const loginStatus = signal<{ message: string; url?: string; code?: string
 export const following = signal(0);
 /** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
 export const draft = signal(sessionStorage.getItem("draft") ?? "");
+/** Why the page is not connected, and when it tries again. */
+export const linkError = signal<string | undefined>(undefined);
 
 let core: Client | undefined;
 let current: RootClient | undefined;
@@ -649,9 +651,16 @@ export async function editQueued(
     notice("that message already left the queue");
     if (change.kind === "text") draft.value = [change.text, draft.value].filter(Boolean).join("\n");
   } catch (error) {
-    notice(error instanceof Error ? error.message : String(error), "warning");
-    // The edit is never lost: it comes back as a draft.
-    if (change.kind === "text") draft.value = [change.text, draft.value].filter(Boolean).join("\n");
+    const reason = error instanceof Error ? error.message : String(error);
+    // The edit is never lost, and never sent twice: it opens again over the queued original.
+    if (change.kind === "text" && editing.value === undefined) {
+      batch(() => {
+        editing.value = { name, id, draft: draft.value };
+        draft.value = change.text;
+      });
+      return notice(`${reason} · the edit is open again; the original is still queued`, "warning");
+    }
+    notice(reason, "warning");
   }
 }
 
@@ -693,6 +702,11 @@ export async function interrupt(): Promise<void> {
 /** Stores a file the user attaches, for the next message. */
 export function attachFile(name: string, data: Uint8Array): Promise<Attachment> {
   return root().attach(name, data);
+}
+
+/** The text of a failed send was edited or cleared: whatever is sent next is a new message. */
+export function forgetRetry(): void {
+  sessionStorage.removeItem("retry");
 }
 
 /**

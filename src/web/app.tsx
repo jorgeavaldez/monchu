@@ -23,6 +23,7 @@ import {
   choice,
   client,
   connection,
+  linkError,
   editing,
   editQueued,
   loginStatus,
@@ -503,7 +504,7 @@ export function App() {
       ) : secretsOpen.value ? (
         <SecretsPanel />
       ) : state === undefined ? (
-        <main class="transcript">connecting…</main>
+        <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (
         <Transcript key={state.conversation.id} view={state} />
       )}

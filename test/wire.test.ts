@@ -236,6 +236,41 @@ describe("wire", () => {
     }
   });
 
+  it("tells a client whose contracts the core outgrew that it is outdated, without waiting", async () => {
+    const core = await openCore();
+    let session: number | undefined;
+    let outgrown = false;
+    const errors: string[] = [];
+    const dialer = memoryDial(core.host, person("a"), (link) =>
+      tamper(link, {
+        send: (frame) => {
+          if (frame.t === "hold" && JSON.stringify(frame.token).includes("monchu.session"))
+            session ??= frame.id;
+          return frame;
+        },
+        // As a core updated to a new Session version answers this client's reference.
+        receive: (frame) =>
+          outgrown && frame.t === "state" && frame.hold === session
+            ? { t: "gone", id: frame.hold, error: { code: "upgrade_required", message: "changed" } }
+            : frame,
+      }),
+    );
+    const attached = await connectRemote(dialer.dial, {
+      onError: (error) => errors.push(error.message),
+    });
+    try {
+      const id = await attached?.client.currentRoot();
+      if (id === undefined) throw new Error("Nothing answered");
+      outgrown = true;
+      await core.backend.renameRoot(id, "outgrown");
+      await waitFor(() => errors.length > 0, 2000);
+      expect(errors).toEqual([OUTDATED_CORE]);
+    } finally {
+      await attached?.close();
+      await core.close();
+    }
+  });
+
   it("uploads an attachment through dropped connections, before it starts and between its chunks", async () => {
     const core = await openCore();
     const back = Promise.withResolvers<void>();

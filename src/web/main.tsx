@@ -6,7 +6,7 @@ import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
 import { startClient } from "./client.tsx";
 import { startSecrets } from "./secrets.tsx";
-import { cancelLogin, connection, loginStatus, notice, start, view } from "./state.ts";
+import { cancelLogin, connection, linkError, loginStatus, notice, start, view } from "./state.ts";
 import { telemetry } from "./telemetry.ts";
 
 /**
@@ -38,10 +38,13 @@ function socketLike(socket: WebSocket): WebSocketLike {
   };
 }
 
-async function reloadWhenUp(after = 0): Promise<void> {
-  await new Promise((wait) => setTimeout(wait, after));
-  while (!(await up())) await new Promise((wait) => setTimeout(wait, 3000));
-  location.reload();
+const sleep = (ms: number) => new Promise((wait) => setTimeout(wait, ms));
+
+/** The wait before the next try: doubling from 2 s to 30 s, kept through reloads and cleared once the page is up. */
+function backoff(): number {
+  const wait = Math.min(Number(sessionStorage.getItem("wait") ?? 1000) * 2, 30_000);
+  sessionStorage.setItem("wait", String(wait));
+  return wait;
 }
 
 async function dial(): Promise<Link | undefined> {
@@ -61,6 +64,60 @@ async function dial(): Promise<Link | undefined> {
 /** The connected client, and the core's version this page was loaded with. */
 let page: { client: RemoteClient; version: string } | undefined;
 
+const options = {
+  // A core that came back on another protocol or newer contracts, or from an update, serves a newer page: load it.
+  onError: (error: Error) => {
+    if (error.message === OUTDATED_CORE) location.reload();
+    else if (page !== undefined && page.client.release.updating !== null) location.reload();
+  },
+  onReconnect: (ms: number) => page?.client.record("web", "reconnected", { ms }),
+};
+
+/**
+ * Connect, or say why not and try again, waiting longer each time. The test is the core answering, not just the
+ * server: a core that can't start (or is being installed) is said here and asked again, never reloaded into. Only a
+ * socket the answering server refused (signed out) reloads, through the login.
+ */
+async function connect(): Promise<NonNullable<Awaited<ReturnType<typeof connectRemote>>>> {
+  let said = "";
+  for (;;) {
+    let reason = "Monchu's server doesn't answer";
+    try {
+      const attached = await connectRemote(dial, options);
+      if (attached !== undefined) {
+        linkError.value = undefined;
+        return attached;
+      }
+      if (await up()) {
+        await sleep(backoff());
+        location.reload();
+        return new Promise(() => {});
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === OUTDATED_CORE) location.reload();
+      // The server's own wait is the page's to say, as its next try.
+      reason = (error instanceof Error ? error.message : String(error))
+        .replace(/^[a-z_]+: /, "")
+        .replace(/ · next try in \d+s$/, "");
+    }
+    const wait = backoff();
+    linkError.value = `${reason} · trying again in ${wait / 1000}s`;
+    if (reason !== said) notice(`not connected · ${(said = reason)}`, "warning", true);
+    await sleep(wait);
+  }
+}
+
+/** Given up on: a fresh page holds everything anew, once the core answers again. */
+let recovering = false;
+async function recover(): Promise<void> {
+  if (recovering) return;
+  recovering = true;
+  connection.value = "gone";
+  await sleep(backoff());
+  await (await connect()).close();
+  location.reload();
+}
+
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (root === null) return;
@@ -72,21 +129,7 @@ async function boot(): Promise<void> {
     event.preventDefault();
     cancelLogin();
   });
-  const attached = await connectRemote(dial, {
-    // A core that came back on another protocol, or from an update, serves a newer page: load it.
-    onError: (error) => {
-      if (error.message === OUTDATED_CORE) location.reload();
-      else if (page !== undefined && page.client.release.updating !== null) location.reload();
-    },
-    onReconnect: (ms) => page?.client.record("web", "reconnected", { ms }),
-  });
-  if (attached === undefined) {
-    connection.value = "gone";
-    // Not reachable, or not signed in: a navigation goes through the login, then back here.
-    setTimeout(() => location.reload(), 3000);
-    return;
-  }
-  const { client } = attached;
+  const { client } = await connect();
   page = { client, version: client.release.version };
   const watch = telemetry(client);
   // An update replaced the page's own files: load the new ones, once the new core says so.
@@ -95,17 +138,12 @@ async function boot(): Promise<void> {
   });
   client.onConnection((state) => {
     connection.value = state;
-    // Given up on: a fresh page holds everything anew, through the login if need be, once the server answers.
-    if (state === "gone") void reloadWhenUp();
+    if (state === "gone") void recover();
   });
   await start(client);
   await startSecrets(client);
   connection.value = client.connected ? "live" : "lost";
-  // A phone that put the page away may come back to a core that's back too: a reload finds it, through the login if
-  // need be.
-  addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && connection.value === "gone") location.reload();
-  });
+  sessionStorage.removeItem("wait");
   view(undefined)?.subscribe(() => watch.painted(performance.now()));
   client.record("web", "ready", { ms: Math.round(performance.now()) });
   if ("serviceWorker" in navigator)
@@ -114,8 +152,5 @@ async function boot(): Promise<void> {
       .catch(() => notice("offline shell unavailable", "warning"));
 }
 
-// A page that can't connect (a core still installing or failing to start) tries again with a fresh load.
-void boot().catch(() => {
-  connection.value = "gone";
-  void reloadWhenUp(3000);
-});
+// A page that connected but couldn't start tries again with a fresh load once the core answers, waiting longer each time.
+void boot().catch(recover);

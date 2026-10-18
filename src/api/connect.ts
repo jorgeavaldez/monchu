@@ -85,7 +85,8 @@ export async function connectRemote(
     if (!closing) current.gone();
   };
   const closed = use(link);
-  const opening = RemoteClient.open(host);
+  // A core updated to newer contracts refuses this client's references until its code is new too.
+  const opening = RemoteClient.open(host, () => options.onError(new Error(OUTDATED_CORE)));
   // Whichever loses the race below must not reject unheard.
   opening.catch(() => {});
   try {

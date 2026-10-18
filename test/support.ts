@@ -836,6 +836,11 @@ export function memoryCore(open: () => Promise<Monchu>): CoreProcess & { readonl
       starting = undefined;
       return down;
     })();
+    // A start that failed is tried again by the next, as a forked core's is.
+    starting.catch(() => {
+      starting = undefined;
+      set("stopped");
+    });
     return starting;
   };
   const stop = async () => {

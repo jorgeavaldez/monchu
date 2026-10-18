@@ -204,6 +204,31 @@ describe("server", () => {
   });
 });
 
+describe("server with a core that can't start", () => {
+  it("says why, and starts it again only after a growing wait, however often clients ask", async () => {
+    let opens = 0;
+    const { attach, close } = await openServer((backend) => {
+      opens++;
+      void backend.close();
+      throw new Error("store unreadable");
+    });
+    const person = { kind: "client" as const, connection: "a", person: true };
+    try {
+      await expect(attach(person)).rejects.toThrow("store unreadable");
+      expect(opens).toBe(1);
+      // Asked again at once, as a page and each of its references do: no new core, the reason and when it's next tried.
+      await expect(attach(person)).rejects.toThrow(/store unreadable · next try in 2s/);
+      expect(opens).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      await expect(attach(person)).rejects.toThrow("store unreadable");
+      expect(opens).toBe(2);
+      await expect(attach(person)).rejects.toThrow(/next try in 4s/);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+});
+
 describe("server after a lost core link", () => {
   it("replaces a core whose link closed, so a new client still reaches one", async () => {
     const { core, attach, close } = await openServer();

@@ -4,7 +4,15 @@
  * become `gone` instead. A lasting one gets its object again from the new core, and its state keeps the last value
  * until the fresh snapshot arrives. Browser-safe.
  */
-import type { AnyContract, GetOptions, Host, InputOf, Readable, Ref } from "@earendil-works/chord";
+import {
+  isChordError,
+  type AnyContract,
+  type GetOptions,
+  type Host,
+  type InputOf,
+  type Readable,
+  type Ref,
+} from "@earendil-works/chord";
 import type { Watched } from "./client.ts";
 import type { Principal } from "./contract.ts";
 
@@ -29,6 +37,8 @@ export class Lasting<C extends AnyContract> {
   private closed = false;
   /** How long to keep asking once lost; the session says longer while an update installs. */
   patience: () => number = () => REGAIN_FOR_MS;
+  /** The core runs a newer contract than this client's: asking again can't help, the client's code must change. */
+  onOutdated: () => void = () => {};
 
   private constructor(
     host: Host<Principal>,
@@ -86,10 +96,11 @@ export class Lasting<C extends AnyContract> {
   }
 
   private follow(ref: Ref<C>): () => void {
-    return ref.onStatus((status) => {
+    return ref.onStatus((status, error) => {
       if (this.closed || ref !== this.current) return;
       if (status === "live") this.tell("live");
       else if (status === "loading") this.tell("lost");
+      else if (isChordError(error, "upgrade_required")) this.onOutdated();
       else {
         // Gone, or released by the other side (this one stops following before it releases its own).
         this.tell("lost");
@@ -107,9 +118,14 @@ export class Lasting<C extends AnyContract> {
       for (let delay = 50; !this.closed && Date.now() < until; delay = Math.min(delay * 2, 1000)) {
         await new Promise((wait) => setTimeout(wait, delay));
         if (this.closed) return;
+        let outdated = false;
         const ref = await this.host
           .get(this.type, this.input, { ...this.options, signal: AbortSignal.timeout(10_000) })
-          .catch(() => undefined);
+          .catch((error: unknown) => {
+            outdated = isChordError(error, "upgrade_required");
+            return undefined;
+          });
+        if (outdated) return this.onOutdated();
         if (ref === undefined) continue;
         if (this.closed) return ref.release();
         this.stopStatus();

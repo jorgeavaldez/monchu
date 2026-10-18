@@ -153,8 +153,29 @@ export function openServerHost(
   // Each new core is admitted as soon as it runs, before a client needs it: an unanswered link times out.
   const admitted = new WeakSet<Link>();
   let replacing: Promise<void> | undefined;
+  /**
+   * After a start fails, the next waits: 2 s, doubling to a minute while it keeps failing. Every client asks for the core
+   * (a page, each of its references), and a core that can't start must not be forked once per ask.
+   */
+  let failed: { reason: string; until: number; wait: number } | undefined;
+  const start = async () => {
+    if (failed !== undefined && Date.now() < failed.until)
+      throw new Error(
+        `${failed.reason} · next try in ${Math.ceil((failed.until - Date.now()) / 1000)}s`,
+      );
+    try {
+      const link = await core.start();
+      failed = undefined;
+      return link;
+    } catch (error) {
+      const wait = Math.min((failed?.wait ?? 1000) * 2, 60_000);
+      const reason = error instanceof Error ? error.message : String(error);
+      failed = { reason, until: Date.now() + wait, wait };
+      throw error;
+    }
+  };
   const reach = async () => {
-    let link = await core.start();
+    let link = await start();
     if (link.closed) {
       // A closed link never opens again, and the core behind it runs on: only a new core answers clients.
       replacing ??= (async () => {
@@ -164,7 +185,7 @@ export function openServerHost(
         await core.replace();
       })().finally(() => (replacing = undefined));
       await replacing;
-      link = await core.start();
+      link = await start();
     }
     if (!admitted.has(link)) {
       admitted.add(link);

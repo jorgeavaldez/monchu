@@ -202,9 +202,17 @@ export class RemoteClient implements Client {
   private watchdog: ReturnType<typeof setTimeout> | undefined;
   private ended = false;
 
-  private constructor(host: Host<Principal>, session: Lasting<typeof Session>) {
+  private readonly outdated: () => void;
+
+  private constructor(
+    host: Host<Principal>,
+    session: Lasting<typeof Session>,
+    outdated: () => void,
+  ) {
     this.host = host;
     this.session = session;
+    this.outdated = outdated;
+    session.onOutdated = outdated;
     this.helloState = session.state((ref) => ref.hello);
     this.releaseState = session.state((ref) => ref.releaseState);
     session.patience = () => this.patience();
@@ -222,9 +230,12 @@ export class RemoteClient implements Client {
     });
   }
 
-  /** Start on a client host connected to the core: the values every client shows from its first screen. */
-  static async open(host: Host<Principal>): Promise<RemoteClient> {
-    return new RemoteClient(host, await Lasting.open(host, Session, {}));
+  /**
+   * Start on a client host connected to the core: the values every client shows from its first screen. `outdated` hears
+   * a core that came back with contracts newer than this client's.
+   */
+  static async open(host: Host<Principal>, outdated: () => void): Promise<RemoteClient> {
+    return new RemoteClient(host, await Lasting.open(host, Session, {}), outdated);
   }
 
   /** How long a lost core is waited for: longer while it installs an update. */
@@ -240,6 +251,7 @@ export class RemoteClient implements Client {
   ): Promise<Lasting<C>> {
     const lasting = await this.run(() => Lasting.open(this.host, type, input, options));
     lasting.patience = () => this.patience();
+    lasting.onOutdated = this.outdated;
     // A view or root that can't be had again leaves this client showing stale values: it is as gone as the session.
     lasting.onReach((reach) => {
       if (reach === "gone") this.gone();
