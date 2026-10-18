@@ -418,8 +418,9 @@ function Footer() {
           : ""}
         {" · "}
         <span title="provider/model">{name}</span>
-        {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""} <LinkDot />
+        {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""}
       </span>
+      <LinkDot />
     </footer>
   );
 }

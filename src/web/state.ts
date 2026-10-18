@@ -81,7 +81,6 @@ export const loginStatus = signal<{ message: string; url?: string; code?: string
 export const following = signal(0);
 /** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
 export const draft = signal(sessionStorage.getItem("draft") ?? "");
-effect(() => sessionStorage.setItem("draft", draft.value));
 
 let core: Client | undefined;
 let current: RootClient | undefined;
@@ -635,6 +634,9 @@ export function toggleRoots(open = !rootsOpen.value): void {
 export const editing = signal<{ name: string | undefined; id: number; draft: string } | undefined>(
   undefined,
 );
+// What a reload of the tab brings back: the draft, or the one set aside while a queued message is open; that one stays
+// queued.
+effect(() => sessionStorage.setItem("draft", editing.value?.draft ?? draft.value));
 
 /** Changes a still-queued message of the shown conversation; one that already left comes back as a draft. */
 export async function editQueued(
@@ -648,6 +650,8 @@ export async function editQueued(
     if (change.kind === "text") draft.value = [change.text, draft.value].filter(Boolean).join("\n");
   } catch (error) {
     notice(error instanceof Error ? error.message : String(error), "warning");
+    // The edit is never lost: it comes back as a draft.
+    if (change.kind === "text") draft.value = [change.text, draft.value].filter(Boolean).join("\n");
   }
 }
 
@@ -700,13 +704,22 @@ export async function submit(
   raw: string,
   attachments: readonly Attachment[] = [],
 ): Promise<"sent" | "done" | "failed"> {
+  // A message that failed may have reached the core all the same (its answer lost with the link): sent again as it was,
+  // it keeps its request id, so the core takes it once.
+  const failed = sessionStorage.getItem("retry");
+  const requestId = failed?.startsWith(`${raw}\u0000`)
+    ? failed.slice(raw.length + 1)
+    : crypto.randomUUID();
+  sessionStorage.setItem("retry", `${raw}\u0000${requestId}`);
   try {
     const input =
       raw.trim() || attachments.length === 0
         ? parseInput(raw)
         : { command: "message" as const, text: "" };
     if (input === undefined) return "done";
-    return (await runInput(input, attachments)) === true ? "sent" : "done";
+    const sent = (await runInput(input, attachments, requestId)) === true;
+    sessionStorage.removeItem("retry");
+    return sent ? "sent" : "done";
   } catch (error) {
     notice(
       `${error instanceof Error ? error.message : String(error)} · back in the editor`,
@@ -720,6 +733,7 @@ export async function submit(
 async function runInput(
   input: NonNullable<ReturnType<typeof parseInput>>,
   attachments: readonly Attachment[],
+  requestId: string,
 ): Promise<boolean | void> {
   const name = shown.value;
   switch (input.command) {
@@ -728,9 +742,8 @@ async function runInput(
       following.value++;
       const text =
         input.command === "skill" ? await client().skillInput(input.name, input.text) : input.text;
-      if (name === undefined)
-        await root().submit(text, crypto.randomUUID(), mode.value, attachments);
-      else await root().messageWorker(name, text, crypto.randomUUID(), mode.value, attachments);
+      if (name === undefined) await root().submit(text, requestId, mode.value, attachments);
+      else await root().messageWorker(name, text, requestId, mode.value, attachments);
       notice(`received · ${name ?? "root"}`);
       return true;
     }

@@ -100,7 +100,7 @@ export function Editor() {
     draft.value = "";
     void submit(text, attachments).then((outcome) => {
       if (outcome === "sent") clearPending();
-      // Never lost: what didn't go comes back ahead of anything typed since.
+      // Never lost: what didn't go comes back, ahead of anything typed since.
       if (outcome === "failed") draft.value = [text, draft.value].filter(Boolean).join("\n");
     });
   };
@@ -167,11 +167,13 @@ export function Editor() {
         rows={1}
         value={draft.value}
         placeholder={
-          connection.value !== "live" && connection.value !== "connecting"
-            ? "not connected · reconnecting"
-            : editing.value === undefined
-              ? "message"
-              : "queued message"
+          connection.value === "gone"
+            ? "not connected · reloading once Monchu answers"
+            : connection.value !== "live" && connection.value !== "connecting"
+              ? "not connected · reconnecting"
+              : editing.value === undefined
+                ? "message"
+                : "queued message"
         }
         autofocus
         onInput={(event) => {

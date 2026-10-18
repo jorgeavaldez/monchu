@@ -585,6 +585,9 @@ pre {
   text-align: left;
 }
 .footer .link {
+  /* Never clipped: it says the link is down in words. */
+  flex-shrink: 0;
+  overflow: visible;
   color: var(--muted);
 }
 .footer .link[data-state="live"] {

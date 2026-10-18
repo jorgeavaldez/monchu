@@ -38,7 +38,8 @@ function socketLike(socket: WebSocket): WebSocketLike {
   };
 }
 
-async function reloadWhenUp(): Promise<void> {
+async function reloadWhenUp(after = 0): Promise<void> {
+  await new Promise((wait) => setTimeout(wait, after));
   while (!(await up())) await new Promise((wait) => setTimeout(wait, 3000));
   location.reload();
 }
@@ -113,4 +114,8 @@ async function boot(): Promise<void> {
       .catch(() => notice("offline shell unavailable", "warning"));
 }
 
-void boot();
+// A page that can't connect (a core still installing or failing to start) tries again with a fresh load.
+void boot().catch(() => {
+  connection.value = "gone";
+  void reloadWhenUp(3000);
+});
