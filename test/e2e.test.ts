@@ -9,6 +9,7 @@
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -677,9 +678,19 @@ function streamed(
   response.end();
 }
 
-// The real Claude Code CLI (on PATH, as on the phone) under the real bridge, with only the Anthropic API faked on
+// The real Claude Code CLI under the real bridge, with only the Anthropic API faked on
 // loopback: the model drops the mcp__monchu__ prefix once, and Claude Code itself must answer it and ask again.
-describe.skipIf(!installed("claude") || process.platform === "win32")(
+// `claude` on PATH (the phone's launcher), else the same CLI the Agent SDK installs for this platform, as on CI.
+const sdkClaude = join(
+  import.meta.dirname,
+  "..",
+  "node_modules",
+  "@anthropic-ai",
+  `claude-agent-sdk-${process.platform}-${process.arch}`,
+  "claude",
+);
+const claudeCli = installed("claude") ? "claude" : existsSync(sdkClaude) ? sdkClaude : undefined;
+describe.skipIf(claudeCli === undefined || process.platform === "win32")(
   "Monchu end to end, the real Claude Code CLI",
   { timeout: 180_000 },
   () => {
@@ -748,7 +759,7 @@ describe.skipIf(!installed("claude") || process.platform === "win32")(
       const wrapper = join(home, "claude-wrapper.sh");
       await writeFile(
         wrapper,
-        `#!/bin/sh\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:${port}\nexport NO_PROXY=127.0.0.1 no_proxy=127.0.0.1\nexec claude "$@"\n`,
+        `#!/bin/sh\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:${port}\nexport NO_PROXY=127.0.0.1 no_proxy=127.0.0.1\nexec ${JSON.stringify(claudeCli)} "$@"\n`,
         { mode: 0o755 },
       );
       const role = { provider: "claude-code", modelId: "claude-sonnet-4-6", thinkingLevel: "off" };

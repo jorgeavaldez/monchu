@@ -13,7 +13,7 @@
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import { readdir, readFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, readdir, readFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -252,7 +252,12 @@ async function identityProvider(): Promise<{ issuer: string; server: Server }> {
 }
 
 /** `monchu serve --web` from source on a fresh smoke home with faux models; resolves once it serves. */
-async function startCore(home: string, port: number, issuer: string): Promise<ChildProcess> {
+async function startCore(
+  home: string,
+  port: number,
+  issuer: string,
+  root: string = ROOT,
+): Promise<ChildProcess> {
   await writeFile(
     join(home, "web.json"),
     JSON.stringify({ port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] }),
@@ -262,7 +267,7 @@ async function startCore(home: string, port: number, issuer: string): Promise<Ch
     join(home, "config.json"),
     JSON.stringify({ settings: { compaction: { keepRecentTokens: 1 } } }),
   );
-  const core = spawn(process.execPath, [join(ROOT, "src", "main.ts"), "serve", "--web"], {
+  const core = spawn(process.execPath, [join(root, "src", "main.ts"), "serve", "--web"], {
     // None of the Monchu this runs under: an update's outcome or a home it names would show in the page.
     env: {
       ...Object.fromEntries(
@@ -695,7 +700,33 @@ async function typing(): Promise<string> {
 const SETTLED = `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("DONE"))`;
 
 /** The page's server, stopped and started again on the same home and port, as a crash or a restart does. */
-type ServerControl = { stop(): Promise<void>; start(): Promise<void> };
+type ServerControl = { stop(): Promise<void>; start(root?: string): Promise<void> };
+
+/**
+ * The next release, as `/update` would bring it: a copy of this checkout whose session contract is a version newer,
+ * with its own web build. A page still holding the old contract is outdated against its core.
+ */
+async function nextRelease(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "monchu-next-"));
+  const skip = new Set(["node_modules", ".jj", ".git", "dist", "web-check"]);
+  for (const entry of await readdir(ROOT))
+    if (!skip.has(entry)) await cp(join(ROOT, entry), join(root, entry), { recursive: true });
+  await symlink(join(ROOT, "node_modules"), join(root, "node_modules"), "junction");
+  const contract = join(root, "src", "api", "contract.ts");
+  const source = await readFile(contract, "utf8");
+  const bumped = source.replace(
+    /(remote\("monchu\.session", \{\n  version: )(\d+)/,
+    (_, head: string, version: string) => `${head}${Number(version) + 1}`,
+  );
+  if (bumped === source) throw new Error("no monchu.session version to bump in contract.ts");
+  await writeFile(contract, bumped);
+  await new Promise<void>((done, fail) =>
+    execFile(process.execPath, [join(root, "scripts", "build-web.ts")], (error, _out, stderr) =>
+      error ? fail(new Error(`${error.message}\n${stderr}`)) : done(),
+    ),
+  );
+  return root;
+}
 
 async function journeys(
   url: string,
@@ -1775,6 +1806,53 @@ async function journeys(
       return "redialled a 5 s outage in place; past the redial window it said so, waited without reloading, and reloaded once the server answered";
     },
   );
+
+  await journey(
+    "outdated: a core on newer contracts makes the open page load the new release at once",
+    async () => {
+      const root = await nextRelease();
+      try {
+        const script = () => page(`document.querySelector("script[src]")?.getAttribute("src")`);
+        const before = text(await script());
+        await page("window.webCheckMark = 1");
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelector('.link[data-state="live"]') !== null`,
+        );
+        await server.stop();
+        await server.start(root);
+        const back = performance.now();
+        // Told upgrade_required, the page reloads into the new bundle; redialling the old contract would take 30 s.
+        const deadline = back + 10_000;
+        while ((await page("window.webCheckMark").catch(() => 1)) === 1) {
+          if (performance.now() > deadline)
+            throw new Error("the page didn't reload within 10 s of a newer core answering");
+          await new Promise((done) => setTimeout(done, 250));
+        }
+        const reloadMs = ms(back);
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelector('.link[data-state="live"]') !== null`,
+        );
+        const after = text(await script());
+        check(after !== "" && after !== before, `the page kept its bundle (${before})`);
+        await browser("fill", "textarea", "on the new release");
+        await browser("press", "Enter");
+        await browser(
+          "wait",
+          "--fn",
+          `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("on the new release"))`,
+        );
+        return `reloaded ${reloadMs} ms after the newer core answered, from ${before} to ${after}, and answers`;
+      } finally {
+        await server.stop();
+        await server.start();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 }
 
 /** Lower is better for every metric; a regression is past noise for its kind. */
@@ -1884,8 +1962,8 @@ async function run(): Promise<void> {
       stop: async () => {
         if (core !== undefined) await stopCore(core);
       },
-      start: async () => {
-        core = await startCore(home, port, idp.issuer);
+      start: async (root?: string) => {
+        core = await startCore(home, port, idp.issuer, root);
       },
     });
   } catch (error) {
