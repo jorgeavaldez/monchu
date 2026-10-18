@@ -816,11 +816,12 @@ export function tamper(
 
 /**
  * Dial a core host over memory links, the way a client dials the socket: each dial is a new pair, accepted as
- * `principal`. `links` holds the core's ends, so a test can drop a connection as a restarting core does.
+ * `principal`, or as the one it makes for each dial, as the server stamps every socket. `links` holds the core's ends,
+ * so a test can drop a connection as a restarting core does.
  */
 export function memoryDial(
   host: CoreHost,
-  principal: Principal,
+  principal: Principal | (() => Principal),
   wrap: (link: Link) => Link = (link) => link,
 ): { dial: () => Promise<Link>; links: Link[] } {
   const links: Link[] = [];
@@ -829,7 +830,10 @@ export function memoryDial(
     dial: async () => {
       const [core, client] = memoryLinkPair();
       links.push(core);
-      host.accept(core, { principal, kind: "client" });
+      host.accept(core, {
+        principal: typeof principal === "function" ? principal() : principal,
+        kind: "client",
+      });
       return wrap(client);
     },
   };

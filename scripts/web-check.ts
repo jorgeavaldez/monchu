@@ -521,19 +521,25 @@ async function journey(name: string, steps: () => Promise<string>): Promise<void
 
 const ms = (since: number) => Math.round(performance.now() - since);
 
-/** The page's own `ready` records in the core's log, in order. */
-async function readyTimes(home: string): Promise<number[]> {
+/** The core log's records of `scope` saying `body`, in order. */
+async function logRecords(home: string, scope: string, body: string): Promise<Data[]> {
   const logs = join(home, "logs");
-  const times: number[] = [];
+  const records: Data[] = [];
   for (const file of (await readdir(logs).catch(() => [])).toSorted((a, b) => a.localeCompare(b)))
     for (const line of (await readFile(join(logs, file), "utf8")).split("\n")) {
       if (!line) continue;
       const record: unknown = JSON.parse(line);
-      if (!isData(record) || record.scope !== "web" || record.body !== "ready") continue;
-      const value = number(isData(record.attributes) ? record.attributes.ms : undefined);
-      if (value !== undefined) times.push(value);
+      if (isData(record) && record.scope === scope && record.body === body) records.push(record);
     }
-  return times;
+  return records;
+}
+
+/** The page's own `ready` records in the core's log, in order. */
+async function readyTimes(home: string): Promise<number[]> {
+  return (await logRecords(home, "web", "ready")).flatMap((record) => {
+    const value = number(isData(record.attributes) ? record.attributes.ms : undefined);
+    return value === undefined ? [] : [value];
+  });
 }
 
 async function bundle(): Promise<void> {
@@ -1676,6 +1682,61 @@ async function journeys(
   );
 
   await journey(
+    "login: an API key typed in the masked box signs in and is saved, through a dropped connection",
+    async () => {
+      await browser("fill", "textarea", "/login");
+      await browser("press", "Enter");
+      if ((await page(`!!document.querySelector(".pick li")`)) !== true)
+        await browser("press", "Enter");
+      await browser("wait", ".pick li");
+      const at = Number(
+        await page(
+          `[...document.querySelectorAll(".pick li")].findIndex((item) => item.textContent.includes("OpenCode Go")) + 1`,
+        ),
+      );
+      check(at > 0, "OpenCode Go isn't offered");
+      await browser("click", `.pick li:nth-child(${at}) .enter`);
+      await browser("wait", "form.ask input[type=password]");
+      await capture("login-key", home, origin);
+      const key = `sk-web-check-${randomBytes(12).toString("hex")}`;
+      await browser("type", "form.ask input", key);
+      await capture("login-key-typed", home, origin);
+      // A phone drops the page's socket when it leaves to fetch the key; the login waits for it to come back.
+      await page(
+        `(() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (data) { window.dropMe = this; return send.call(this, data); }; return true; })()`,
+      );
+      await browser("wait", "--fn", "!!window.dropMe");
+      const reconnects = async () => (await logRecords(home, "web", "reconnected")).length;
+      const before = await reconnects();
+      await page(`window.dropMe.close()`);
+      for (let waited = 0; (await reconnects()) === before; waited += 100) {
+        check(waited < 15_000, "the page didn't reconnect");
+        await browser("wait", "100");
+      }
+      check(
+        (await page(`!!document.querySelector("form.ask input[type=password]")`)) === true,
+        "the key prompt closed with the connection",
+      );
+      await browser("focus", "form.ask input");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector("form.ask") && !document.querySelector(".login")`,
+      );
+      const notices = text(await page(`document.querySelector(".transcript").textContent`));
+      check(
+        notices.includes("logged in · opencode-go"),
+        `no sign-in notice: ${notices.slice(-200)}`,
+      );
+      const saved: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
+      const entry = isData(saved) ? saved["opencode-go"] : undefined;
+      check(isData(entry) && entry.key === key, "auth.json doesn't hold the typed key");
+      return "the connection dropped under the prompt; OpenCode Go took the key after it and auth.json holds it";
+    },
+  );
+
+  await journey(
     "inbox: an ask is boxed, filters by kind and goal with its briefer, answers by id, and #id links to it",
     async () => {
       const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
@@ -1693,7 +1754,7 @@ async function journeys(
       );
       check(/^[k-z]{4,8}$/.test(id), `no message id: ${id}`);
       await send(`label ${id} ask smoke`);
-      await browser("wait", "--fn", `!!document.querySelector(".ask .answer")`);
+      await browser("wait", "--fn", `!!document.querySelector(".askCard .answer")`);
       check(
         (await page(`document.querySelector(".filters .yellow")?.textContent`)) === "asks 1",
         "the filter bar doesn't count the open ask",
@@ -1725,14 +1786,14 @@ async function journeys(
       );
       await capture("inbox-goal", home, origin);
       await browser("click", ".filters button:first-child");
-      await browser("click", ".ask .answer");
+      await browser("click", ".askCard .answer");
       check(
         (await page(`document.querySelector("textarea").value`)) === `/answer ${id} `,
         "answer didn't draft /answer with the id",
       );
       await browser("fill", "textarea", `/answer ${id} yes, ship it`);
       await browser("press", "Enter");
-      await browser("wait", "--fn", `!!document.querySelector(".ask.answered")`);
+      await browser("wait", "--fn", `!!document.querySelector(".askCard.answered")`);
       await send(`see #${id}`);
       await browser("wait", "--fn", `!!document.querySelector(".assistant a.ref")`);
       await browser("click", ".assistant a.ref");

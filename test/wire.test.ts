@@ -67,7 +67,7 @@ async function openCore() {
 
 async function attach(
   host: CoreHost,
-  principal: Principal,
+  principal: Principal | (() => Principal),
   rewrite: Parameters<typeof tamper>[1] = {},
   /** Redials wait for it: a core that is still restarting. */
   redial: Promise<void> = Promise.resolve(),
@@ -380,7 +380,7 @@ describe("wire", () => {
       // Another connection can't answer it: the login is the owner's connection's alone.
       rewrite = calling("jobs", {
         member: "loginAnswer",
-        args: { login: 1, prompt: 1, value: "stolen" },
+        args: { login: "1", prompt: 1, value: "stolen" },
       });
       await expect(stranger.client.jobs()).rejects.toThrow("No login 1 on this connection");
       rewrite = (frame) => frame;
@@ -397,6 +397,57 @@ describe("wire", () => {
       await owner.close();
       await stranger.close();
       await service.close();
+      await core.close();
+    }
+  });
+
+  it("keeps a login through a dropped connection, for the client's next one to finish", async () => {
+    const core = await openCore();
+    const back = Promise.withResolvers<void>();
+    let dials = 0;
+    // Every socket is a new connection, as the server stamps them.
+    const { client, close, links } = await attach(
+      core.host,
+      () => person(`phone-${dials++}`),
+      {},
+      back.promise,
+    );
+    try {
+      const notices: string[] = [];
+      const stopNotices = client.onReport((message) => notices.push(message));
+      const prompted = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<string>();
+      const login = client.login("faux", "api_key", {
+        prompt: () => {
+          prompted.resolve();
+          return answer.promise;
+        },
+        notify: () => {},
+      });
+      await prompted.promise;
+      // The page goes away to fetch the key, and its socket with it.
+      links[0]?.close("suspended");
+      await waitFor(() => notices.includes("connection to Monchu lost · reconnecting"));
+      back.resolve();
+      await waitFor(() => notices.includes("reconnected to Monchu"));
+      answer.resolve("fetched-key");
+      await login;
+      expect(dials).toBeGreaterThan(1);
+      const auth: unknown = JSON.parse(
+        await readFile(join(core.backend.home, "auth.json"), "utf8"),
+      );
+      expect(auth).toEqual({ faux: { type: "api_key", key: "fetched-key" } });
+
+      // Declining a prompt cancels the login rather than failing it.
+      await expect(
+        client.login("faux", "api_key", {
+          prompt: () => Promise.reject(new Error("closed")),
+          notify: () => {},
+        }),
+      ).rejects.toThrow("Login cancelled");
+      stopNotices();
+    } finally {
+      await close();
       await core.close();
     }
   });

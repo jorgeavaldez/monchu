@@ -888,14 +888,14 @@ p.offer {
   margin-left: auto;
   border-left: 1px solid var(--line);
 }
-.ask {
+.askCard {
   display: flex;
   flex-direction: column;
   gap: var(--s1);
   border: 1px solid var(--yellow);
   padding: var(--s1);
 }
-.ask:is(.answered, .closed) {
+.askCard:is(.answered, .closed) {
   border-style: dashed;
   border-color: var(--muted);
 }

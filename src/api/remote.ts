@@ -567,9 +567,13 @@ export class RemoteClient implements Client {
     };
   }
 
-  /** Follow one of this connection's logins: answer its prompts here, pass its events on, settle with its outcome. */
+  /**
+   * Follow one of this connection's logins: answer its prompts here, pass its events on, settle with its outcome. A
+   * phone drops the link whenever the page goes away, as it does to fetch the key being asked for: the core keeps the
+   * login meanwhile, and the next connection resumes it, so only a session that is gone ends it.
+   */
   private follow(
-    id: number,
+    id: string,
     signal: AbortSignal | undefined,
     onEvent: (event: LoginState["events"][number]) => void,
     answer: (request: NonNullable<LoginState["prompt"]>["request"]) => Promise<string | null>,
@@ -578,6 +582,10 @@ export class RemoteClient implements Client {
       let events = 0;
       let prompted = 0;
       let started = false;
+      // Each drop starts a generation; calls wait until its connection has the login back.
+      let generation = 0;
+      let resumed = Promise.resolve();
+      let settle = () => {};
       const cancel = () =>
         void this.run(() => this.session.ref.loginCancel({ login: id })).catch(() => {});
       signal?.addEventListener("abort", cancel, { once: true });
@@ -586,20 +594,49 @@ export class RemoteClient implements Client {
         stopStatus();
         signal?.removeEventListener("abort", cancel);
       };
-      // A reconnect can't bring a login back: the core cancels a connection's logins when it goes.
-      const stopStatus = this.session.onReach((reach) => {
-        if (reach === "live") return;
+      const end = (error: Error) => {
         finish();
-        reject(new Error("Login ended: connection lost"));
+        reject(error);
+      };
+      const stopStatus = this.session.onReach((reach) => {
+        if (reach === "gone") return end(new Error("Login ended: connection lost"));
+        if (reach === "lost") {
+          if (!started) return;
+          started = false;
+          generation++;
+          const next = Promise.withResolvers<void>();
+          resumed = next.promise;
+          settle = next.resolve;
+          return;
+        }
+        if (started) return;
+        this.run(() => this.session.ref.loginResume({ login: id })).then(
+          () => settle(),
+          // Dropped again under it: the next connection tries again.
+          () => {
+            if (this.connected) end(new Error("Login ended: closed"));
+          },
+        );
       });
+      const send = async (prompt: number, value: string | null) => {
+        for (;;) {
+          await this.live();
+          await resumed;
+          const at = generation;
+          try {
+            return await this.run(() => this.session.ref.loginAnswer({ login: id, prompt, value }));
+          } catch (error) {
+            if (generation === at && this.connected) throw error;
+          }
+        }
+      };
       const stop = this.followState(
         (ref) => ref.logins,
         (logins) => {
-          const state = logins[String(id)];
+          const state = logins[id];
           if (state === undefined) {
             if (!started) return;
-            finish();
-            return reject(new Error("Login ended: closed"));
+            return end(new Error("Login ended: closed"));
           }
           started = true;
           for (const event of state.events.slice(events)) onEvent(event);
@@ -609,11 +646,7 @@ export class RemoteClient implements Client {
             prompted = prompt.id;
             void answer(prompt.request)
               .catch(() => null)
-              .then((value) =>
-                this.run(() =>
-                  this.session.ref.loginAnswer({ login: id, prompt: prompt.id, value }),
-                ),
-              )
+              .then((value) => send(prompt.id, value))
               .catch(() => {});
           }
           if (state.done === null) return;

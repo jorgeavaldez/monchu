@@ -467,11 +467,20 @@ async function runLogin(): Promise<void> {
       providers.map(({ id, label }) => ({ id, label })),
     );
     if (picked === undefined) return;
-    loginStatus.value = { message: "Starting…" };
+    const starting = { message: "Starting…" };
+    loginStatus.value = starting;
     const auth = providers.find((entry) => entry.id === picked.id)?.auth ?? "oauth";
     await client().login(picked.id, auth, {
       signal: controller.signal,
-      prompt: (request) => answerPrompt(request, controller.signal),
+      // Closing a prompt cancels the login it asks for.
+      prompt: (request) => {
+        // The prompt says what happens now; a provider's status (a sign-in page) stays.
+        if (loginStatus.value === starting) loginStatus.value = undefined;
+        return answerPrompt(request, controller.signal).catch((error: unknown) => {
+          controller.abort();
+          throw error;
+        });
+      },
       notify: loginEvent,
     });
     notice(`logged in · ${picked.id}`);
@@ -482,6 +491,8 @@ async function runLogin(): Promise<void> {
   } finally {
     login = undefined;
     loginStatus.value = undefined;
+    // A prompt still open belongs to a login that is over.
+    controller.abort();
   }
   // As in the terminal: what still needs a login, once this one is done.
   if (loggedIn)
@@ -515,7 +526,8 @@ async function runMcp(text: string): Promise<void> {
   const controller = new AbortController();
   login = controller;
   try {
-    loginStatus.value = { message: "Starting…" };
+    const starting = { message: "Starting…" };
+    loginStatus.value = starting;
     const message = await client().mcpLogin(
       name,
       {

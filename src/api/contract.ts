@@ -92,7 +92,8 @@ export type LoginPrompt =
 
 /** One login in progress, as the client that started it sees it. Events only grow. */
 export type LoginState = {
-  id: number;
+  /** Unguessable: a client's next connection takes the login back with it after a drop. */
+  id: string;
   /** The prompt waiting for this client's answer. */
   prompt: { id: number; request: LoginPrompt } | null;
   /** Provider events; an MCP sign-in sends its authorization URL as `auth_url`. */
@@ -143,7 +144,7 @@ const sessionState = {
   reports: trusted<Reports>(),
   roots: trusted<RootSummary[]>(),
   jobsState: trusted<JobsState>(),
-  /** This connection's own logins by id: no other connection sees them. */
+  /** This connection's own logins by id: no other connection sees them, until this one drops and another resumes them. */
   logins: trusted<Record<string, LoginState>>(),
   /** Stored secrets by name and the pending requests: never values. */
   secrets: trusted<SecretsState>(),
@@ -214,15 +215,20 @@ const sessionMethods = {
       provider: text,
       auth: Type.Union([Type.Literal("oauth"), Type.Literal("api_key")]),
     }),
-    trusted<number>(),
+    trusted<string>(),
   ),
   /** Starts an MCP sign-in for this connection, as for `login`. */
-  mcpLogin: method(Type.Object({ server: text }), trusted<number>()),
+  mcpLogin: method(Type.Object({ server: text }), trusted<string>()),
+  /**
+   * Takes a login an earlier connection of this client started into this one's `logins`: a dropped connection's
+   * logins wait a while for it, since a phone drops the page's socket whenever it goes away to fetch what is asked.
+   */
+  loginResume: method(Type.Object({ login: id })),
   /** Answers a login's prompt; `null` declines it. */
   loginAnswer: method(
-    Type.Object({ login: count, prompt: count, value: Type.Union([text, Type.Null()]) }),
+    Type.Object({ login: id, prompt: count, value: Type.Union([text, Type.Null()]) }),
   ),
-  loginCancel: method(Type.Object({ login: count })),
+  loginCancel: method(Type.Object({ login: id })),
 };
 
 /**
@@ -230,7 +236,7 @@ const sessionMethods = {
  * a service login gets `service`, which can't `update` or touch secrets.
  */
 export const Session = remote("monchu.session", {
-  version: 2,
+  version: 3,
   input: Type.Object({}),
   host: hostNamed("core"),
   variants: {

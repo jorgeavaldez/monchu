@@ -316,7 +316,7 @@ function entryNode(
       />
     );
     // A plugin's ask on a worker's notice, such as a browser handoff, is boxed like the front's own.
-    return item?.kind === "ask" ? <div class={`ask ${item.state ?? ""}`}>{card}</div> : card;
+    return item?.kind === "ask" ? <div class={`askCard ${item.state ?? ""}`}>{card}</div> : card;
   }
   const message = entry.model?.[0];
   if (entry.kind === "pi.user" && message?.role === "user") {
@@ -382,7 +382,7 @@ function entryNode(
       />
     );
     // An ask is boxed until it is answered or closed, so it stands out in the stream.
-    return item?.kind === "ask" ? <div class={`ask ${item.state ?? ""}`}>{reply}</div> : reply;
+    return item?.kind === "ask" ? <div class={`askCard ${item.state ?? ""}`}>{reply}</div> : reply;
   }
   if (entry.kind === "pi.compaction") return <div class="system">context compacted</div>;
   if (entry.kind === "pi.reset") return <div class="system">new context</div>;

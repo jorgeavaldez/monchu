@@ -11,6 +11,7 @@ import {
   type Self,
 } from "@earendil-works/chord";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
 import type { ConversationView, WatchHandle } from "@earendil-works/pi-durable";
 import type { ClientNotice, InboxItem, RootSummary } from "../api/client.ts";
 import { Type, type TUnsafe } from "typebox";
@@ -129,31 +130,75 @@ type LoginRun = (
   signal: AbortSignal,
 ) => Promise<string>;
 
+/** How long a dropped connection's logins wait for the client to come back and resume them. */
+const PARKED_MS = 10 * 60_000;
+/** How long a finished login stays in its connection's state, for the client to read the outcome. */
+const DONE_MS = 30_000;
+
+/** One login in progress: owned by the connection that started or resumed it, else parked until one resumes it. */
+type Run = {
+  id: string;
+  person: boolean;
+  owner: Logins | undefined;
+  state: LoginState;
+  controller: AbortController;
+  answer(prompt: number, value: string | null): void;
+  timer: ReturnType<typeof setTimeout> | undefined;
+};
+
+/** Logins whose connection dropped, by id, until their client resumes them or they expire. */
+const parked = new Map<string, Run>();
+
 /** One connection's logins: their prompts and events reach only its `logins` state. */
 class Logins extends Latest<Record<string, LoginState>> {
-  private readonly runs = new Map<
-    number,
-    { controller: AbortController; answer(prompt: number, value: string | null): void }
-  >();
-  private next = 1;
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly runs = new Map<string, Run>();
+  private readonly person: boolean;
 
-  constructor() {
+  constructor(person: boolean) {
     super({});
+    this.person = person;
   }
 
-  private update(id: number, change: (state: LoginState) => LoginState): void {
-    const state = this.value[String(id)];
-    if (state !== undefined) this.set({ ...this.value, [String(id)]: json(change(state)) });
+  private show(run: Run): void {
+    this.set({ ...this.value, [run.id]: run.state });
   }
 
-  start(run: LoginRun): number {
-    const id = this.next++;
+  private take(run: Run): void {
+    run.owner = this;
+    this.runs.set(run.id, run);
+    this.show(run);
+    if (run.state.done !== null) this.expire(run);
+  }
+
+  /** A finished login goes once its client had time to read the outcome. */
+  private expire(run: Run): void {
+    clearTimeout(run.timer);
+    run.timer = setTimeout(() => {
+      this.runs.delete(run.id);
+      const { [run.id]: _gone, ...rest } = this.value;
+      this.set(rest);
+    }, DONE_MS);
+    run.timer.unref();
+  }
+
+  start(work: LoginRun): string {
     const controller = new AbortController();
-    this.set({ ...this.value, [String(id)]: { id, prompt: null, events: [], done: null } });
-    const update = (change: (state: LoginState) => LoginState) => this.update(id, change);
+    const id = randomUUID();
     let nextPrompt = 1;
     const answers = new Map<number, (value: string | null) => void>();
+    const run: Run = {
+      id,
+      person: this.person,
+      owner: undefined,
+      state: { id, prompt: null, events: [], done: null },
+      controller,
+      answer: (prompt, value) => answers.get(prompt)?.(value),
+      timer: undefined,
+    };
+    const update = (change: (state: LoginState) => LoginState) => {
+      run.state = json(change(run.state));
+      run.owner?.show(run);
+    };
     const ask = (request: LoginPrompt, signal?: AbortSignal) =>
       new Promise<string>((resolve, reject) => {
         const promptId = nextPrompt++;
@@ -169,13 +214,15 @@ class Logins extends Latest<Record<string, LoginState>> {
           controller.signal.removeEventListener("abort", abort);
           signal?.removeEventListener("abort", abort);
           update((current) => ({ ...current, prompt: null }));
-          if (value === null) reject(new Error("Login cancelled"));
-          else resolve(value);
+          if (value !== null) return resolve(value);
+          // Declining a prompt cancels the login: it ends as cancelled, not failed.
+          controller.abort();
+          reject(new Error("Login cancelled"));
         });
         update((current) => ({ ...current, prompt: { id: promptId, request } }));
       });
-    this.runs.set(id, { controller, answer: (prompt, value) => answers.get(prompt)?.(value) });
-    void run(update, ask, controller.signal)
+    this.take(run);
+    void work(update, ask, controller.signal)
       .then(
         (message) => ({ ok: true as const, message }),
         // Provider failures can carry entered credentials; only the cancellation is named.
@@ -183,37 +230,51 @@ class Logins extends Latest<Record<string, LoginState>> {
       )
       .then((done) => {
         update((current) => ({ ...current, prompt: null, done }));
-        // The client reads the outcome before the login goes.
-        const timer = setTimeout(() => {
-          this.timers.delete(timer);
-          this.runs.delete(id);
-          const { [String(id)]: _gone, ...rest } = this.value;
-          this.set(rest);
-        }, 30_000);
-        timer.unref();
-        this.timers.add(timer);
+        // A parked login keeps its outcome until it is resumed or expires.
+        run.owner?.expire(run);
       });
     return id;
   }
 
-  private run(id: number) {
-    const entry = this.runs.get(id);
-    if (entry === undefined) throw new Error(`No login ${id} on this connection`);
-    return entry;
+  private run(id: string): Run {
+    const run = this.runs.get(id);
+    if (run === undefined) throw new Error(`No login ${id} on this connection`);
+    return run;
   }
 
-  answer(id: number, prompt: number, value: string | null): void {
+  answer(id: string, prompt: number, value: string | null): void {
     this.run(id).answer(prompt, value);
   }
 
-  cancel(id: number): void {
+  cancel(id: string): void {
     this.run(id).controller.abort();
   }
 
+  resume(id: string): void {
+    if (this.runs.has(id)) return;
+    const run = parked.get(id);
+    if (run === undefined || run.person !== this.person)
+      throw new Error(`No login ${id} to resume`);
+    parked.delete(id);
+    clearTimeout(run.timer);
+    run.timer = undefined;
+    this.take(run);
+  }
+
+  /** The connection is gone: finished logins go with it, the others wait for the client to resume them. */
   close(): void {
-    for (const entry of this.runs.values()) entry.controller.abort();
+    for (const run of this.runs.values()) {
+      clearTimeout(run.timer);
+      run.owner = undefined;
+      if (run.state.done !== null) continue;
+      parked.set(run.id, run);
+      run.timer = setTimeout(() => {
+        parked.delete(run.id);
+        run.controller.abort();
+      }, PARKED_MS);
+      run.timer.unref();
+    }
     this.runs.clear();
-    for (const timer of this.timers) clearTimeout(timer);
   }
 }
 
@@ -319,7 +380,7 @@ export default defineFacet<Principal>(
       };
       const runs = self.resource("logins", {
         version: 1,
-        open: () => new Logins(),
+        open: () => new Logins(principal.kind !== "client" || principal.person),
         close: (logins) => logins.close(),
       });
       const logins = self.state("logins", any<Record<string, LoginState>>(), {});
@@ -406,6 +467,7 @@ export default defineFacet<Principal>(
               signal,
             ),
           ),
+        loginResume: ({ login }) => runs.value.resume(login),
         loginAnswer: ({ login, prompt, value }) => runs.value.answer(login, prompt, value),
         loginCancel: ({ login }) => runs.value.cancel(login),
       };
