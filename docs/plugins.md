@@ -110,7 +110,7 @@ Handlers use Pi's event names with Durable's arguments, run in plugin then regis
 - `/reload` (or the `reload_extensions` tool) imports a fresh copy of a plugin only when one of its files changed. A plugin whose new code fails keeps its last good code; the rest of the reload goes ahead. The reload tool's result names each plugin's state.
 - A removed or disabled plugin leaves every conversation at the next reload, which re-caches conversations that had its tools.
 - Old module copies stay in memory until `/restart` (Node can't unload ES modules).
-- A plugin can still crash or hang the core (an unhandled rejection in its own timer, a busy loop). That is the trust it runs with.
+- A throw or rejection from a plugin's own code that nothing catches (its timer, a callback, a dropped promise) is told once to every client and the front, and the core runs on. A plugin can still hang the core (a busy loop); that is the trust it runs with.
 
 ## What from Pi's extension API is here
 

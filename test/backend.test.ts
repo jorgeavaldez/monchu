@@ -55,6 +55,16 @@ describe("backend", () => {
       await mkdir(value.agentDir, { recursive: true });
       for (const name of ["auth.json", "settings.json", "models.json"])
         await writeFile(join(value.agentDir, name), "decoy: not valid JSON");
+      // A plugin whose own timer throws and whose dropped promise rejects: the core is told, and runs on.
+      await mkdir(join(home, "plugins", "faulty"), { recursive: true });
+      await writeFile(
+        join(home, "plugins", "faulty", "index.js"),
+        `export default () => {
+  setTimeout(() => { throw new Error("timer boom"); }, 50);
+  setTimeout(() => void Promise.reject(new Error("promise boom")), 50);
+};
+`,
+      );
       const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
       /** Run the entry point; `until` resolves `seen` once its output contains that text. */
       const run = (args: string[], until?: string) => {
@@ -98,11 +108,21 @@ describe("backend", () => {
       // `serve` runs the server, which forks the core; `stop` closes both.
       const serve = run(["serve"], "core ready");
       await serve.seen;
+      await waitFor(async () => {
+        const log = await logText(home);
+        return ["timer boom", "promise boom"].every((boom) =>
+          log.includes(
+            `Plugin faulty threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: ${boom}`,
+          ),
+        );
+      }, 30_000);
       const stop = await run(["stop"]).exited;
       expect(stop, stop.output).toMatchObject({ code: 0 });
       expect(stop.output).toContain("stopped the Monchu of");
       const served = await serve.exited;
       expect(served, served.output).toMatchObject({ code: 0 });
+      // The core closed normally: it outlived the plugin's faults.
+      expect(await logText(home)).toMatch(/\nclosed(\n|$)/);
       // Nothing answers any more.
       expect((await run(["stop"]).exited).output).toContain("no Monchu runs for");
 

@@ -209,6 +209,11 @@ export class Monchu implements Client {
       // Renders start once the harness resumes, after the backend below takes over.
       let observeBudget = (_levels: BudgetLevel[]) => {};
       let tellHome = (_problems: readonly string[], _from?: ConversationId) => {};
+      // Before the backend exists, a notice waits for it.
+      const early: [string, string][] = [];
+      let tellFront: (summary: string, text: string) => void = (summary, text) => {
+        early.push([summary, text]);
+      };
       const loaded = await Extensions.load(
         models,
         config,
@@ -217,6 +222,7 @@ export class Monchu implements Client {
         {
           observeBudget: (levels) => observeBudget(levels),
           tellHome: (problems, from) => tellHome(problems, from),
+          tellFront: (summary, text) => tellFront(summary, text),
           onError: (error) =>
             log.write("warn", "core.chord", "background failure", {
               reason: error instanceof Error ? error.message : String(error),
@@ -264,6 +270,7 @@ export class Monchu implements Client {
       log.write("info", "core.open", "opened", phases);
       observeBudget = (levels) => backend.observeBudget(levels);
       tellHome = (problems, from) => backend.tellHome(problems, from);
+      tellFront = (summary, text) => backend.tellFront(summary, text);
       // A failed storage call closes the Session for good, and every later call rejects: say why, once.
       void harness.closed.then((end) => {
         if (end.reason !== "failed") return;
@@ -283,6 +290,7 @@ export class Monchu implements Client {
       harness.resume();
       // The first home check: what this start could not load reaches the front, not only the log.
       void loaded.homeCheck.check();
+      for (const [summary, text] of early) backend.tellFront(summary, text);
       backend.watchEdge();
       return backend;
     } catch (error) {
@@ -884,14 +892,31 @@ export class Monchu implements Client {
             );
             return worker === undefined ? undefined : `Worker ${worker.name}`;
           }, context);
+    await this.submitFront(
+      homeNotice(problems, name ?? (from === undefined ? undefined : `Agent ${shortId(from)}`)),
+    );
+  }
+
+  /** A system notice to the current root's front, after any home check notice before it. */
+  private tellFront(summary: string, text: string): void {
+    if (this.closing !== undefined) return;
+    this.homeWork = this.homeWork
+      .then(() => this.submitFront(systemNoticeText(summary, text)))
+      .catch((error: unknown) =>
+        this.reports.report(
+          `Notice failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+  }
+
+  private async submitFront(content: string): Promise<void> {
+    const current = currentRoot(await this.records());
+    if (current === undefined) return;
     const front = await this.root(shortId(current.id)).conversation();
     await front.submit(
       {
         type: "input",
-        content: homeNotice(
-          problems,
-          name ?? (from === undefined ? undefined : `Agent ${shortId(from)}`),
-        ),
+        content,
         requestId: `home-check:${Date.now()}:${++this.homeNotices}`,
         whenBusy: "followUp",
       },

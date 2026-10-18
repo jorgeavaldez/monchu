@@ -41,6 +41,13 @@ describe("home check", () => {
       fix: { tool: "write", args: { path: skill, content: GOOD_SKILL } },
       break: { tool: "write", args: { path: plugin, content: BROKEN_PLUGIN } },
       look: { tool: "bash", args: { command: "echo hi" } },
+      other: {
+        tool: "write",
+        args: {
+          path: join(home, "skills", "other", "SKILL.md"),
+          content: "---\nname: other\ndescription: Other notes\n---\nOther.\n",
+        },
+      },
       reload: { tool: "reload_extensions", args: {} },
     });
     route(value.faux, (request) => {
@@ -92,7 +99,7 @@ describe("home check", () => {
 
       // A break the front makes is in that call's result, and its final answer sends it back once.
       const broken = await turn(backend, "break");
-      expect(broken).toContain("[error] Monchu's home has a problem since this call");
+      expect(broken).toContain("[error] This call broke what Monchu loads from its home");
       expect(broken).toContain("Plugin farm was not loaded: unknown event session_start");
       await settled(backend);
       const sentBack = (await inputs(backend)).filter((text) =>
@@ -100,6 +107,13 @@ describe("home check", () => {
       );
       expect(sentBack).toHaveLength(1);
       expect(sentBack[0]).toContain("Plugin farm was not loaded");
+
+      // A good change while that problem lasts is not blamed for it, and nobody is sent back again.
+      const other = await turn(backend, "other");
+      expect(other).not.toContain("[error]");
+      expect(
+        (await inputs(backend)).filter((text) => text.includes("Your changes left")),
+      ).toHaveLength(1);
 
       // A fix from outside any tool call (another device's sync, an editor) reaches the front.
       await writeFile(plugin, "export default () => {};\n");

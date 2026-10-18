@@ -7,6 +7,7 @@ import { ChordError, ipcLink, type IpcChannel, type Link } from "@earendil-works
 import { childControl } from "@earendil-works/chord/node";
 import { Server } from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
+import { containPluginFault } from "../core/plugins.ts";
 import { openCoreHost, Reloads, type CoreHost } from "./host.ts";
 
 /** The IPC channel to the server: a forked child always has one. */
@@ -27,6 +28,14 @@ function channel(): IpcChannel {
 
 /** Run the core until it is told to close or its parent goes; resolves once it closed. */
 export async function runCore(open: () => Promise<Monchu>): Promise<void> {
+  // A plugin's own uncaught failure is told and the core runs on; any other still stops it, as Node would.
+  const fatal = (error: unknown) => {
+    if (containPluginFault(error)) return;
+    console.error(error);
+    process.exit(1);
+  };
+  process.on("uncaughtException", fatal);
+  process.on("unhandledRejection", fatal);
   const control = childControl();
   try {
     await control.lock();

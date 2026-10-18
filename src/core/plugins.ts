@@ -170,6 +170,28 @@ export function createPluginSections(sections: readonly PromptSection[]): Extens
 const PARAM = "monchu-plugin";
 /** Plugin folder URLs (trailing slash): their files take the reload query, and their host imports Monchu's copies. */
 const roots = new Set<string>();
+/** Each plugin folder's name, by its URL and its path, as an error's stack names its files. */
+const folders = new Map<string, string>();
+/** The core's `Plugins`, which tell a fault: one while the core is open. */
+const tellers = new Set<Plugins>();
+
+/**
+ * Whether `error`, thrown or rejected where nothing catches it, came from a plugin's own code (its timers, its
+ * callbacks, a promise it dropped): the topmost stack frame in a plugin's folder names it. That plugin's fault is told
+ * once per message and Monchu runs on, since one plugin's bug must not stop the core on every device the home syncs
+ * to. Anything else is Monchu's own failure, and the caller lets it stop the process as before.
+ */
+export function containPluginFault(error: unknown): boolean {
+  const stack = error instanceof Error ? (error.stack ?? "") : "";
+  let found: { at: number; name: string } | undefined;
+  for (const [folder, name] of folders) {
+    const at = stack.indexOf(folder);
+    if (at >= 0 && (found === undefined || at < found.at)) found = { at, name };
+  }
+  if (found === undefined) return false;
+  for (const plugins of tellers) plugins.fault(found.name, message(error));
+  return true;
+}
 let hooked = false;
 let generation = 0;
 const PLUGIN_MODULE = new URL(
@@ -240,7 +262,10 @@ async function fingerprint(dir: string): Promise<string> {
 
 async function importFresh(found: Found): Promise<Plugin> {
   installResolveHook();
-  roots.add(pathToFileURL(join(found.dir, "/")).href);
+  const folder = pathToFileURL(join(found.dir, "/")).href;
+  roots.add(folder);
+  folders.set(folder, found.name);
+  folders.set(join(found.dir, "/"), found.name);
   const url = pathToFileURL(found.entry);
   url.searchParams.set(PARAM, String(++generation));
   const loaded: unknown = await import(url.href);
@@ -293,17 +318,36 @@ export class Plugins {
   /** The last plugin function that ran without failing, by entry path. */
   private readonly good = new Map<string, Plugin>();
   private readonly live = new Set<Instance>();
+  private readonly onFault: (summary: string, text: string) => void;
+  /** Faults already told, by plugin and message. */
+  private readonly faults = new Set<string>();
 
   constructor(
     home: string,
     report: (warning: string) => void,
     vault: Vault,
-    bundledDir = fileURLToPath(new URL("../plugins/", import.meta.url)),
+    options: {
+      /** A plugin's fault for the front, beyond the warning every client shows. */
+      onFault?: (summary: string, text: string) => void;
+      bundledDir?: string;
+    } = {},
   ) {
     this.home = home;
     this.report = report;
     this.vault = vault;
-    this.bundledDir = bundledDir;
+    this.onFault = options.onFault ?? (() => {});
+    this.bundledDir = options.bundledDir ?? fileURLToPath(new URL("../plugins/", import.meta.url));
+    tellers.add(this);
+  }
+
+  /** Tell a plugin's uncaught failure (see `containPluginFault`), once per plugin and message. */
+  fault(name: string, error: string): void {
+    const key = `${name}\0${error}`;
+    if (this.faults.has(key)) return;
+    this.faults.add(key);
+    const text = `Plugin ${name} threw where nothing catches it (its own timer, callback or promise), and Monchu kept running: ${error}. Fix it, or turn it off in plugins.local.json.`;
+    this.report(text);
+    this.onFault(`Plugin ${name} failed`, text);
   }
 
   /** Find, import and run every enabled plugin. Never throws for a plugin's fault. */
@@ -422,6 +466,7 @@ export class Plugins {
   }
 
   close(): void {
+    tellers.delete(this);
     this.settle(undefined);
   }
 

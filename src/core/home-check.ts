@@ -148,8 +148,11 @@ export class HomeCheck {
   private told: readonly string[] = [];
   /** Each tool call's fingerprint before it ran, by tool task. */
   private readonly before = new Map<string, string>();
-  /** Agents whose tool calls broke the home, with the problems they were last sent back for. */
-  private readonly editors = new Map<ConversationId, string | undefined>();
+  /** Agents whose tool calls broke the home: the problems they added, and whether they were sent back. */
+  private readonly editors = new Map<
+    ConversationId,
+    { readonly caused: Set<string>; sentBack: boolean }
+  >();
 
   constructor(inputs: HomeCheckInputs) {
     this.inputs = inputs;
@@ -211,45 +214,75 @@ export class HomeCheck {
     this.before.delete(taskId);
     const had = this.found;
     const { problems, print } = await this.refresh();
+    this.forget(problems);
     if (before === undefined || print === before) {
       // Changed outside this call (another device's sync, an editor), or not at all.
       if (key(problems) !== key(had) && this.editors.size === 0) this.tell();
       return undefined;
     }
-    if (problems.length === 0) {
-      this.editors.delete(conversation);
-      if (had.length === 0) return undefined;
-      this.tell();
-      return withDiagnostic(result, "info", "Monchu's home check passes now.");
+    // Only what this call broke is its own: a problem the home already had is not, nor one it fixed.
+    const old = new Set(had.map(normal));
+    const added = problems.filter((problem) => !old.has(normal(problem)));
+    const now = new Set(problems.map(normal));
+    const fixed = had.filter((problem) => !now.has(normal(problem)));
+    if (added.length === 0) {
+      if (fixed.length === 0) return undefined;
+      if (this.editors.size === 0) this.tell();
+      return withDiagnostic(
+        result,
+        "info",
+        problems.length === 0
+          ? "Monchu's home check passes now."
+          : `This call fixed:\n${list(fixed)}`,
+      );
     }
-    if (!this.editors.has(conversation)) this.editors.set(conversation, undefined);
+    const editor = this.editors.get(conversation) ?? { caused: new Set<string>(), sentBack: false };
+    for (const problem of added) editor.caused.add(normal(problem));
+    this.editors.set(conversation, editor);
+    const others = problems.length - added.length;
     return withDiagnostic(
       result,
       "error",
-      `${summary(problems)} since this call: a reload or the next start runs without what is broken. Fix it now:\n${list(problems)}`,
+      `This call broke what Monchu loads from its home: a reload or the next start runs without it. Fix it now:\n${list(added)}${others ? `\n(${others} other ${others === 1 ? "problem was" : "problems were"} there before this call.)` : ""}`,
     );
   }
 
-  /** At an agent's final answer: send it back once while the home it broke stays broken, then tell the front. */
+  /** Drop the problems that are gone from what each agent caused, and agents with nothing left. */
+  private forget(problems: readonly string[]): void {
+    const now = new Set(problems.map(normal));
+    for (const [conversation, editor] of this.editors) {
+      for (const problem of editor.caused) if (!now.has(problem)) editor.caused.delete(problem);
+      if (editor.caused.size === 0) this.editors.delete(conversation);
+    }
+  }
+
+  /** At an agent's final answer: send it back once while what it broke stays broken, then tell the front. */
   async onYield(conversation: ConversationId): Promise<string | undefined> {
     if (!this.editors.has(conversation)) return undefined;
     const { problems } = await this.refresh();
-    if (problems.length === 0) {
-      this.editors.delete(conversation);
-      this.tell();
+    this.forget(problems);
+    const editor = this.editors.get(conversation);
+    if (editor === undefined) {
+      if (this.editors.size === 0) this.tell();
       return undefined;
     }
-    if (this.editors.get(conversation) !== key(problems)) {
-      this.editors.set(conversation, key(problems));
+    const left = problems.filter((problem) => editor.caused.has(normal(problem)));
+    if (!editor.sentBack) {
+      editor.sentBack = true;
       return systemNoticeText(
-        summary(problems),
-        `Your changes left what Monchu loads from its home broken. Fix it before you finish, or say why you can't:\n${list(problems)}`,
+        summary(left),
+        `Your changes left what Monchu loads from its home broken. Fix it before you finish, or say why you can't:\n${list(left)}`,
       );
     }
     this.editors.delete(conversation);
     this.tell(conversation);
     return undefined;
   }
+}
+
+/** A problem as compared across checks: a plugin's import generation changes with every fresh import. */
+function normal(problem: string): string {
+  return problem.replace(/[?&]monchu-plugin=\d+/g, "");
 }
 
 function key(found: readonly string[]): string {

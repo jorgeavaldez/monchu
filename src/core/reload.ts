@@ -153,6 +153,8 @@ export class Extensions {
       vault?: Vault;
       /** The home check's problems for the front (none: they are gone), and the agent that left them. */
       tellHome?: (problems: readonly string[], from?: ConversationId) => void;
+      /** A system notice for the front, such as a plugin's fault. */
+      tellFront?: (summary: string, text: string) => void;
     } = {},
   ): Promise<Extensions> {
     const skippedFiles = new Set<string>();
@@ -170,7 +172,9 @@ export class Extensions {
       async (provider) => (await models.getAuth(provider))?.auth.apiKey,
     );
     const vault = options.vault ?? new Vault(join(home, "secrets"));
-    const plugins = new Plugins(home, report, vault);
+    const plugins = new Plugins(home, report, vault, {
+      onFault: (summary, text) => options.tellFront?.(summary, text),
+    });
     const registry = createRegistry();
     const host = createHost<Principal>({
       name: "core",
