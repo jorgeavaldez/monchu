@@ -254,6 +254,11 @@ async function startCore(home: string, port: number, issuer: string): Promise<Ch
     join(home, "web.json"),
     JSON.stringify({ port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] }),
   );
+  // Compaction keeps only the newest reply, so `/compact` has something to summarize on a short transcript.
+  await writeFile(
+    join(home, "config.json"),
+    JSON.stringify({ settings: { compaction: { keepRecentTokens: 1 } } }),
+  );
   const core = spawn(process.execPath, [join(ROOT, "src", "main.ts"), "serve", "--web"], {
     // None of the Monchu this runs under: an update's outcome or a home it names would show in the page.
     env: {
@@ -675,7 +680,15 @@ async function typing(): Promise<string> {
 
 const SETTLED = `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("DONE"))`;
 
-async function journeys(url: string, home: string, origin: string): Promise<void> {
+/** The page's server, stopped and started again on the same home and port, as a crash or a restart does. */
+type ServerControl = { stop(): Promise<void>; start(): Promise<void> };
+
+async function journeys(
+  url: string,
+  home: string,
+  origin: string,
+  server: ServerControl,
+): Promise<void> {
   await browser("set", "viewport", String(WIDTH), String(HEIGHT));
   await browser("set", "media", "light", "reduced-motion");
 
@@ -1480,6 +1493,33 @@ async function journeys(url: string, home: string, origin: string): Promise<void
     },
   );
 
+  await journey("compact: /compact ends with a line saying the context was compacted", async () => {
+    for (const message of ["before compacting", "and once more"]) {
+      await browser("fill", "textarea", message);
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes(${JSON.stringify(message)}))`,
+      );
+    }
+    await browser("fill", "textarea", "/compact");
+    await browser("press", "Enter");
+    await browser(
+      "wait",
+      "--fn",
+      `document.querySelector(".transcript")?.textContent.includes("context compacted")`,
+    );
+    check(
+      (await page(
+        `[...document.querySelectorAll(".transcript > *")].at(-1)?.textContent.includes("context compacted")`,
+      )) === true,
+      "the compaction line isn't the transcript's last",
+    );
+    await capture("compact", home, origin);
+    return "the root's compaction showed as its last line";
+  });
+
   await journey(
     "worker: a delegated worker gets a tab, its report a card, its view a tap",
     async () => {
@@ -1593,6 +1633,59 @@ async function journeys(url: string, home: string, origin: string): Promise<void
   const ready = await readyTimes(home);
   if (ready[0] !== undefined) report.metrics["page.readyColdMs"] = ready[0];
   if (ready[1] !== undefined) report.metrics["page.readyWarmMs"] = ready[1];
+
+  // Last, since a server that goes away fills the console with failed connections.
+  await journey(
+    "link: the server goes away and comes back; the page redials in place, and after it gave up reloads once",
+    async () => {
+      const dot = (state: string) =>
+        `document.querySelector('.link[data-state="${state}"]') !== null`;
+      const mark = () => page("window.webCheckMark");
+      // Past agent-browser's own 25 s wait: the redial window alone is 30 s.
+      const until = async (expression: string, ms: number) => {
+        const deadline = performance.now() + ms;
+        while ((await page(expression).catch(() => false)) !== true) {
+          if (performance.now() > deadline)
+            throw new Error(`not within ${ms / 1000} s: ${expression}`);
+          await new Promise((done) => setTimeout(done, 1000));
+        }
+      };
+      await page("window.webCheckMark = 1");
+      // A short outage: the page redials and carries on, the same page.
+      await server.stop();
+      await browser("wait", "--fn", `${dot("lost")} || ${dot("gone")}`);
+      await new Promise((done) => setTimeout(done, 5000));
+      await server.start();
+      await browser("wait", "--fn", dot("live"));
+      check((await mark()) === 1, "the page reloaded for a short outage");
+      await browser("fill", "textarea", "after the outage");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("after the outage"))`,
+      );
+      // A long one: past the redial window the page gives up, says why and waits, never reloading while it's down.
+      await server.stop();
+      await until(dot("gone"), 90_000);
+      await new Promise((done) => setTimeout(done, 15_000));
+      check((await mark()) === 1, "the page reloaded while the server was down");
+      check(
+        text(await page(`document.querySelector(".link")?.textContent`)).includes("disconnected"),
+        "the page doesn't say it's disconnected",
+      );
+      await server.start();
+      // Back up: one fresh page, which connects.
+      await until(`window.webCheckMark === undefined && ${dot("live")}`, 90_000);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("after the outage")`,
+      );
+      await capture("link", home, origin);
+      return "redialled a 5 s outage in place; past the redial window it said so, waited without reloading, and reloaded once the server answered";
+    },
+  );
 }
 
 /** Lower is better for every metric; a regression is past noise for its kind. */
@@ -1699,7 +1792,14 @@ async function run(): Promise<void> {
   try {
     const port = await freePort();
     core = await startCore(home, port, idp.issuer);
-    await journeys(`http://127.0.0.1:${port}/`, home, `127.0.0.1:${port}`);
+    await journeys(`http://127.0.0.1:${port}/`, home, `127.0.0.1:${port}`, {
+      stop: async () => {
+        if (core !== undefined) await stopCore(core);
+      },
+      start: async () => {
+        core = await startCore(home, port, idp.issuer);
+      },
+    });
   } catch (error) {
     gate("run", false, error instanceof Error ? error.message : String(error));
   } finally {

@@ -54,9 +54,11 @@ function repository(root: string): string {
   return match[1];
 }
 
-/** The release tarball's URL. */
+/** The release tarball's URL: GitHub's, or `$MONCHU_RELEASES/<tag>/monchu.tgz` from a mirror of them. */
 function releaseUrl(root: string, release: string): string {
   const tag = release === "edge" ? "edge" : `v${release}`;
+  const mirror = process.env.MONCHU_RELEASES;
+  if (mirror) return `${mirror.replace(/\/+$/, "")}/${tag}/monchu.tgz`;
   return `https://github.com/${repository(root)}/releases/download/${tag}/monchu.tgz`;
 }
 

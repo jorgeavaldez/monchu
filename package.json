@@ -83,7 +83,8 @@
       "jj",
       "agent-browser",
       "fnox",
-      "age-keygen"
+      "age-keygen",
+      "script"
     ],
     "entry": [
       "src/core/extensions.ts",

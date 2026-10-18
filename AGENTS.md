@@ -55,6 +55,7 @@ Providers cache each request's prefix (tools, system prompt, then messages). Any
 - **No compatibility shims.** When you change an API, update every caller and delete the old shape. Stored-shape changes get a migration only when the maintainer asks for one.
 - **Web UI.** Follow `docs/internals.md#Web design`: the tokens in `src/web/style.css`, one icon set, state shown rather than explained, and `mise run web:check` for every visible change.
 - **Tests.** Use real Durable Harnesses on SQLite in temp dirs with Pi's faux providers, through public seams. No `vi` mocks, spies, or fake timers. Helpers live only in `test/support.ts`. Call `setup()` and `cleanup()`, and never touch the real home. Tests pass on Windows and Linux.
+- **End to end.** `test/e2e.test.ts` drives the real entry point over its socket and in a real terminal, and CI runs it on the installed release too. A new surface, tool, command or plugin kind gets a step there, driven through the real front (smoke mode's `call <tool> <json>`); a new way the home can break the core gets a case in `test/unbreakable.test.ts`. Entry runs go through `runEntry`/`entryProcess` only: never run a bare `monchu` command from a checkout, which reaches the real home.
 
 ## Delivery
 

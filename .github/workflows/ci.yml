@@ -29,6 +29,9 @@ jobs:
       - uses: jdx/mise-action@v5
       # The tests drive real jj repositories.
       - run: mise use --global jj@0.46.0
+      # The fnox plugin's end-to-end step runs where fnox is installed.
+      - if: runner.os == 'Linux'
+        run: mise use --global fnox@1.39.0
       - run: mise run check
       - run: mise run build
 
@@ -92,6 +95,12 @@ jobs:
         run: |
           npm install -g --no-audit --no-fund --prefix "$RUNNER_TEMP/stage" ./monchu.tgz
           mise run boot-check -- "$RUNNER_TEMP/stage/lib/node_modules/monchu"
+      # The end-to-end suite again, on that installed release instead of the checkout's source.
+      - name: End to end
+        shell: bash
+        run: |
+          mise use --global jj@0.46.0 fnox@1.39.0
+          MONCHU_E2E_ENTRY="$RUNNER_TEMP/stage/lib/node_modules/monchu/dist/main.js" MONCHU_E2E_TARBALL="$PWD/monchu.tgz" mise run e2e
       - uses: actions/upload-artifact@v7
         with:
           name: monchu

@@ -1,7 +1,11 @@
+import { isJsonValue, type JsonValue } from "@earendil-works/chord";
 import {
+  createProvider,
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
+  getCurrentTools,
+  type ClassifierChoiceAnswer,
   type Provider,
 } from "@earendil-works/pi-ai";
 
@@ -40,6 +44,10 @@ const MARKDOWN = [
   "[unsafe](javascript:alert(1)) <b>raw html</b> DONE",
 ].join("\n");
 
+function isObject(value: unknown): value is Record<string, JsonValue> {
+  return isJsonValue(value) && typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Offline provider for the real TUI smoke mode; all tool calls still execute through Durable. */
 export function createDevProvider(): Provider {
   const faux = fauxProvider({
@@ -48,7 +56,7 @@ export function createDevProvider(): Provider {
     tokenSize: { min: 1, max: 1 },
   });
   faux.setResponses(
-    Array.from({ length: 100 }, () => (request, _options, _state, model) => {
+    Array.from({ length: 10_000 }, () => (request, _options, _state, model) => {
       const last = request.messages.findLast((message) => message.role !== "system");
       if (model.id === "worker") {
         if (last?.role === "toolResult") return fauxAssistantMessage("Faux worker result: done.");
@@ -72,6 +80,34 @@ export function createDevProvider(): Provider {
           { stopReason: "toolUse" },
         );
       if (text === "markdown") return fauxAssistantMessage(MARKDOWN);
+      // `prompt` says what this request gave the model: its tools and prompt sections; `section <name>` one's text.
+      const sections = request.messages.flatMap((message) =>
+        message.role === "system" ? Object.entries(message.sections ?? {}) : [],
+      );
+      if (text === "prompt")
+        return fauxAssistantMessage(
+          `Faux prompt · tools: ${getCurrentTools(request.messages)
+            .map((tool) => tool.name)
+            .join(" ")}\nsections: ${[...new Set(sections.map(([key]) => key))].join(" ")}`,
+        );
+      if (text.startsWith("section ")) {
+        const name = text.slice(8);
+        // Later system messages replace a section by name.
+        const value = sections.findLast(([key]) => key === name)?.[1];
+        return fauxAssistantMessage(`Faux section ${name}: ${value ?? "none"}`);
+      }
+      // `call <tool> <json args>` makes that one call, so a check can drive any tool through the real front.
+      const call = /^call (\S+)(?: ([\s\S]+))?$/.exec(text);
+      if (call !== null) {
+        let args: unknown;
+        try {
+          args = JSON.parse(call[2] ?? "{}");
+        } catch {
+          args = undefined;
+        }
+        if (!isObject(args)) return fauxAssistantMessage("Faux front: call takes a JSON object.");
+        return fauxAssistantMessage([fauxToolCall(call[1] ?? "", args)], { stopReason: "toolUse" });
+      }
       if (text === "read")
         return fauxAssistantMessage([fauxToolCall("read", { path: "missing-file.txt" })], {
           stopReason: "toolUse",
@@ -150,5 +186,50 @@ export function createDevProvider(): Provider {
       return fauxAssistantMessage(`Faux reply: ${text}. Streaming stays above the editor. DONE`);
     }),
   );
-  return faux.provider;
+  return createProvider({
+    id: faux.provider.id,
+    name: faux.provider.name,
+    auth: faux.provider.auth,
+    models: [
+      ...faux.models,
+      // Off in smoke homes unless `plugins.clef` names it: `faux/clef` sends `work …` to a worker, the rest to the front.
+      {
+        type: "classifier",
+        id: "clef",
+        name: "Faux Clef",
+        api: "faux-classifier",
+        provider: faux.provider.id,
+        baseUrl: "http://localhost:0",
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 65536,
+      },
+    ],
+    api: faux.provider,
+    classifiers: {
+      "faux-classifier": {
+        classify: async (model, request) => {
+          const choice = (picked: string, other: string): ClassifierChoiceAnswer => ({
+            type: "choice",
+            choice: picked,
+            confidence: 0.8,
+            probabilities: { [picked]: 0.9, [other]: 0.1 },
+          });
+          const message = request.state.message;
+          const worker = typeof message === "string" && /^work \S+ \S/.test(message);
+          return {
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            answers: {
+              route: worker ? choice("worker", "front") : choice("front", "worker"),
+              split: choice("one", "several"),
+            },
+            stopReason: "stop",
+            timestamp: Date.now(),
+          };
+        },
+      },
+    },
+  });
 }

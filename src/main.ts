@@ -49,7 +49,13 @@ try {
       const { Monchu } = await import("./core/backend.ts");
       const backend =
         process.env.MONCHU_DEV_FAUX === "1"
-          ? await (await import("./core/dev-faux.ts")).openDevMonchu(home, { safe })
+          ? await (
+              await import("./core/dev-faux.ts")
+            ).openDevMonchu(home, {
+              safe,
+              // The secret store plugin's (fnox) instead of one in memory, for checks of the plugin itself.
+              pluginSecrets: process.env.MONCHU_DEV_SECRETS === "plugins",
+            })
           : await Monchu.open(home, undefined, { safe });
       backend.addNotes(...seeded);
       // Left by the server this one came back from after /update.

@@ -22,6 +22,11 @@ description = 'Run the test suite'
 depends = ['install']
 run = 'npm exec --no -- vitest --run'
 
+[tasks.e2e]
+description = 'Run the end-to-end suite on the real entry point (MONCHU_E2E_ENTRY: an installed release instead)'
+depends = ['install']
+run = 'npm exec --no -- vitest --run test/e2e.test.ts'
+
 [tasks.lint]
 description = 'Run type-aware lint'
 depends = ['install']

@@ -25,6 +25,7 @@ import {
   context,
   deliveryTaskId,
   fauxRole,
+  fixtureServer,
   lastMessage,
   open,
   route,
@@ -36,37 +37,6 @@ import {
 } from "./support.ts";
 
 afterEach(cleanup);
-
-/** A stdio MCP server built on the SDK's own server, appending a line to `marker` each time it starts. */
-async function fixtureServer(directory: string): Promise<{ script: string; marker: string }> {
-  const script = join(directory, "fixture-server.mjs");
-  const marker = join(directory, "starts.txt");
-  const url = (specifier: string) => JSON.stringify(import.meta.resolve(specifier));
-  await writeFile(
-    script,
-    `import { Server } from ${url("@modelcontextprotocol/sdk/server/index.js")};
-import { StdioServerTransport } from ${url("@modelcontextprotocol/sdk/server/stdio.js")};
-import { CallToolRequestSchema, ListToolsRequestSchema } from ${url("@modelcontextprotocol/sdk/types.js")};
-import { appendFileSync } from "node:fs";
-appendFileSync(process.argv[2], "start\\n");
-const server = new Server(
-  { name: "fixture", version: "1.0.0" },
-  { capabilities: { tools: {} }, instructions: "fixture guide: crawl politely" },
-);
-server.setRequestHandler(ListToolsRequestSchema, () => ({
-  tools: [
-    { name: "echo", description: "Echo text back", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, annotations: { readOnlyHint: true } },
-    { name: "crawl_site", description: "Crawl a whole site from a seed URL", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
-  ],
-}));
-server.setRequestHandler(CallToolRequestSchema, (request) => ({
-  content: [{ type: "text", text: request.params.name + ":" + JSON.stringify(request.params.arguments) }],
-}));
-await server.connect(new StdioServerTransport());
-`,
-  );
-  return { script, marker };
-}
 
 /**
  * An HTTP MCP server behind OAuth (the SDK's demo authorization server: dynamic registration, PKCE, auto-approve),
