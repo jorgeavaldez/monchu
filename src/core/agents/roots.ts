@@ -84,13 +84,16 @@ export function findRoot<T extends { id: ConversationId; label: string }>(
   throw new Error(`Root ${text} is ambiguous: ${list(matches)}`);
 }
 
-/** The open root with the newest input from the user, else the newest open one, else the first. */
+/**
+ * The open root with the newest input from the user, else the newest open one, else the first. Roots are listed in the
+ * order they were created, so a tie within a millisecond goes to the later one.
+ */
 export function currentRoot(roots: readonly RootRecord[]): RootRecord | undefined {
   const open = roots.filter((root) => !root.archived);
   const when = (root: RootRecord) => root.lastInputAt ?? root.createdAt;
   return (
     open.reduce<RootRecord | undefined>(
-      (best, root) => (best === undefined || when(root) > when(best) ? root : best),
+      (best, root) => (best === undefined || when(root) >= when(best) ? root : best),
       undefined,
     ) ?? roots[0]
   );
