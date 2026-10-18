@@ -1,5 +1,5 @@
 /** The page: who's working, the shown conversation, its queue, and the editor or whatever answer it waits for. */
-import { useSignal } from "@preact/signals";
+import { signal, useSignal } from "@preact/signals";
 import type { RootSummary } from "../api/client.ts";
 import { systemNoticeSummary } from "../api/notices.ts";
 import {
@@ -353,6 +353,20 @@ function LinkDot() {
   );
 }
 
+/** A user's home directory at the start of a path, on Linux, macOS, Termux and Windows; the page has no other way to know it. */
+const HOME =
+  /^(\/home\/[^/]+|\/Users\/[^/]+|\/root|\/data\/data\/com\.termux\/files\/home|[A-Za-z]:\\Users\\[^\\]+)(?=$|[/\\])/;
+
+/** Tokens compactly: 900, 42k, 1.2M. */
+function tokens(count: number): string {
+  if (count < 1000) return `${count}`;
+  if (count < 1e6) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** Whether the status bar's details are open above it. */
+const details = signal(false);
+
 function Footer() {
   const state = view(shown.value)?.value;
   const root = view(undefined)?.value;
@@ -369,33 +383,72 @@ function Footer() {
       usage.context === undefined || window === undefined ? undefined : usage.context / window;
     return { usage, fill };
   };
-  const { fill } = meter(state);
+  const { usage, fill } = meter(state);
   const level = fill === undefined ? "" : fill > 0.9 ? "red" : fill > 0.7 ? "yellow" : "";
   const name = live.provider === undefined ? live.model : `${live.provider}/${live.model}`;
+  const thinking = model?.reasoning === true ? (live.thinkingLevel ?? "off") : undefined;
+  const dir = live.cwd?.replace(HOME, "~");
+  const base = dir?.split(/[/\\]/).findLast(Boolean) ?? dir ?? "";
+  const open = details.value;
+  const percent = fill === undefined ? "?" : `${Math.round(fill * 100)}%`;
+  const rows: [string, string][] = [
+    ["dir", dir ?? "?"],
+    ["model", thinking === undefined ? name : `${name} · ${thinking}`],
+    [
+      "context",
+      `${usage.context === undefined ? "?" : tokens(usage.context)} / ${
+        model?.contextWindow === undefined ? "?" : tokens(model.contextWindow)
+      } · ${percent}`,
+    ],
+    [
+      "tokens",
+      `↑${tokens(usage.input)} ↓${tokens(usage.output)} R${tokens(usage.cacheRead)} W${tokens(usage.cacheWrite)}`,
+    ],
+  ];
+  if (shown.value !== undefined && root !== undefined)
+    rows.push(["root", tokens(contextUsage(root).context ?? 0)]);
+  rows.push(["link", LINK[connection.value]]);
   return (
-    <footer
-      class="footer"
-      style={{
-        "--fill": `${Math.round(Math.min(1, fill ?? 0) * 100)}%`,
-        "--meter": level === "" ? "var(--muted)" : `var(--${level})`,
-      }}
-    >
-      <span class="cwd" title={live.cwd}>
-        <bdi>{live.cwd ?? ""}</bdi>
-      </span>
-      <span>
-        <span class={level} title="context used">
-          {fill === undefined ? "?" : `${Math.round(fill * 100)}%`}
+    <>
+      {open ? (
+        <dl class="status" id="status">
+          {rows.map(([term, value]) => (
+            <div key={term}>
+              <dt>{term}</dt>
+              <dd>
+                <bdi>{value}</bdi>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      <footer
+        class="footer"
+        style={{
+          "--fill": `${Math.round(Math.min(1, fill ?? 0) * 100)}%`,
+          "--meter": level === "" ? "var(--muted)" : `var(--${level})`,
+        }}
+      >
+        <button
+          class={`more${open ? " on" : ""}`}
+          aria-expanded={open}
+          aria-controls="status"
+          aria-label={`status details: ${dir ?? ""}`}
+          title={live.cwd}
+          onClick={() => (details.value = !open)}
+        >
+          <span aria-hidden="true">{open ? "▾" : "▴"}</span> <bdi>{base}</bdi>
+        </button>
+        <span class="meta">
+          <span class={level} title="context used">
+            {percent}
+          </span>{" "}
+          <span title={name}>{live.model}</span>
+          {thinking === undefined ? "" : ` ${thinking}`}
         </span>
-        {shown.value !== undefined && root !== undefined
-          ? ` · root ${Math.round((contextUsage(root).context ?? 0) / 1000)}k`
-          : ""}
-        {" · "}
-        <span title="provider/model">{name}</span>
-        {model?.reasoning === true ? ` · ${live.thinkingLevel ?? "off"}` : ""}
-      </span>
-      <LinkDot />
-    </footer>
+        <LinkDot />
+      </footer>
+    </>
   );
 }
 

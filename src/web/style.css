@@ -580,9 +580,44 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.footer .cwd {
-  direction: rtl;
-  text-align: left;
+/* The directory's last part, and a tap opens the details above the bar. */
+.footer .more {
+  flex-shrink: 0;
+  align-self: stretch;
+  max-width: 40%;
+  margin-left: calc(-1 * var(--s1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: none;
+  border-right: 1px solid var(--line);
+  background: none;
+  color: var(--fg);
+}
+.footer .more.on {
+  color: var(--bg);
+  background: var(--fg);
+}
+.footer .meta {
+  flex: 1;
+}
+/* The status bar's details: everything it has no room for, one term a row. */
+.status {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 var(--s1);
+  margin: 0;
+  padding: var(--s0) var(--s1);
+  border-top: 1px solid var(--line);
+}
+.status div {
+  display: contents;
+}
+.status dt {
+  color: var(--muted);
+}
+.status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .footer .link {
   /* Never clipped: it says the link is down in words. */

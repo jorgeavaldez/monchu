@@ -844,6 +844,24 @@ async function journeys(
     return "reply settled";
   });
 
+  await journey("status: the bar's toggle opens its details above it and closes them", async () => {
+    await browser("click", ".footer .more");
+    await browser("wait", ".status");
+    const terms = text(
+      await page(
+        `[...document.querySelectorAll(".status dt")].map((term) => term.textContent).join(" ")`,
+      ),
+    );
+    check(terms.startsWith("dir model context tokens"), `details read ${terms}`);
+    await capture("status", home, origin);
+    await browser("click", ".footer .more");
+    check(
+      (await page(`document.querySelector(".status") === null`)) === true,
+      "details stayed open",
+    );
+    return terms;
+  });
+
   await journey(
     "markdown: a reply renders as markdown while it streams and once settled, safely",
     async () => {
