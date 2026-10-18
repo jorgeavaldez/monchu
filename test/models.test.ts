@@ -1,5 +1,4 @@
 import { createProvider, type OAuthCredential } from "@earendil-works/pi-ai";
-import { cloudflareWorkersAIProvider } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai";
 import { spawn } from "node:child_process";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,6 +16,7 @@ describe("Monchu models", () => {
     const models = await openModels(value.directory, value.faux.provider);
     expect(models.getProviders().map((provider) => provider.id)).toEqual([
       "openai-codex",
+      "cloudflare-workers-ai",
       "claude-code",
       "opencode-go",
       "opencode",
@@ -47,7 +47,7 @@ describe("Monchu models", () => {
     expect(fixed.warnings).toHaveLength(2);
     expect(fixed.warnings[0]).toContain("no configured model faux/opus (front); faux has");
     expect(fixed.warnings[1]).toContain(
-      "providers: openai-codex, claude-code, opencode-go, opencode, openrouter",
+      "providers: openai-codex, cloudflare-workers-ai, claude-code, opencode-go, opencode, openrouter",
     );
     expect(await configuredRoles(models, config)).toEqual({ config, warnings: [] });
     // On reload a bad role keeps the running one instead.
@@ -107,10 +107,9 @@ describe("Monchu models", () => {
     expect(front.config.worker.provider).toBe("claude-code");
   });
 
-  it("logs in to a plugin's provider (Cloudflare) and reopens its key/account without exposing them", async () => {
+  it("logs in to Cloudflare locally and reopens its key/account without exposing them", async () => {
     const value = await setup();
     const models = await openModels(value.directory);
-    models.setProvider(cloudflareWorkersAIProvider());
     const prompts: string[] = [];
     await models.login("cloudflare-workers-ai", "api_key", {
       prompt: async (prompt) => {
@@ -123,7 +122,6 @@ describe("Monchu models", () => {
     // An existing valid credential file must also be restricted, not only newly created files.
     await chmod(join(value.directory, "auth.json"), 0o644);
     const reopened = await openModels(value.directory);
-    reopened.setProvider(cloudflareWorkersAIProvider());
     if (process.platform !== "win32")
       expect((await stat(join(value.directory, "auth.json"))).mode & 0o777).toBe(0o600);
     expect(await reopened.getAuth("cloudflare-workers-ai")).toEqual({

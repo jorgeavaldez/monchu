@@ -12,7 +12,7 @@ describe("first-run text every client shows", () => {
       expect.stringMatching(
         /^login needed · OpenAI Codex .* or Claude Code .*Run \/login and pick one/,
       ),
-      "routing advice (Clef) is off · optional: /login → Cloudflare Workers AI turns it on",
+      "routing advice (Clef) is off · optional: /login → Cloudflare Workers AI (API key) turns it on",
     ]);
     // After a login that left chat still missing, only the chat line repeats.
     expect(loginHints(fresh, false, plugins)).toHaveLength(1);

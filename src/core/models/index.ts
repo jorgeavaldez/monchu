@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { defaultConfig, type ClaudeConfig, type ModelRole, type MonchuConfig } from "../config.ts";
 import { OpenCodeGo, OpenCodeZen, OpenRouter } from "./api-key.ts";
 import { createClaudeCodeProvider } from "./claude-code.ts";
+import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
 import { FileCredentials } from "./credentials.ts";
 
@@ -29,6 +30,7 @@ export async function openModels(
   await credentials.list();
   const models = createModels({ credentials });
   models.setProvider(createCodexProvider());
+  models.setProvider(Cloudflare);
   models.setProvider(createClaudeCodeProvider(home, claude));
   models.setProvider(OpenCodeGo);
   models.setProvider(OpenCodeZen);

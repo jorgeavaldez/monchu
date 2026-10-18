@@ -11,7 +11,6 @@
  */
 import type { Context } from "@earendil-works/chord";
 import type { ClassifierContext, ClassifierModel, ClassifierApi } from "@earendil-works/pi-ai";
-import { cloudflareWorkersAIProvider } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai";
 import {
   LiveDoc,
   type ContextView,
@@ -365,13 +364,6 @@ async function roster(agents: PluginAgents, tx: Tx, front: ConversationId) {
 export default definePlugin((monchu) => {
   const { agents, models } = monchu;
   const profiles = agents.profiles;
-  // Clef's default classifier, and /login's way to it. Refused only when Monchu or another plugin has the provider
-  // already, which then serves Clef as well.
-  try {
-    monchu.registerProvider(cloudflareWorkersAIProvider());
-  } catch {
-    // Someone else's Cloudflare provider is as good.
-  }
   const chosen = pick(models, monchu.config);
   if ("error" in chosen) monchu.report(chosen.error);
   let model = "model" in chosen ? chosen.model : undefined;

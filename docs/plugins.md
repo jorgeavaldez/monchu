@@ -23,7 +23,7 @@ A plugin is a folder of code that adds tools, prompt sections and event handlers
 A plugin's settings live in two places, read together as `monchu.config`:
 
 - **Shared**, synced to every device: `"plugins": { "<name>": ... }` in the home's `config.json`.
-- **This device**, gitignored: `"settings": { "<name>": ... }` in `plugins.local.json`. A local service's address, which secret holds its token, anything that differs per device. When both are objects, the device's fields win one by one; otherwise the device's value replaces the shared one.
+- **This device**, gitignored: `"settings": { "<name>": ... }` in `plugins.local.json`; `null` there turns a shared setting off on this device. A local service's address, which secret holds its token, anything that differs per device. When both are objects, the device's fields win one by one; otherwise the device's value replaces the shared one.
 
 Settings never go in a plugin's code, so a synced plugin can run everywhere while each device keeps its own. `monchu.saveConfig(value)` writes the shared ones and `saveConfig(value, { device: true })` this device's; the next reload runs the plugin with them.
 
@@ -111,7 +111,7 @@ Tool names are global: a plugin whose tool or task name Monchu or an earlier plu
 | `input`                  | the user's message to a front: `{ action: "transform", text }` or `"handled"`; Monchu's own `admitted(tx, submission)` runs in a commit right after it is admitted |
 | `input_change`           | Monchu's own: a front's queued message was edited or withdrawn, inside that commit                                                                                 |
 
-Guards fail closed, as in Pi: a `tool_call` handler that throws blocks the call, and a `tool_result` handler that throws withholds the result. Any other handler that throws counts as returning nothing. Each failure is reported once. `tool_call` and `tool_result` also see nested calls (codemode's), with `parentToolCallId` set, so a redaction or guard plugin covers both.
+Guards fail closed, as in Pi: a `tool_call` handler that throws blocks the call, and a `tool_result` handler that throws withholds the result. Any other handler that throws counts as returning nothing. Each failure is reported once. `tool_call` and `tool_result` also see nested calls (codemode's), with `parentToolCallId` set, so a redaction or guard plugin covers both. `input` runs on every attempt, a client's retry of the same message included, so anything it does besides answering must be safe to repeat; a `transform` without text is ignored. `agent_before_settle` has no cap, as in Pi: guard its condition. `session_shutdown` reaches only a copy that ran: the home check's copy and a failed reload's share the running copy's module state and get no call.
 
 ### Commands
 

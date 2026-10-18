@@ -256,7 +256,10 @@ export type PluginEvents = {
     readonly messageEntryId: EntryId;
     readonly toolResultEntryIds: readonly EntryId[];
   }>;
-  /** A final answer: `continue` runs once more, with `message` as the next input (default "Continue."). */
+  /**
+   * A final answer: `continue` runs once more, with `message` as the next input (default "Continue."). As in Pi,
+   * nothing caps it: guard the condition, or a handler that always continues never lets the agent settle.
+   */
   agent_before_settle: Handler<
     { readonly type: "agent_before_settle"; readonly message: AssistantMessage },
     { readonly continue?: boolean; readonly message?: string }
@@ -271,12 +274,19 @@ export type PluginEvents = {
     },
     { readonly cancel?: boolean; readonly compaction?: { readonly summary: string } }
   >;
-  /** This plugin instance is retired: a reload replaced or removed it, or Monchu is closing. Release resources here. */
+  /**
+   * This instance is retired after it ran: a reload replaced or removed it, or Monchu is closing. Release resources
+   * here. A copy that never ran (the home check's, a failed reload's) gets no call: it shares the running copy's module
+   * state, which isn't its to close.
+   */
   session_shutdown: (event: {
     readonly type: "session_shutdown";
     readonly reason: "reload" | "quit";
   }) => void | Promise<void>;
-  /** The user's message to a front, before it is admitted. */
+  /**
+   * The user's message to a front, before it is admitted. It runs on every attempt, a client's retry of the same message
+   * included, so whatever it does beyond answering must be safe to repeat. A transform needs non-empty text.
+   */
   input: Handler<InputEvent, InputEventResult>;
   /** Monchu's own: a front's queued message changed (see `InputChangeEvent`). */
   input_change: (event: InputChangeEvent, tx: Tx, ctx: PluginContext) => void | Promise<void>;

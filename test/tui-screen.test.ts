@@ -456,8 +456,8 @@ it("keeps API-key login prompts out of chat, editor history and raw terminal out
     await visible(screen, "/help · home");
     send(screen, "/login");
     await visible(screen, "Choose provider:");
-    // OpenCode Zen is fourth.
-    for (let down = 0; down < 3; down++) screen.sendInput("\x1b[B");
+    // OpenCode Zen is fifth.
+    for (let down = 0; down < 4; down++) screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
     screen.sendInput("private-key-123");
@@ -479,7 +479,7 @@ it("keeps API-key login prompts out of chat, editor history and raw terminal out
     // Raw provider errors must not echo the submitted key, even after another login fails.
     send(screen, "/login");
     await visible(screen, "Choose provider:");
-    for (let down = 0; down < 3; down++) screen.sendInput("\x1b[B");
+    for (let down = 0; down < 4; down++) screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
     send(screen, "never-echo-key");

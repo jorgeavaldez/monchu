@@ -73,7 +73,7 @@ export const commands: Record<
   "/cd": { usage: "<path>", help: "change the shown conversation's directory (while idle)" },
   "/login": {
     usage: "",
-    help: "sign in to a model provider: Codex, Claude Code, OpenCode, OpenRouter, plugins' providers",
+    help: "sign in to a model provider: Codex, Claude Code, Cloudflare, OpenCode, OpenRouter, plugins'",
   },
   "/mcp": {
     usage: "[login|logout|reconnect] [server]",
@@ -100,6 +100,7 @@ export const LOGIN_PROVIDERS: readonly { id: string; label: string; auth: "oauth
   [
     { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)", auth: "oauth" },
     { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)", auth: "oauth" },
+    { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI (API key)", auth: "api_key" },
     { id: "opencode-go", label: "OpenCode Go (API key)", auth: "api_key" },
     { id: "opencode", label: "OpenCode Zen (API key)", auth: "api_key" },
     { id: "openrouter", label: "OpenRouter (API key)", auth: "api_key" },

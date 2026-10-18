@@ -3,6 +3,7 @@ import { Type as TypeboxType } from "typebox";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { Monchu } from "../src/core/backend.ts";
 import { defaultConfig } from "../src/core/config.ts";
 import { Plugins } from "../src/core/plugins.ts";
@@ -399,5 +400,52 @@ export default (monchu) => {
     expect(value.models.getProvider("made")).toBe(live);
     plugins.close();
     expect(value.models.getProvider("made")).toBeUndefined();
+  });
+
+  it("lets a device null a shared setting, ignores a transform without text, and shuts down only copies that ran", async () => {
+    const value = await setup();
+    await plugin(value.directory, "keeper", {
+      "index.js": `export default (monchu) => {
+  const seen = Reflect.get(globalThis, "keeperSeen") ?? [];
+  seen.push(monchu.config);
+  Reflect.set(globalThis, "keeperSeen", seen);
+  monchu.on("input", () => ({ action: "transform" }));
+  monchu.on("session_shutdown", () => Reflect.set(globalThis, "keeperDown", (Reflect.get(globalThis, "keeperDown") ?? 0) + 1));
+};`,
+    });
+    await writeFile(
+      join(value.directory, "plugins.local.json"),
+      JSON.stringify({ settings: { keeper: null } }),
+    );
+    const plugins = new Plugins({
+      home: value.directory,
+      report: (warning) => value.reports.push(warning),
+      vault: value.vault,
+      models: value.models,
+      saveSettings: async () => {},
+    });
+    const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
+    const config = { ...defaultConfig(), plugins: { clef: null, keeper: { on: true } } };
+    const running = (await plugins.load(config)).use(reserved);
+    plugins.settle(running);
+    // The device's null wins over the shared setting.
+    expect(Reflect.get(globalThis, "keeperSeen")).toEqual([null]);
+    const seen = await running.front.input(
+      {
+        text: "hello",
+        source: "interactive",
+        streamingBehavior: "followUp",
+        messages: async () => [],
+      },
+      ROOT_CONVERSATION_ID,
+    );
+    expect(seen.text).toBe("hello");
+    expect(value.reports.join("\n")).toContain("its transform has no text");
+    // A second copy, as the home check runs, is retired without a shutdown; the running copy gets one at close.
+    (await plugins.load(config)).use(reserved);
+    plugins.settle(running);
+    expect(Reflect.get(globalThis, "keeperDown")).toBeUndefined();
+    plugins.close();
+    await waitFor(() => Reflect.get(globalThis, "keeperDown") === 1);
   });
 });

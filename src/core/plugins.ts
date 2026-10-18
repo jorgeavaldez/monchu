@@ -155,13 +155,17 @@ function overlay(
 }
 
 /** A plugin's settings: the synced ones, with this device's over them (field by field when both are objects). */
-function settingsOf(synced: JsonValue | undefined, device: JsonValue | undefined) {
+function settingsOf(
+  synced: JsonValue | undefined,
+  device: { readonly value: JsonValue } | undefined,
+): JsonValue | undefined {
+  if (device === undefined) return synced;
   const object = (value: JsonValue | undefined) =>
     typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
   const base = object(synced);
-  const over = object(device);
-  if (base !== undefined && over !== undefined) return { ...base, ...over };
-  return device ?? synced;
+  const over = object(device.value);
+  // Any device value replaces the synced one, `null` included: that is how one device turns a plugin's setting off.
+  return base !== undefined && over !== undefined ? { ...base, ...over } : device.value;
 }
 
 type PluginSource = "bundled" | "home" | "local";
@@ -489,6 +493,8 @@ export class Plugins {
   /** The last plugin function that ran without failing, by entry path. */
   private readonly good = new Map<string, Plugin>();
   private readonly live = new Set<Instance>();
+  /** Live instances whose build ran: only these get `session_shutdown`. */
+  private readonly ran = new Set<Instance>();
   private readonly onFault: (summary: string, text: string) => void;
   /** Faults already told, by plugin and message. */
   private readonly faults = new Set<string>();
@@ -564,7 +570,12 @@ export class Plugins {
       const loaded = await this.loadOne(
         plugin,
         config,
-        settingsOf(config.plugins[plugin.name], device.settings[plugin.name]),
+        settingsOf(
+          config.plugins[plugin.name],
+          Object.hasOwn(device.settings, plugin.name)
+            ? { value: device.settings[plugin.name] ?? null }
+            : undefined,
+        ),
       );
       if ("error" in loaded) {
         const kept = loaded.contribution !== undefined;
@@ -664,6 +675,7 @@ export class Plugins {
   settle(running: PluginBuild | undefined, reason: "reload" | "quit" = "reload"): void {
     for (const instance of this.live)
       if (!running?.instances.has(instance)) this.retire(instance, reason);
+    for (const instance of running?.instances ?? []) this.ran.add(instance);
     const wanted = new Map<string, Provider>();
     for (const [instance, { providers }] of this.provided) {
       if (!this.live.has(instance)) this.provided.delete(instance);
@@ -688,6 +700,9 @@ export class Plugins {
   private retire(instance: Instance, reason: "reload" | "quit" = "reload"): void {
     if (!this.live.delete(instance)) return;
     instance.controller.abort(new Error("Plugin retired"));
+    // Only a copy that ran shuts down: the home check's copy, or a failed reload's, never served, and its module state
+    // is the running copy's.
+    if (!this.ran.delete(instance)) return;
     for (const shutdown of instance.shutdown) {
       void (async () => shutdown(reason))().catch((error: unknown) =>
         this.report(`A plugin's session_shutdown handler failed: ${message(error)}`),
@@ -1126,13 +1141,20 @@ function frontEvents(used: readonly Contribution[]): FrontEvents {
       const admitted: AfterAdmission[] = [];
       for (const { handler, contribution } of inputs) {
         // The message isn't admitted until every handler answers, so one that hangs must not hold up the front.
-        const result = await contribution.guard("input", () =>
-          withTimeout(
+        // A transform must leave text to send: one that doesn't is reported and ignored, so no message is lost.
+        const result = await contribution.guard("input", async () => {
+          const answer = await withTimeout(
             handler({ ...event, type: "input", text }, ctx(contribution, front)),
             INPUT_TIMEOUT_MS,
             "it did not answer",
-          ),
-        );
+          );
+          if (
+            answer?.action === "transform" &&
+            (typeof answer.text !== "string" || answer.text.trim() === "")
+          )
+            throw new Error("its transform has no text; the message goes on unchanged");
+          return answer;
+        });
         if (result === "failed" || result === undefined) continue;
         if (result.action === "handled") return { text: undefined, admitted: [] };
         if (result.action === "transform") text = result.text;
