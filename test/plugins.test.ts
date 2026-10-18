@@ -504,4 +504,29 @@ export default (monchu) => monchu.registerSecretStore({
     plugins.close();
     await waitFor(() => Reflect.get(globalThis, "keeperDown") === 1);
   });
+
+  it("never blames the home for a bundled folder without code, and tells it once", async () => {
+    const value = await setup();
+    const bundled = join(value.directory, "bundled");
+    // A folder an install left behind, such as one whose plugin moved or was removed.
+    await mkdir(join(bundled, "stale"), { recursive: true });
+    const reported: string[] = [];
+    const plugins = new Plugins({
+      home: value.directory,
+      report: (warning) => reported.push(warning),
+      vault: value.vault,
+      models: value.models,
+      saveSettings: async () => {},
+      bundledDir: bundled,
+    });
+    const config = { ...defaultConfig(), plugins: { clef: null } };
+    const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
+    for (const dry of [true, false, true]) {
+      const loaded = (await plugins.load(config, { dry })).use(reserved);
+      expect(loaded.warnings).toEqual([]);
+    }
+    expect(reported).toEqual([
+      `Plugin stale was skipped: ${join(bundled, "stale")} has no index.ts or index.js`,
+    ]);
+  });
 });

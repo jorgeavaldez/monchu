@@ -526,6 +526,8 @@ export class Plugins {
   /** The last plugin function that ran without failing, by entry path. */
   private readonly good = new Map<string, Plugin>();
   private readonly live = new Set<Instance>();
+  /** Bundled folders without code, already told. */
+  private readonly leftovers = new Set<string>();
   /** Live instances whose build ran: only these get `session_shutdown`. */
   private readonly ran = new Set<Instance>();
   private readonly onFault: (summary: string, text: string) => void;
@@ -797,7 +799,14 @@ export class Plugins {
         .map((file) => join(folder, file))
         .find((file) => existsSync(file));
       if (index === undefined) {
-        warnings.push(`Plugin ${entry.name} was skipped: ${folder} has no index.ts or index.js`);
+        const warning = `Plugin ${entry.name} was skipped: ${folder} has no index.ts or index.js`;
+        // A bundled folder without code is the install's leftover, not the home's problem: the home check never
+        // blames it on a conversation, and it is told once.
+        if (source !== "bundled") warnings.push(warning);
+        else if (!this.leftovers.has(folder)) {
+          this.leftovers.add(folder);
+          this.report(warning);
+        }
         continue;
       }
       found.push({ name: entry.name, source, dir: folder, entry: index });
