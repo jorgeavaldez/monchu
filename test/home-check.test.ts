@@ -32,7 +32,7 @@ describe("home check", () => {
     await mkdir(join(home, "skills", "notes"), { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await writeFile(join(home, "skills", "notes", "SKILL.md"), BROKEN_SKILL);
@@ -209,7 +209,7 @@ describe("home check", () => {
     await mkdir(home, { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const skill = join(home, "skills", "notes", "SKILL.md");
@@ -248,7 +248,7 @@ describe("home check", () => {
     await mkdir(join(home, "plugins", "warny"), { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     /** A plugin that warns of its settings as it loads, and leaves a way to make errors in its own code. */
@@ -322,7 +322,7 @@ describe("home check", () => {
     await mkdir(join(home, "plugins", "evil"), { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await writeFile(

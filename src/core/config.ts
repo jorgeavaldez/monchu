@@ -240,7 +240,7 @@ function profiles(value: unknown, worker: ModelRole): Record<string, WorkerProfi
 }
 
 /**
- * `classifier` became the Clef plugin's `plugins.clef`: an old file keeps working, read there unless `plugins.clef` is
+ * A top-level `classifier` became the classifier plugin's `plugins.classifier`: an old file keeps working, read there unless `plugins.classifier` is
  * set too, with a warning to move it.
  */
 function movedClassifier(
@@ -249,13 +249,13 @@ function movedClassifier(
 ): { plugins: Record<string, JsonValue>; warnings?: string[] } {
   if (value === undefined) return { plugins };
   if (!isJsonValue(value)) throw new Error("classifier must be JSON");
-  const set = Object.hasOwn(plugins, "clef");
+  const set = Object.hasOwn(plugins, "classifier");
   return {
-    plugins: set ? plugins : { ...plugins, clef: value },
+    plugins: set ? plugins : { ...plugins, classifier: value },
     warnings: [
       set
-        ? '"classifier" in config.json is ignored: "plugins": { "clef": ... } sets Clef\'s classifier. Remove it'
-        : '"classifier" in config.json is now "plugins": { "clef": ... }; it still works there for now. Move it',
+        ? '"classifier" in config.json is ignored: "plugins": { "classifier": ... } sets it. Remove it'
+        : '"classifier" in config.json is now "plugins": { "classifier": ... }; it still works there for now. Move it',
     ],
   };
 }

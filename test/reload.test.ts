@@ -38,7 +38,7 @@ const config = {
   front: fauxRole,
   worker: fauxRole,
   profiles: {},
-  plugins: { clef: { provider: classifierModel.provider, modelId: classifierModel.id } },
+  plugins: { classifier: { provider: classifierModel.provider, modelId: classifierModel.id } },
   settings: {},
   claude: { executable: undefined, plan: "pro" as const, longContextExtraUsage: false },
   chosen: { front: true, worker: true },
@@ -275,11 +275,13 @@ describe("in-process reload", () => {
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("bash");
       await writeFile(
         join(value.directory, "config.json"),
-        JSON.stringify({ ...config, plugins: { clef: null }, chosen: undefined }),
+        JSON.stringify({ ...config, plugins: { classifier: null }, chosen: undefined }),
       );
       await extensions.reload();
-      // Turned off, the Clef plugin stays installed: assessments already accepted still finish.
-      expect(extensions.defaults().map((extension) => extension.name)).toContain("monchu.clef");
+      // Turned off, the classifier plugin stays installed: assessments already accepted still finish.
+      expect(extensions.defaults().map((extension) => extension.name)).toContain(
+        "monchu.classifier",
+      );
       expect(extensions.registry.snapshot().task("monchu.assess")).toBeDefined();
     } finally {
       await harness.close(context);

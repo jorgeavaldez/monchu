@@ -27,7 +27,7 @@ describe("prompt cache", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await writeFile(join(home, "FRONT.md"), "FRONT BEFORE");
@@ -119,7 +119,7 @@ describe("prompt cache", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await mkdir(join(home, "plugins", "base"), { recursive: true });

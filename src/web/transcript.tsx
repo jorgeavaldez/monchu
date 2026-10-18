@@ -634,7 +634,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
       {filtered && kept === 0 ? (
         <div class="status">
           nothing here yet · the front labels a message by starting it with ask, done or update;
-          /clef labels the rest
+          /classifier labels the rest
         </div>
       ) : null}
       {live.status && !filtered ? <div class="status">{live.status}</div> : null}

@@ -38,7 +38,7 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
   await mkdir(home, { recursive: true });
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
   );
   prepareHome(home);
   return { home, backend: await Monchu.open(home, value.faux.provider) };
@@ -164,7 +164,7 @@ export default () => {
         expect(config).toMatchObject({
           front: { provider: "faux" },
           worker: { provider: "faux" },
-          plugins: { clef: null },
+          plugins: { classifier: null },
         });
       }
     },
@@ -180,7 +180,7 @@ export default () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     const provider = createProvider({
       id: value.faux.provider.id,
@@ -227,7 +227,7 @@ export default () => {
     const role = { ...fauxRole, provider: "openai-codex" };
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: role, worker: role, plugins: { clef: null } }),
+      JSON.stringify({ front: role, worker: role, plugins: { classifier: null } }),
     );
     let method = "";
     const provider = createProvider({
@@ -315,7 +315,7 @@ export default () => {
         JSON.stringify({
           front: { ...fauxRole, modelId: "next-front" },
           worker: { ...fauxRole, modelId: "next-worker" },
-          plugins: { clef: null },
+          plugins: { classifier: null },
           settings: {
             theme: "light",
             httpIdleTimeoutMs: 1234,
@@ -438,7 +438,7 @@ export default () => {
         JSON.stringify({
           front: fauxRole,
           worker: fauxRole,
-          plugins: { clef: null },
+          plugins: { classifier: null },
           settings: { defaultTools: [tool] },
         }),
       );
@@ -525,7 +525,7 @@ export default () => {
       expect(await backend.loginNeeds()).toEqual({
         chat: ["openai-codex", "claude-code"],
         anyOf: true,
-        optional: [{ provider: "cloudflare-workers-ai", purpose: "routing advice (Clef)" }],
+        optional: [{ provider: "cloudflare-workers-ai", purpose: "routing advice (classifier)" }],
       });
     } finally {
       unsubscribe();
@@ -550,7 +550,7 @@ export default () => {
         JSON.stringify({
           front: fauxRole,
           worker: fauxRole,
-          plugins: { clef: null },
+          plugins: { classifier: null },
           settings: { theme: "missing" },
         }),
       );
@@ -564,7 +564,7 @@ export default () => {
         JSON.stringify({
           front: { ...fauxRole, provider: "openai-codex", modelId: "no-such-model" },
           worker: fauxRole,
-          plugins: { clef: null },
+          plugins: { classifier: null },
         }),
       );
       await backend.reload();
@@ -583,7 +583,7 @@ export default () => {
         JSON.stringify({
           front: fauxRole,
           worker: fauxRole,
-          plugins: { clef: null },
+          plugins: { classifier: null },
           settings: { defaultTools: ["fffind"] },
         }),
       );
@@ -693,7 +693,7 @@ export default () => {
       JSON.stringify({
         front: fauxRole,
         worker: fauxRole,
-        plugins: { clef: null },
+        plugins: { classifier: null },
         settings: { compaction: { keepRecentTokens: 1 } },
       }),
     );
@@ -786,7 +786,7 @@ export default () => {
         JSON.stringify({
           front: { ...fauxRole, modelId: "edited", thinkingLevel: "high" },
           worker: fauxRole,
-          plugins: { clef: null },
+          plugins: { classifier: null },
         }),
       );
       await backend.reload();

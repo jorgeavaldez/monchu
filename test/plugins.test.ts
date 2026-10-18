@@ -85,7 +85,7 @@ describe("plugins", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await plugin(home, "notes", {
@@ -177,7 +177,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       // An edit to any of its files reloads it; the reload tool says what loaded.
       await writeFile(join(home, "plugins", "notes", "version.ts"), `export const version = "v2";`);
       expect(await turn(backend, "reload")).toContain(
-        "Plugins: clef, fnox, jj, herdr, browser, notes, thrower; not loaded: broken (",
+        "Plugins: classifier, fnox, jj, herdr, browser, notes, thrower; not loaded: broken (",
       );
       expect(await turn(backend, "read")).toBe("note v2");
 
@@ -209,7 +209,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     await plugin(home, "pinger", {
@@ -314,7 +314,7 @@ export default function (monchu: PluginApi) {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const tool = (text: string) => `import { defineTool, Type } from "monchu/plugin";
@@ -325,7 +325,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "where", descr
       JSON.stringify({
         front: fauxRole,
         worker: fauxRole,
-        plugins: { clef: null, place: { who: "synced", port: 1 } },
+        plugins: { classifier: null, place: { who: "synced", port: 1 } },
       }),
     );
     await writeFile(
@@ -389,7 +389,7 @@ export default (monchu) => {
       saveSettings: async () => {},
     });
     const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
-    const config = { ...defaultConfig(), plugins: { clef: null } };
+    const config = { ...defaultConfig(), plugins: { classifier: null } };
     const running = (await plugins.load(config)).use(reserved);
     expect(running.status).toContainEqual({ name: "maker", source: "home", state: "loaded" });
     expect(Reflect.get(globalThis, "madeSeen")).toBe(true);
@@ -426,7 +426,7 @@ export default (monchu) => monchu.registerSecretStore({
       saveSettings: async () => {},
     });
     const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
-    const config = { ...defaultConfig(), plugins: { clef: null } };
+    const config = { ...defaultConfig(), plugins: { classifier: null } };
     // The bundled fnox plugin keeps them by default, so a second store isn't loaded.
     const both = (await plugins.load(config)).use(reserved);
     expect(both.status).toContainEqual({
@@ -481,7 +481,7 @@ export default (monchu) => monchu.registerSecretStore({
       saveSettings: async () => {},
     });
     const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
-    const config = { ...defaultConfig(), plugins: { clef: null, keeper: { on: true } } };
+    const config = { ...defaultConfig(), plugins: { classifier: null, keeper: { on: true } } };
     const running = (await plugins.load(config)).use(reserved);
     plugins.settle(running);
     // The device's null wins over the shared setting.
@@ -519,7 +519,7 @@ export default (monchu) => monchu.registerSecretStore({
       saveSettings: async () => {},
       bundledDir: bundled,
     });
-    const config = { ...defaultConfig(), plugins: { clef: null } };
+    const config = { ...defaultConfig(), plugins: { classifier: null } };
     const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
     for (const dry of [true, false, true]) {
       const loaded = (await plugins.load(config, { dry })).use(reserved);

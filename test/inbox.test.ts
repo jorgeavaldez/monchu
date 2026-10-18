@@ -34,7 +34,7 @@ describe("inbox", () => {
     await mkdir(home, { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const sections: string[] = [];
@@ -113,7 +113,7 @@ describe("inbox", () => {
     await mkdir(home, { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const sections: string[] = [];

@@ -205,11 +205,11 @@ export function createDevProvider(): Provider {
     auth: faux.provider.auth,
     models: [
       ...faux.models,
-      // Off in smoke homes unless `plugins.clef` names it: `faux/clef` sends `work …` to a worker, the rest to the front.
+      // Off in smoke homes unless `plugins.classifier` names it: `faux/classifier` sends `work …` to a worker, the rest to the front.
       {
         type: "classifier",
-        id: "clef",
-        name: "Faux Clef",
+        id: "classifier",
+        name: "Faux classifier",
         api: "faux-classifier",
         provider: faux.provider.id,
         baseUrl: "http://localhost:0",

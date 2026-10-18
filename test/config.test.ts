@@ -223,7 +223,7 @@ describe("config", () => {
     const config = await loadConfig(
       await home({
         worker: { provider: "openai", modelId: "gpt-6-sol" },
-        plugins: { clef: null, other: { url: "x" } },
+        plugins: { classifier: null, other: { url: "x" } },
       }),
     );
     expect(config.worker).toEqual({
@@ -231,16 +231,18 @@ describe("config", () => {
       modelId: "gpt-6-sol",
       thinkingLevel: "high",
     });
-    expect(config.plugins).toEqual({ clef: null, other: { url: "x" } });
+    expect(config.plugins).toEqual({ classifier: null, other: { url: "x" } });
   });
 
-  it("reads an old top-level classifier as the Clef plugin's setting, with a warning to move it", async () => {
+  it("reads an old top-level classifier as the classifier plugin's setting, with a warning to move it", async () => {
     const jev = { provider: "opencode", modelId: "jev-1.13" };
     const old = await loadConfig(await home({ classifier: jev }));
-    expect(old.plugins).toEqual({ clef: jev });
-    expect(old.warnings).toEqual([expect.stringContaining('is now "plugins": { "clef": ... }')]);
-    const both = await loadConfig(await home({ classifier: null, plugins: { clef: jev } }));
-    expect(both.plugins).toEqual({ clef: jev });
+    expect(old.plugins).toEqual({ classifier: jev });
+    expect(old.warnings).toEqual([
+      expect.stringContaining('is now "plugins": { "classifier": ... }'),
+    ]);
+    const both = await loadConfig(await home({ classifier: null, plugins: { classifier: jev } }));
+    expect(both.plugins).toEqual({ classifier: jev });
     expect(both.warnings).toEqual([expect.stringContaining("is ignored")]);
   });
 

@@ -6,7 +6,7 @@ import { MemoryStore } from "./secrets/vault.ts";
 
 /**
  * Explicit offline smoke mode. Its home and Pi resources stay in a throwaway temp directory. The faux roles are
- * rewritten each time; plugin and run settings already in `config.json` stay (Clef is off unless they set it), and a `web.json`
+ * rewritten each time; plugin and run settings already in `config.json` stay (the classifier is off unless they set it), and a `web.json`
  * beside them is untouched, so plugins and the web server can be tried offline too. Secrets stay in memory, so smoke
  * runs need no secret store plugin and leave nothing behind, unless `pluginSecrets` asks for the plugins' store.
  */
@@ -34,7 +34,7 @@ export async function openDevMonchu(
     JSON.stringify({
       front: { provider: "faux", modelId: "front", thinkingLevel: "off" },
       worker: { provider: "faux", modelId: "worker", thinkingLevel: "off" },
-      plugins: { clef: null, ...kept.plugins },
+      plugins: { classifier: null, ...kept.plugins },
       ...(kept.settings === undefined ? {} : { settings: kept.settings }),
     }),
   );

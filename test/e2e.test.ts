@@ -2,7 +2,7 @@
  * End to end: Monchu's real entry point (`serve`, which forks the core) on a smoke home with faux models, reached as
  * every client reaches it, over the home's socket, and in a real terminal. Each step drives a surface through the real
  * front, so the wiring between server, core, facets, plugin loader and tools is what passes or fails: every core tool,
- * the bundled jj, Clef, herdr, browser and fnox plugins, a home plugin's direct and deferred tools, section, guard and command, an MCP
+ * the bundled jj, the classifier, herdr, browser and fnox plugins, a home plugin's direct and deferred tools, section, guard and command, an MCP
  * server, workers, jobs, secrets, roots, `/reload` and `/restart`, and the terminal. CI runs it on this checkout and on
  * the installed release tarball (`MONCHU_E2E_ENTRY`). A new surface, tool or plugin gets a step here.
  */
@@ -71,7 +71,7 @@ type Served = {
   close: () => Promise<void>;
   /** Every message of the current root's view, oldest first. */
   messages: () => Message[];
-  /** Every line the root's clients were notified of (plugins' and Clef's notices). */
+  /** Every line the root's clients were notified of (plugins' and the classifier's notices). */
   notices: string[];
   /** What the client was told about its connection and the core. */
   reports: string[];
@@ -85,7 +85,9 @@ async function open(env: Record<string, string> = {}): Promise<Served> {
   const home = await smokeHome({ probe: probe("v1") });
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ plugins: { clef: { provider: "faux", modelId: "clef", waitMs: 5000 } } }),
+    JSON.stringify({
+      plugins: { classifier: { provider: "faux", modelId: "classifier", waitMs: 5000 } },
+    }),
   );
   const { script, marker } = await fixtureServer(home);
   await writeFile(
@@ -247,8 +249,8 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     expect(tools).not.toContain("probe_deferred");
     expect(sections).toContain("plugins");
     expect(await section("plugins")).toContain("probe section v1");
-    // Clef, the bundled routing plugin, assessed each message on the faux classifier.
-    await waitFor(() => monchu.notices.some((notice) => notice.startsWith("clef · ")));
+    // The classifier, the bundled routing plugin, assessed each message on the faux classifier.
+    await waitFor(() => monchu.notices.some((notice) => notice.startsWith("classifier · ")));
   });
 
   it("runs the file, shell and search tools in the front's directory", async () => {
@@ -340,8 +342,8 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     await ask("work reader inspect", "Faux front: result received.");
     await ask("work writer draft", "Faux front: result received.");
     expect(await ok("worker_status", {})).toContain("reader");
-    // Clef sent `work …` to a worker, and the front did start one.
-    await waitFor(() => monchu.notices.some((notice) => /clef · .*worker/.test(notice)));
+    // The classifier sent `work …` to a worker, and the front did start one.
+    await waitFor(() => monchu.notices.some((notice) => /classifier · .*worker/.test(notice)));
     await ok("message_worker", { name: "reader", message: "more" });
     await waitFor(() => count("Faux front: result received.") >= reports + 3, 30_000);
     const idle = async () =>
@@ -776,7 +778,7 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
         JSON.stringify({
           front: role,
           worker: role,
-          plugins: { clef: null },
+          plugins: { classifier: null },
           claude: { executable: wrapper },
         }),
       );

@@ -36,7 +36,7 @@ export type InboxItem = {
   /** The goal's id, `null` when it belongs to none; absent until labeled. */
   goal?: string | null;
   /** Who set the label, with the classifier's probability for its kind; the front's and a plugin's are final. */
-  by?: "clef" | "front" | "plugin";
+  by?: "classifier" | "front" | "plugin";
   probability?: number;
   labeledAt?: number;
   /** An ask's state: open until the user answers or the front closes it. */
@@ -278,7 +278,7 @@ export async function closeAsk(
 export type InboxLabel = {
   kind?: InboxKind;
   goal?: string | null;
-  by: "clef" | "front";
+  by: "classifier" | "front";
   probability?: number;
 };
 
@@ -290,7 +290,10 @@ export async function labelItem(
   label: InboxLabel,
 ): Promise<boolean> {
   const item = (await tx.doc(InboxItemsDoc, front)).items.find((each) => each.entry === entry);
-  if (item === undefined || (label.by === "clef" && item.by !== undefined && item.by !== "clef"))
+  if (
+    item === undefined ||
+    (label.by === "classifier" && item.by !== undefined && item.by !== "classifier")
+  )
     return false;
   if (label.kind !== undefined) {
     if (label.kind === "ask" && item.kind !== "ask") item.state = "open";

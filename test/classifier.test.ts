@@ -19,7 +19,7 @@ import { systemNoticeSummary } from "../src/api/notices.ts";
 import { defaultConfig, type WorkerProfile } from "../src/core/config.ts";
 import { ClientNoticesDoc } from "../src/core/plugin-shapes.ts";
 import { createPluginSections, Plugins } from "../src/core/plugins.ts";
-import { AssessmentsDoc, RoutingDoc } from "../src/plugins/clef/index.ts";
+import { AssessmentsDoc, RoutingDoc } from "../src/plugins/classifier/index.ts";
 import { GoalsDoc } from "../src/core/agents/goals.ts";
 import { InboxItemsDoc, noteReplies } from "../src/core/inbox.ts";
 import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
@@ -59,24 +59,24 @@ const Done = defineTask<null, { phase: "done" }, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-/** Clef's advice as the request carries it: the newest text of its prompt section. */
+/** the classifier's advice as the request carries it: the newest text of its prompt section. */
 function adviceOf(messages: readonly Message[]): string | undefined {
   const text = sectionTexts(messages, "plugins").findLast((section) =>
-    section.includes("<clef_advice>"),
+    section.includes("<classifier_advice>"),
   );
-  return /<clef_advice>\n([\s\S]*?)\n<\/clef_advice>/.exec(text ?? "")?.[1];
+  return /<classifier_advice>\n([\s\S]*?)\n<\/classifier_advice>/.exec(text ?? "")?.[1];
 }
 
-/** Whether a user entry's text is Clef's escalation. */
+/** Whether a user entry's text is the classifier's escalation. */
 const escalation = (text: string) =>
-  systemNoticeSummary(text)?.startsWith("routing advice (Clef): ") === true;
+  systemNoticeSummary(text)?.startsWith("routing advice (classifier): ") === true;
 
-/** The bundled Clef plugin on a scripted classifier, loaded as Monchu loads it, with the front's input path. */
+/** The bundled classifier plugin on a scripted classifier, loaded as Monchu loads it, with the front's input path. */
 async function withAssessment(
   extensions: readonly Extension[] = [],
   waitMs = 2000,
   profiles: Record<string, WorkerProfile> = {},
-  provider = "clef-test",
+  provider = "classifier-test",
   before: (models: MutableModels) => void = () => {},
 ) {
   const value = await setup();
@@ -94,7 +94,7 @@ async function withAssessment(
     await plugins.load({
       ...defaultConfig(),
       profiles,
-      plugins: { clef: { provider, modelId: classifierModel.id, waitMs } },
+      plugins: { classifier: { provider, modelId: classifierModel.id, waitMs } },
     })
   ).use({ tools: new Set(), tasks: new Set() });
   plugins.settle(build);
@@ -334,7 +334,7 @@ describe("routing helper", () => {
     await test.send("fix the config");
     await test.root.waitForIdle(context);
     expect(results).toHaveLength(2);
-    expect(results[0]).toContain("[Routing helper: Routing helper (Clef)");
+    expect(results[0]).toContain("[Routing helper: Routing helper (classifier)");
     expect(results[0]).toContain("Nothing is routed for it yet.");
     expect(results[1]).not.toContain("Routing helper");
     await test.harness.close(context);
@@ -362,7 +362,7 @@ describe("routing helper", () => {
     expect(texts).toHaveLength(2);
     // A notice from Monchu itself: clients show its summary, and Esc never puts it back in the editor.
     expect(systemNoticeSummary(texts[1] ?? "")).toBe(
-      "routing advice (Clef): needs a worker (92%), several lines of work (80%)",
+      "routing advice (classifier): needs a worker (92%), several lines of work (80%)",
     );
     expect((await test.items())[0]?.escalated).toBe(true);
     await test.harness.close(context);
@@ -523,7 +523,7 @@ describe("routing helper", () => {
     await test.harness.close(context);
   });
 
-  it("shows a repeated failure once until Clef answers again, and keeps its error out of the front's advice", async () => {
+  it("shows a repeated failure once until the classifier answers again, and keeps its error out of the front's advice", async () => {
     const test = await withAssessment();
     const advice: string[] = [];
     route(test.faux, (request) => {
@@ -546,12 +546,12 @@ describe("routing helper", () => {
       await test.send(`message ${index}`);
       await test.settle(index);
     }
-    // Clients get each line once; a repeated failure isn't sent again until Clef answers.
+    // Clients get each line once; a repeated failure isn't sent again until the classifier answers.
     await waitFor(async () => (await test.notices()).length === 3);
     expect(await test.notices()).toEqual([
-      "clef · unavailable (Cloudflare Workers AI error (429): out of credits) · /clef off pauses it",
-      "clef · needs a worker (90%)",
-      "clef · unavailable (Cloudflare Workers AI error (429): out again) · /clef off pauses it",
+      "classifier · unavailable (Cloudflare Workers AI error (429): out of credits) · /classifier off pauses it",
+      "classifier · needs a worker (90%)",
+      "classifier · unavailable (Cloudflare Workers AI error (429): out again) · /classifier off pauses it",
     ]);
     expect(advice[0]).toBe(
       "Routing helper unavailable for this message. Route by your own judgment.",
@@ -578,12 +578,12 @@ describe("routing helper", () => {
 
   it("stays off without its provider's credentials and sends input to the front unassessed", async () => {
     const requests: unknown[] = [];
-    const test = await withAssessment([], 2000, {}, "clef-off", (models) =>
+    const test = await withAssessment([], 2000, {}, "classifier-off", (models) =>
       models.setProvider(
         createProvider({
-          id: "clef-off",
+          id: "classifier-off",
           auth: { apiKey: { name: "Off", resolve: async () => undefined } },
-          models: [{ ...classifierModel, provider: "clef-off" }],
+          models: [{ ...classifierModel, provider: "classifier-off" }],
           classifiers: {
             "test-classifier": {
               classify: async (_model, request) => {
@@ -611,7 +611,7 @@ describe("routing helper", () => {
     expect(test.classifier.requests).toEqual([]);
     expect(test.reports).toContainEqual(
       expect.stringMatching(
-        /^Plugin clef: no classifier model nowhere\/clef-test, so Clef is off; classifier models: .*clef-test\/clef-test/,
+        /^Plugin classifier: no classifier model nowhere\/classifier-test, so the classifier is off; classifier models: .*classifier-test\/classifier-test/,
       ),
     );
     await test.harness.close(context);
@@ -629,8 +629,8 @@ describe("routing helper", () => {
       });
       return {
         api: "test-classifier",
-        provider: "clef-test",
-        model: "clef-test",
+        provider: "classifier-test",
+        model: "classifier-test",
         answers: { kind: choice("milestone", 0.92), goal: choice("monchu", 0.8) },
         stopReason: "stop",
         timestamp: Date.now(),
@@ -666,7 +666,7 @@ describe("routing helper", () => {
         headline: "Inbox shipped: labels and pushes are live",
         kind: "milestone",
         goal: "monchu",
-        by: "clef",
+        by: "classifier",
         probability: 0.92,
       },
     ]);

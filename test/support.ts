@@ -145,10 +145,10 @@ export type ScriptedClassifier = {
 
 export const classifierModel: ClassifierModel<ClassifierApi> = {
   type: "classifier",
-  id: "clef-test",
-  name: "clef-test",
+  id: "classifier-test",
+  name: "classifier-test",
   api: "test-classifier",
-  provider: "clef-test",
+  provider: "classifier-test",
   baseUrl: "https://example.test/v1",
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -163,7 +163,7 @@ export function scriptedClassifier(models: MutableModels): ScriptedClassifier {
   };
   models.setProvider(
     createProvider({
-      id: "clef-test",
+      id: "classifier-test",
       auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
       models: [classifierModel],
       classifiers: {
@@ -198,8 +198,8 @@ export function routed(
   const [split, splitProbability] = more.split ?? ["one", 0.9];
   return {
     api: "test-classifier",
-    provider: "clef-test",
-    model: "clef-test",
+    provider: "classifier-test",
+    model: "classifier-test",
     answers: {
       route: choice(route, route === "worker" ? "front" : "worker", routeProbability),
       ...(more.worker === undefined
@@ -281,7 +281,7 @@ export async function setup(
   directories.add(directory);
   await writeFile(
     join(directory, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
   );
   const agentDir = join(directory, ".pi", "agent");
   prepareHome(directory);

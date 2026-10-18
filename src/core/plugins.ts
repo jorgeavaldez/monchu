@@ -180,7 +180,7 @@ type PluginSource = "bundled" | "home" | "local";
  * Durable redeclares every tool when their order changes, so a new bundled plugin, or one moved out of the core in the
  * core's old place, never reorders the tools conversations already have.
  */
-const BUNDLED_ORDER = ["clef", "fnox", "jj", "herdr", "browser"];
+const BUNDLED_ORDER = ["classifier", "fnox", "jj", "herdr", "browser"];
 
 function bundledPlace(plugin: { source: PluginSource; name: string }): number {
   const place = BUNDLED_ORDER.indexOf(plugin.name);
@@ -1232,7 +1232,8 @@ const agents = (config: MonchuConfig): PluginApi["agents"] => ({
       workers: [...goal.workers],
     })),
   profiles: config.profiles,
-  labelReply: (tx, front, entry, label) => labelItem(tx, front, entry, { ...label, by: "clef" }),
+  labelReply: (tx, front, entry, label) =>
+    labelItem(tx, front, entry, { ...label, by: "classifier" }),
   ask: openAsk,
   closeAsk,
 });

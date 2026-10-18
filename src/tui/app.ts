@@ -453,7 +453,7 @@ export async function runTerminal(
     );
   }
 
-  /** First-run guidance: which providers still need /login, and whether Clef is off for lack of one. */
+  /** First-run guidance: which providers still need /login, and whether the classifier is off for lack of one. */
   async function loginHint(
     startup: boolean,
     needs?: Awaited<ReturnType<Client["loginNeeds"]>>,

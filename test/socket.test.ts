@@ -17,7 +17,7 @@ describe("local socket", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const provider = createProvider({

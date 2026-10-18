@@ -14,7 +14,7 @@ A plugin is a folder of code that adds tools, prompt sections and event handlers
 ```
 
 - A name is lowercase letters, digits and dashes. A device's own plugin replaces a synced one of the same name, and both replace a bundled one.
-- Monchu ships bundled plugins too (`src/plugins/`): `clef` (routing advice), `fnox` (keeps secret values in [fnox](https://fnox.jdx.dev)), `jj` (Jujutsu), `herdr` (Herdr agents) and `browser` (`agent_browser`, over the agent-browser CLI). They use the same API, load the same way, and `disabled` turns them off too. Each wraps one tool or service a user may not have; what belongs in the core and what in a plugin is in the repository's `AGENTS.md`.
+- Monchu ships bundled plugins too (`src/plugins/`): `classifier` (routing advice), `fnox` (keeps secret values in [fnox](https://fnox.jdx.dev)), `jj` (Jujutsu), `herdr` (Herdr agents) and `browser` (`agent_browser`, over the agent-browser CLI). They use the same API, load the same way, and `disabled` turns them off too. Each wraps one tool or service a user may not have; what belongs in the core and what in a plugin is in the repository's `AGENTS.md`.
 - If `plugins.local.json` can't be read or parsed, no home plugin loads (bundled ones still do) and a warning says why.
 - Plugins are only read from the home. Monchu never loads code from a conversation's directory or a project.
 

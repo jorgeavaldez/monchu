@@ -568,7 +568,9 @@ text(await tools[found.name]({ city: "Testville" }));`,
           models: value.models,
           saveSettings: async () => {},
         });
-        const loaded = (await plugins.load({ ...defaultConfig(), plugins: { clef: null } })).use({
+        const loaded = (
+          await plugins.load({ ...defaultConfig(), plugins: { classifier: null } })
+        ).use({
           tools: new Set(),
           tasks: new Set(),
         });

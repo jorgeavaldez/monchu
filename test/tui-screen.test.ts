@@ -312,7 +312,7 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
     );
     prepareHome(home);
     const backend = await Monchu.open(home, value.faux.provider);
@@ -382,7 +382,7 @@ it("keeps notices beside their entries through compaction and says the context w
     JSON.stringify({
       front: fauxRole,
       worker: fauxRole,
-      plugins: { clef: null },
+      plugins: { classifier: null },
       settings: { compaction: { keepRecentTokens: 1 } },
     }),
   );
@@ -424,7 +424,7 @@ it("keeps API-key login prompts out of chat, editor history and raw terminal out
   const role = { ...fauxRole, provider: "opencode" };
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: role, worker: role, plugins: { clef: null } }),
+    JSON.stringify({ front: role, worker: role, plugins: { classifier: null } }),
   );
   const provider = createProvider({
     id: value.faux.provider.id,

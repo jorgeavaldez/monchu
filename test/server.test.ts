@@ -29,7 +29,7 @@ async function openServer(opened: (backend: Monchu) => void = () => {}) {
   await mkdir(home);
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { classifier: null } }),
   );
   prepareHome(home);
   route(value.faux, (request) => fauxAssistantMessage(`echo: ${textOf(request.messages.at(-1))}`));

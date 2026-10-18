@@ -185,7 +185,7 @@ describe("Monchu models", () => {
         })
       ).warnings,
     ).toEqual([]);
-    // Jev, which the Clef plugin can use, is a classifier model of both OpenCode Zen and OpenRouter.
+    // Jev, which the classifier plugin can use, is a classifier model of both OpenCode Zen and OpenRouter.
     expect(models.getModelOfType("classifier", "opencode", "jev-1.13")?.api).toBe(
       "typesafe-system-one",
     );

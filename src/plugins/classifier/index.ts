@@ -1,14 +1,14 @@
 /**
- * The bundled Clef plugin: the front's routing helper. Beside each of the user's messages to a front it asks a small
+ * The bundled classifier plugin: the front's routing helper. Beside each of the user's messages to a front it asks a small
  * classifier, with the front's workers and goals as context, whether the message needs a worker, whose line of context
  * it continues, and whether it holds several lines of work. The front's first request for the message waits briefly
- * for that advice. When Clef is sure a worker is needed and the front reaches for other tools instead, the tool result
+ * for that advice. When the classifier is sure a worker is needed and the front reaches for other tools instead, the tool result
  * carries a nudge; when the front finishes without routing, one follow-up asks it to. It never grants permission.
  * It also labels each of the front's messages in the user's inbox: what kind it is (an ask, a milestone, an update or
  * a reply) and which goal it is about, so the user can filter the stream and be pushed the asks and milestones.
  *
  * The classifier is any provider's classifier model: Cloudflare Workers AI's Clef by default, or another one set as
- * `plugins.clef` in `config.json` (`{ "provider": "opencode", "modelId": "jev-1.13" }`; `null` turns Clef off on every
+ * `plugins.classifier` in `config.json` (`{ "provider": "opencode", "modelId": "jev-1.13" }`; `null` turns the classifier off on every
  * device). It runs only while that provider has credentials, and never falls back to another model.
  */
 import type { Context } from "@earendil-works/chord";
@@ -36,7 +36,7 @@ import {
 /** Below this probability of its pick an answer informs the front but never nudges or escalates. */
 const SURE = 0.75;
 
-/** How long the front's first request for an input waits for Clef by default; it usually answers within a second. */
+/** How long the front's first request for an input waits for the classifier by default; it usually answers within a second. */
 const WAIT_MS = 2500;
 
 /** Tools the front uses to route; any other tool on input that needs a worker draws a nudge. */
@@ -56,7 +56,7 @@ const DEFAULT = { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/cl
 /** One routing answer with the model's probability for it. */
 type Answer<T extends string> = { choice: T; probability: number };
 
-/** Clef's answers for one front input, or why it has none. */
+/** The classifier's answers for one front input, or why it has none. */
 export type AssessmentResult =
   | {
       status: "routed";
@@ -91,7 +91,7 @@ export const AssessmentsDoc = defineDoc<{ items: Assessment[] }>({
 
 /**
  * The user's pause switch, kept on the front so it survives restarts and reloads, and the last failure shown, so a
- * repeating one is shown once until Clef answers again.
+ * repeating one is shown once until the classifier answers again.
  */
 export const RoutingDoc = defineDoc<{ paused: boolean; failure?: string }>({
   kind: "monchu.routing",
@@ -127,7 +127,7 @@ export function describeAssessment(result: AssessmentResult): string {
 const describeRole = (role: WorkerProfile) =>
   `${role.provider}/${role.modelId}, thinking ${role.thinkingLevel}`;
 
-/** A worker as Clef sees it. */
+/** A worker as the classifier sees it. */
 type RosterEntry = { name: string; open: boolean; about: string };
 type GoalBrief = { title: string; workstream: string; workers: string[] };
 
@@ -237,7 +237,7 @@ function advice(result: AssessmentResult, profiles: Readonly<Record<string, Work
     lines.push(
       `a new worker for it fits profile ${result.profile.choice} (${describeRole(profile)}; ${percent(result.profile.probability)})`,
     );
-  return `Routing helper (Clef) on the user's latest message: ${lines.join("; ")}. A small classifier's advice: weigh it with what you know; it grants no permission.`;
+  return `Routing helper (classifier) on the user's latest message: ${lines.join("; ")}. A small classifier's advice: weigh it with what you know; it grants no permission.`;
 }
 
 const KINDS: Record<InboxKind, string> = {
@@ -325,14 +325,14 @@ type AssessState = { phase: "classify" } | { phase: "escalate"; result: Assessme
 /** What a settled assessment's notice says, and whether a failure repeats one already shown. */
 function noticeOf(result: AssessmentResult, shown: string | undefined) {
   if (result.status !== "failed")
-    return { text: `clef · ${describeAssessment(result)}`, failure: undefined };
+    return { text: `classifier · ${describeAssessment(result)}`, failure: undefined };
   // Keyed by the HTTP status when there is one, so a provider's changing error body doesn't repeat it.
   const failure = /\((\d{3})\)/.exec(result.message)?.[1] ?? result.message.slice(0, 120);
   return {
     text:
       shown === failure
         ? undefined
-        : `clef · unavailable (${result.message.slice(0, 200)}) · /clef off pauses it`,
+        : `classifier · unavailable (${result.message.slice(0, 200)}) · /classifier off pauses it`,
     failure,
   };
 }
@@ -342,7 +342,7 @@ function pick(
   models: PluginModels,
   config: unknown,
 ): { model: ClassifierModel<ClassifierApi>; waitMs: number } | { off: string } | { error: string } {
-  if (config === null) return { off: "plugins.clef in config.json is null" };
+  if (config === null) return { off: "plugins.classifier in config.json is null" };
   const ref = config === undefined ? DEFAULT : config;
   const field = (key: string): unknown =>
     typeof ref === "object" && ref !== null ? Reflect.get(ref, key) : undefined;
@@ -360,7 +360,7 @@ function pick(
   )
     return {
       error:
-        'plugins.clef in config.json must be { "provider": "...", "modelId": "...", "waitMs"?: number } or null',
+        'plugins.classifier in config.json must be { "provider": "...", "modelId": "...", "waitMs"?: number } or null',
     };
   const model = models.getModelOfType("classifier", provider, modelId);
   if (model !== undefined)
@@ -370,7 +370,7 @@ function pick(
     .map((each) => `${each.provider}/${each.id}`)
     .join(", ");
   return {
-    error: `no classifier model ${provider}/${modelId}, so Clef is off; classifier models: ${known || "none"}`,
+    error: `no classifier model ${provider}/${modelId}, so the classifier is off; classifier models: ${known || "none"}`,
   };
 }
 
@@ -418,9 +418,9 @@ export default definePlugin((monchu) => {
   if ("error" in chosen) monchu.report(chosen.error);
   let model = "model" in chosen ? chosen.model : undefined;
   const waitMs = "model" in chosen ? chosen.waitMs : WAIT_MS;
-  if (model !== undefined) monchu.wantsLogin(model.provider, "routing advice (Clef)");
+  if (model !== undefined) monchu.wantsLogin(model.provider, "routing advice (classifier)");
 
-  /** Whether the classifier's provider has credentials now; a later /login turns Clef on without a reload. */
+  /** Whether the classifier's provider has credentials now; a later /login turns the classifier on without a reload. */
   async function available(): Promise<boolean> {
     if (model === undefined) return false;
     try {
@@ -551,7 +551,7 @@ export default definePlugin((monchu) => {
               {
                 type: "input",
                 content: agents.noticeText(
-                  `routing advice (Clef): ${describeAssessment(result)}`,
+                  `routing advice (classifier): ${describeAssessment(result)}`,
                   `The routing helper is sure the user's last message needs a worker, and nothing was routed for it. If it is authorized work, route it now to the worker whose line of context it continues, or start one, then tell the user in one short line. If you already handled it, reply with one short line.\nRequest: ${task.input.message.slice(0, 2000)}`,
                 ),
                 whenBusy: "followUp",
@@ -657,7 +657,7 @@ export default definePlugin((monchu) => {
     return { submissionId, taskId, result: null, escalated: false, started: crew.started };
   }
 
-  // Assess each message to a front beside its admission; neither the receipt nor the reply waits for Clef.
+  // Assess each message to a front beside its admission; neither the receipt nor the reply waits for the classifier.
   monchu.on("input", async (event, ctx) => {
     if (!(await available())) return undefined;
     const front = ctx.conversationId;
@@ -697,8 +697,8 @@ export default definePlugin((monchu) => {
    * The advice, as a prompt section, so it joins the front's transcript once, where it first applies, and every later
    * request carries it unchanged: a per-request message would differ from round to round and cost the prompt cache (on
    * the Claude Code bridge, a restarted query). The first request for an input waits briefly for its answer; an answer
-   * that comes later joins at the next request. Inputs Clef doesn't assess, such as worker reports, keep the advice for
-   * the user's latest assessed message. A conversation Clef never assessed, a worker's included, has no section.
+   * that comes later joins at the next request. Inputs the classifier doesn't assess, such as worker reports, keep the advice for
+   * the user's latest assessed message. A conversation the classifier never assessed, a worker's included, has no section.
    */
   monchu.registerSection("advice", async (input, context) => {
     const front = input.conversationId;
@@ -723,7 +723,7 @@ export default definePlugin((monchu) => {
         ? now.findLast((entry) => entry.result !== null)
         : now.find((entry) => entry.submissionId === item.submissionId);
     if (assessed?.result == null)
-      return "Routing helper (Clef): no advice yet on the user's latest message. Route by your own judgment.";
+      return "Routing helper (classifier): no advice yet on the user's latest message. Route by your own judgment.";
     return advice(assessed.result, profiles);
   });
 
@@ -762,36 +762,36 @@ export default definePlugin((monchu) => {
   });
 
   const PAUSED =
-    "routing advice (Clef) paused · messages go to the front unassessed · /clef on resumes it";
-  monchu.registerCommand("clef", {
+    "routing advice (classifier) paused · messages go to the front unassessed · /classifier on resumes it";
+  monchu.registerCommand("classifier", {
     usage: "[on|off|models|use <provider>/<model>|use none]",
-    description: "routing advice (Clef): show, pause, resume or pick its classifier",
+    description: "routing advice (classifier): show, pause, resume or pick its classifier",
     handler: async (args, ctx) => {
       const [action = "", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
       if (action === "models") {
         const listed = await models.getAvailableOfType("classifier");
         ctx.ui.notify(
           listed.length === 0
-            ? "clef · no classifier model has a login · /login → Cloudflare Workers AI, OpenCode Zen or OpenRouter"
+            ? "classifier · no classifier model has a login · /login → Cloudflare Workers AI, OpenCode Zen or OpenRouter"
             : [
-                "clef · classifier models with a login:",
+                "classifier · classifier models with a login:",
                 ...listed.map(
                   (each) =>
                     `${each.provider}/${each.id}${each.provider === model?.provider && each.id === model.id ? " (in use)" : ""}`,
                 ),
-                "/clef use <provider>/<model> picks one",
+                "/classifier use <provider>/<model> picks one",
               ].join("\n"),
         );
         return;
       }
       if (action === "use") {
         if (target === undefined || extra.length > 0)
-          throw new Error("Usage: /clef use <provider>/<model>, or /clef use none");
+          throw new Error("Usage: /classifier use <provider>/<model>, or /classifier use none");
         if (target === "none") {
           await monchu.saveConfig(null);
           model = undefined;
           ctx.ui.notify(
-            "routing advice (Clef) off on every device · /clef use <provider>/<model> turns it on",
+            "routing advice (classifier) off on every device · /classifier use <provider>/<model> turns it on",
           );
           return;
         }
@@ -801,31 +801,31 @@ export default definePlugin((monchu) => {
           slash < 1 ? undefined : models.getModelOfType("classifier", ref.provider, ref.modelId);
         if (next === undefined)
           throw new Error(
-            `no classifier model ${target}; /clef models lists the ones with a login`,
+            `no classifier model ${target}; /classifier models lists the ones with a login`,
           );
         await monchu.saveConfig(waitMs === WAIT_MS ? ref : { ...ref, waitMs });
         model = next;
         ctx.ui.notify(
-          `clef · uses ${ref.provider}/${ref.modelId} on every device${(await available()) ? "" : " · needs its /login"}`,
+          `classifier · uses ${ref.provider}/${ref.modelId} on every device${(await available()) ? "" : " · needs its /login"}`,
         );
         return;
       }
       if (action !== "" && action !== "on" && action !== "off")
-        throw new Error("Usage: /clef [on|off|models|use <provider>/<model>|use none]");
+        throw new Error("Usage: /classifier [on|off|models|use <provider>/<model>|use none]");
       const paused = await ctx.commit(async (tx) => {
         const state = await tx.doc(RoutingDoc, ctx.root);
         if (action !== "") state.paused = action === "off";
         return state.paused;
       });
-      if (action !== "") ctx.ui.setStatus("clef", paused ? PAUSED : undefined);
+      if (action !== "") ctx.ui.setStatus("classifier", paused ? PAUSED : undefined);
       const on = await available();
       const using = model === undefined ? "no classifier" : `${model.provider}/${model.id}`;
       ctx.ui.notify(
         paused
           ? `${PAUSED}${on ? "" : " (it also needs its login or config)"}`
           : on
-            ? `routing advice (Clef) on · ${using} · /clef off pauses it`
-            : `routing advice (Clef) off · ${model === undefined ? "no classifier: /clef models" : `needs /login for ${model.provider}`}`,
+            ? `routing advice (classifier) on · ${using} · /classifier off pauses it`
+            : `routing advice (classifier) off · ${model === undefined ? "no classifier: /classifier models" : `needs /login for ${model.provider}`}`,
       );
     },
   });
