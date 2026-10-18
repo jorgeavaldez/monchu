@@ -8,8 +8,8 @@ import type { AnyContract, GetOptions, Host, InputOf, Readable, Ref } from "@ear
 import type { Watched } from "./client.ts";
 import type { Principal } from "./contract.ts";
 
-/** Whether the object answers now (`live`), or is being reached again (`lost`). */
-export type Reach = "live" | "lost";
+/** Whether the object answers now (`live`), is being reached again (`lost`), or was asked for in vain (`gone`). */
+export type Reach = "live" | "lost" | "gone";
 
 /** How long a lost object is asked for before it counts as gone: long enough for a restart. */
 const REGAIN_FOR_MS = 30_000;
@@ -90,14 +90,15 @@ export class Lasting<C extends AnyContract> {
       if (this.closed || ref !== this.current) return;
       if (status === "live") this.tell("live");
       else if (status === "loading") this.tell("lost");
-      else if (status === "gone") {
+      else {
+        // Gone, or released by the other side (this one stops following before it releases its own).
         this.tell("lost");
         void this.regain();
       }
     });
   }
 
-  /** Ask again, quickly at first, until the new core answers or patience runs out. */
+  /** Ask again, quickly at first, until the new core answers or patience runs out, which says `gone`. */
   private async regain(): Promise<void> {
     if (this.regaining) return;
     this.regaining = true;
@@ -119,6 +120,7 @@ export class Lasting<C extends AnyContract> {
         this.tell(ref.status === "live" ? "live" : "lost");
         return;
       }
+      if (!this.closed) this.tell("gone");
     } finally {
       this.regaining = false;
     }

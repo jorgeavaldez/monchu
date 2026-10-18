@@ -2,7 +2,7 @@
  * The web client's state: signals the views read, and the actions behind every command. All core access goes through
  * the shared `Client` contract, so the web does what the terminal does, with the same command table.
  */
-import { batch, signal, type Signal } from "@preact/signals";
+import { batch, effect, signal, type Signal } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Attachment } from "../api/attachments.ts";
@@ -79,8 +79,9 @@ export const loginStatus = signal<{ message: string; url?: string; code?: string
 );
 /** Bumped when the user sends a message, so the transcript goes back to its end and follows it. */
 export const following = signal(0);
-/** The editor's text, so a stopped front's queued messages can come back into it. */
-export const draft = signal("");
+/** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
+export const draft = signal(sessionStorage.getItem("draft") ?? "");
+effect(() => sessionStorage.setItem("draft", draft.value));
 
 let core: Client | undefined;
 let current: RootClient | undefined;
@@ -692,29 +693,27 @@ export function attachFile(name: string, data: Uint8Array): Promise<Attachment> 
 }
 
 /**
- * One editor submission: a message, a skill, or a command, as the terminal handles it. Resolves true once a message
- * carried `attachments`; files alone make a message, and with a command they wait for the next one.
+ * One editor submission: a message, a skill, or a command, as the terminal handles it. Resolves `sent` once a message
+ * carried `attachments` (files alone make a message, and with a command they wait for the next one), `failed` when it
+ * didn't go, so the editor takes the text back.
  */
 export async function submit(
   raw: string,
   attachments: readonly Attachment[] = [],
-): Promise<boolean> {
-  let input;
+): Promise<"sent" | "done" | "failed"> {
   try {
-    input =
+    const input =
       raw.trim() || attachments.length === 0
         ? parseInput(raw)
         : { command: "message" as const, text: "" };
+    if (input === undefined) return "done";
+    return (await runInput(input, attachments)) === true ? "sent" : "done";
   } catch (error) {
-    notice(error instanceof Error ? error.message : String(error), "warning");
-    return false;
-  }
-  if (input === undefined) return false;
-  try {
-    return (await runInput(input, attachments)) === true;
-  } catch (error) {
-    notice(error instanceof Error ? error.message : String(error), "warning");
-    return false;
+    notice(
+      `${error instanceof Error ? error.message : String(error)} · back in the editor`,
+      "warning",
+    );
+    return "failed";
   }
 }
 

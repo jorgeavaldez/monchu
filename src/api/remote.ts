@@ -193,6 +193,9 @@ export class RemoteClient implements Client {
   /** Method-only references to the roots this client called, kept until it closes. */
   private readonly roots = new Map<string, Promise<Lasting<typeof Root>>>();
   private lostAt: number | undefined;
+  /** Says `gone` if the session is still out of reach once its patience is over, whatever kept it from answering. */
+  private watchdog: ReturnType<typeof setTimeout> | undefined;
+  private ended = false;
 
   private constructor(host: Host<Principal>, session: Lasting<typeof Session>) {
     this.host = host;
@@ -202,6 +205,9 @@ export class RemoteClient implements Client {
     session.patience = () => this.patience();
     session.onReach((reach) => {
       if (reach === "lost") return this.disconnected();
+      if (reach === "gone") return this.gone();
+      clearTimeout(this.watchdog);
+      this.ended = false;
       const lost = this.lostAt;
       this.lostAt = undefined;
       if (lost === undefined) return;
@@ -229,6 +235,10 @@ export class RemoteClient implements Client {
   ): Promise<Lasting<C>> {
     const lasting = await this.run(() => Lasting.open(this.host, type, input, options));
     lasting.patience = () => this.patience();
+    // A view or root that can't be had again leaves this client showing stale values: it is as gone as the session.
+    lasting.onReach((reach) => {
+      if (reach === "gone") this.gone();
+    });
     return lasting;
   }
 
@@ -286,6 +296,8 @@ export class RemoteClient implements Client {
   private disconnected(): void {
     if (this.lostAt !== undefined) return;
     this.lostAt = Date.now();
+    clearTimeout(this.watchdog);
+    this.watchdog = setTimeout(() => this.gone(), this.patience() + 5000);
     const updating = this.release.updating;
     this.notice(
       updating === null
@@ -297,6 +309,9 @@ export class RemoteClient implements Client {
 
   /** The redials gave up: the core stays out of reach until it is started again. */
   gone(): void {
+    clearTimeout(this.watchdog);
+    if (this.ended) return;
+    this.ended = true;
     this.notice("Monchu is gone; start it again, then reload");
     this.tell("gone");
   }
@@ -317,6 +332,7 @@ export class RemoteClient implements Client {
   }
 
   close(): void {
+    clearTimeout(this.watchdog);
     this.session.release();
     for (const lasting of this.roots.values())
       void lasting.then(

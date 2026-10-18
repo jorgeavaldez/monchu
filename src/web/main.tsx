@@ -38,6 +38,11 @@ function socketLike(socket: WebSocket): WebSocketLike {
   };
 }
 
+async function reloadWhenUp(): Promise<void> {
+  while (!(await up())) await new Promise((wait) => setTimeout(wait, 3000));
+  location.reload();
+}
+
 async function dial(): Promise<Link | undefined> {
   if (!(await up())) return undefined;
   return new Promise((resolve) => {
@@ -72,12 +77,7 @@ async function boot(): Promise<void> {
       if (error.message === OUTDATED_CORE) location.reload();
       else if (page !== undefined && page.client.release.updating !== null) location.reload();
     },
-    onReconnect: (ms) => {
-      // An update replaced the page's own files: load the new ones.
-      if (page !== undefined && page.client.release.version !== page.version)
-        return location.reload();
-      page?.client.record("web", "reconnected", { ms });
-    },
+    onReconnect: (ms) => page?.client.record("web", "reconnected", { ms }),
   });
   if (attached === undefined) {
     connection.value = "gone";
@@ -88,8 +88,14 @@ async function boot(): Promise<void> {
   const { client } = attached;
   page = { client, version: client.release.version };
   const watch = telemetry(client);
+  // An update replaced the page's own files: load the new ones, once the new core says so.
+  client.onRelease((release) => {
+    if (release.updating === null && release.version !== page?.version) location.reload();
+  });
   client.onConnection((state) => {
     connection.value = state;
+    // Given up on: a fresh page holds everything anew, through the login if need be, once the server answers.
+    if (state === "gone") void reloadWhenUp();
   });
   await start(client);
   await startSecrets(client);

@@ -20,6 +20,7 @@ import { Keys } from "./keys.tsx";
 import {
   attachFile,
   client,
+  connection,
   draft,
   editing,
   endEdit,
@@ -95,8 +96,10 @@ export function Editor() {
     const attachments = readyAttachments();
     if (attachments === undefined) return notice("still uploading · send when the files are up");
     draft.value = "";
-    void submit(text, attachments).then((sent) => {
-      if (sent) clearPending();
+    void submit(text, attachments).then((outcome) => {
+      if (outcome === "sent") clearPending();
+      // Never lost: what didn't go comes back ahead of anything typed since.
+      if (outcome === "failed") draft.value = [text, draft.value].filter(Boolean).join("\n");
     });
   };
   const accept = (item: Suggestion) => {
@@ -161,7 +164,13 @@ export function Editor() {
         class={mode.value === "steer" ? "steer" : ""}
         rows={1}
         value={draft.value}
-        placeholder={editing.value === undefined ? "message" : "queued message"}
+        placeholder={
+          connection.value !== "live" && connection.value !== "connecting"
+            ? "not connected · reconnecting"
+            : editing.value === undefined
+              ? "message"
+              : "queued message"
+        }
         autofocus
         onInput={(event) => {
           draft.value = event.currentTarget.value;

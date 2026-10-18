@@ -363,7 +363,7 @@ function LinkDot() {
         title={LINK.gone}
         onClick={() => location.reload()}
       >
-        ●
+        ● {LINK.gone}
       </button>
     );
   return (
@@ -374,7 +374,7 @@ function LinkDot() {
       aria-label={LINK[state]}
       title={LINK[state]}
     >
-      {state === "live" ? "●" : "○"}
+      {state === "live" ? "●" : `○ ${LINK[state]}`}
     </span>
   );
 }

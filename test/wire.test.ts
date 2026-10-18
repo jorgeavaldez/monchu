@@ -204,6 +204,38 @@ describe("wire", () => {
     }
   });
 
+  it("gets the session again when the other side releases it, so calls work again", async () => {
+    const core = await openCore();
+    let session: number | undefined;
+    let release = false;
+    const { client, close } = await attach(core.host, person("a"), {
+      send: (frame) => {
+        if (frame.t === "hold" && JSON.stringify(frame.token).includes("monchu.session"))
+          session ??= frame.id;
+        return frame;
+      },
+      // The next frame for the session's hold arrives as its end, released, as a stopping core's relay may say it.
+      receive: (frame) => {
+        if (!release || frame.t !== "state" || frame.hold !== session) return frame;
+        release = false;
+        return { t: "gone", id: frame.hold, error: { code: "released", message: "released" } };
+      },
+    });
+    try {
+      const id = await client.currentRoot();
+      const states: string[] = [];
+      client.onConnection((state) => states.push(state));
+      release = true;
+      await core.backend.renameRoot(id, "released");
+      await waitFor(() => states.includes("live"));
+      expect(states).toEqual(["lost", "live"]);
+      await client.renameRoot(id, "back");
+    } finally {
+      await close();
+      await core.close();
+    }
+  });
+
   it("uploads an attachment through dropped connections, before it starts and between its chunks", async () => {
     const core = await openCore();
     const back = Promise.withResolvers<void>();
