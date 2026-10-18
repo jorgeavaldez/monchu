@@ -478,6 +478,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
       if (!filtered) nodes.push(<NoticeLine key={`n${item.id}`} item={item} />);
     }
   };
+  let kept = 0;
   for (const [index, entry] of view.entries.entries()) {
     if (index > 0 || entry.head === undefined) flush(entry.id);
     const calls =
@@ -492,6 +493,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
             .join("")
         : "";
     if (!keep(entry)) continue;
+    kept++;
     const item = items.get(entry.id);
     const key = `${calls}:${prefixes.get(entry.id) ?? 0}:${item?.kind}:${item?.goal}:${item?.state}`;
     const cached = cache.get(entry);
@@ -629,7 +631,13 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
             running={live.output.find((output) => output.id === call.id)?.text}
           />
         ))}
-      {live.status ? <div class="status">{live.status}</div> : null}
+      {filtered && kept === 0 ? (
+        <div class="status">
+          nothing here yet · the front labels a message by starting it with ask, done or update;
+          /clef labels the rest
+        </div>
+      ) : null}
+      {live.status && !filtered ? <div class="status">{live.status}</div> : null}
       {left.value !== undefined && (unread > 0 || streaming) ? (
         <button
           class="unread"

@@ -1676,6 +1676,15 @@ async function journeys(
           (await page(`document.querySelectorAll(".transcript .assistant").length`)) === 1,
         "the asks filter shows more than the ask",
       );
+      // A kind with nothing in it says so, and never shows the front's live status.
+      await browser("click", ".filters button:nth-child(3)");
+      check(
+        (await page(
+          `document.querySelector(".transcript .status")?.textContent.includes("nothing here yet")`,
+        )) === true,
+        "an empty filter doesn't say it is empty",
+      );
+      await browser("click", ".filters button:nth-child(3)");
       await browser("click", ".filters .goal");
       await browser("wait", "--fn", `!!document.querySelector(".pick")`);
       await browser("click", ".pick li:nth-child(2) .enter");

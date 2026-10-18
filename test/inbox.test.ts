@@ -6,7 +6,7 @@ import { UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { shortId } from "../src/api/ids.ts";
 import { Monchu } from "../src/core/backend.ts";
-import { closeAsk, headlineOf, openAsk, type InboxItem } from "../src/core/inbox.ts";
+import { closeAsk, headlineOf, markOf, openAsk, type InboxItem } from "../src/core/inbox.ts";
 import { GoalsDoc } from "../src/core/agents/goals.ts";
 import { noticeText } from "../src/api/notices.ts";
 import { encrypt, Pusher } from "../src/core/push.ts";
@@ -45,6 +45,7 @@ describe("inbox", () => {
       const text = textOf(last);
       if (text === "status")
         return fauxAssistantMessage("**Monchu inbox:** ship it now, or after a review?\nI'd ship.");
+      if (text === "shipped") return fauxAssistantMessage("done · nope: the inbox shipped");
       if (text === "relabel")
         return fauxAssistantMessage([fauxToolCall("inbox", { id: ask, kind: "ask", goal: "" })], {
           stopReason: "toolUse",
@@ -78,6 +79,15 @@ describe("inbox", () => {
       await front.submit("next", "r3", "followUp");
       await waitFor(() => sections.some((text) => text.includes("Open asks:")));
       expect(sections.join("\n")).toContain(`${shortId(item.entry)} · ask (open) · no goal`);
+
+      // The front labels its own message by its headline; an unknown goal is none.
+      await front.submit("shipped", "r6", "followUp");
+      await waitFor(() => items.some((each) => each.headline === "the inbox shipped"));
+      expect(items.find((each) => each.headline === "the inbox shipped")).toMatchObject({
+        kind: "milestone",
+        goal: null,
+        by: "front",
+      });
 
       await front.answer(ask, "ship it", "r4", "followUp");
       await waitFor(() =>
@@ -197,6 +207,17 @@ describe("inbox", () => {
     });
     expect(() => parseInput("/answer kx")).toThrow(/Usage/);
     expect(headlineOf("\n## **Done:** inbox shipped\nmore")).toBe("Done: inbox shipped");
+    expect(markOf("done · monchu: inbox shipped")).toEqual({
+      kind: "milestone",
+      goal: "monchu",
+      headline: "inbox shipped",
+    });
+    expect(markOf("ask: ship now or later?")).toEqual({
+      kind: "ask",
+      goal: undefined,
+      headline: "ship now or later?",
+    });
+    expect(markOf("done the thing")).toBeUndefined();
   });
 });
 

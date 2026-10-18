@@ -210,7 +210,12 @@ export class Pusher {
             const response = await fetch(each.endpoint, {
               method: "POST",
               headers: {
-                Authorization: vapid(stored.key, each.endpoint, each.origin),
+                // A VAPID contact must be an https URL or a mailto: a page on a local http origin has none to give.
+                Authorization: vapid(
+                  stored.key,
+                  each.endpoint,
+                  each.origin.startsWith("https://") ? each.origin : "mailto:push@monchu.invalid",
+                ),
                 "Content-Encoding": "aes128gcm",
                 "Content-Type": "application/octet-stream",
                 TTL: String(24 * 3600),

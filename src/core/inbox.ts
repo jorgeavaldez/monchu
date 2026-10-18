@@ -120,6 +120,28 @@ export function headlineOf(text: string): string {
   return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 100))}…`;
 }
 
+const MARKS: Record<string, InboxKind> = {
+  ask: "ask",
+  done: "milestone",
+  update: "update",
+  reply: "reply",
+};
+
+/**
+ * The label a front writes at the start of its headline, `done · monchu: the inbox shipped` or `ask: ship now?`: the
+ * kind (`ask`, `done`, `update`, `reply`), an optional goal id, and the headline after it. `undefined` without one.
+ */
+export function markOf(
+  headline: string,
+): { kind: InboxKind; goal: string | undefined; headline: string } | undefined {
+  const match = /^(ask|done|update|reply)(?:\s*·\s*([a-z0-9][a-z0-9-]{0,47}))?\s*:\s+(\S.*)$/i.exec(
+    headline,
+  );
+  const kind = MARKS[match?.[1]?.toLowerCase() ?? ""];
+  if (match === null || kind === undefined) return undefined;
+  return { kind, goal: match[2]?.toLowerCase(), headline: match[3] ?? "" };
+}
+
 /**
  * Adds the front's replies committed since the last call as items, inside a commit, and returns them. Called after
  * each commit that adds a reply to a root; a reply missed by a crash joins at the next one.
@@ -127,15 +149,29 @@ export function headlineOf(text: string): string {
 export async function noteReplies(tx: Tx, front: ConversationId): Promise<InboxItem[]> {
   const doc = await tx.doc(InboxItemsDoc, front);
   const fresh: InboxItem[] = [];
+  const goals = new Set((await tx.doc(GoalsDoc, front)).goals.map((goal) => goal.id));
   const add = (entry: EntryRecord) => {
     const text = replyText(entry);
     const message = entry.model?.[0];
     if (text === "" || message?.role !== "assistant") return;
-    fresh.push({
-      entry: entry.id,
-      at: message.timestamp + (message.durationMs ?? 0),
-      headline: headlineOf(text),
-    });
+    const at = message.timestamp + (message.durationMs ?? 0);
+    const headline = headlineOf(text);
+    // The front's own label is final, so the routing helper is never asked about it.
+    const mark = markOf(headline);
+    fresh.push(
+      mark === undefined
+        ? { entry: entry.id, at, headline }
+        : {
+            entry: entry.id,
+            at,
+            headline: mark.headline,
+            kind: mark.kind,
+            goal: mark.goal !== undefined && goals.has(mark.goal) ? mark.goal : null,
+            by: "front",
+            labeledAt: Date.now(),
+            ...(mark.kind === "ask" ? { state: "open" as const } : {}),
+          },
+    );
   };
   if (doc.cursor === undefined) {
     // A front's inbox starts at its newest entry: older replies stay out of it.

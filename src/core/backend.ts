@@ -497,7 +497,7 @@ export class Monchu implements Client {
     if (this.closing !== undefined || !(await this.rootIds()).includes(id)) return;
     await this.harness.commit(async (tx) => {
       for (const item of await noteReplies(tx, id)) {
-        const entry = await tx.entry(item.entry);
+        const entry = item.kind === undefined ? await tx.entry(item.entry) : undefined;
         if (entry !== undefined)
           await this.extensions.plugin.front.reply(
             { entry: item.entry, text: replyText(entry), headline: item.headline },
