@@ -9,7 +9,8 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 - Monchu owns its home (`MONCHU_HOME`, default `~/.monchu`), config, and credentials. It reuses Pi's model and auth APIs, but never reads or writes another tool's config or credentials.
 - Credentials, Durable stores, and other runtime state stay on their device. Add every new runtime file to `home-template/gitignore` (seeded as the home's `.gitignore`).
 - Routing advice and classification never authorize side effects. Failures stay visible, and nothing silently falls back.
-- Shipped code, skills, templates, and docs assume nothing about one person's setup (paths, dotfiles, accounts, devices). Discover it or ask.
+- This repo is public. Shipped code, skills, templates, docs, tests, and commit messages assume nothing about one person's setup (paths, dotfiles, accounts, devices). Discover it or ask.
+- An integration with one person's own infra or services (their hosts, domains, farms, accounts) is a private plugin in their home, never this repo. Before pushing, read the diff for hostnames, ids, header or secret names, and personal integrations.
 
 ## Durable
 
