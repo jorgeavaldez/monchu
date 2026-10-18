@@ -70,7 +70,8 @@ import {
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
-import { redact, Vault, type SecretInput, type SecretStore } from "./secrets/vault.ts";
+import type { SecretStore } from "../plugin.ts";
+import { redact, Vault, type SecretInput } from "./secrets/vault.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -116,7 +117,7 @@ export class Monchu implements Client {
   private homeWork: Promise<void> = Promise.resolve();
   private homeNotices = 0;
   private readonly envs: ExecutionEnvs;
-  /** The home's secrets: values in fnox, names here. */
+  /** The home's secrets: names here, values in the store a plugin keeps. */
   private readonly vault: Vault;
   /** The structured log: warnings, timings, model replies and client events. */
   readonly log: Log;
@@ -160,7 +161,7 @@ export class Monchu implements Client {
   }
 
   /**
-   * `secretStore` replaces fnox, for tests and the offline smoke home only. `safe` opens without home plugins, as the
+   * `secretStore` replaces plugins' secret stores, for tests and the offline smoke home only. `safe` opens without home plugins, as the
    * server's supervisor asks once a core with them failed.
    */
   static async open(

@@ -7,14 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { shortId } from "../src/api/ids.ts";
 import { answerRequests, SecretsDoc } from "../src/core/secrets/requests.ts";
 import { createSecrets, fillPlaceholders } from "../src/core/secrets/tool.ts";
-import {
-  ageIdentity,
-  FnoxStore,
-  MemoryStore,
-  StreamRedactor,
-  Vault,
-  redact,
-} from "../src/core/secrets/vault.ts";
+import { MemoryStore, StreamRedactor, Vault, redact } from "../src/core/secrets/vault.ts";
+import { ageIdentity, FnoxStore } from "../src/plugins/fnox/index.ts";
 import {
   cleanup,
   context,

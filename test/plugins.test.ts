@@ -7,6 +7,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { Monchu } from "../src/core/backend.ts";
 import { defaultConfig } from "../src/core/config.ts";
 import { Plugins } from "../src/core/plugins.ts";
+import { Vault } from "../src/core/secrets/vault.ts";
 import {
   callTools,
   cleanup,
@@ -176,7 +177,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       // An edit to any of its files reloads it; the reload tool says what loaded.
       await writeFile(join(home, "plugins", "notes", "version.ts"), `export const version = "v2";`);
       expect(await turn(backend, "reload")).toContain(
-        "Plugins: clef, jj, notes, thrower; not loaded: broken (",
+        "Plugins: clef, fnox, jj, notes, thrower; not loaded: broken (",
       );
       expect(await turn(backend, "read")).toBe("note v2");
 
@@ -403,6 +404,58 @@ export default (monchu) => {
     expect(value.models.getProvider("made")).toBe(live);
     plugins.close();
     expect(value.models.getProvider("made")).toBeUndefined();
+  });
+
+  it("keeps secret values in the one store a plugin registers, once its build runs", async () => {
+    const value = await setup();
+    await plugin(value.directory, "keeper", {
+      "index.js": `const values = new Map();
+Reflect.set(globalThis, "keptValues", values);
+export default (monchu) => monchu.registerSecretStore({
+  write: async (key, value) => { values.set(key, value); },
+  remove: async (key) => { values.delete(key); },
+  readAll: async () => Object.fromEntries(values),
+});`,
+    });
+    const vault = new Vault(join(value.directory, "secrets"));
+    const plugins = new Plugins({
+      home: value.directory,
+      report: (warning) => value.reports.push(warning),
+      vault,
+      models: value.models,
+      saveSettings: async () => {},
+    });
+    const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
+    const config = { ...defaultConfig(), plugins: { clef: null } };
+    // The bundled fnox plugin keeps them by default, so a second store isn't loaded.
+    const both = (await plugins.load(config)).use(reserved);
+    expect(both.status).toContainEqual({
+      name: "keeper",
+      source: "home",
+      state: "failed",
+      error: "plugin fnox already keeps the secrets; turn one of them off in plugins.local.json",
+    });
+    await writeFile(
+      join(value.directory, "plugins.local.json"),
+      JSON.stringify({ disabled: ["fnox"] }),
+    );
+    const running = (await plugins.load(config)).use(reserved);
+    expect(running.status).toContainEqual({ name: "keeper", source: "home", state: "loaded" });
+    // Not before its build runs.
+    await expect(vault.set({ name: "TOKEN", kind: "value", value: "kept-value" })).rejects.toThrow(
+      "No secret store is loaded",
+    );
+    plugins.settle(running);
+    await vault.set({ name: "TOKEN", kind: "value", value: "kept-value" });
+    const kept: unknown = Reflect.get(globalThis, "keptValues");
+    expect(kept instanceof Map ? kept.get("TOKEN") : undefined).toBe("kept-value");
+    // The home check's copy never replaces the running store.
+    (await plugins.load(config)).use(reserved);
+    plugins.settle(running);
+    const use = { tool: "bash", conversation: "kkkk" };
+    expect(await vault.resolve(["TOKEN"], use)).toEqual({ TOKEN: "kept-value" });
+    plugins.close();
+    await expect(vault.resolve(["TOKEN"], use)).rejects.toThrow("No secret store is loaded");
   });
 
   it("lets a device null a shared setting, ignores a transform without text, and shuts down only copies that ran", async () => {

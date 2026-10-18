@@ -7,7 +7,7 @@ import { MemoryStore } from "./secrets/vault.ts";
 /**
  * Explicit offline smoke mode. Its home and Pi resources stay in a throwaway temp directory. The faux roles are
  * rewritten each time; a `web.json` beside them is untouched, so the web server can be tried offline too. Secrets
- * stay in memory, so smoke runs need no fnox and leave nothing behind.
+ * stay in memory, so smoke runs need no secret store plugin and leave nothing behind.
  */
 export async function openDevMonchu(
   home: string,

@@ -47,6 +47,7 @@ import {
   type PluginEvents,
   type PluginTool,
   type PluginUI,
+  type SecretStore,
   type ToolExposure,
   type ToolNamespace,
 } from "../plugin.ts";
@@ -232,6 +233,8 @@ type Contribution = {
   readonly commands: readonly PluginCommandEntry[];
   readonly providers: readonly { readonly provider: Provider; readonly login: PluginLogin }[];
   readonly wants: readonly PluginWant[];
+  /** The secret store it registered. */
+  readonly secrets: SecretStore | undefined;
   readonly input: readonly PluginEvents["input"][];
   readonly inputChange: readonly PluginEvents["input_change"][];
   readonly guard: Guard;
@@ -264,6 +267,8 @@ export type PluginBuild = {
   /** Providers the plugins added, which `/login` offers after Monchu's own. */
   readonly logins: readonly PluginLogin[];
   readonly wants: readonly PluginWant[];
+  /** The one store a plugin keeps secret values in, which the vault uses while this build runs. */
+  readonly secrets: SecretStore | undefined;
   readonly front: FrontEvents;
   readonly status: readonly PluginStatus[];
   readonly warnings: readonly string[];
@@ -639,6 +644,7 @@ export class Plugins {
         const taken = new Map([...reserved.tools].map((name) => [name, "Monchu"]));
         const tasks = new Map([...reserved.tasks].map((name) => [name, "Monchu"]));
         const used: Contribution[] = [];
+        let secrets: Contribution | undefined;
         for (const contribution of contributions) {
           const names = (contribution.extension?.tasks ?? []).map((task) => task.definition.name);
           const tool = contribution.tools.find((name) => taken.has(name));
@@ -649,8 +655,12 @@ export class Plugins {
               : task !== undefined
                 ? { kind: "task", name: task, owner: tasks.get(task) }
                 : undefined;
-          if (clash !== undefined) {
-            const error = `${clash.kind} ${clash.name} is already defined by ${clash.owner === "Monchu" ? "Monchu" : `plugin ${clash.owner}`}`;
+          const keeper = contribution.secrets === undefined ? undefined : secrets?.found.name;
+          if (clash !== undefined || keeper !== undefined) {
+            const error =
+              clash !== undefined
+                ? `${clash.kind} ${clash.name} is already defined by ${clash.owner === "Monchu" ? "Monchu" : `plugin ${clash.owner}`}`
+                : `plugin ${keeper ?? ""} already keeps the secrets; turn one of them off in plugins.local.json`;
             warnings.push(`Plugin ${contribution.found.name} was not loaded: ${error}`);
             const at = status.findIndex((entry) => entry.name === contribution.found.name);
             status[at] = {
@@ -665,6 +675,7 @@ export class Plugins {
           }
           for (const name of contribution.tools) taken.set(name, contribution.found.name);
           for (const name of names) tasks.set(name, contribution.found.name);
+          if (contribution.secrets !== undefined) secrets = contribution;
           used.push(contribution);
         }
         return {
@@ -694,6 +705,7 @@ export class Plugins {
             contribution.providers.map((entry) => entry.login),
           ),
           wants: used.flatMap((contribution) => contribution.wants),
+          secrets: secrets?.secrets,
           front: frontEvents(used),
           status,
           warnings,
@@ -725,6 +737,7 @@ export class Plugins {
       this.set.add(id);
       this.models.setProvider(provider);
     }
+    this.vault.useStore(running?.secrets);
   }
 
   close(): void {
@@ -877,6 +890,7 @@ export class Plugins {
     const commands: PluginCommandEntry[] = [];
     const providers: { provider: Provider; login: PluginLogin }[] = [];
     const wants: PluginWant[] = [];
+    let secrets: SecretStore | undefined;
     const handlers: { [E in keyof PluginEvents]: PluginEvents[E][] } = {
       tool_call: [],
       tool_result: [],
@@ -1033,6 +1047,14 @@ export class Plugins {
         opened();
         wants.push({ provider: String(provider), purpose: String(purpose) });
       },
+      registerSecretStore: (store) => {
+        opened();
+        if (secrets !== undefined) throw new Error("it registers two secret stores");
+        for (const method of ["write", "remove", "readAll"] as const)
+          if (typeof store[method] !== "function")
+            throw new Error(`its secret store has no ${method} function`);
+        secrets = store;
+      },
     };
     try {
       await withTimeout(plugin(api), SETUP_TIMEOUT_MS);
@@ -1095,6 +1117,7 @@ export class Plugins {
       commands,
       providers,
       wants,
+      secrets,
       input: handlers.input,
       inputChange: handlers.input_change,
       guard,

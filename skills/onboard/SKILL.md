@@ -41,7 +41,11 @@ Look, don't guess. Check each candidate exists and how big it is before reading 
 - Durable knowledge they would want to read later (a setup guide, a project overview): their notes, if they keep any, following the notes' own conventions.
 - Merge with what the home already holds; dedupe, keep entries short, and stay within the memory limits.
 
-## 5. Finish
+## 5. Check what Monchu needs here
+
+- Secrets: the bundled `fnox` plugin keeps secret values in [fnox](https://fnox.jdx.dev), which must be on PATH (`fnox --version`). If it is missing, tell the user that agents can't store or use secrets until it is installed (`mise use -g fnox`, or fnox's installer), or until another store plugin replaces `fnox`. Monchu makes its own fnox config and key in the home's `secrets/`; never read or change the user's own fnox setup.
+
+## 6. Finish
 
 - If the home is a repository, commit the changes. Push only to a remote the user set up.
 - Tell the user in a few bullets: what you read, what you saved where, what you skipped and why, and the open questions. Ask for corrections; their word beats any session.

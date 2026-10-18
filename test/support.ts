@@ -225,7 +225,7 @@ export type Setup = {
   /** Decoy Pi directory inside this test home; not created. */
   readonly agentDir: string;
   readonly finders: FffFinders;
-  /** This home's secrets, kept in memory: tests never need fnox. */
+  /** This home's secrets, kept in memory: tests never need a secret store plugin. */
   readonly vault: Vault;
   readonly secretStore: MemoryStore;
 };

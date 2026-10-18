@@ -14,7 +14,7 @@ A plugin is a folder of code that adds tools, prompt sections and event handlers
 ```
 
 - A name is lowercase letters, digits and dashes. A device's own plugin replaces a synced one of the same name, and both replace a bundled one.
-- Monchu ships bundled plugins too (`src/plugins/`: `jj`, and `clef`, the routing helper). They load the same way, and `disabled` turns them off too.
+- Monchu ships bundled plugins too (`src/plugins/`: `jj`; `clef`, the routing helper; and `fnox`, which keeps secret values in [fnox](https://fnox.jdx.dev)). They load the same way, and `disabled` turns them off too.
 - If `plugins.local.json` can't be read or parsed, no home plugin loads (bundled ones still do) and a warning says why.
 - Plugins are only read from the home. Monchu never loads code from a conversation's directory or a project.
 
@@ -132,6 +132,8 @@ Guards fail closed, as in Pi: a `tool_call` handler that throws blocks the call,
 ### Secrets
 
 `monchu.secrets` (Monchu's own) reaches the home's secrets by name: `info(name)` (never a value), `value(key, use)` for the plugin's own credentials, `fill(texts, use)` to replace `{{secret:KEY}}` in what a tool sends (a login with a site only when `origin` matches it), and `redacting(tool)` so a tool's streamed output hides stored values. Every use is audited with `use`'s tool and conversation.
+
+`registerSecretStore(store)` (Monchu's own) keeps the values: `write(key, value)`, `remove(key)` (an absent key is no error) and `readAll()`, by environment-variable key (a login's are `NAME_USERNAME` and `NAME_PASSWORD`). Monchu has no store of its own; the bundled `fnox` plugin is the default one. Monchu keeps names, kinds, sites and use in `<home>/secrets/index.json` and reads values once, until the next change; a store's errors must never carry a value. One plugin keeps the secrets: a second that registers a store is not loaded, so turn `fnox` off in `plugins.local.json` to use your own. The store follows the running build, so the home check's copy or a failed reload never replaces it; with no store loaded, setting or using a secret fails and says so.
 
 ### Agents
 

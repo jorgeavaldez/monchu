@@ -30,4 +30,4 @@ The full reference is `../../docs/plugins.md` (relative to this skill's folder):
 
 ## Turning one off on a device
 
-Add its name to `<home>/plugins.local.json` (`{ "disabled": ["name"] }`, gitignored), then reload. Bundled plugins (`jj`, `clef`) can be turned off the same way.
+Add its name to `<home>/plugins.local.json` (`{ "disabled": ["name"] }`, gitignored), then reload. Bundled plugins (`jj`, `clef`, `fnox`) can be turned off the same way. `fnox` keeps the secret values: turn it off only for a plugin that registers another store (`registerSecretStore`).

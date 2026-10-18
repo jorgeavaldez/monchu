@@ -9,7 +9,7 @@ It is shaped around one person's way of working: subscription models only (ChatG
 
 ## Quick start
 
-You need Node 22.19+ and a ChatGPT or Claude Pro/Max subscription. Install the newest build of `main` as a global `monchu` command, the same way on macOS, Linux, Windows, and Android (Termux):
+You need Node 22.19+ and a ChatGPT or Claude Pro/Max subscription. Secrets (API keys and logins agents use by name, never seeing them) also need [fnox](https://fnox.jdx.dev) on PATH: the bundled `fnox` plugin keeps their values, and any other store can replace it as a plugin. Install the newest build of `main` as a global `monchu` command, the same way on macOS, Linux, Windows, and Android (Termux):
 
 ```sh
 npm install -g --allow-remote=root https://github.com/jorgeavaldez/monchu/releases/download/edge/monchu.tgz
@@ -20,7 +20,8 @@ To update, type `/update` in Monchu (or `/update <version>` for a [tagged releas
 
 1. Monchu creates its home at `~/.monchu`. Set `MONCHU_HOME` to use a different directory.
 2. Run `/login` and pick a provider. With Codex or Claude Code, Monchu uses its models; with OpenCode or OpenRouter (API keys), pick models with `/model` and Ctrl+S.
-3. Ask Monchu to use the `onboard` skill to learn about you from what's already on the machine.
+3. For secrets, install [fnox](https://fnox.jdx.dev) (`mise use -g fnox`, or its own installer). Monchu makes its own fnox config and age key in `~/.monchu/secrets/` and never reads yours.
+4. Ask Monchu to use the `onboard` skill to learn about you from what's already on the machine.
 
 [docs/setup.md](docs/setup.md) covers logins, configuration, MCP servers, and running on several devices; [docs/plugins.md](docs/plugins.md) how to add your own tools and hooks as private plugins. [docs/internals.md](docs/internals.md) covers how Monchu works. `/help` lists the commands.
 

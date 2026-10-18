@@ -153,7 +153,7 @@ export class Extensions {
     options: {
       observeBudget?: (levels: BudgetLevel[]) => void;
       onError?: (error: unknown) => void;
-      /** The home's secrets; by default fnox under `<home>/secrets`. */
+      /** The home's secrets; by default `<home>/secrets`, with values in the store a plugin keeps. */
       vault?: Vault;
       /** The home check's problems for the front (none: they are gone), and the agent that left them. */
       tellHome?: (problems: readonly string[], from?: ConversationId) => void;

@@ -321,6 +321,20 @@ export interface PluginSecrets {
   redacting<P extends TSchema>(tool: PluginTool<P>): PluginTool<P>;
 }
 
+/**
+ * Monchu's own: where the home's secret values live, by key (environment-variable names; a login's are
+ * `NAME_USERNAME` and `NAME_PASSWORD`). Monchu keeps names, kinds, sites and use itself, and hands a store only values.
+ * Errors must never carry a value.
+ */
+export interface SecretStore {
+  /** Stores a value, replacing the key's old one. */
+  write(key: string, value: string): Promise<void>;
+  /** Removes a key's value; one already gone is no error. */
+  remove(key: string): Promise<void>;
+  /** Every stored value by key. Monchu reads them once and keeps them in memory until the next write or remove. */
+  readAll(): Promise<Record<string, string>>;
+}
+
 /** A conversation as Monchu's agents know it. */
 export type AgentInfo =
   | { readonly role: "front"; readonly id: ConversationId }
@@ -486,6 +500,11 @@ export interface PluginApi {
    * `/login` say `<purpose> is off` and how to turn it on.
    */
   wantsLogin(provider: string, purpose: string): void;
+  /**
+   * Monchu's own: keep the home's secret values in `store`. Monchu has no store of its own (the bundled `fnox` plugin is
+   * one), and one plugin at a time keeps them: a second plugin that registers one is not loaded.
+   */
+  registerSecretStore(store: SecretStore): void;
   /**
    * Monchu's own: a Durable task the plugin's tools create, such as a wait that outlives a turn. Name it after the
    * plugin; its definition must be registered at every load, so pending tasks resume.

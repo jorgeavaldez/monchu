@@ -30,7 +30,8 @@ web-client.json
 # Web sign-in sessions, by token hash.
 web-sessions.json
 web-sessions.json*
-# Secrets the user gave Monchu on this device: fnox's config, its age key and the names index.
+# Secrets the user gave Monchu on this device: the names index, and the store plugin's files (the fnox plugin's
+# config and age key).
 secrets/
 .env
 *.env
