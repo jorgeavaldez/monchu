@@ -16,7 +16,7 @@ const OUT = join(ROOT, "dist", "web");
  * Chord's client host brings its whole runtime and TypeBox (about 80 KB gzip of the ~110); the rest is the app. The
  * service worker keeps the script, so it is fetched once per release.
  */
-const BUDGET_GZIP_BYTES = 123 * 1024;
+const BUDGET_GZIP_BYTES = 126 * 1024;
 
 await rm(OUT, { recursive: true, force: true });
 await mkdir(OUT, { recursive: true });

@@ -15,6 +15,7 @@ import {
   Harness,
   type CommitPublication,
   type ConversationId,
+  type EntryId,
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -53,11 +54,14 @@ import {
   type ModelRole,
   type Settings,
 } from "./config.ts";
+import { GoalsDoc } from "./agents/goals.ts";
 import { parentOf, WorkersDoc } from "./agents/workers.ts";
 import { harnessSettings } from "./context.ts";
 import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
 import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
+import { InboxItemsDoc, noteReplies, replyText, type InboxKind } from "./inbox.ts";
+import { Pusher, type PushSubscription } from "./push.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
 import { configuredRoles, defaultProviders, openModels } from "./models/index.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
@@ -122,6 +126,10 @@ export class Monchu implements Client {
   /** The structured log: warnings, timings, model replies and client events. */
   readonly log: Log;
   private readonly stopTelemetry: () => void;
+  /** This device's browsers that asked for pushes, and what sends them. */
+  private readonly pusher: Pusher;
+  /** Inbox work per conversation, one run at a time. */
+  private readonly inboxRuns = new Map<ConversationId, Promise<void>>();
 
   private constructor(
     home: string,
@@ -153,10 +161,26 @@ export class Monchu implements Client {
       show: (id) => this.show(id),
       findRoot: async (prefix) => findRoot(await this.records(), prefix),
     };
+    this.pusher = new Pusher(home, (body, attributes) =>
+      log.write("info", "core.push", body, attributes),
+    );
     const telemetry = modelTelemetry(log);
     this.stopTelemetry = harness.subscribeCommits((publication) => {
       telemetry(publication);
       if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
+      for (const change of publication.changes)
+        if (change.type === "entry" && replyText(change.value) !== "")
+          this.inboxLater(change.value.conversationId, () =>
+            this.noteReplies(change.value.conversationId),
+          );
+        else if (
+          change.type === "document" &&
+          change.record.kind === InboxItemsDoc.definition.kind &&
+          change.conversationId !== undefined
+        ) {
+          const id = change.conversationId;
+          this.inboxLater(id, () => this.pushInbox(id));
+        }
     });
   }
 
@@ -448,6 +472,91 @@ export class Monchu implements Client {
       this.fronts.set(id, front);
     }
     return front;
+  }
+
+  /** Runs inbox work for a conversation after the ones before it; a failure is reported. */
+  private inboxLater(id: ConversationId, work: () => Promise<void>): void {
+    const run = (this.inboxRuns.get(id) ?? Promise.resolve())
+      .then(work)
+      .catch((error: unknown) => {
+        if (this.closing === undefined)
+          this.reports.report(`Inbox: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        if (this.inboxRuns.get(id) === run) this.inboxRuns.delete(id);
+      });
+    this.inboxRuns.set(id, run);
+  }
+
+  /** A root front's new replies join its inbox, and plugins hear of each in the same commit. */
+  private async noteReplies(id: ConversationId): Promise<void> {
+    if (this.closing !== undefined || !(await this.rootIds()).includes(id)) return;
+    await this.harness.commit(async (tx) => {
+      for (const item of await noteReplies(tx, id)) {
+        const entry = await tx.entry(item.entry);
+        if (entry !== undefined)
+          await this.extensions.plugin.front.reply(
+            { entry: item.entry, text: replyText(entry), headline: item.headline },
+            tx,
+            id,
+          );
+      }
+    }, context);
+  }
+
+  /**
+   * Pushes a root's newly labeled asks and milestones to the browsers that want them, at most once each: marked pushed
+   * before they go. One labeled long ago, such as on a front's relabel days later, is not news.
+   */
+  private async pushInbox(id: ConversationId): Promise<void> {
+    if (this.closing !== undefined) return;
+    const now = Date.now();
+    const due = async (item: { kind?: InboxKind; pushed?: boolean; labeledAt?: number }) =>
+      (item.kind === "ask" || item.kind === "milestone") &&
+      item.pushed !== true &&
+      (item.labeledAt ?? 0) > now - 15 * 60_000 &&
+      (await this.pusher.wants(item.kind));
+    const items = (await this.harness.snapshot(InboxItemsDoc, id, context))?.items ?? [];
+    const pending: EntryId[] = [];
+    for (const item of items.slice(-20)) if (await due(item)) pending.push(item.entry);
+    if (pending.length === 0) return;
+    const sent = await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(InboxItemsDoc, id);
+      const marked = doc.items.filter(
+        (item) => pending.includes(item.entry) && item.pushed !== true,
+      );
+      for (const item of marked) item.pushed = true;
+      return marked.map((item) => ({ ...item }));
+    }, context);
+    const goals = (await this.harness.snapshot(GoalsDoc, id, context))?.goals ?? [];
+    for (const item of sent) {
+      if (item.kind === undefined) continue;
+      const goal = goals.find((each) => each.id === item.goal);
+      await this.pusher.send(
+        {
+          title: `${item.kind === "ask" ? "needs you" : "done"}${goal === undefined ? "" : ` · ${goal.title}`}`,
+          body: item.headline,
+          url: `/?root=${shortId(id)}#m-${shortId(item.entry)}`,
+          tag: shortId(item.entry),
+        },
+        item.kind,
+      );
+    }
+  }
+
+  /** This device's web push key, for a browser to subscribe with. */
+  pushKey(): Promise<string> {
+    return this.pusher.publicKey();
+  }
+
+  /** A browser asks for pushes of `kinds` (none stops them). */
+  pushSubscribe(subscription: PushSubscription): Promise<void> {
+    return this.pusher.subscribe(subscription);
+  }
+
+  /** The kinds a browser gets pushed, or `null` when it has no subscription here. */
+  async pushKinds(endpoint: string): Promise<InboxKind[] | null> {
+    return (await this.pusher.kinds(endpoint)) ?? null;
   }
 
   private async records(): Promise<readonly RootRecord[]> {

@@ -157,6 +157,19 @@ export function createDevProvider(): Provider {
           ],
           { stopReason: "toolUse" },
         );
+      // `label <id> <kind> [goal]` labels one of the front's messages in the inbox, as the routing helper would.
+      const label = /^label (\S+) (ask|milestone|update|reply)(?: (\S+))?$/.exec(text);
+      if (label !== null)
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("inbox", {
+              id: label[1] ?? "",
+              kind: label[2] ?? "reply",
+              ...(label[3] === undefined ? {} : { goal: label[3] }),
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
       if (text === "goal waiting")
         return fauxAssistantMessage(
           [fauxToolCall("update_goal", { id: "smoke", status: "waiting" })],

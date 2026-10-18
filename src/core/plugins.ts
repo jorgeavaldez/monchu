@@ -39,6 +39,7 @@ import { noticeText, systemNoticeText } from "../api/notices.ts";
 import {
   PLUGIN_API_VERSION,
   type AfterAdmission,
+  type FrontReplyEvent,
   type InputChangeEvent,
   type InputEvent,
   type Plugin,
@@ -53,6 +54,7 @@ import {
   type ToolNamespace,
 } from "../plugin.ts";
 import { GoalsDoc } from "./agents/goals.ts";
+import { labelItem } from "./inbox.ts";
 import { messageWorker, parentOf, reopenWorker, rootOf, WorkersDoc } from "./agents/workers.ts";
 import { replaceFile, type MonchuConfig } from "./config.ts";
 import { RELOAD_TOOLS } from "./build.ts";
@@ -212,6 +214,8 @@ type FrontEvents = {
   /** Whether any plugin follows queue changes, so the caller reads the front's context only then. */
   readonly changes: boolean;
   change(event: Omit<InputChangeEvent, "type">, tx: Tx, front: ConversationId): Promise<void>;
+  /** Every plugin's `front_reply`, inside the commit that adds the message to the inbox. */
+  reply(event: Omit<FrontReplyEvent, "type">, tx: Tx, front: ConversationId): Promise<void>;
 };
 
 export type PluginStatus = {
@@ -250,6 +254,7 @@ type Contribution = {
   readonly secrets: SecretStore | undefined;
   readonly input: readonly PluginEvents["input"][];
   readonly inputChange: readonly PluginEvents["input_change"][];
+  readonly frontReply: readonly PluginEvents["front_reply"][];
   readonly guard: Guard;
   readonly ui: (id: ConversationId, context: Context) => PluginUI;
   readonly skills: string | undefined;
@@ -925,6 +930,7 @@ export class Plugins {
       session_shutdown: [],
       input: [],
       input_change: [],
+      front_reply: [],
     };
     let open = true;
     const opened = () => {
@@ -1150,6 +1156,7 @@ export class Plugins {
       secrets,
       input: handlers.input,
       inputChange: handlers.input_change,
+      frontReply: handlers.front_reply,
       guard,
       ui,
       skills: existsSync(skills) ? skills : undefined,
@@ -1225,6 +1232,7 @@ const agents = (config: MonchuConfig): PluginApi["agents"] => ({
       workers: [...goal.workers],
     })),
   profiles: config.profiles,
+  labelReply: (tx, front, entry, label) => labelItem(tx, front, entry, { ...label, by: "clef" }),
 });
 
 /** The plugins' front events, in plugin then registration order. */
@@ -1234,6 +1242,9 @@ function frontEvents(used: readonly Contribution[]): FrontEvents {
   );
   const changes = used.flatMap((contribution) =>
     contribution.inputChange.map((handler) => ({ handler, contribution })),
+  );
+  const replies = used.flatMap((contribution) =>
+    contribution.frontReply.map((handler) => ({ handler, contribution })),
   );
   const ctx = (contribution: Contribution, front: ConversationId): PluginContext => ({
     conversationId: front,
@@ -1278,6 +1289,12 @@ function frontEvents(used: readonly Contribution[]): FrontEvents {
       for (const { handler, contribution } of changes)
         await contribution.guard("input_change", () =>
           handler({ ...event, type: "input_change" }, tx, ctx(contribution, front)),
+        );
+    },
+    reply: async (event, tx, front) => {
+      for (const { handler, contribution } of replies)
+        await contribution.guard("front_reply", () =>
+          handler({ ...event, type: "front_reply" }, tx, ctx(contribution, front)),
         );
     },
   };

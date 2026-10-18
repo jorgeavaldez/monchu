@@ -40,4 +40,40 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(caches.match(request).then((cached) => cached ?? fetch(request)));
 });
 
+/** A push from this device's Monchu: shown unless a Monchu page is in front, where the stream already shows it. */
+self.addEventListener("push", (event) => {
+  const message: unknown = event.data?.json();
+  const field = (key: string) => {
+    const value: unknown =
+      typeof message === "object" && message !== null ? Reflect.get(message, key) : undefined;
+    return typeof value === "string" ? value : "";
+  };
+  event.waitUntil(
+    self.clients.matchAll({ type: "window" }).then((windows) =>
+      windows.some((each) => each.visibilityState === "visible" && each.focused)
+        ? undefined
+        : self.registration.showNotification(field("title") || "Monchu", {
+            body: field("body"),
+            tag: field("tag"),
+            data: { url: field("url") || "/" },
+          }),
+    ),
+  );
+});
+
+/** A tap opens the message: in an open Monchu window when there is one. */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data: unknown = event.notification.data;
+  const path: unknown = typeof data === "object" && data !== null ? Reflect.get(data, "url") : "/";
+  const url = new URL(typeof path === "string" ? path : "/", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window" }).then(async (windows) => {
+      const open = windows[0];
+      if (open === undefined) return void (await self.clients.openWindow(url));
+      await (await open.navigate(url))?.focus();
+    }),
+  );
+});
+
 export {};

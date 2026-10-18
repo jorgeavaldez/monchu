@@ -23,6 +23,7 @@ import type { ModelChoice, ModelPick, QueueChange, RootClient } from "../api/cli
 import { shortId } from "../api/ids.ts";
 import type { InputEvent, PluginCommandContext } from "../plugin.ts";
 import {
+  answerText,
   noticeText,
   parseRootNotice,
   parseWorkerNotice,
@@ -44,6 +45,7 @@ import {
 } from "./agents/workers.ts";
 import { thinkingLevels, type ModelRole } from "./config.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
+import { findItem, InboxItemsDoc, type InboxItem } from "./inbox.ts";
 import { ClientNoticesDoc, setStatus } from "./plugin-shapes.ts";
 import type { Extensions } from "./reload.ts";
 import { IMAGE_BUDGET_BYTES, imageBytes, images } from "./tools/images.ts";
@@ -312,6 +314,55 @@ export class Front implements RootClient {
       unsubscribe();
       state.dispose();
     };
+  }
+
+  /** The root's inbox: its front's messages with their labels, newest last, now and as they change. */
+  async watchInbox(listener: (items: readonly InboxItem[]) => void): Promise<() => void> {
+    const front = await this.conversation();
+    await front.commit(async (tx) => {
+      await tx.doc(InboxItemsDoc, front.id);
+    }, context);
+    const state = await this.host.harness.documentState(InboxItemsDoc, front.id, context);
+    if (state === undefined) throw new Error("Inbox document is missing");
+    const unsubscribe = state.subscribe((value) => listener(value?.items ?? []));
+    return () => {
+      unsubscribe();
+      state.dispose();
+    };
+  }
+
+  /**
+   * `/answer`: the user's answer to one of the front's messages, named by a unique prefix of its id, goes to the front
+   * as a message that quotes it, so it stands on its own whatever came between. Any message can be answered; an ask is
+   * marked answered, and a second answer says it corrects the first.
+   */
+  async answer(id: string, text: string, requestId: string, whenBusy: WhenBusy): Promise<void> {
+    if (!text.trim()) throw new Error("Usage: /answer <id> <text>");
+    const front = await this.conversation();
+    const item = findItem(
+      (await this.host.harness.snapshot(InboxItemsDoc, front.id, context))?.items ?? [],
+      id,
+    );
+    const code = shortId(item.entry);
+    await this.submit(
+      answerText({
+        id: code,
+        about: [item.kind ?? "message", ...(item.goal ? [`goal ${item.goal}`] : [])].join(", "),
+        headline: item.headline,
+        again: item.answer !== undefined,
+        text: text.trim(),
+      }),
+      requestId,
+      whenBusy,
+    );
+    await front.commit(async (tx) => {
+      const stored = (await tx.doc(InboxItemsDoc, front.id)).items.find(
+        (each) => each.entry === item.entry,
+      );
+      if (stored === undefined) return;
+      stored.answer = text.trim().slice(0, 200);
+      if (stored.kind === "ask") stored.state = "answered";
+    }, context);
   }
 
   /** Plugins' status lines on this root, for a client opening it. */

@@ -29,6 +29,7 @@ type Input =
         | "/attach";
       text: string;
     }
+  | { command: "/answer"; id: string; text: string }
   | { command: "skill"; name: string; text: string }
   | { command: "plugin"; name: string; text: string };
 
@@ -49,6 +50,10 @@ export const commands: Record<
     help: "roots: switch, start, rename, archive; each has its own crew",
   },
   "/goals": { usage: "", help: "ongoing projects and commitments" },
+  "/answer": {
+    usage: "<id> <text>",
+    help: "answer one of Monchu's messages by its id; it reaches the front quoted",
+  },
   "/jobs": {
     usage: "",
     help: "every job (agent, command, bg) and recent job events",
@@ -188,6 +193,12 @@ export function parseInput(raw: string): Input | undefined {
     case "/cd":
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
+    case "/answer": {
+      const id = rest.split(/\s+/, 1)[0] ?? "";
+      const text = rest.slice(id.length).trim();
+      if (!id || !text) throw new Error(`Usage: ${command} ${commands[command].usage}`);
+      return { command, id, text };
+    }
     default:
       // A plugin's command, which the core runs; it answers an unknown one.
       if (/^\/[a-z][a-z0-9-]*$/.test(command))

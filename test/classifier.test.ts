@@ -21,6 +21,7 @@ import { ClientNoticesDoc } from "../src/core/plugin-shapes.ts";
 import { createPluginSections, Plugins } from "../src/core/plugins.ts";
 import { AssessmentsDoc, RoutingDoc } from "../src/plugins/clef/index.ts";
 import { GoalsDoc } from "../src/core/agents/goals.ts";
+import { InboxItemsDoc, noteReplies } from "../src/core/inbox.ts";
 import { startWorker, WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   allEntries,
@@ -613,6 +614,66 @@ describe("routing helper", () => {
         /^Plugin clef: no classifier model nowhere\/clef-test, so Clef is off; classifier models: .*clef-test\/clef-test/,
       ),
     );
+    await test.harness.close(context);
+  });
+
+  it("labels each of the front's messages in the inbox with its kind and goal", async () => {
+    const test = await withAssessment();
+    test.classifier.answer = (request) => {
+      if (request.questions.kind === undefined) return routed("front", 0.9);
+      const choice = (picked: string, probability: number) => ({
+        type: "choice" as const,
+        choice: picked,
+        confidence: 0.8,
+        probabilities: { [picked]: probability },
+      });
+      return {
+        api: "test-classifier",
+        provider: "clef-test",
+        model: "clef-test",
+        answers: { kind: choice("milestone", 0.92), goal: choice("monchu", 0.8) },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      };
+    };
+    await test.root.commit(async (tx) => {
+      (await tx.doc(GoalsDoc, test.root.id)).goals.push({
+        id: "monchu",
+        title: "Monchu's inbox",
+        kind: "endeavor",
+        status: "active",
+        workstream: "labels and pushes",
+        workers: [],
+        next: "ship",
+        updatedAt: 0,
+      });
+    }, context);
+    route(test.faux, () => fauxAssistantMessage("Inbox shipped: labels and pushes are live"));
+    await test.send("status");
+    await test.root.commit(async (tx) => {
+      for (const item of await noteReplies(tx, test.root.id))
+        await test.front.reply(
+          { entry: item.entry, text: item.headline, headline: item.headline },
+          tx,
+          test.root.id,
+        );
+    }, context);
+    const inbox = async () =>
+      (await test.harness.snapshot(InboxItemsDoc, test.root.id, context))?.items ?? [];
+    await waitFor(async () => (await inbox()).some((item) => item.kind !== undefined));
+    expect(await inbox()).toMatchObject([
+      {
+        headline: "Inbox shipped: labels and pushes are live",
+        kind: "milestone",
+        goal: "monchu",
+        by: "clef",
+        probability: 0.92,
+      },
+    ]);
+    const asked = test.classifier.requests.find((request) => request.questions.kind !== undefined);
+    expect(
+      Object.keys(asked?.questions.goal?.type === "choice" ? asked.questions.goal.criteria : {}),
+    ).toEqual(["monchu", "none"]);
     await test.harness.close(context);
   });
 });

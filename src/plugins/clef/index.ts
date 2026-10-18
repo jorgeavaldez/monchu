@@ -4,6 +4,8 @@
  * it continues, and whether it holds several lines of work. The front's first request for the message waits briefly
  * for that advice. When Clef is sure a worker is needed and the front reaches for other tools instead, the tool result
  * carries a nudge; when the front finishes without routing, one follow-up asks it to. It never grants permission.
+ * It also labels each of the front's messages in the user's inbox: what kind it is (an ask, a milestone, an update or
+ * a reply) and which goal it is about, so the user can filter the stream and be pushed the asks and milestones.
  *
  * The classifier is any provider's classifier model: Cloudflare Workers AI's Clef by default, or another one set as
  * `plugins.clef` in `config.json` (`{ "provider": "opencode", "modelId": "jev-1.13" }`; `null` turns Clef off on every
@@ -15,6 +17,7 @@ import {
   LiveDoc,
   type ContextView,
   type ConversationId,
+  type EntryId,
   type HookApi,
   type TaskId,
   type Tx,
@@ -23,6 +26,7 @@ import {
   defineDoc,
   definePlugin,
   defineTask,
+  type InboxKind,
   type PluginAgents,
   type PluginModels,
   type SubmissionId,
@@ -234,6 +238,52 @@ function advice(result: AssessmentResult, profiles: Readonly<Record<string, Work
       `a new worker for it fits profile ${result.profile.choice} (${describeRole(profile)}; ${percent(result.profile.probability)})`,
     );
   return `Routing helper (Clef) on the user's latest message: ${lines.join("; ")}. A small classifier's advice: weigh it with what you know; it grants no permission.`;
+}
+
+const KINDS: Record<InboxKind, string> = {
+  ask: "It needs the user's answer, decision, approval or action before some work can go on: a question to the user, options to pick from, a request for access. Counts even when it also reports progress or results.",
+  milestone:
+    "It reports something delivered, finished, shipped, fixed or closed: a goal or a part of one is done. Nothing is asked of the user.",
+  update:
+    "Progress or status of work still going on: started, routed, running, waiting on a worker, a sitrep. Nothing is asked and nothing is finished.",
+  reply:
+    "A direct answer to the user's question, or conversation: an explanation, a greeting, an acknowledgement.",
+};
+const isKind = (value: string): value is InboxKind => Object.hasOwn(KINDS, value);
+
+type LabelInput = {
+  entry: EntryId;
+  message: string;
+  goals: { id: string; title: string; workstream: string }[];
+};
+
+/** What the classifier is asked about one of the front's messages to the user. */
+function labelQuestions(goals: LabelInput["goals"]): ClassifierContext["questions"] {
+  return {
+    kind: {
+      type: "choice",
+      instructions:
+        "This is a message from Monchu, the user's assistant, to the user. What kind of message is it? Judge what it asks of or tells the user, not its topic.",
+      criteria: KINDS,
+    },
+    ...(goals.length === 0
+      ? {}
+      : {
+          goal: {
+            type: "choice",
+            instructions: "Which of the user's ongoing goals is this message about?",
+            criteria: {
+              ...Object.fromEntries(
+                goals.map((goal) => [
+                  goal.id,
+                  `${goal.title}. Now: ${goal.workstream}`.slice(0, 500),
+                ]),
+              ),
+              none: "None of these goals, or several of them at once, as in a sitrep.",
+            },
+          },
+        }),
+  };
 }
 
 type Recent = { role: "user" | "assistant" | "toolResult"; text: string }[];
@@ -520,6 +570,76 @@ export default definePlugin((monchu) => {
       runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
   });
   monchu.registerTask(Assess);
+
+  // Labels a message the front sent the user, once it is in the inbox; a failure leaves it unlabeled.
+  const Label = defineTask<LabelInput, { phase: "classify" }, string>({
+    name: "monchu.inbox-label",
+    version: 1,
+    initial: () => ({ phase: "classify" }),
+    phases: {
+      classify: async (task, runtime, context) => {
+        let outcome = "no classifier model";
+        if (model !== undefined) {
+          const answer = await models.classify(
+            model,
+            {
+              state: { message: task.input.message, goals: task.input.goals },
+              questions: labelQuestions(task.input.goals),
+            },
+            { signal: runtime.signal },
+          );
+          runtime.signal.throwIfAborted();
+          const { kind, goal } = answer.answers;
+          if (answer.stopReason !== "stop")
+            outcome = answer.errorMessage ?? `classifier stopped: ${answer.stopReason}`;
+          else if (
+            kind?.type !== "choice" ||
+            !isKind(kind.choice) ||
+            (goal !== undefined && goal.type !== "choice")
+          )
+            outcome = "incomplete or unknown answers";
+          else {
+            const picked = goal?.type === "choice" && goal.choice !== "none" ? goal.choice : null;
+            const label = {
+              kind: kind.choice,
+              goal: task.input.goals.some((each) => each.id === picked) ? picked : null,
+              probability: kind.probabilities[kind.choice] ?? 0,
+            };
+            outcome = `${label.kind} · ${label.goal ?? "no goal"}`;
+            await runtime.commit(async (tx) => {
+              await agents.labelReply(tx, runtime.conversationId, task.input.entry, label);
+              return { status: "terminal", outcome: { status: "completed", result: outcome } };
+            }, context);
+            return;
+          }
+        }
+        await runtime.commit(
+          () => ({ status: "terminal", outcome: { status: "completed", result: outcome } }),
+          context,
+        );
+      },
+    },
+    abort: (_task, runtime, context) =>
+      runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+  });
+  monchu.registerTask(Label);
+
+  monchu.on("front_reply", async (event, tx, ctx) => {
+    const front = ctx.conversationId;
+    if ((await tx.doc(RoutingDoc, front)).paused || !(await available())) return;
+    const goals = (await agents.goals(tx, front))
+      .filter((goal) => goal.status === "active" || goal.status === "waiting")
+      .map((goal) => ({
+        id: goal.id,
+        title: goal.title,
+        workstream: goal.workstream.slice(0, 300),
+      }));
+    await tx.createTask(
+      Label,
+      { entry: event.entry, message: event.text.slice(0, 4000), goals },
+      { conversationId: front, ownership: { kind: "conversation" }, background: true },
+    );
+  });
 
   async function start(
     tx: Tx,

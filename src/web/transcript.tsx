@@ -10,6 +10,7 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageParts } from "../api/attachments.ts";
 import {
+  parseAnswer,
   parseJobNotice,
   skillInvocation,
   systemNoticeSummary,
@@ -19,7 +20,18 @@ import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
 import { Markdown } from "./markdown.tsx";
-import { expandAll, following, notices, rootId, type Notice } from "./state.ts";
+import type { InboxItem } from "../api/client.ts";
+import { Briefer } from "./inbox.tsx";
+import {
+  answerDraft,
+  expandAll,
+  filter,
+  following,
+  inbox,
+  notices,
+  rootId,
+  type Notice,
+} from "./state.ts";
 
 const PREVIEW_LINES = 4;
 
@@ -204,12 +216,34 @@ function JobBox(props: { name: string; what: string; text: string; at: Component
 
 /** When an entry was sent and its short id, the unique prefix highlighted as jj does. */
 function Stamp(props: { entry: EntryRecord; ids: ShortIds }) {
-  const { unique, rest } = props.ids.split(props.entry.id);
+  const { code, unique, rest } = props.ids.split(props.entry.id);
   return (
-    <span class="stamp">
+    <span class="stamp" id={`m-${code}`}>
       {stamp(sentAt(props.entry) ?? 0)} · <span class="prefix">{unique}</span>
       {rest}
     </span>
+  );
+}
+
+const KIND_LABELS = { ask: "ask", milestone: "done", update: "update", reply: "reply" };
+
+/** An inbox item's label after its stamp: kind, goal and an ask's state, with a way to answer it. */
+function Label({ item, code }: { item: InboxItem; code: string }) {
+  if (item.kind === undefined) return null;
+  return (
+    <>
+      <span class={`label k-${item.kind}`}>
+        {" · "}
+        {KIND_LABELS[item.kind]}
+        {item.goal ? ` · ${item.goal}` : ""}
+        {item.state === undefined || item.state === "open" ? "" : ` · ${item.state}`}
+      </span>
+      {item.kind === "ask" && item.state === "open" ? (
+        <button type="button" class="answer" onClick={() => answerDraft(code)}>
+          answer
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -253,6 +287,7 @@ function entryNode(
   entry: EntryRecord,
   results: Map<string, ToolResultMessage>,
   ids: ShortIds,
+  item: InboxItem | undefined,
 ): VNode | null {
   const shown = addressable(entry) ? <Stamp entry={entry} ids={ids} /> : undefined;
   const notice = workerNotice(entry);
@@ -293,6 +328,20 @@ function entryNode(
           <div class="meta">{shown}</div>
         </>
       );
+    // An /answer shows what the user wrote under a link to the message it answers; the front gets the quote too.
+    const answer = parseAnswer(text);
+    if (answer !== undefined)
+      return (
+        <>
+          <div class="user">
+            <a class="ref" href={`#m-${answer.id}`}>
+              ↩ #{answer.id}
+            </a>{" "}
+            <Text text={answer.text} />
+          </div>
+          <div class="meta">{shown}</div>
+        </>
+      );
     return (
       <>
         <div class="user">
@@ -304,14 +353,24 @@ function entryNode(
       </>
     );
   }
-  if (entry.kind === "pi.assistant" && message?.role === "assistant")
-    return (
+  if (entry.kind === "pi.assistant" && message?.role === "assistant") {
+    const reply = (
       <Assistant
         message={message}
         results={results}
-        stamp={shown === undefined ? null : <div class="meta">{shown}</div>}
+        stamp={
+          shown === undefined ? null : (
+            <div class="meta">
+              {shown}
+              {item === undefined ? null : <Label item={item} code={ids.split(entry.id).code} />}
+            </div>
+          )
+        }
       />
     );
+    // An ask is boxed until it is answered or closed, so it stands out in the stream.
+    return item?.kind === "ask" ? <div class={`ask ${item.state ?? ""}`}>{reply}</div> : reply;
+  }
   if (entry.kind === "pi.compaction") return <div class="system">context compacted</div>;
   if (entry.kind === "pi.reset") return <div class="system">new context</div>;
   return null;
@@ -369,7 +428,20 @@ function anchor(item: Notice, view: ConversationView): number {
 const AT_END = 48;
 
 /** One conversation's transcript; keyed by the conversation, so another one starts at its end. */
-export function Transcript({ view }: { view: ConversationView }) {
+export function Transcript({ view, front }: { view: ConversationView; front: boolean }) {
+  // The front's stream is the root's inbox: each reply's label, and the person's filter.
+  const items = new Map(front ? inbox.value.map((item) => [item.entry, item]) : []);
+  const shownFilter = front ? filter.value : {};
+  const filtered = shownFilter.kind !== undefined || shownFilter.goal !== undefined;
+  const keep = (entry: EntryRecord) => {
+    if (!filtered) return true;
+    const item = items.get(entry.id);
+    return (
+      item !== undefined &&
+      (shownFilter.kind === undefined || item.kind === shownFilter.kind) &&
+      (shownFilter.goal === undefined || item.goal === shownFilter.goal)
+    );
+  };
   const results = new Map<string, ToolResultMessage>();
   for (const entry of view.entries)
     for (const message of entry.model ?? [])
@@ -385,11 +457,12 @@ export function Transcript({ view }: { view: ConversationView }) {
     .map((item) => ({ item, after: anchor(item, view) }))
     .toSorted((x, y) => x.after - y.after);
   const nodes: ComponentChildren[] = [];
+  if (shownFilter.goal !== undefined) nodes.push(<Briefer key="brief" id={shownFilter.goal} />);
   const flush = (before: number) => {
     while (pending[0] !== undefined && pending[0].after < before) {
       const { item } = pending[0];
       pending.shift();
-      nodes.push(<NoticeLine key={`n${item.id}`} item={item} />);
+      if (!filtered) nodes.push(<NoticeLine key={`n${item.id}`} item={item} />);
     }
   };
   for (const [index, entry] of view.entries.entries()) {
@@ -405,11 +478,13 @@ export function Transcript({ view }: { view: ConversationView }) {
             .map((id) => (results.has(id) ? "1" : "0"))
             .join("")
         : "";
-    const key = `${calls}:${prefixes.get(entry.id) ?? 0}`;
+    if (!keep(entry)) continue;
+    const item = items.get(entry.id);
+    const key = `${calls}:${prefixes.get(entry.id) ?? 0}:${item?.kind}:${item?.goal}:${item?.state}`;
     const cached = cache.get(entry);
     let node = cached?.node;
     if (cached === undefined || cached.results !== key) {
-      node = entryNode(entry, results, ids);
+      node = entryNode(entry, results, ids, item);
       cache.set(entry, { results: key, node });
     }
     nodes.push(<Fragment key={entry.id}>{node}</Fragment>);
@@ -460,6 +535,23 @@ export function Transcript({ view }: { view: ConversationView }) {
   const reading = () => {
     if (left.value === undefined) left.value = follow.current.count;
   };
+  /** Scroll to a message by id, as a #id backlink or a push names it; a filter hiding it is cleared first. */
+  const jump = (code: string, retry = true) => {
+    const target = document.getElementById(`m-${code}`);
+    if (target === null) {
+      if (retry && filtered) {
+        filter.value = {};
+        requestAnimationFrame(() => jump(code, false));
+      }
+      return;
+    }
+    reading();
+    target.scrollIntoView({ block: "center" });
+  };
+  useEffect(() => {
+    const hash = location.hash;
+    if (hash.startsWith("#m-")) requestAnimationFrame(() => jump(hash.slice(3)));
+  }, []);
   const unread = left.value === undefined ? 0 : count - left.value;
   const streaming = live.partial !== undefined || live.calls.length > 0;
   return (
@@ -489,6 +581,13 @@ export function Transcript({ view }: { view: ConversationView }) {
       onKeyDown={(event) => {
         if (["ArrowUp", "PageUp", "Home"].includes(event.key)) reading();
       }}
+      onClick={(event) => {
+        const link =
+          event.target instanceof Element ? event.target.closest('a[href^="#m-"]') : null;
+        if (link === null) return;
+        event.preventDefault();
+        jump(link.getAttribute("href")?.slice(3) ?? "");
+      }}
       onScroll={(event) => {
         const element = event.currentTarget;
         const state = follow.current;
@@ -501,7 +600,7 @@ export function Transcript({ view }: { view: ConversationView }) {
       }}
     >
       {nodes}
-      {live.partial ? (
+      {live.partial && !filtered ? (
         <div class="assistant live">
           <Markdown text={live.partial} />
         </div>

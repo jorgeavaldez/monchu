@@ -157,6 +157,17 @@ class RemoteRoot implements RootClient {
   statusLines() {
     return this.run((root) => root.statusLines());
   }
+  async watchInbox(listener: Parameters<RootClient["watchInbox"]>[0]) {
+    const state = (await this.client.hold(Root, { root: this.id })).state((ref) => ref.inbox, true);
+    const stop = state.subscribe(listener);
+    return () => {
+      stop();
+      state.dispose();
+    };
+  }
+  answer(id: string, message: string, requestId: string, whenBusy: "steer" | "followUp") {
+    return this.run((root) => root.answer({ id, message, requestId, whenBusy }));
+  }
   command(name: string, text: string, workerName?: string) {
     return this.run((root) =>
       root.command({ name, text, ...(workerName === undefined ? {} : { worker: workerName }) }),
@@ -465,6 +476,15 @@ export class RemoteClient implements Client {
   }
   declineSecret(name: string) {
     return this.run(() => this.owner().declineSecret({ name }));
+  }
+  pushKey() {
+    return this.run(() => this.session.ref.pushKey());
+  }
+  pushSubscribe(subscription: Parameters<Client["pushSubscribe"]>[0]) {
+    return this.run(() => this.session.ref.pushSubscribe({ subscription }));
+  }
+  pushKinds(endpoint: string) {
+    return this.run(() => this.session.ref.pushKinds({ endpoint }));
   }
   roleChoice(role: "front" | "worker") {
     return this.run(() => this.session.ref.roleChoice({ role }));

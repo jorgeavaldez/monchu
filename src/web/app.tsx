@@ -34,6 +34,7 @@ import {
   roots,
   rootsMessage,
   panel,
+  inbox,
   show,
   shown,
   switchRoot,
@@ -41,6 +42,7 @@ import {
   view,
   workers,
 } from "./state.ts";
+import { FilterBar } from "./inbox.tsx";
 import { Transcript } from "./transcript.tsx";
 
 const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idle" };
@@ -481,7 +483,10 @@ export function App() {
       ) : state === undefined ? (
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (
-        <Transcript key={state.conversation.id} view={state} />
+        <>
+          {shown.value === undefined && inbox.value.length > 0 ? <FilterBar /> : null}
+          <Transcript key={state.conversation.id} view={state} front={shown.value === undefined} />
+        </>
       )}
       <Queue />
       <Login />

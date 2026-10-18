@@ -795,6 +795,10 @@ export async function runTerminal(
         await front.compact(input.text);
         view.notice("compaction started");
         break;
+      case "/answer":
+        await front.answer(input.id, input.text, randomUUID(), whenBusy);
+        view.notice(`answered · ${input.id}`);
+        break;
       case "/cd": {
         const name = selected;
         const directory = await front.changeDirectory(input.text, name);

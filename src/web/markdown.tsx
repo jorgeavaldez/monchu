@@ -41,11 +41,12 @@ function link(href: string, children: ComponentChildren): ComponentChildren {
 }
 
 /**
- * Inline spans, the earliest match first: code, an escape, strong, strike, emphasis, a link, an autolink or a bare URL.
+ * Inline spans, the earliest match first: code, an escape, strong, strike, emphasis, a link, an autolink, a bare URL
+ * or a message id (`#kxyz`).
  * Underscores only count at word edges, so snake_case stays as written.
  */
 const INLINE =
-  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\\([!-/:-@[-`{-~])|\*\*(?=\S)([\s\S]*?\S)\*\*|(?<!\w)__(?=\S)([\s\S]*?\S)__(?!\w)|~~(?=\S)([\s\S]*?\S)~~|(?<![\w*])\*(?=[^\s*])((?:[^*\n]|\*\*[^*\n]+\*\*)*?[^\s*])\*(?![\w*])|(?<!\w)_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)|\[([^\]\n]+)\]\(\s*<?([^\s()<>]+(?:\([^\s()<>]*\))?)>?\s*\)|<((?:https?|mailto):[^\s<>]+)>|(https?:\/\/[^\s<>()"'`]+(?:\([^\s<>()"'`]*\))?[^\s<>()"'`.,;:!?*_~])/g;
+  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\\([!-/:-@[-`{-~])|\*\*(?=\S)([\s\S]*?\S)\*\*|(?<!\w)__(?=\S)([\s\S]*?\S)__(?!\w)|~~(?=\S)([\s\S]*?\S)~~|(?<![\w*])\*(?=[^\s*])((?:[^*\n]|\*\*[^*\n]+\*\*)*?[^\s*])\*(?![\w*])|(?<!\w)_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)|\[([^\]\n]+)\]\(\s*<?([^\s()<>]+(?:\([^\s()<>]*\))?)>?\s*\)|<((?:https?|mailto):[^\s<>]+)>|(https?:\/\/[^\s<>()"'`]+(?:\([^\s<>()"'`]*\))?[^\s<>()"'`.,;:!?*_~])|(?<![\w#&])#([k-z]{4,8})(?![\w])/g;
 
 function inline(text: string): ComponentChildren[] {
   const parts: ComponentChildren[] = [];
@@ -53,7 +54,8 @@ function inline(text: string): ComponentChildren[] {
   for (const match of text.matchAll(INLINE)) {
     if (match.index > last) parts.push(text.slice(last, match.index));
     last = match.index + match[0].length;
-    const [, , code, escaped, strong, under, strike, em, emUnder, label, href, auto, bare] = match;
+    const [, , code, escaped, strong, under, strike, em, emUnder, label, href, auto, bare, ref] =
+      match;
     if (code !== undefined) {
       // A span padded on both sides, as for a backtick inside it, loses one space each side.
       const trimmed = /^ .*[^ ].* $/s.test(code) ? code.slice(1, -1) : code;
@@ -67,6 +69,13 @@ function inline(text: string): ComponentChildren[] {
     else if (label !== undefined && href !== undefined) parts.push(link(href, inline(label)));
     else if (auto !== undefined) parts.push(link(auto, auto));
     else if (bare !== undefined) parts.push(link(bare, bare));
+    // A message's id, as the front cites an earlier one: the transcript jumps to it.
+    else if (ref !== undefined)
+      parts.push(
+        <a class="ref" href={`#m-${ref}`}>
+          #{ref}
+        </a>,
+      );
   }
   if (last < text.length) parts.push(text.slice(last));
   return parts;

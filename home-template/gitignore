@@ -30,6 +30,9 @@ web-client.json
 # Web sign-in sessions, by token hash.
 web-sessions.json
 web-sessions.json*
+# This device's web push key and its browsers' subscriptions.
+web-push.json
+web-push.json*
 # Secrets the user gave Monchu on this device: the names index, and the store plugin's files (the fnox plugin's
 # config and age key).
 secrets/

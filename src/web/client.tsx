@@ -4,8 +4,10 @@
  * browser's own prompt, offered once and kept in the menu, since no page can install itself.
  */
 import { signal, useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
 import { Close, Panel } from "./panel.tsx";
-import { panel } from "./state.ts";
+import type { InboxKind } from "../api/client.ts";
+import { client, panel } from "./state.ts";
 
 /** What Chrome hands a page it would install: its prompt, and how the person answered. */
 type InstallPrompt = Event & {
@@ -169,12 +171,104 @@ function NameRow() {
   );
 }
 
+/** What this browser is pushed: `undefined` until known, or where the browser has no push. */
+const pushed = signal<InboxKind[] | undefined>(undefined);
+const PUSH_KINDS: [InboxKind, string][] = [
+  ["ask", "asks"],
+  ["milestone", "done"],
+];
+
+async function subscription(): Promise<PushSubscription | null> {
+  return (await navigator.serviceWorker.ready).pushManager.getSubscription();
+}
+
+async function loadPush(): Promise<void> {
+  if (!("PushManager" in window) || !("serviceWorker" in navigator)) return;
+  const current = await subscription();
+  pushed.value = current === null ? [] : ((await client().pushKinds(current.endpoint)) ?? []);
+}
+
+/** Push this browser one kind more or less: asks the browser's permission, and subscribes on the first. */
+async function togglePush(kind: InboxKind): Promise<void> {
+  const kinds = pushed.value ?? [];
+  const next = kinds.includes(kind) ? kinds.filter((each) => each !== kind) : [...kinds, kind];
+  if (next.length > 0 && (await Notification.requestPermission()) !== "granted") {
+    message.value = {
+      text: "notifications are blocked for this site in the browser",
+      failed: true,
+    };
+    return;
+  }
+  let current = await subscription();
+  if (current === null && next.length > 0)
+    current = await (
+      await navigator.serviceWorker.ready
+    ).pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: Uint8Array.from(
+        atob((await client().pushKey()).replace(/-/g, "+").replace(/_/g, "/")),
+        (char) => char.charCodeAt(0),
+      ),
+    });
+  if (current === null) return;
+  const keys = current.toJSON().keys ?? {};
+  await client().pushSubscribe({
+    endpoint: current.endpoint,
+    p256dh: keys.p256dh ?? "",
+    auth: keys.auth ?? "",
+    origin: location.origin,
+    kinds: next,
+  });
+  if (next.length === 0) await current.unsubscribe();
+  pushed.value = next;
+}
+
+function PushRow() {
+  useEffect(() => {
+    void loadPush().catch(() => {});
+  }, []);
+  return (
+    <li>
+      <span class="lines">
+        <span class="name">push</span>
+        <span class="help">
+          {pushed.value === undefined
+            ? "this browser has no push"
+            : "notify this browser when Monchu needs you or finishes something"}
+        </span>
+      </span>
+      {pushed.value === undefined ? null : (
+        <span class="actions">
+          {PUSH_KINDS.map(([kind, label]) => (
+            <button
+              key={kind}
+              type="button"
+              aria-pressed={pushed.value?.includes(kind) === true}
+              onClick={() =>
+                void togglePush(kind).catch((error: unknown) => {
+                  message.value = {
+                    text: `push: ${error instanceof Error ? error.message : String(error)}`,
+                    failed: true,
+                  };
+                })
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      )}
+    </li>
+  );
+}
+
 /** The menu, in place of the transcript like `/roots`. */
 export function ClientPanel() {
   return (
     <Panel name="client" status={message.value}>
       <ul>
         <NameRow />
+        <PushRow />
         <li>
           <span class="lines">
             <span class="name">install</span>

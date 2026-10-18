@@ -97,6 +97,27 @@ export function parseJobNotice(content: string): JobNotice | undefined {
   return { name, header, text: rest.slice(0, -1).join("\n\n") };
 }
 
+/**
+ * The user's `/answer` to one of the front's messages as the front gets it: the message quoted by id, kind and
+ * headline, so it stands on its own, then what the user wrote.
+ */
+export function answerText(answer: {
+  id: string;
+  about: string;
+  headline: string;
+  again: boolean;
+  text: string;
+}): string {
+  const again = answer.again ? "; this corrects the user's earlier answer" : "";
+  return `[The user answers your message #${answer.id} (${answer.about}): "${answer.headline.replace(/\n/g, " ")}"${again}]\n${answer.text}`;
+}
+
+/** The id an answer's text replies to, and what the user wrote; `undefined` for any other text. */
+export function parseAnswer(content: string): { id: string; text: string } | undefined {
+  const match = /^\[The user answers your message #([k-z]+) \(.*\]\n([\s\S]*)$/.exec(content);
+  return match === null ? undefined : { id: match[1] ?? "", text: match[2] ?? "" };
+}
+
 const SYSTEM_PREFIX = "[System notice: ";
 const SYSTEM_SUFFIX = ". Not a new user instruction.]";
 

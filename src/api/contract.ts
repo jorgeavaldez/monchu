@@ -9,6 +9,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { hostNamed, method, remote } from "@earendil-works/chord";
 import { Type } from "typebox";
 import type { Goal } from "../core/agents/goals.ts";
+import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
@@ -163,7 +164,27 @@ const secretMethods = {
   declineSecret: method(Type.Object({ name: text })),
 };
 
+const inboxKind = Type.Union([
+  Type.Literal("ask"),
+  Type.Literal("milestone"),
+  Type.Literal("update"),
+  Type.Literal("reply"),
+]);
+
 const sessionMethods = {
+  pushKey: method(undefined, trusted<string>()),
+  pushSubscribe: method(
+    Type.Object({
+      subscription: Type.Object({
+        endpoint: Type.String({ pattern: "^https://", maxLength: 2000 }),
+        p256dh: Type.String({ pattern: "^[A-Za-z0-9_-]{80,100}$" }),
+        auth: Type.String({ pattern: "^[A-Za-z0-9_-]{16,32}$" }),
+        origin: Type.String({ pattern: "^https?://", maxLength: 500 }),
+        kinds: Type.Array(inboxKind, { maxItems: 4, uniqueItems: true }),
+      }),
+    }),
+  ),
+  pushKinds: method(Type.Object({ endpoint: text }), trusted<InboxKind[] | null>()),
   skillInput: method(Type.Object({ name: text, text }), trusted<string>()),
   findRoot: method(Type.Object({ prefix: text }), trusted<string>()),
   currentRoot: method(undefined, trusted<string>()),
@@ -232,9 +253,10 @@ export const Root = remote("monchu.root", {
   host: hostNamed("core"),
   variants: {
     owner: {
-      state: { notices: trusted<ClientNotice[]>() },
+      state: { notices: trusted<ClientNotice[]>(), inbox: trusted<InboxItem[]>() },
       methods: {
         submit: method(Type.Object({ message: text, requestId: text, whenBusy, attachments })),
+        answer: method(Type.Object({ id, message: text, requestId: text, whenBusy })),
         messageWorker: method(
           Type.Object({ worker: text, message: text, requestId: text, whenBusy, attachments }),
         ),

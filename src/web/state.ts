@@ -9,6 +9,8 @@ import type { Attachment } from "../api/attachments.ts";
 import type {
   Client,
   JobEvent,
+  Goal,
+  InboxItem,
   ModelPick,
   QueueChange,
   RootClient,
@@ -89,6 +91,13 @@ export const jobEvent = signal(0);
 export const following = signal(0);
 /** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
 export const draft = signal(sessionStorage.getItem("draft") ?? "");
+/** The shown root's inbox: its front's messages with their labels. */
+export const inbox = signal<readonly InboxItem[]>([]);
+/** What the front's stream shows: every message, or only one kind, one goal's, or both. */
+export type Filter = { kind?: "ask" | "milestone" | "update"; goal?: string };
+export const filter = signal<Filter>({});
+/** The shown root's goals, for the goal filter and its briefer. */
+export const goalList = signal<readonly Goal[]>([]);
 /** Why the page is not connected, and when it tries again. */
 export const linkError = signal<string | undefined>(undefined);
 
@@ -202,6 +211,9 @@ async function openRoot(id: string, push = false): Promise<void> {
     rootId.value = id;
     shown.value = undefined;
     workers.value = [];
+    inbox.value = [];
+    filter.value = {};
+    goalList.value = [];
   });
   sessionStorage.setItem("root", id);
   const url = new URL(location.href);
@@ -238,6 +250,12 @@ async function openRoot(id: string, push = false): Promise<void> {
         void refreshWorkers().catch(() => {});
       }),
     );
+  const stopInbox = await from.watchInbox((items) => {
+    if (from === current) inbox.value = items;
+  });
+  if (from !== current) return stopInbox();
+  unbind.push(stopInbox);
+  void refreshGoals().catch(() => {});
   // Plugins' lines from before this view opened stay unshown; their status lines show once now.
   let last: number | undefined;
   const stopNotices = await from.watchNotices((items) => {
@@ -302,6 +320,29 @@ export async function start(connected: Client): Promise<void> {
 
 function reportFailure(error: unknown): void {
   notice(error instanceof Error ? error.message : String(error), "warning");
+}
+
+async function refreshGoals(): Promise<void> {
+  const from = root();
+  const list = await from.goals();
+  if (from === current) goalList.value = list;
+}
+
+/** Filter the stream to one goal's messages, picked from the root's goals; none shows every goal's. */
+export async function pickGoal(): Promise<void> {
+  await refreshGoals();
+  const picked = await pick("Goal", [
+    { id: "", label: "every goal" },
+    ...goalList.value.map((goal) => ({ id: goal.id, label: goal.title, detail: goal.status })),
+  ]);
+  if (picked === undefined) return;
+  const { goal: _goal, ...rest } = filter.value;
+  filter.value = picked.id ? { ...rest, goal: picked.id } : rest;
+}
+
+/** Start an answer to a message by its id in the editor. */
+export function answerDraft(code: string): void {
+  draft.value = `/answer ${code} `;
 }
 
 export async function show(name: string | undefined): Promise<void> {
@@ -831,6 +872,11 @@ async function runInput(
     case "/new":
       await root().reset(input.text || undefined);
       return notice("new context · root");
+    case "/answer":
+      following.value++;
+      await root().answer(input.id, input.text, requestId, mode.value);
+      notice(`answered · ${input.id}`);
+      return true;
     case "/compact":
       await root().compact(input.text || undefined);
       return notice("compacting · root");

@@ -388,7 +388,7 @@ describe("in-process reload", () => {
   });
 
   // Workers still get them by inheriting the root's selection; see the backend's worker tool test.
-  it("adds goals, memory and roots to the root, not the host default, in the real manifest", async () => {
+  it("adds goals, memory, roots and the inbox to the root, not the host default, in the real manifest", async () => {
     const value = await setup();
     scriptedClassifier(value.models);
     const extensions = await Extensions.load(value.models, config, value.directory, () => {});
@@ -396,10 +396,12 @@ describe("in-process reload", () => {
       "monchu.goals",
       "monchu.memory",
       "monchu.roots",
+      "monchu.inbox",
     ]);
     const defaults = extensions.defaults().map((extension) => extension.name);
     expect(defaults).not.toContain("monchu.goals");
     expect(defaults).not.toContain("monchu.memory");
     expect(defaults).not.toContain("monchu.roots");
+    expect(defaults).not.toContain("monchu.inbox");
   });
 });

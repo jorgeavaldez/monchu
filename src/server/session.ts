@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/chord";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, WatchHandle } from "@earendil-works/pi-durable";
-import type { ClientNotice, RootSummary } from "../api/client.ts";
+import type { ClientNotice, InboxItem, RootSummary } from "../api/client.ts";
 import { Type, type TUnsafe } from "typebox";
 import { Check } from "typebox/value";
 import {
@@ -348,6 +348,9 @@ export default defineFacet<Principal>(
           await monchu().declineSecret(name);
         },
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
+        pushKey: () => monchu().pushKey(),
+        pushSubscribe: ({ subscription }) => monchu().pushSubscribe(subscription),
+        pushKinds: ({ endpoint }) => monchu().pushKinds(endpoint),
         findRoot: ({ prefix }) => monchu().findRoot(prefix),
         currentRoot: () => monchu().currentRoot(),
         createRoot: ({ requestId }) => monchu().createRoot(requestId),
@@ -427,9 +430,18 @@ export default defineFacet<Principal>(
         async () => [],
         (set) => front().watchNotices((items) => set([...items])),
       );
+      const inbox = fed<InboxItem[]>(
+        self,
+        "inbox",
+        async () => [],
+        (set) => front().watchInbox((items) => set([...items])),
+      );
       return {
         variant: "owner",
         notices,
+        inbox,
+        answer: ({ id, message, requestId, whenBusy }) =>
+          front().answer(id, message, requestId, whenBusy),
         submit: ({ message, requestId, whenBusy, attachments }) =>
           front().submit(message, requestId, whenBusy, attachments),
         messageWorker: ({ worker, message, requestId, whenBusy, attachments }) =>

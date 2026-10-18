@@ -303,6 +303,8 @@ export type PluginEvents = {
   input: Handler<InputEvent, InputEventResult>;
   /** Monchu's own: a front's queued message changed (see `InputChangeEvent`). */
   input_change: (event: InputChangeEvent, tx: Tx, ctx: PluginContext) => void | Promise<void>;
+  /** Monchu's own: a front's message joined the user's inbox (see `FrontReplyEvent`), such as to label it. */
+  front_reply: (event: FrontReplyEvent, tx: Tx, ctx: PluginContext) => void | Promise<void>;
 };
 
 /** Whose a secret use is, for the audit: the tool (or command) and the conversation's short id. */
@@ -422,7 +424,35 @@ export interface PluginAgents {
   >;
   /** The worker profiles in `config.json`, by name, as of this load. */
   readonly profiles: Readonly<Record<string, WorkerProfile>>;
+  /**
+   * Labels a front's message in the user's inbox (see `front_reply`): its kind and goal id (`null` for none), with the
+   * classifier's probability. False when the inbox has no such message, or the front labeled it itself.
+   */
+  labelReply(
+    tx: Tx,
+    front: ConversationId,
+    entry: EntryId,
+    label: {
+      readonly kind?: InboxKind;
+      readonly goal?: string | null;
+      readonly probability?: number;
+    },
+  ): Promise<boolean>;
 }
+
+/**
+ * Kinds of a front's message to the user. `ask`: waits on the user's input or decision. `milestone`: something
+ * delivered, finished or closed. `update`: progress or status. `reply`: an answer, or conversation.
+ */
+export type InboxKind = "ask" | "milestone" | "update" | "reply";
+
+/** Monchu's own: a front's message with text reached the user's inbox, inside the commit that adds it. */
+export type FrontReplyEvent = {
+  readonly type: "front_reply";
+  readonly entry: EntryId;
+  readonly text: string;
+  readonly headline: string;
+};
 
 /**
  * The home's models and logins, as Pi's `ctx.modelRegistry` serves an extension: read and call, never log in or out.

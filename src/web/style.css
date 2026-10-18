@@ -808,3 +808,50 @@ p.offer {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* The inbox: a bar filtering the front's stream, asks boxed until answered, labels after the stamp. */
+.filters {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.filters button {
+  min-height: var(--row);
+  padding: 0 var(--s1);
+  border: none;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.filters [aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+.filters .goal {
+  margin-left: auto;
+  border-left: 1px solid var(--line);
+}
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  border: 1px solid var(--yellow);
+  padding: var(--s1);
+}
+.ask:is(.answered, .closed) {
+  border-style: dashed;
+  border-color: var(--muted);
+}
+.label {
+  color: var(--muted);
+}
+.label.k-ask,
+.label.k-milestone {
+  color: var(--yellow);
+  font-weight: bold;
+}
+.meta .answer {
+  margin-left: var(--s1);
+  padding: 0 var(--s1);
+}
+.brief .body > * {
+  white-space: pre-wrap;
+}

@@ -1584,6 +1584,63 @@ async function journeys(
   );
 
   await journey(
+    "inbox: an ask is boxed, filters by kind and goal with its briefer, answers by id, and #id links to it",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const send = async (text: string) => {
+        const before = Number(await page(replies));
+        await browser("fill", "textarea", text);
+        await browser("press", "Enter");
+        await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      };
+      await send("goal");
+      await send("ship the smoke check now");
+      // The newest stamp is the reply's, below the message it answers.
+      const id = text(
+        await page(`[...document.querySelectorAll(".meta .stamp[id]")].at(-1)?.id.slice(2)`),
+      );
+      check(/^[k-z]{4,8}$/.test(id), `no message id: ${id}`);
+      await send(`label ${id} ask smoke`);
+      await browser("wait", "--fn", `!!document.querySelector(".ask .answer")`);
+      check(
+        (await page(`document.querySelector(".filters .yellow")?.textContent`)) === "asks 1",
+        "the filter bar doesn't count the open ask",
+      );
+      await capture("inbox-ask", home, origin);
+      await browser("click", ".filters button:nth-child(2)");
+      check(
+        (await page(`document.querySelectorAll(".transcript .user").length`)) === 0 &&
+          (await page(`document.querySelectorAll(".transcript .assistant").length`)) === 1,
+        "the asks filter shows more than the ask",
+      );
+      await browser("click", ".filters .goal");
+      await browser("wait", "--fn", `!!document.querySelector(".pick")`);
+      await browser("click", ".pick li:nth-child(2) .enter");
+      await browser("wait", "--fn", `!!document.querySelector(".brief")`);
+      check(
+        (await page(`document.querySelector(".brief").textContent.includes("Smoke goal")`)) ===
+          true,
+        "the goal briefer is missing",
+      );
+      await capture("inbox-goal", home, origin);
+      await browser("click", ".filters button:first-child");
+      await browser("click", ".ask .answer");
+      check(
+        (await page(`document.querySelector("textarea").value`)) === `/answer ${id} `,
+        "answer didn't draft /answer with the id",
+      );
+      await browser("fill", "textarea", `/answer ${id} yes, ship it`);
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!document.querySelector(".ask.answered")`);
+      await send(`see #${id}`);
+      await browser("wait", "--fn", `!!document.querySelector(".assistant a.ref")`);
+      await browser("click", ".assistant a.ref");
+      await capture("inbox-answered", home, origin);
+      return `ask ${id} boxed, filtered, answered and linked`;
+    },
+  );
+
+  await journey(
     "restart: /restart brings the page back connected on the same transcript",
     async () => {
       const replies = `document.querySelectorAll(".assistant:not(.live)").length`;

@@ -16,6 +16,7 @@ import { BUILD, BuildHost, Builds, RELOAD_TOOLS, type Build, type BuildInputs } 
 import { createContext } from "./context.ts";
 import { createHomeCheck } from "./home-check.ts";
 import { createIdentity } from "./identity.ts";
+import { Inbox } from "./inbox.ts";
 import { createJobs } from "./jobs.ts";
 import { loadMcpConfig } from "./mcp/config.ts";
 import { createMcpTools } from "./mcp/tools.ts";
@@ -50,7 +51,16 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const jobs = (preload: readonly string[]) =>
     createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
   // Tool and task names the plugins may not take: every core one, whatever the preload, and the reload controls.
-  const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
+  const core = [
+    context.extension,
+    tools.extension,
+    workers([]),
+    jobs([]),
+    Roots,
+    Codemode,
+    Goals,
+    Inbox,
+  ];
   const own = [...core, memory, identity, mcp.extension, secrets];
   const plugins = loaded.use({
     tools: new Set([
@@ -80,6 +90,8 @@ async function build(inputs: BuildInputs): Promise<Build> {
     search.extension,
     // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.
     secrets,
+    // After the secrets, so the inbox tool joins the end of each root's list.
+    Inbox,
     ...search.groups,
     createPluginSections(plugins.sections),
     ...plugins.attached,
@@ -87,7 +99,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
   inputs.validate(extensions);
   return {
     extensions,
-    root: [Goals, memory, Roots],
+    root: [Goals, memory, Roots, Inbox],
     groups: search.groups,
     preload: search.preload,
     settings: context.settings,
