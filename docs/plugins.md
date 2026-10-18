@@ -14,7 +14,7 @@ A plugin is a folder of code that adds tools, prompt sections and event handlers
 ```
 
 - A name is lowercase letters, digits and dashes. A device's own plugin replaces a synced one of the same name, and both replace a bundled one.
-- Monchu ships bundled plugins too (`src/plugins/`: `jj`; `clef`, the routing helper; and `fnox`, which keeps secret values in [fnox](https://fnox.jdx.dev)). They load the same way, and `disabled` turns them off too.
+- Monchu ships bundled plugins too (`src/plugins/`): `clef` (routing advice), `fnox` (keeps secret values in [fnox](https://fnox.jdx.dev)), `jj` (Jujutsu), `herdr` (Herdr agents) and `browser` (`agent_browser`, over the agent-browser CLI). They use the same API, load the same way, and `disabled` turns them off too. Each wraps one tool or service a user may not have; what belongs in the core and what in a plugin is in the repository's `AGENTS.md`.
 - If `plugins.local.json` can't be read or parsed, no home plugin loads (bundled ones still do) and a warning says why.
 - Plugins are only read from the home. Monchu never loads code from a conversation's directory or a project.
 
@@ -86,7 +86,7 @@ Every tool a conversation declares is part of its cached prompt prefix, so expos
 | `direct`             | in every conversation, from the next request                  | one re-cache of every conversation when added, and again when its definition changes |
 | `codemode`           | never; codemode scripts find it with `searchTools()`          | none                                                                                 |
 
-A plugin's tools of one exposure form one group. Its `namespace`, from the first tool that has one, sets the group's line in the deferred-tools list (default: `package.json`'s `description`), a guide returned once when it loads (`instructions`), and with `preload` whether conversations on the Claude Code bridge load it from the start. Keep descriptions stable: each edit of a loaded or direct tool re-caches.
+A plugin's tools of one exposure form one group. Its `namespace`, from the first tool that has one, sets the group's line in the deferred-tools list (default: `package.json`'s `description`), a guide returned once when it loads (`instructions`: a text, or Monchu's own, a function that writes it then, such as a CLI's version-matched help), and with `preload` whether conversations on the Claude Code bridge load it from the start. Keep descriptions stable: each edit of a loaded or direct tool re-caches.
 
 Tool names are global: a plugin whose tool or task name Monchu or an earlier plugin already uses is not loaded.
 
@@ -137,7 +137,7 @@ Guards fail closed, as in Pi: a `tool_call` handler that throws blocks the call,
 
 ### Agents
 
-`monchu.agents` (Monchu's own) reads and messages Monchu's crew inside a Durable transaction: `whois(tx, id)` says whether a conversation is a front or a worker, `workers(tx, front)` and `goals(tx, front)` list a front's crew and goals, `messageWorker(tx, worker, text, requestId)` messages a worker as its parent would, `updateText`/`noticeText` format a worker update or a notice from Monchu itself, and `profiles` are the worker profiles. Reach a front with Durable's `conversation(id).submit`. `shortId(id)` is the id Monchu shows.
+`monchu.agents` (Monchu's own) reads and messages Monchu's crew inside a Durable transaction: `whois(tx, id)` says whether a conversation is a front or a worker, `workers(tx, front)` and `goals(tx, front)` list a front's crew and goals, `rootOf(tx, id)` the front a conversation's crew answers to, `messageWorker(tx, worker, text, requestId)` messages a worker as its parent would, `updateText`/`noticeText` format a worker update or a notice from Monchu itself, and `profiles` are the worker profiles. Reach a front with Durable's `conversation(id).submit`. `shortId(id)` is the id Monchu shows.
 
 ## Loading, reload and failures
 

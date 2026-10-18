@@ -13,6 +13,18 @@ Read `README.md` and `docs/internals.md` before changing it. Product intent and 
 - This repo is public. Shipped code, skills, templates, docs, tests, and commit messages assume nothing about one person's setup (paths, dotfiles, accounts, devices). Discover it or ask.
 - An integration with one person's own infra or services (their hosts, domains, farms, accounts) is a private plugin in their home, never this repo. Before pushing, read the diff for hostnames, ids, header or secret names, and personal integrations.
 
+## Core or plugin
+
+The core is what every install needs, whatever tools, services and tastes its user has: the front and workers, goals, jobs, the store, model roles and logins, the home and its files, memory, skills, the MCP host, the plugin loader and API, secrets as a seam (names, the `secret` tool, injection, redaction), file and shell tools, `codemode`, `tool_search`, and the server, web and terminal. Everything else is a plugin.
+
+- **Test:** does a user without X lose anything if this code is gone? If not, X is a plugin. Code that names one external tool, CLI, service or provider (jj, Herdr, agent-browser, fnox, a classifier), or a taste another user would swap, is a plugin.
+- **Seams, not defaults.** The core defines the interface (`registerProvider`, a secret store, sections, `tool_call` hooks) and never names an implementation. A seam may have no default: with its plugin off, the feature is off and says so.
+- **Bundled or home.** A plugin a stranger would want ships in `src/plugins/<name>/`. One tied to one person's setup is a home plugin and never enters this repository.
+- **Bundled plugins are plugins.** They import only `monchu/plugin` (`src/plugin.ts`) and packages, never the core, the contract or another plugin, and nothing imports them; lint enforces both. When one needs what the API lacks, grow the API, so home plugins get it too.
+- **Off is safe.** Every plugin can be turned off in `plugins.local.json`, and Monchu runs without it.
+- **Moves keep the cache.** Moving code out of the core keeps each tool's declaration and place byte-identical: a bundled plugin takes the core code's place in `BUNDLED_ORDER` (`src/core/plugins.ts`), and a new one goes last. Compare a request before and after.
+- **What stays core, and why:** the Codex and Claude Code providers (subscription models are the product), Cloudflare Workers AI (roles on it resolve before plugins load), Herdr pane reporting in `src/tui/herdr-agent.ts` (plugins run in the core, not in clients), Cloudflare Access login in `src/server/auth.ts` (the server runs no plugins), and a new home's `jj git init` (it runs before any plugin loads). Add to this list only with a reason the plugin API can't meet.
+
 ## Durable
 
 - Durable is experimental. Read the installed declarations and Pi's source before adapting it.

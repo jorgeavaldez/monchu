@@ -44,6 +44,15 @@
           {
             "group": ["./server/*", "../server/*", "../../server/*", "../../../server/*"],
             "message": "Only src/main.ts composes the server; the core and clients never import it."
+          },
+          {
+            "group": [
+              "./plugins/*/*",
+              "../plugins/*/*",
+              "../../plugins/*/*",
+              "../../../plugins/*/*"
+            ],
+            "message": "Bundled plugins load through the plugin loader, by URL; nothing imports one."
           }
         ]
       }
@@ -226,6 +235,48 @@
                 "name": "vitest",
                 "importNames": ["vi", "vitest"],
                 "message": "Tests exercise real Harnesses through Monchu's public seams; no mocks, spies, or stubs."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/plugins/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../../core/*",
+                  "../../../core/*",
+                  "../../api/*",
+                  "../../../api/*",
+                  "../../ui/*",
+                  "../../../ui/*",
+                  "../../tui/*",
+                  "../../../tui/*",
+                  "../../web/*",
+                  "../../../web/*",
+                  "../../server/*",
+                  "../../../server/*",
+                  "../../telemetry/*",
+                  "../../../telemetry/*",
+                  "../../core/**",
+                  "../../main.ts",
+                  "../../reexec.ts"
+                ],
+                "message": "A bundled plugin is a plugin: it reaches Monchu only through monchu/plugin (src/plugin.ts), like a home plugin. Grow that API instead."
+              },
+              {
+                "group": ["../*/*", "!../../plugin.ts"],
+                "message": "A plugin never imports another plugin."
+              },
+              {
+                "group": ["**/test/*", "../test/*"],
+                "message": "Source never imports test code."
               }
             ]
           }

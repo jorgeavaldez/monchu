@@ -145,15 +145,6 @@ export async function fillPlaceholders(
   return args.map((arg) => arg.replace(PLACEHOLDER, (_whole, key: string) => values[key] ?? ""));
 }
 
-/** A page's URL as its origin, or `undefined` when it isn't one. */
-export function originOf(url: string): string | undefined {
-  try {
-    return siteOrigin(url.trim());
-  } catch {
-    return undefined;
-  }
-}
-
 function redactJson(value: JsonValue, known: Parameters<typeof redact>[1]): JsonValue {
   if (typeof value === "string") return redact(value, known);
   if (Array.isArray(value)) return value.map((each) => redactJson(each, known));

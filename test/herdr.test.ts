@@ -1,10 +1,11 @@
-import type { JsonObject } from "@earendil-works/pi-durable";
+import { defineExtension, type JsonObject } from "@earendil-works/pi-durable";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHerdr, type HerdrHost } from "../src/core/tools/herdr.ts";
+import { durableTool } from "../src/core/plugin-shapes.ts";
+import { createHerdrTool, type HerdrHost } from "../src/plugins/herdr/index.ts";
 import { callTools, cleanup, context, open, route, setup, toolResults } from "./support.ts";
 
 afterEach(cleanup);
@@ -57,7 +58,11 @@ async function herdr(directory: string, plan: Step[], env: HerdrHost["env"]) {
   const fixture = join(directory, "herdr-fixture.mjs");
   await writeFile(fixture, FIXTURE);
   await writeFile(join(directory, "plan.json"), JSON.stringify(plan));
-  return createHerdr({ command: { executable: process.execPath, args: [fixture] }, env });
+  const tool = createHerdrTool({ command: { executable: process.execPath, args: [fixture] }, env });
+  return defineExtension({
+    name: "monchu.herdr",
+    tools: [durableTool(tool, () => ({ notify: () => {}, setStatus: () => {} }))],
+  });
 }
 
 async function calls(directory: string): Promise<string[][]> {
@@ -98,11 +103,13 @@ async function call(plan: Step[], env: HerdrHost["env"], request: JsonObject) {
 const inside = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/herdr.sock", HERDR_PANE_ID: "w1:p1" };
 
 describe("herdr", () => {
-  it("declares one object schema and is never replayed", async () => {
-    const value = await setup();
-    const tools = (await herdr(value.directory, [], {})).tools ?? [];
-    expect(tools.map((tool) => [tool.name, tool.parameters.type, tool.replay])).toEqual([
-      ["herdr", "object", "unsafe"],
+  it("declares one direct object schema and is never replayed", () => {
+    const tool = createHerdrTool({ command: { executable: "herdr", args: [] }, env: {} });
+    expect([tool.name, tool.parameters.type, tool.replay, tool.exposure]).toEqual([
+      "herdr",
+      "object",
+      "unsafe",
+      "direct",
     ]);
   });
 

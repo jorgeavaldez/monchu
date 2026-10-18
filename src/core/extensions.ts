@@ -19,9 +19,7 @@ import { createIdentity } from "./identity.ts";
 import { createJobs } from "./jobs.ts";
 import { loadMcpConfig } from "./mcp/config.ts";
 import { createMcpTools } from "./mcp/tools.ts";
-import { createBrowser } from "./tools/browser.ts";
 import { Codemode } from "./tools/codemode.ts";
-import { createHerdr } from "./tools/herdr.ts";
 import { createPiTools } from "./tools/pi-tools.ts";
 import { createSecrets } from "./secrets/tool.ts";
 import { createPluginSections, reservedTasks } from "./plugins.ts";
@@ -46,26 +44,24 @@ async function build(inputs: BuildInputs): Promise<Build> {
     };
   });
   const mcp = await createMcpTools(mcpConfig.servers, inputs.clients);
-  const browser = createBrowser(inputs.vault);
   const secrets = createSecrets(inputs.vault);
   const workers = (preload: readonly string[]) =>
     createWorkerTools(inputs.workerRole, config.profiles, preload);
   const jobs = (preload: readonly string[]) =>
     createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
-  const herdr = createHerdr({ command: { executable: "herdr", args: [] }, env: process.env });
   // Tool and task names the plugins may not take: every core one, whatever the preload, and the reload controls.
   const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
-  const own = [...core, memory, identity, herdr, mcp.extension, secrets];
+  const own = [...core, memory, identity, mcp.extension, secrets];
   const plugins = loaded.use({
     tools: new Set([
       ...own.flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name)),
-      ...[...mcp.groups, browser].flatMap((group) => group.tools.map((tool) => tool.name)),
+      ...mcp.groups.flatMap((group) => group.tools.map((tool) => tool.name)),
       ...RELOAD_TOOLS,
       "tool_search",
     ]),
     tasks: reservedTasks(own),
   });
-  const search = createToolSearch([...mcp.groups, browser, ...plugins.groups]);
+  const search = createToolSearch([...mcp.groups, ...plugins.groups]);
   const extensions = [
     context.extension,
     tools.extension,
@@ -77,9 +73,9 @@ async function build(inputs: BuildInputs): Promise<Build> {
     memory,
     identity,
     createHomeCheck(inputs.homeCheck),
-    // Bundled plugins keep the place jj had before it became one, so every conversation's tools stay in order.
+    // Bundled plugins keep the place jj and herdr had before they became plugins, so every conversation's tools stay in
+    // order (see BUNDLED_ORDER in plugins.ts).
     ...plugins.bundled,
-    herdr,
     mcp.extension,
     search.extension,
     // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.

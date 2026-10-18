@@ -11,7 +11,8 @@ import { once } from "node:events";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createBrowser } from "../src/core/tools/browser.ts";
+import { defaultConfig } from "../src/core/config.ts";
+import { Plugins } from "../src/core/plugins.ts";
 import { loadMcpConfig } from "../src/core/mcp/config.ts";
 import { createMcpTools } from "../src/core/mcp/tools.ts";
 import { runMcpCommand } from "../src/core/mcp/cli.ts";
@@ -589,7 +590,21 @@ text(await tools[found.name]({ city: "Testville" }));`,
       const path = process.env.PATH;
       process.env.PATH = `${bin}${delimiter}${path ?? ""}`;
       try {
-        const settings = install(value, [createBrowser(value.vault)]);
+        // The bundled browser plugin as Monchu loads it.
+        const plugins = new Plugins({
+          home: value.directory,
+          report: (warning) => value.reports.push(warning),
+          vault: value.vault,
+          models: value.models,
+          saveSettings: async () => {},
+        });
+        const loaded = (await plugins.load({ ...defaultConfig(), plugins: { clef: null } })).use({
+          tools: new Set(),
+          tasks: new Set(),
+        });
+        const browser = loaded.groups.filter((group) => group.name === "browser");
+        expect(browser.map((group) => [group.name, group.preload])).toEqual([["browser", true]]);
+        const settings = install(value, browser);
         route(value.faux, (request) => {
           const last = lastMessage(request.messages);
           if (last?.role === "user" && textOf(last).includes("BROWSE"))

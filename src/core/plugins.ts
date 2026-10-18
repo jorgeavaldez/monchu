@@ -24,6 +24,7 @@ import {
   type Extension,
   type Harness,
   type PromptSection,
+  type ToolExecutionApi,
   type ToolRegistration,
   type Tx,
 } from "@earendil-works/pi-durable";
@@ -52,7 +53,7 @@ import {
   type ToolNamespace,
 } from "../plugin.ts";
 import { GoalsDoc } from "./agents/goals.ts";
-import { messageWorker, parentOf, reopenWorker, WorkersDoc } from "./agents/workers.ts";
+import { messageWorker, parentOf, reopenWorker, rootOf, WorkersDoc } from "./agents/workers.ts";
 import { replaceFile, type MonchuConfig } from "./config.ts";
 import { RELOAD_TOOLS } from "./build.ts";
 import { durableHooks, durableTool, rootUi, type Guard } from "./plugin-shapes.ts";
@@ -171,6 +172,18 @@ function settingsOf(
 }
 
 type PluginSource = "bundled" | "home" | "local";
+
+/**
+ * Bundled plugins in the order their tools reach every conversation: the order they shipped in, each new one last.
+ * Durable redeclares every tool when their order changes, so a new bundled plugin, or one moved out of the core in the
+ * core's old place, never reorders the tools conversations already have.
+ */
+const BUNDLED_ORDER = ["clef", "fnox", "jj", "herdr", "browser"];
+
+function bundledPlace(plugin: { source: PluginSource; name: string }): number {
+  const place = BUNDLED_ORDER.indexOf(plugin.name);
+  return plugin.source !== "bundled" || place === -1 ? BUNDLED_ORDER.length : place;
+}
 
 /** A plugin's slash command, with the plugin that registered it. */
 export type PluginCommandEntry = PluginCommand & { readonly name: string; readonly plugin: string };
@@ -593,6 +606,7 @@ export class Plugins {
     const ordered = [...found.values()].sort(
       (left, right) =>
         Number(left.source !== "bundled") - Number(right.source !== "bundled") ||
+        bundledPlace(left) - bundledPlace(right) ||
         left.name.localeCompare(right.name),
     );
     for (const plugin of ordered) {
@@ -1101,7 +1115,14 @@ export class Plugins {
           tools: listed,
           ...(exposure === "codemode" ? { codemode: true } : {}),
           ...(namespace?.preload === true && exposure === "deferred" ? { preload: true } : {}),
-          ...(instructions === undefined ? {} : { details: async () => instructions }),
+          ...(instructions === undefined
+            ? {}
+            : {
+                details: async (api: ToolExecutionApi, context: Context) =>
+                  typeof instructions === "string"
+                    ? instructions
+                    : instructions({ durable: { api, context } }),
+              }),
         },
       ];
     };
@@ -1150,6 +1171,7 @@ function pluginSecrets(vault: Vault): Omit<PluginApi["secrets"], "redacting"> {
 /** Monchu's crew as plugins see it, with the worker profiles of the config this load applies. */
 const agents = (config: MonchuConfig): PluginApi["agents"] => ({
   shortId,
+  rootOf,
   whois: async (tx, id) => {
     if ((await tx.conversation(id)) === undefined) return undefined;
     const parent = await parentOf(tx, id);

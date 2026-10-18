@@ -70,8 +70,17 @@ export type ToolExposure = "deferred" | "direct" | "codemode";
  */
 export type ToolNamespace = {
   readonly description: string;
-  readonly instructions?: string;
+  /**
+   * Monchu's own besides a text: a function that writes the guide when a conversation loads the group, such as a CLI's
+   * own version-matched help. A failure shows in place of the guide.
+   */
+  readonly instructions?: string | ((ctx: GuideContext) => Promise<string | undefined>);
   readonly preload?: boolean;
+};
+
+/** What a group's guide function gets: Durable's tool API and context of the `tool_search` call that loads it. */
+export type GuideContext = {
+  readonly durable: { readonly api: ToolExecutionApi; readonly context: Context };
 };
 
 /** What a tool returns, as Pi's `AgentToolResult`. Throwing gives the model an error result. */
@@ -364,6 +373,8 @@ export interface PluginAgents {
    * or it is a worker its parent no longer lists. Read before the transaction's first write.
    */
   whois(tx: Tx, id: ConversationId): Promise<AgentInfo | undefined>;
+  /** The front a conversation's crew answers to: itself for a front, else its workers' chain of parents to the top. */
+  rootOf(tx: Tx, id: ConversationId): Promise<ConversationId>;
   /**
    * Messages a worker as its parent would, once per `requestId`, reopening it if it was closed; its answer is reported
    * as usual. A front gets input through Durable instead (`conversation(id).submit`).
