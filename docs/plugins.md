@@ -50,6 +50,7 @@ export default function (monchu: PluginApi) {
 - TypeScript runs through Node's type stripping: only erasable syntax (no `enum`, `namespace` or parameter properties). Import your own files with their extension (`./util.ts`).
 - The function may be async and must finish within 10 seconds. Register only while it runs. Don't start timers or processes there; start them from a tool, and stop them in `session_shutdown`.
 - `monchu.name`, `dir`, `home`, `device` (hostname, platform, arch, user), `signal` (aborts when the instance retires) and `report(warning)` (a system notice) are there for the plugin's own use.
+- A plugin's own settings (a service's URL, which secret holds its token) belong in a gitignored file in the home or in `plugins/local/`, never in a synced plugin's code, so the plugin can sync while each device keeps its own.
 
 ### Tools and the prompt cache
 
@@ -86,6 +87,22 @@ Handlers use Pi's event names with Durable's arguments, run in plugin then regis
 
 `tool_call` and `tool_result` also see nested calls (codemode's), with `call.parent` set. A redaction or guard plugin should handle both events.
 
+### Commands
+
+`registerCommand(name, { usage, help, run })` adds `/<name>` to the terminal and the web: it shows in `/help` and the typeahead, and `run(args)` runs in the core and returns the text the client shows. A built-in command of the same name wins, and so does an earlier plugin's.
+
+### Tasks
+
+`registerTask(defineTask(...))` installs a Durable task a plugin's tools create with `tx.createTask`, such as a wait that outlives the turn (a task owned by a conversation stops with it). Name it after the plugin, and register it at every load: Durable resumes pending tasks only when their definition is installed.
+
+### Secrets
+
+`monchu.secrets` reaches the home's secrets by name: `info(name)` (never a value), `value(key, use)` for the plugin's own credentials, `fill(texts, use)` to replace `{{secret:KEY}}` in what a tool sends (a login with a site only when `origin` matches it), and `redacting(tool)` so a tool's streamed output hides stored values. Every use is audited with `use`'s tool and conversation.
+
+### Agents
+
+`monchu.agents` reads and messages Monchu's crew inside a Durable transaction: `whois(tx, id)` says whether a conversation is a front or a worker (with its name, parent and whether it is closed), `messageWorker(tx, worker, text, requestId)` messages a worker as its parent would (reopening it, once per request id), and `updateText`/`noticeText` format a worker update for its front or a notice from Monchu itself. Reach a front with Durable's `conversation(id).submit`. `shortId(id)` is the id Monchu shows.
+
 ## Loading, reload and failures
 
 - At startup each plugin loads on its own. One that fails to import, run or validate is skipped with a warning that names its file, and Monchu starts anyway.
@@ -96,15 +113,15 @@ Handlers use Pi's event names with Durable's arguments, run in plugin then regis
 
 ## What from Pi's extension API is here
 
-Supported: tools (`registerTool`) with `deferred`, `direct` and `codemode` exposure, namespaces with instructions, prompt sections, the events above, plugin-shipped skills, async setup, shutdown.
+Supported: tools (`registerTool`) with `deferred`, `direct` and `codemode` exposure, namespaces with instructions, prompt sections, the events above, slash commands (`registerCommand`, text in and out), Durable tasks, plugin-shipped skills, async setup, shutdown.
 
 Not supported, and why:
 
-- **Slash commands, shortcuts, flags** (`registerCommand`, `registerShortcut`, `registerFlag`): Monchu's commands are a client-side table shared by the terminal and the web. Plugin commands need a core command registry and a contract method: a later phase.
+- **Shortcuts, flags, and commands with their own UI** (`registerShortcut`, `registerFlag`, `ctx.ui` in a command): Monchu's keys and pickers are client-side, shared by the terminal and the web; a plugin command returns text.
 - **UI** (`ctx.ui`, renderers, widgets): Monchu has two clients over a wire, and the web has a size budget. Plugins show results through tool output and notices.
 - **`sendMessage`, `sendUserMessage`, `appendEntry`, session control** (`setActiveTools`, model and thinking changes): conversations are Durable's, written through tools and commits. Use a tool's `api.commit` and Durable documents (`defineDoc`) for state.
 - **`registerProvider`, `registerVirtualModel`**: models and logins belong to Monchu's `/login`, with its own credential store.
 - **`registerMcpServer`**: use the home's `mcp.json`.
 - **Session events Monchu has no equivalent for** (`session_before_switch`, `session_before_fork`, `session_tree`, `input`, `user_bash`, provider stream and header events, `model_select`): there is no such moment in Monchu, or it belongs to a client.
-- **Wraps of other tools or sections, and extension tasks**: Durable has them, but they reach into Monchu's own definitions; not in the API yet.
+- **Wraps of other tools or sections**: Durable has them, but they reach into Monchu's own definitions; not in the API yet.
 - **Installing from npm or git**: plugins come only from the home, which you control.

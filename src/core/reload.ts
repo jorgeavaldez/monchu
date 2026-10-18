@@ -24,7 +24,12 @@ import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
-import { formatPluginStatus, Plugins, type PluginStatus } from "./plugins.ts";
+import {
+  formatPluginStatus,
+  Plugins,
+  type PluginCommandEntry,
+  type PluginStatus,
+} from "./plugins.ts";
 import type { EffortAssessment } from "./agents/classifier.ts";
 import type { BudgetLevel } from "./identity.ts";
 import {
@@ -152,7 +157,8 @@ export class Extensions {
       report,
       async (provider) => (await models.getAuth(provider))?.auth.apiKey,
     );
-    const plugins = new Plugins(home, report);
+    const vault = options.vault ?? new Vault(join(home, "secrets"));
+    const plugins = new Plugins(home, report, vault);
     const registry = createRegistry();
     const host = createHost<Principal>({
       name: "core",
@@ -179,7 +185,7 @@ export class Extensions {
       observeBudget: (levels) => options.observeBudget?.(levels),
       finders,
       clients,
-      vault: options.vault ?? new Vault(join(home, "secrets")),
+      vault,
       plugins,
       validate: (list) => validateExtensions(registry, list),
     };
@@ -316,6 +322,11 @@ export class Extensions {
   /** Home plugins' extensions, which every conversation selects by appending them. */
   get attached(): readonly Extension[] {
     return this.current.plugins.attached;
+  }
+
+  /** Plugins' slash commands as of the last build. */
+  get commands(): readonly PluginCommandEntry[] {
+    return this.current.plugins.commands;
   }
 
   /** What the last build loaded of each plugin. */

@@ -98,6 +98,7 @@ function hello(backend: Monchu): Hello {
     home: backend.home,
     settings: backend.settings,
     skills: [...backend.skills()],
+    commands: [...backend.commands()],
     models: [...backend.catalog()],
     notes: [...backend.notes],
   };
@@ -347,6 +348,7 @@ export default defineFacet<Principal>(
           await monchu().declineSecret(name);
         },
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
+        command: ({ name, text }) => monchu().command(name, text),
         findRoot: ({ prefix }) => monchu().findRoot(prefix),
         currentRoot: () => monchu().currentRoot(),
         createRoot: ({ requestId }) => monchu().createRoot(requestId),

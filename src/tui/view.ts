@@ -77,7 +77,7 @@ import {
   workerNotice,
   type WhenBusy,
 } from "../api/notices.ts";
-import { commands } from "../ui/commands.ts";
+import { commands, pluginCommands } from "../ui/commands.ts";
 import { presentation, type QueuedItem } from "../ui/state.ts";
 
 /**
@@ -618,15 +618,19 @@ export class MonchuTui {
     return args !== undefined || this.commandNames.has(command);
   }
 
-  setSkills(skills: readonly { name: string; description: string }[]): void {
+  setSkills(
+    skills: readonly { name: string; description: string }[],
+    plugins: readonly { name: string; usage: string; help: string }[] = [],
+  ): void {
+    const all = [...Object.entries(commands), ...pluginCommands(plugins)];
     this.commandNames = new Set([
-      ...Object.keys(commands),
+      ...all.map(([command]) => command),
       ...skills.map((skill) => `/skill:${skill.name}`),
     ]);
     this.editor.setAutocompleteProvider(
       new CombinedAutocompleteProvider(
         [
-          ...Object.entries(commands).map(([command, { usage, help }]) => ({
+          ...all.map(([command, { usage, help }]) => ({
             name: command.slice(1),
             description: help,
             ...(usage ? { argumentHint: usage } : {}),

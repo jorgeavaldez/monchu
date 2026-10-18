@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { help, parseInput } from "../src/ui/commands.ts";
+import { helpText, parseInput } from "../src/ui/commands.ts";
 import { presentation } from "../src/ui/state.ts";
 import { MonchuTui } from "../src/tui/view.ts";
 import { startWorker } from "../src/core/agents/workers.ts";
@@ -58,24 +58,29 @@ describe("terminal input boundary", () => {
     expect(parseInput("/update")).toEqual({ command: "/update", text: "edge" });
     expect(parseInput("/update v1.2.0")).toEqual({ command: "/update", text: "1.2.0" });
     expect(() => parseInput("/update latest; rm -rf ~")).toThrow("Usage: /update [edge|version]");
+    // Any other /name is a plugin's command, which the core runs or refuses.
+    expect(parseInput("/tell w more")).toEqual({ command: "plugin", name: "tell", text: "w more" });
+    expect(parseInput("/cd-worker")).toEqual({ command: "plugin", name: "cd-worker", text: "" });
     for (const invalid of [
-      "/work name",
-      "/tell w more",
-      "/workers",
-      "/abort",
-      "/cd-worker w x",
+      "/Work name",
+      "/tmp/file",
       "/skill:",
       "/cd",
       "/quit now",
       "/login key",
       "/reload now",
       "/restart yes",
-      "/missing",
     ])
       expect(() => parseInput(invalid)).toThrow();
+    const help = helpText([
+      { name: "weather", usage: "[city]", help: "a plugin's" },
+      { name: "goals", usage: "", help: "shadowed" },
+    ]);
     expect(help).toContain("/reload");
     expect(help).toContain("/restart");
     expect(help).toContain("/skill:<name>");
+    expect(help).toMatch(/\/weather \[city\] +a plugin's/);
+    expect(help).not.toContain("shadowed");
   });
 
   it("restores the terminal and stops input before /restart closes the core and the entry re-executes in place, reopens storage, and propagates the code", async () => {

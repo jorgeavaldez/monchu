@@ -8,8 +8,11 @@
  */
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type {
+  AnyTask,
   CompactionHooks,
+  ConversationId,
   EntryId,
   HookApi,
   HookResult,
@@ -18,18 +21,22 @@ import type {
   ToolExecutionResult,
   ToolHookCall,
   ToolRegistration,
+  Tx,
   UserInput,
 } from "@earendil-works/pi-durable";
 
 export { Type } from "@earendil-works/pi-ai";
-export { defineDoc, defineTool } from "@earendil-works/pi-durable";
+export { defineDoc, defineTask, defineTool } from "@earendil-works/pi-durable";
 export type {
+  AnyTask,
+  ConversationId,
   HookApi,
   PromptInput,
   ToolExecutionApi,
   ToolExecutionResult,
   ToolHookCall,
   ToolRegistration,
+  Tx,
 } from "@earendil-works/pi-durable";
 
 /**
@@ -84,6 +91,77 @@ export type PluginEvents = {
   session_shutdown: () => void | Promise<void>;
 };
 
+/** A slash command in every client: `/<name> <args>` runs `run` in the core and shows what it returns. */
+export type PluginCommand = {
+  /** Shown after the name in help and typeahead, such as `[id]`. */
+  readonly usage?: string;
+  /** One short line, shown beside the command on a phone. */
+  readonly help: string;
+  readonly run: (args: string) => string | Promise<string>;
+};
+
+/** Whose a secret use is, for the audit: the tool (or command) and the conversation's short id. */
+export type SecretUse = { readonly tool: string; readonly conversation: string };
+
+/** The home's secrets, by name. Values reach only the plugin's own code, never the model. */
+export interface PluginSecrets {
+  /** A stored secret's name, kind and site, never its value; `undefined` when there is none. */
+  info(
+    name: string,
+  ): Promise<
+    { readonly name: string; readonly kind: "value" | "login"; readonly site?: string } | undefined
+  >;
+  /** A stored value by key (a login's are `NAME_USERNAME` and `NAME_PASSWORD`), audited; `undefined` when none. */
+  value(key: string, use: SecretUse): Promise<string | undefined>;
+  /**
+   * Each text with `{{secret:KEY}}` replaced by the value. An unknown key throws; so does a login with a site unless
+   * `origin` returns that site.
+   */
+  fill(
+    texts: readonly string[],
+    use: SecretUse & { readonly origin?: () => Promise<string | undefined> },
+  ): Promise<string[]>;
+  /** The tool with its streamed output redacted, as Monchu's own browser and shell tools are. */
+  redacting<P extends TSchema>(tool: ToolRegistration<P>): ToolRegistration<P>;
+}
+
+/** A conversation as Monchu's agents know it. */
+export type AgentInfo =
+  | { readonly role: "front"; readonly id: ConversationId }
+  | {
+      readonly role: "worker";
+      readonly id: ConversationId;
+      readonly name: string;
+      /** The conversation that started it: its front, or the worker it reports to. */
+      readonly parent: ConversationId;
+      readonly closed: boolean;
+    };
+
+/** Monchu's fronts and workers, read and messaged inside a Durable transaction. */
+export interface PluginAgents {
+  /** The conversation's short id, as Monchu shows it. */
+  shortId(id: ConversationId): string;
+  /**
+   * Who the conversation is: a front, or a worker with its name and parent. `undefined` when the store no longer has it,
+   * or it is a worker its parent no longer lists. Read before the transaction's first write.
+   */
+  whois(tx: Tx, id: ConversationId): Promise<AgentInfo | undefined>;
+  /**
+   * Messages a worker as its parent would, once per `requestId`, reopening it if it was closed; its answer is reported
+   * as usual. A front gets input through Durable instead (`conversation(id).submit`).
+   */
+  messageWorker(
+    tx: Tx,
+    worker: Extract<AgentInfo, { role: "worker" }>,
+    text: string,
+    requestId: string,
+  ): Promise<void>;
+  /** Text a parent reads as the worker's progress update, as `post_update` sends it. */
+  updateText(name: string, text: string): string;
+  /** Text an agent reads as a notice from Monchu itself, not from the user; `summary` is one line. */
+  noticeText(summary: string, text: string): string;
+}
+
 /** What a plugin's function receives. Registration only counts while the function runs. */
 export interface PluginApi {
   /** The plugin's folder name. */
@@ -102,6 +180,8 @@ export interface PluginApi {
   readonly signal: AbortSignal;
   /** A warning the user sees as a system notice and in the log. */
   report(warning: string): void;
+  readonly secrets: PluginSecrets;
+  readonly agents: PluginAgents;
   /**
    * Describe the plugin's deferred tools, as Pi's tool `namespace`: `description` is the one line `tool_search` lists,
    * `instructions` a guide returned once when the group loads. `preload` loads the group from the start in
@@ -126,6 +206,13 @@ export interface PluginApi {
     options?: { readonly tag?: boolean },
   ): void;
   on<E extends keyof PluginEvents>(event: E, handler: PluginEvents[E]): void;
+  /**
+   * A Durable task the plugin's tools create, such as a wait that outlives a turn. Name it after the plugin; its
+   * definition must be registered at every load, so pending tasks resume.
+   */
+  registerTask(task: AnyTask): void;
+  /** `/<name>`: lowercase letters, digits and dashes. A built-in command of the same name wins. */
+  registerCommand(name: string, command: PluginCommand): void;
 }
 
 /** A plugin's default export. It may be async; Monchu waits for it (up to 10 seconds) before loading the next one. */

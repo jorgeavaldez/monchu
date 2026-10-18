@@ -61,6 +61,8 @@ export type Hello = {
   home: string;
   settings: Settings;
   skills: { name: string; description: string }[];
+  /** Plugins' slash commands. */
+  commands: { name: string; usage: string; help: string }[];
   /** The chat model catalog, for context windows and reasoning support. */
   models: Model<Api>[];
   notes: string[];
@@ -155,6 +157,7 @@ const secretMethods = {
 
 const sessionMethods = {
   skillInput: method(Type.Object({ name: text, text }), trusted<string>()),
+  command: method(Type.Object({ name: text, text }), trusted<string>()),
   findRoot: method(Type.Object({ prefix: text }), trusted<string>()),
   currentRoot: method(undefined, trusted<string>()),
   createRoot: method(Type.Object({ requestId: text }), trusted<string>()),

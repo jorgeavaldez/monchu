@@ -291,6 +291,31 @@ export class Monchu implements Client {
     return this.extensions.skills.map(({ name, description }) => ({ name, description }));
   }
 
+  /** Plugins' slash commands as of the last successful load or reload. */
+  commands(): readonly { name: string; usage: string; help: string }[] {
+    return this.extensions.commands.map(({ name, usage, help }) => ({
+      name,
+      usage: usage ?? "",
+      help,
+    }));
+  }
+
+  /** Runs a plugin's slash command and returns what it shows; throws for an unknown one or the plugin's error. */
+  async command(name: string, args: string): Promise<string> {
+    const command = this.extensions.commands.find((entry) => entry.name === name);
+    if (command === undefined) throw new Error("Unknown command. /help lists commands.");
+    try {
+      return String(await command.run(args));
+    } catch (error) {
+      throw new Error(
+        `/${name} (plugin ${command.plugin}) failed: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          cause: error,
+        },
+      );
+    }
+  }
+
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
   async skillInput(name: string, text: string): Promise<string> {
     const skill = this.extensions.skills.find((item) => item.name === name);

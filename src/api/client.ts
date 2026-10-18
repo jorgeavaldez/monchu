@@ -149,6 +149,10 @@ export interface Client {
   /** The core's startup notes, such as a freshly seeded home, which every client shows under its header. */
   readonly notes: readonly string[];
   skills(): readonly { name: string; description: string }[];
+  /** Plugins' slash commands, for help and typeahead. */
+  commands(): readonly { name: string; usage: string; help: string }[];
+  /** Runs a plugin's slash command and returns what it shows. */
+  command(name: string, args: string): Promise<string>;
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
   skillInput(name: string, text: string): Promise<string>;
   /** The catalog model of a model reference, while its provider still offers it. */

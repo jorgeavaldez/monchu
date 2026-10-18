@@ -183,6 +183,89 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
     }
   });
 
+  it("gives plugins tasks, slash commands, secrets by name and Monchu's agents", async () => {
+    const value = await setup();
+    const home = join(value.directory, "home");
+    await mkdir(home);
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    );
+    prepareHome(home);
+    await plugin(home, "pinger", {
+      "index.ts": `
+import { defineTask, defineTool, Type, type PluginApi } from "monchu/plugin";
+
+export default function (monchu: PluginApi) {
+  const Ping = defineTask<{ owner: number }, { phase: "run" }, null>({
+    name: "pinger.ping",
+    version: 1,
+    initial: () => ({ phase: "run" }),
+    phases: {
+      run: async (task, runtime, context) => {
+        const owner = await runtime.conversation(task.input.owner, context);
+        await owner?.submit(
+          { type: "input", content: monchu.agents.noticeText("pinged", "the task ran"), whenBusy: "followUp", requestId: "ping:1" },
+          context,
+        );
+        await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+      },
+    },
+  });
+  monchu.registerTask(Ping);
+  monchu.registerTool(
+    defineTool({
+      name: "ping",
+      description: "Ping later",
+      parameters: Type.Object({}),
+      execute: async (_args, api, context) => {
+        const who = await api.commit(async (tx) => {
+          const who = await monchu.agents.whois(tx, api.conversationId);
+          await tx.createTask(Ping, { owner: api.conversationId }, {
+            conversationId: api.conversationId,
+            ownership: { kind: "conversation" },
+            background: true,
+          });
+          return who;
+        }, context);
+        return { output: [{ type: "text", text: "role " + who?.role + " " + monchu.agents.shortId(api.conversationId) }] };
+      },
+    }),
+    { exposure: "direct" },
+  );
+  monchu.registerCommand("hello", {
+    usage: "[name]",
+    help: "say hello",
+    run: async (args) => "hi " + args + ", secret " + String(await monchu.secrets.value("NO_SUCH", { tool: "/hello", conversation: "user" })),
+  });
+}
+`,
+    });
+    const requests: Message[][] = [];
+    const answer = callTools({ ping: { tool: "ping", args: {} } });
+    route(value.faux, (request) => {
+      requests.push(structuredClone([...request.messages]));
+      return answer(request);
+    });
+    const backend = await Monchu.open(home, value.faux.provider);
+    try {
+      expect(backend.commands()).toEqual([{ name: "hello", usage: "[name]", help: "say hello" }]);
+      expect(await backend.command("hello", "you")).toBe("hi you, secret undefined");
+      await expect(backend.command("nope", "")).rejects.toThrow("Unknown command");
+      await (await front(backend)).submit("ping", "ping:submit", "followUp");
+      // The tool knows its caller is a front; its task outlives the turn and tells the front through Durable.
+      await waitFor(() =>
+        requests.some((request) => textOf(lastMessage(request)).includes("the task ran")),
+      );
+      const result = requests
+        .flat()
+        .find((message) => message.role === "toolResult" && textOf(message).startsWith("role"));
+      expect(textOf(result)).toMatch(/^role front \S+$/);
+    } finally {
+      await backend.close();
+    }
+  });
+
   it("lets a device's own plugin replace a synced one, and an invalid deny list loads no home plugin", async () => {
     const value = await setup();
     const home = join(value.directory, "home");

@@ -18,7 +18,7 @@ import type { WhenBusy } from "../api/notices.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { releaseNotices } from "../api/release.ts";
-import { commands, help, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
+import { commands, helpText, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
 import { formatJobEvent, jobEventRoot } from "../ui/jobs.ts";
 import { activeRoots, parseRootsCommand, rootIds, rootLabel } from "../ui/roots.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -499,7 +499,7 @@ export async function runTerminal(
         exit();
         break;
       case "/help":
-        view.notice(help);
+        view.notice(helpText(backend.commands()));
         break;
       case "/mcp": {
         const [action, name, ...extra] = input.text.split(/\s+/).filter(Boolean);
@@ -734,6 +734,10 @@ export async function runTerminal(
         }
         break;
       }
+      case "plugin": {
+        view.notice(await backend.command(input.name, input.text));
+        break;
+      }
       case "/logs": {
         const records = await backend.logs(logQuery(input.text));
         view.notice(
@@ -835,9 +839,9 @@ export async function runTerminal(
       view.updateRoots(next);
       show();
     });
-    view.setSkills(backend.skills());
+    view.setSkills(backend.skills(), backend.commands());
     stopReload = backend.onReload(() => {
-      view.setSkills(backend.skills());
+      view.setSkills(backend.skills(), backend.commands());
       applyTheme();
       show(true);
     });

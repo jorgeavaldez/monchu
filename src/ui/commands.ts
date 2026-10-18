@@ -31,14 +31,15 @@ type Input =
         | "/attach";
       text: string;
     }
-  | { command: "skill"; name: string; text: string };
+  | { command: "skill"; name: string; text: string }
+  | { command: "plugin"; name: string; text: string };
 
 /**
  * Every command once, in help order; parsing, help, and the editor's typeahead all read this table. `help` is short
  * enough to show beside the command on a phone.
  */
 export const commands: Record<
-  Exclude<Input["command"], "message" | "skill">,
+  Exclude<Input["command"], "message" | "skill" | "plugin">,
   { usage: string; help: string }
 > = {
   "/agents": {
@@ -118,18 +119,26 @@ export function loginAuth(provider: string): "oauth" | "api_key" {
   return LOGIN_PROVIDERS.find((entry) => entry.id === provider)?.auth ?? "oauth";
 }
 
-export const help = [
-  "Commands:",
-  ...Object.entries(commands).map(([command, { usage, help }]) =>
-    `${`${command} ${usage}`.padEnd(21)} ${help}`.trimEnd(),
-  ),
-  `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
-  "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
-  "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
-  "Ctrl+V (Alt+V on Windows) attaches a copied image or file, and a pasted image path attaches that image; in the web, use the attach button, paste or drop.",
-  "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
-  "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the shown root. Footer dots are roots at work (●) or done unseen; /roots has them.",
-].join("\n");
+/** Plugins' commands that a built-in command doesn't shadow, as `/name`. */
+export const pluginCommands = (
+  list: readonly { name: string; usage: string; help: string }[],
+): [string, { usage: string; help: string }][] =>
+  list.filter(({ name }) => !(`/${name}` in commands)).map((entry) => [`/${entry.name}`, entry]);
+
+/** `/help`: every command, plugins' after the built-ins, and the keys. */
+export const helpText = (plugins: readonly { name: string; usage: string; help: string }[]) =>
+  [
+    "Commands:",
+    ...[...Object.entries(commands), ...pluginCommands(plugins)].map(([command, { usage, help }]) =>
+      `${`${command} ${usage}`.padEnd(21)} ${help}`.trimEnd(),
+    ),
+    `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
+    "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
+    "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
+    "Ctrl+V (Alt+V on Windows) attaches a copied image or file, and a pasted image path attaches that image; in the web, use the attach button, paste or drop.",
+    "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
+    "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the shown root. Footer dots are roots at work (●) or done unseen; /roots has them.",
+  ].join("\n");
 
 /** Parse once at the input boundary; directory/message tails may contain spaces and newlines. */
 export function parseInput(raw: string): Input | undefined {
@@ -176,6 +185,9 @@ export function parseInput(raw: string): Input | undefined {
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
     default:
+      // A plugin's command, which the core runs; it answers an unknown one.
+      if (/^\/[a-z][a-z0-9-]*$/.test(command))
+        return { command: "plugin", name: command.slice(1), text: rest };
       throw new Error("Unknown command. /help lists commands.");
   }
 }

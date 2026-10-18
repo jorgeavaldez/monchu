@@ -346,6 +346,10 @@ export class RemoteClient implements Client {
     return this.hello.skills;
   }
 
+  commands(): readonly { name: string; usage: string; help: string }[] {
+    return this.hello.commands;
+  }
+
   model(ref: ModelRef): Model<Api> | undefined {
     return this.hello.models.find(
       (model) => model.provider === ref.provider && model.id === ref.modelId,
@@ -389,6 +393,9 @@ export class RemoteClient implements Client {
 
   skillInput(name: string, text: string) {
     return this.run(() => this.session.ref.skillInput({ name, text }));
+  }
+  command(name: string, text: string) {
+    return this.run(() => this.session.ref.command({ name, text }));
   }
   jobs() {
     return this.run(() => this.session.ref.jobs());

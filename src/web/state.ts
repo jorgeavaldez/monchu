@@ -19,7 +19,7 @@ import { shortId } from "../api/ids.ts";
 import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
 import type { Connection } from "../api/remote.ts";
-import { help, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
+import { helpText, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
@@ -747,7 +747,7 @@ async function runInput(
     case "/roots":
       return await runRoots(parseRootsCommand(input.text));
     case "/help":
-      return notice(help);
+      return notice(helpText(client().commands()));
     case "/quit":
       return notice("close the tab to quit; Monchu keeps running");
     case "/agents":
@@ -839,6 +839,8 @@ async function runInput(
           : [`logs · ${records.length}`, ...records.map(formatRecord)].join("\n"),
       );
     }
+    case "plugin":
+      return notice(await client().command(input.name, input.text));
     case "/login":
       return await runLogin();
     case "/mcp":

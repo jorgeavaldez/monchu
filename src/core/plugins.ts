@@ -18,6 +18,7 @@ import {
   hook,
   section,
   ToolTask,
+  type AnyTask,
   type Extension,
   type HookRegistration,
   type JsonObject,
@@ -30,17 +31,26 @@ import { registerHooks } from "node:module";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Plugin, PluginApi, PluginEvents, ToolExposure } from "../plugin.ts";
+import { shortId } from "../api/ids.ts";
+import { noticeText, systemNoticeText } from "../api/notices.ts";
+import type { Plugin, PluginApi, PluginCommand, PluginEvents, ToolExposure } from "../plugin.ts";
+import { messageWorker, parentOf, reopenWorker, WorkersDoc } from "./agents/workers.ts";
+import { fillPlaceholders, redacting } from "./secrets/tool.ts";
+import type { Vault } from "./secrets/vault.ts";
 import { PLUGIN_PREFIX, type ToolGroup } from "./tools/tool-search.ts";
 
 const NAME = /^[a-z][a-z0-9-]{0,47}$/;
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const SECTION_KEY = /^[a-z][a-z0-9_-]*$/;
+const COMMAND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const SETUP_TIMEOUT_MS = 10_000;
 /** Deny list: `{ "disabled": ["name", ...] }`, gitignored, so each device decides. */
 const DENY_FILE = "plugins.local.json";
 
 type PluginSource = "bundled" | "home" | "local";
+
+/** A plugin's slash command, with the plugin that registered it. */
+export type PluginCommandEntry = PluginCommand & { readonly name: string; readonly plugin: string };
 
 export type PluginStatus = {
   readonly name: string;
@@ -68,6 +78,7 @@ type Contribution = {
   readonly sections: readonly PromptSection[];
   readonly groups: ToolGroup[];
   readonly tools: readonly string[];
+  readonly commands: readonly PluginCommandEntry[];
   readonly skills: string | undefined;
   readonly instance: Instance;
 };
@@ -88,6 +99,8 @@ export type PluginBuild = {
   readonly groups: ToolGroup[];
   /** Every plugin's sections, which the `plugins` section renders. */
   readonly sections: readonly PromptSection[];
+  /** Slash commands by name; an earlier plugin's wins a clash. */
+  readonly commands: readonly PluginCommandEntry[];
   readonly status: readonly PluginStatus[];
   readonly warnings: readonly string[];
   readonly instances: ReadonlySet<Instance>;
@@ -254,6 +267,7 @@ async function withTimeout(work: void | Promise<void>, ms: number): Promise<void
 export class Plugins {
   private readonly home: string;
   private readonly report: (warning: string) => void;
+  private readonly vault: Vault;
   private readonly bundledDir: string;
   /** The last import of each plugin folder, by entry path, with the fingerprint it was made from. */
   private readonly modules = new Map<string, { fingerprint: string; plugin: Plugin | Error }>();
@@ -264,10 +278,12 @@ export class Plugins {
   constructor(
     home: string,
     report: (warning: string) => void,
+    vault: Vault,
     bundledDir = fileURLToPath(new URL("../plugins/", import.meta.url)),
   ) {
     this.home = home;
     this.report = report;
+    this.vault = vault;
     this.bundledDir = bundledDir;
   }
 
@@ -354,6 +370,16 @@ export class Plugins {
           ),
           groups: used.flatMap((contribution) => contribution.groups),
           sections: used.flatMap((contribution) => contribution.sections),
+          commands: used
+            .flatMap((contribution) => contribution.commands)
+            .filter((entry, index, all) => {
+              const first = all.findIndex((other) => other.name === entry.name);
+              if (first !== index)
+                warnings.push(
+                  `Plugin ${entry.plugin}'s command /${entry.name} is left out: plugin ${all[first]?.plugin ?? ""} has one`,
+                );
+              return first === index;
+            }),
           status,
           warnings,
           instances,
@@ -477,6 +503,8 @@ export class Plugins {
     this.live.add(instance);
     const tools: { tool: ToolRegistration; exposure: ToolExposure }[] = [];
     const sections: PromptSection[] = [];
+    const tasks: AnyTask[] = [];
+    const commands: PluginCommandEntry[] = [];
     const handlers: { [E in keyof PluginEvents]: PluginEvents[E][] } = {
       tool_call: [],
       tool_result: [],
@@ -513,6 +541,8 @@ export class Plugins {
       device: device(),
       signal: instance.controller.signal,
       report,
+      secrets: pluginSecrets(this.vault),
+      agents: AGENTS,
       namespace: (options) => {
         opened();
         namespace = options;
@@ -549,6 +579,28 @@ export class Plugins {
         if (!Object.hasOwn(handlers, event)) throw new Error(`unknown event ${String(event)}`);
         handlers[event].push(handler);
       },
+      registerTask: (task) => {
+        opened();
+        if (tasks.some((entry) => entry.definition.name === task.definition.name))
+          throw new Error(`two tasks are named ${task.definition.name}`);
+        tasks.push(task);
+      },
+      registerCommand: (name, command) => {
+        opened();
+        if (!COMMAND_NAME.test(name))
+          throw new Error(`command name ${JSON.stringify(name)} must match ${COMMAND_NAME.source}`);
+        if (typeof command.run !== "function")
+          throw new Error(`command /${name} has no run function`);
+        if (commands.some((entry) => entry.name === name))
+          throw new Error(`two commands are named /${name}`);
+        commands.push({
+          name,
+          plugin: found.name,
+          help: String(command.help),
+          ...(command.usage === undefined ? {} : { usage: String(command.usage) }),
+          run: command.run,
+        });
+      },
     };
     try {
       await withTimeout(plugin(api), SETUP_TIMEOUT_MS);
@@ -563,6 +615,7 @@ export class Plugins {
       name: found.source === "bundled" ? `monchu.${found.name}` : `${PLUGIN_PREFIX}${found.name}`,
       tools: tools.filter((entry) => entry.exposure === "direct").map((entry) => entry.tool),
       hooks: guardedHooks(handlers, guard),
+      tasks,
     });
     try {
       // Durable's own checks.
@@ -594,18 +647,65 @@ export class Plugins {
       ];
     };
     const skills = join(found.dir, "skills");
-    const empty = extension.tools?.length === 0 && extension.hooks?.length === 0;
+    const empty =
+      extension.tools?.length === 0 && extension.hooks?.length === 0 && tasks.length === 0;
     return {
       found,
       extension: empty ? undefined : extension,
       sections,
       groups: [...group("deferred"), ...group("codemode")],
       tools: tools.map((entry) => entry.tool.name),
+      commands,
       skills: existsSync(skills) ? skills : undefined,
       instance,
     };
   }
 }
+
+/** The home's secrets as plugins see them: by name, with values only for the plugin's own code. */
+function pluginSecrets(vault: Vault): PluginApi["secrets"] {
+  return {
+    info: async (name) => {
+      const info = await vault.info(name);
+      return info === undefined
+        ? undefined
+        : {
+            name: info.name,
+            kind: info.kind,
+            ...(info.site === undefined ? {} : { site: info.site }),
+          };
+    },
+    value: async (key, use) =>
+      (await vault.owner(key)) === undefined ? undefined : (await vault.resolve([key], use))[key],
+    fill: (texts, use) => fillPlaceholders(vault, texts, use),
+    redacting: (tool) => redacting(tool, vault),
+  };
+}
+
+const AGENTS: PluginApi["agents"] = {
+  shortId,
+  whois: async (tx, id) => {
+    if ((await tx.conversation(id)) === undefined) return undefined;
+    const parent = await parentOf(tx, id);
+    if (parent === undefined) return { role: "front", id };
+    const worker = (await tx.doc(WorkersDoc, parent)).workers.find(
+      (each) => each.conversationId === id,
+    );
+    return worker === undefined
+      ? undefined
+      : { role: "worker", id, name: worker.name, parent, closed: worker.closed === true };
+  },
+  messageWorker: async (tx, worker, text, requestId) => {
+    const current = (await tx.doc(WorkersDoc, worker.parent)).workers.find(
+      (each) => each.conversationId === worker.id,
+    );
+    if (current === undefined) throw new Error(`${worker.name} is no longer a worker`);
+    if (current.closed === true) await reopenWorker(tx, worker.parent, current.name);
+    await messageWorker(tx, worker.parent, current.name, text, requestId, "followUp");
+  },
+  updateText: (name, text) => noticeText({ name, status: "update", text }),
+  noticeText: systemNoticeText,
+};
 
 async function packageDescription(dir: string): Promise<string | undefined> {
   try {
