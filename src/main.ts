@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { enableCompileCache } from "node:module";
+import { resolve } from "node:path";
 import { chooseRoot, type RootChoice } from "./api/roots.ts";
 import { monchuHome, seedHome } from "./core/home.ts";
+
+/** The home of the core a process runs inside, if any. */
+const CORE_HOME_ENV = "MONCHU_CORE_HOME";
 
 // Before the dynamic imports below, so startup and /restart reuse compiled code. Node keys the cache by version and
 // source hash in its default temp directory; NODE_DISABLE_COMPILE_CACHE turns it off.
@@ -32,6 +36,8 @@ try {
       error: (line) => console.error(line),
     });
   } else if (process.argv[2] === "__core") {
+    // Inherited by everything the core runs (tool shells, plugins' children), so a `monchu stop` from there refuses.
+    process.env[CORE_HOME_ENV] = resolve(home);
     // The server's child: it owns the store. Seeding happens here, so its notes reach every client's first screen.
     const seeded = await seedHome(home);
     const { runCore } = await import("./server/child.ts");
@@ -89,6 +95,11 @@ try {
       }
     } else if (command === "stop") {
       if (args.length !== 1) throw new Error(`Unknown arguments: ${args.join(" ")}`);
+      // An agent's shell stopping the Monchu it runs in ends itself and every other conversation's work.
+      if (process.env[CORE_HOME_ENV] === resolve(home))
+        throw new Error(
+          `This runs inside the Monchu of ${home}, which it would stop. Use /restart, or stop it from a terminal of your own.`,
+        );
       const { stopServer } = await import("./server/socket.ts");
       console.log(
         (await stopServer(path))

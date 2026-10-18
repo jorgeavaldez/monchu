@@ -72,6 +72,19 @@ export default () => {
 `,
       );
       const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+      // What an agent's shell does: run `monchu stop` from inside the core, with the core's environment.
+      await mkdir(join(home, "plugins", "inside"), { recursive: true });
+      await writeFile(
+        join(home, "plugins", "inside", "index.js"),
+        `import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
+export default () => {
+  execFile(process.execPath, [${JSON.stringify(entry)}, "stop"], (error, stdout, stderr) =>
+    writeFileSync(${JSON.stringify(join(home, "inside-stop"))}, \`\${error?.code}\n\${stdout}\${stderr}\`),
+  );
+};
+`,
+      );
       /** Run the entry point; `until` resolves `seen` once its output contains that text. */
       const run = (args: string[], until?: string) => {
         const child = spawn(process.execPath, [entry, ...args], {
@@ -124,6 +137,11 @@ export default () => {
         30_000,
       );
       expect(await logText(home)).not.toContain("promise boom");
+      // It refused, so the server still runs for the `stop` below.
+      await waitFor(() => existsSync(join(home, "inside-stop")), 30_000);
+      const inside = await readFile(join(home, "inside-stop"), "utf8");
+      expect(inside).toMatch(/^1\n/);
+      expect(inside).toContain("This runs inside the Monchu of");
       const stop = await run(["stop"]).exited;
       expect(stop, stop.output).toMatchObject({ code: 0 });
       expect(stop.output).toContain("stopped the Monchu of");

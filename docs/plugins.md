@@ -8,7 +8,7 @@ A plugin is a folder of code that adds tools, prompt sections and event handlers
 <home>/plugins/<name>/         synced with the home, so it runs on every device
 <home>/plugins/local/<name>/   this device only (gitignored)
   index.ts or index.js         default export: a function that receives the plugin API
-  package.json                 optional: a description, the plugin API versions it works with, pure-JS dependencies
+  package.json                 optional: "type": "module", a description, the plugin API versions it works with, pure-JS dependencies
   skills/                      optional: skills that ship with the plugin
 <home>/plugins.local.json      optional, gitignored: this device's { "disabled": [...], "settings": { ... } }
 ```
