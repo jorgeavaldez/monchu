@@ -11,15 +11,16 @@ The full reference is `../../docs/plugins.md` (relative to this skill's folder):
 
 - Instructions or a script the agent runs: a skill. No code in Monchu's process.
 - A service with its own process, any language, or anything heavy or flaky: an MCP server in `mcp.json`.
-- An in-process tool, a guard on other tools (`tool_call`), result rewriting (`tool_result`), or prompt context computed per request: a plugin.
+- An in-process tool, a guard on other tools (`tool_call`), result rewriting (`tool_result`), or prompt context: a plugin. Context the model should keep goes in a section (`registerSection`), which joins the transcript once; a `context` handler changes every request and costs the prompt cache.
 
 ## Writing one
 
 1. Ask where it runs: `plugins/<name>/` syncs to every device; `plugins/local/<name>/` stays on this one (work-only or device-specific plugins go there). Check the device rules before syncing one that reaches a machine or service.
-2. Write `index.ts` (erasable TypeScript only) or `index.js`, default-exporting `function (monchu: PluginApi)`. Import only from `monchu/plugin` and Monchu's host packages as bare names; other dependencies go in its `package.json`, pure JS, `npm install` in its folder.
-3. Keep tools `deferred` (the default) unless most turns need them. A `direct` tool, or any edit to its description or schema, re-caches every conversation. Keep descriptions stable.
-4. Set `replay: "safe"` only on tools that can safely run twice.
-5. Don't start timers or processes in the plugin function; release what tools start in `session_shutdown`.
+2. Write `index.ts` (erasable TypeScript only) or `index.js`, default-exporting `function (monchu: PluginApi)`. The API has Pi's extension shapes: tool definitions, `(event, ctx)` handlers, commands with `handler(args, ctx)` and `ctx.ui.notify`. Import only from `monchu/plugin` and Monchu's host packages as bare names; other dependencies go in its `package.json`, pure JS, `npm install` in its folder. Put `"monchu": { "api": <apiVersion> }` there too.
+3. Settings never go in its code: shared ones in `config.json` `plugins.<name>`, this device's in `plugins.local.json` `settings.<name>`; the plugin reads `monchu.config`.
+4. Keep tools `deferred` (the default) unless most turns need them. A `direct` tool, or any edit to its description or schema, re-caches every conversation. Keep descriptions stable.
+5. Set `replay: "safe"` only on tools that can safely run twice.
+6. Don't start timers or processes in the plugin function; release what tools start in `session_shutdown`.
 
 ## Testing and shipping
 
@@ -29,4 +30,4 @@ The full reference is `../../docs/plugins.md` (relative to this skill's folder):
 
 ## Turning one off on a device
 
-Add its name to `<home>/plugins.local.json` (`{ "disabled": ["name"] }`, gitignored), then reload. Bundled plugins (such as `jj`) can be turned off the same way.
+Add its name to `<home>/plugins.local.json` (`{ "disabled": ["name"] }`, gitignored), then reload. Bundled plugins (`jj`, `clef`) can be turned off the same way.
