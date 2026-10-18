@@ -391,6 +391,7 @@ function Footer() {
   const base = dir?.split(/[/\\]/).findLast(Boolean) ?? dir ?? "";
   const open = details.value;
   const percent = fill === undefined ? "?" : `${Math.round(fill * 100)}%`;
+  const meterTitle = usage.compacted ? "compacted: unknown until the next reply" : "context used";
   const rows: [string, string][] = [
     ["dir", dir ?? "?"],
     ["model", thinking === undefined ? name : `${name} · ${thinking}`],
@@ -398,15 +399,17 @@ function Footer() {
       "context",
       `${usage.context === undefined ? "?" : tokens(usage.context)} / ${
         model?.contextWindow === undefined ? "?" : tokens(model.contextWindow)
-      } · ${percent}`,
+      } · ${percent}${usage.compacted ? " · compacted, next reply measures it" : ""}`,
     ],
     [
       "tokens",
       `↑${tokens(usage.input)} ↓${tokens(usage.output)} R${tokens(usage.cacheRead)} W${tokens(usage.cacheWrite)}`,
     ],
   ];
-  if (shown.value !== undefined && root !== undefined)
-    rows.push(["root", tokens(contextUsage(root).context ?? 0)]);
+  if (shown.value !== undefined && root !== undefined) {
+    const size = contextUsage(root).context;
+    rows.push(["root", size === undefined ? "?" : tokens(size)]);
+  }
   rows.push(["link", LINK[connection.value]]);
   return (
     <>
@@ -440,7 +443,7 @@ function Footer() {
           <span aria-hidden="true">{open ? "▾" : "▴"}</span> <bdi>{base}</bdi>
         </button>
         <span class="meta">
-          <span class={level} title="context used">
+          <span class={level} title={meterTitle}>
             {percent}
           </span>{" "}
           <span title={name}>{live.model}</span>

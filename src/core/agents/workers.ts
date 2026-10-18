@@ -616,7 +616,7 @@ export async function messageWorker(
 
 /**
  * When a worker last did something (its newest message; a reply counts from when it ended) and the context size its
- * newest reply reported. Scans only the newest entries.
+ * newest reply reported, unless a compaction or reset came after it. Scans only the newest entries.
  */
 async function lastActivity(
   tx: Tx,
@@ -624,19 +624,26 @@ async function lastActivity(
 ): Promise<{ at?: number; contextTokens?: number }> {
   const found: { at?: number; contextTokens?: number } = {};
   const { items } = await tx.scanEntries({ conversationId }, 50);
-  for (const entry of items)
+  let settled = false;
+  for (const entry of items) {
+    // Replies before a context's head marker measured the context it replaced.
+    if (entry.head !== undefined) settled = true;
     for (const message of (entry.model ?? []).toReversed()) {
       if (message.role === "system") continue;
       if (found.at === undefined)
         found.at =
           message.timestamp + (message.role === "assistant" ? (message.durationMs ?? 0) : 0);
-      if (message.role === "assistant" && found.contextTokens === undefined) {
+      if (message.role === "assistant" && !settled) {
         const { input, cacheRead, cacheWrite, output } = message.usage;
         const tokens = input + cacheRead + cacheWrite + output;
-        if (tokens > 0) found.contextTokens = tokens;
+        if (tokens > 0) {
+          found.contextTokens = tokens;
+          settled = true;
+        }
       }
-      if (found.at !== undefined && found.contextTokens !== undefined) return found;
+      if (found.at !== undefined && settled) return found;
     }
+  }
   return found;
 }
 

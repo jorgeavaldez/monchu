@@ -251,6 +251,7 @@ it("fits Pi's footer to any width, keeping the shown conversation, mode and cont
     cacheRead: 1200000,
     cacheWrite: 40000,
     context: 92000,
+    compacted: false,
   };
   footer.state = {
     ...footer.state,

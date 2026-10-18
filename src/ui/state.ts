@@ -102,13 +102,17 @@ export function presentation(view: ConversationView) {
   };
 }
 
-/** Token use of the active context, as Pi's footer shows it; `context` is undefined until a reply measures it. */
+/**
+ * Token use of the active context, as Pi's footer shows it; `context` is undefined until a reply measures it, and
+ * `compacted` says it is unknown because a compaction replaced the context the last reply measured.
+ */
 export type ContextUsage = {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
   context: number | undefined;
+  compacted: boolean;
 };
 
 /** Pi's request-size measure of a reply's usage. */
@@ -149,7 +153,9 @@ const usages = new WeakMap<readonly EntryRecord[], ContextUsage>();
 
 /**
  * Token totals of the replies in the active context, and its size as Durable's compaction measures it: the newest
- * reply's usage plus estimates of the messages after it. Views share unchanged entry arrays, so each is read once.
+ * reply's usage plus estimates of the messages after it. Only a reply appended after the head marker measured the
+ * active context; replies kept from before a compaction measured the old one, so the size stays unknown until the
+ * next reply. Views share unchanged entry arrays, so each is read once.
  */
 export function contextUsage(view: ConversationView): ContextUsage {
   const cached = usages.get(view.entries);
@@ -160,7 +166,9 @@ export function contextUsage(view: ConversationView): ContextUsage {
     cacheRead: 0,
     cacheWrite: 0,
     context: undefined,
+    compacted: false,
   };
+  const marker = view.entries[0]?.head === undefined ? undefined : view.entries[0];
   let trailing = 0;
   for (const entry of view.entries.toReversed())
     for (const message of (entry.model ?? []).toReversed()) {
@@ -169,11 +177,18 @@ export function contextUsage(view: ConversationView): ContextUsage {
         usage.output += message.usage.output;
         usage.cacheRead += message.usage.cacheRead;
         usage.cacheWrite += message.usage.cacheWrite;
-        if (usage.context === undefined && requestTokens(message.usage) > 0)
+        if (
+          usage.context === undefined &&
+          (marker === undefined || entry.id > marker.id) &&
+          requestTokens(message.usage) > 0
+        )
           usage.context = requestTokens(message.usage) + trailing;
       }
       if (usage.context === undefined) trailing += estimate(message);
     }
+  // A reset marker heads itself; a compaction marker heads the first entry it kept.
+  usage.compacted =
+    usage.context === undefined && marker !== undefined && marker.head !== marker.id;
   usages.set(view.entries, usage);
   return usage;
 }

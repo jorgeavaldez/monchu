@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { presentation } from "../src/ui/state.ts";
+import { contextUsage, presentation } from "../src/ui/state.ts";
 import { parseWorkerNotice, systemNoticeSummary, workerNotice } from "../src/api/notices.ts";
 import {
   cleanup,
@@ -673,6 +673,65 @@ export default () => {
       await backend.close();
     }
     await expect(backend.reload()).rejects.toThrow("Monchu is closing");
+  });
+
+  it("after compaction, the context size is unknown until a reply, and a new model gets only the compacted context", async () => {
+    const value = await setup({ models: [{ id: "faux-1" }, { id: "picked" }] });
+    const requests: { text: string; model: string; messages: string }[] = [];
+    route(value.faux, async (request, _options, _state, model) => {
+      const text = textOf(lastMessage(request.messages));
+      requests.push({ text, model: model.id, messages: JSON.stringify(request.messages) });
+      return fauxAssistantMessage(text.startsWith("<conversation>") ? "the summary" : `re ${text}`);
+    });
+    const home = join(value.directory, "home");
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({
+        front: fauxRole,
+        worker: fauxRole,
+        plugins: { clef: null },
+        settings: { compaction: { keepRecentTokens: 1 } },
+      }),
+    );
+    prepareHome(home);
+    const backend = await Monchu.open(home, value.faux.provider);
+    const state = await (await front(backend)).viewState();
+    const replied = (text: string) =>
+      waitFor(() =>
+        state.value.entries.some((entry) =>
+          entry.model?.some((message) => message.role === "assistant" && textOf(message) === text),
+        ),
+      );
+    try {
+      for (const text of ["first", "second"]) {
+        await (await front(backend)).submit(text, text, "followUp");
+        await replied(`re ${text}`);
+      }
+      expect(contextUsage(state.value)).toMatchObject({ compacted: false });
+      expect(contextUsage(state.value).context).toBeGreaterThan(0);
+      await (await front(backend)).compact(undefined);
+      await waitFor(() => state.value.entries[0]?.kind === "pi.compaction");
+      // The kept reply measured the context the summary replaced.
+      expect(state.value.entries.some((entry) => entry.model?.[0]?.role === "assistant")).toBe(
+        true,
+      );
+      expect(contextUsage(state.value)).toMatchObject({ context: undefined, compacted: true });
+      await (
+        await front(backend)
+      ).pickModel({ model: { provider: "faux", modelId: "picked" } }, false);
+      await (await front(backend)).submit("third", "third", "followUp");
+      await replied("re third");
+      const third = requests.find((request) => request.text === "third");
+      expect(third?.model).toBe("picked");
+      expect(third?.messages).toContain("the summary");
+      expect(third?.messages).not.toContain('"first"');
+      expect(contextUsage(state.value)).toMatchObject({ compacted: false });
+      expect(contextUsage(state.value).context).toBeGreaterThan(0);
+    } finally {
+      state.dispose();
+      await backend.close();
+    }
   });
 
   it("keeps a picked root model through reload and reopen, and saves role defaults only with Ctrl+S", async () => {
