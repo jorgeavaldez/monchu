@@ -1,9 +1,13 @@
-import { createModels, type Models, type Provider } from "@earendil-works/pi-ai";
+import {
+  createModels,
+  type Models,
+  type MutableModels,
+  type Provider,
+} from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { defaultConfig, type ClaudeConfig, type ModelRole, type MonchuConfig } from "../config.ts";
 import { OpenCodeGo, OpenCodeZen, OpenRouter } from "./api-key.ts";
 import { createClaudeCodeProvider } from "./claude-code.ts";
-import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
 import { FileCredentials } from "./credentials.ts";
 
@@ -19,13 +23,12 @@ export async function openModels(
   home: string,
   devProvider?: Provider,
   claude: ClaudeConfig = { executable: undefined, plan: "pro", longContextExtraUsage: false },
-): Promise<Models> {
+): Promise<MutableModels> {
   const credentials = new FileCredentials(join(home, "auth.json"));
   // Validate existing credentials and initialize a fresh store before opening Durable.
   await credentials.list();
   const models = createModels({ credentials });
   models.setProvider(createCodexProvider());
-  models.setProvider(Cloudflare);
   models.setProvider(createClaudeCodeProvider(home, claude));
   models.setProvider(OpenCodeGo);
   models.setProvider(OpenCodeZen);
@@ -42,37 +45,23 @@ function roleProblem(
   models: Models,
   field: string,
   role: { provider: string; modelId: string },
-  type: "chat" | "classifier",
 ): string | undefined {
-  const found =
-    type === "chat"
-      ? models.getModel(role.provider, role.modelId)
-      : models.getModelOfType("classifier", role.provider, role.modelId);
-  if (found !== undefined) return undefined;
-  const label = type === "chat" ? "model" : "classifier model";
+  if (models.getModel(role.provider, role.modelId) !== undefined) return undefined;
   if (models.getProvider(role.provider) === undefined)
-    return `Monchu has no configured ${label} ${role.provider}/${role.modelId} (${field}); providers: ${models
+    return `Monchu has no configured model ${role.provider}/${role.modelId} (${field}); providers: ${models
       .getProviders()
       .map((provider) => provider.id)
       .join(", ")}`;
-  const ids = (
-    type === "chat"
-      ? models.getModels(role.provider)
-      : models.getModelsOfType("classifier", role.provider)
-  ).map((model) => model.id);
-  return `Monchu has no configured ${label} ${role.provider}/${role.modelId} (${field}); ${role.provider} has ${ids.join(", ") || "none"}`;
+  const ids = models.getModels(role.provider).map((model) => model.id);
+  return `Monchu has no configured model ${role.provider}/${role.modelId} (${field}); ${role.provider} has ${ids.join(", ") || "none"}`;
 }
 
 function problems(models: Models, config: MonchuConfig) {
   return {
-    front: roleProblem(models, "front", config.front, "chat"),
-    worker: roleProblem(models, "worker", config.worker, "chat"),
-    classifier:
-      config.classifier === null
-        ? undefined
-        : roleProblem(models, "classifier", config.classifier, "classifier"),
+    front: roleProblem(models, "front", config.front),
+    worker: roleProblem(models, "worker", config.worker),
     profiles: Object.entries(config.profiles).flatMap(([name, profile]) => {
-      const problem = roleProblem(models, `profiles.${name}`, profile, "chat");
+      const problem = roleProblem(models, `profiles.${name}`, profile);
       return problem === undefined ? [] : [{ name, problem }];
     }),
   };
@@ -100,7 +89,7 @@ async function hasAuth(models: Models, provider: string): Promise<boolean> {
 /**
  * The roles Monchu runs with. Roles `config.json` leaves out follow the first chat provider with credentials (Codex
  * when there is none), so logging in to one provider is enough. A role naming an unknown provider or model must not
- * stop Monchu: it keeps `running`'s role (on reload) or that default (at startup; the classifier turns off), and each
+ * stop Monchu: it keeps `running`'s role (on reload) or that default (at startup), and each
  * replacement comes back as a warning, so the user can fix it from inside Monchu.
  */
 export async function configuredRoles(
@@ -120,7 +109,7 @@ export async function configuredRoles(
     if (!config.chosen.worker) next.worker = roles.worker;
   }
   const found = problems(models, next);
-  const warnings: string[] = [];
+  const warnings: string[] = [...(config.warnings ?? [])];
   const using = (problem: string, role: { provider: string; modelId: string }) =>
     `${problem}. Using ${role.provider}/${role.modelId} until config.json is fixed`;
   for (const field of ["front", "worker"] as const) {
@@ -129,14 +118,6 @@ export async function configuredRoles(
     if (problem === undefined || fallback === undefined) continue;
     next[field] = fallback;
     warnings.push(using(problem, fallback));
-  }
-  if (found.classifier !== undefined) {
-    next.classifier = running?.classifier ?? null;
-    warnings.push(
-      next.classifier === null
-        ? `${found.classifier}. Routing advice is off until config.json is fixed`
-        : using(found.classifier, next.classifier),
-    );
   }
   if (found.profiles.length) {
     next.profiles = { ...config.profiles };

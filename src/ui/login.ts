@@ -1,17 +1,20 @@
-import { LOGIN_PROVIDERS } from "./commands.ts";
+import type { LoginEntry, LoginNeeds } from "../api/client.ts";
+import { loginProviders } from "./commands.ts";
 
 /** What a client says after a failed login: provider errors can quote entered credentials, so never those. */
 export const LOGIN_FAILED = "login failed; credentials may have been saved; retry /login";
 
 /**
- * What still needs a login, as every client says it: at startup, and after each login until nothing does. The routing
- * hint shows at startup, and after a login only once the chat providers are done.
+ * What still needs a login, as every client says it: at startup, and after each login until nothing does. Optional
+ * logins plugins want show at startup, and after a login only once the chat providers are done.
  */
 export function loginHints(
-  needs: { chat: readonly string[]; anyOf: boolean; classifier: string | undefined },
+  needs: LoginNeeds,
   startup: boolean,
+  plugins: readonly LoginEntry[],
 ): string[] {
-  const label = (id: string) => LOGIN_PROVIDERS.find((entry) => entry.id === id)?.label ?? id;
+  const providers = loginProviders(plugins);
+  const label = (id: string) => providers.find((entry) => entry.id === id)?.label ?? id;
   const lines: string[] = [];
   if (needs.chat.length > 0)
     lines.push(
@@ -19,10 +22,9 @@ export function loginHints(
         ? `login needed · ${needs.chat.map(label).join(" or ")}. Run /login and pick one; Monchu uses that provider's models. /model changes them, and Ctrl+S there saves the pick.`
         : `login needed · ${needs.chat.map(label).join(", ")}. Run /login and pick it. To use another provider instead, log in to it, then pick its models with /model and press Ctrl+S to save them as the defaults.`,
     );
-  if (needs.classifier !== undefined && (startup || needs.chat.length === 0))
-    lines.push(
-      `routing advice (Clef) is off · optional: /login → Cloudflare turns it on; "classifier": null in config.json hides this`,
-    );
+  if (startup || needs.chat.length === 0)
+    for (const want of needs.optional)
+      lines.push(`${want.purpose} is off · optional: /login → ${label(want.provider)} turns it on`);
   return lines;
 }
 

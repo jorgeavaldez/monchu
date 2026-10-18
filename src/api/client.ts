@@ -11,7 +11,6 @@ import type {
   ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
-import type { Assessment } from "../core/agents/classifier.ts";
 import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { listWorkers } from "../core/agents/workers.ts";
@@ -26,6 +25,22 @@ import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
 export type { Goal, JobEvent, SecretInput, SecretsState };
+
+/** A provider `/login` offers, and the login it takes. */
+export type LoginEntry = { id: string; label: string; auth: "oauth" | "api_key" };
+
+/**
+ * What still needs a login: chat providers (`anyOf` when any one of them will do), and optional logins plugins want,
+ * with what each turns on.
+ */
+export type LoginNeeds = {
+  chat: string[];
+  anyOf: boolean;
+  optional: { provider: string; purpose: string }[];
+};
+
+/** A line a plugin shows a root's clients once, by its id there. */
+export type ClientNotice = { id: number; text: string };
 
 /** A value kept current from the core: the shape clients render from, the same as Durable's attached states. */
 export interface Watched<T> {
@@ -128,10 +143,12 @@ export interface RootClient {
 
   goals(): Promise<readonly (Goal & { changed: boolean })[]>;
   seeGoal(id: string, updatedAt: number): Promise<void>;
-  /** Routing assessments of this front's inputs as they settle; returns a stop function. */
-  watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void>;
-  /** The routing helper's state for this root, pausing or resuming it first when `paused` is given. */
-  routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }>;
+  /** Lines plugins show this root's clients once each, newest last; returns a stop function. */
+  watchNotices(listener: (items: readonly ClientNotice[]) => void): Promise<() => void>;
+  /** Plugins' lines for a client opening this root. */
+  statusLines(): Promise<string[]>;
+  /** Runs a plugin's slash command for the root, or the named worker shown, and returns what it shows. */
+  command(name: string, args: string, workerName?: string): Promise<string>;
 
   modelChoice(workerName?: string): Promise<ModelChoice>;
   pickModel(pick: ModelPick, saveDefault: boolean, workerName?: string): Promise<void>;
@@ -151,8 +168,8 @@ export interface Client {
   skills(): readonly { name: string; description: string }[];
   /** Plugins' slash commands, for help and typeahead. */
   commands(): readonly { name: string; usage: string; help: string }[];
-  /** Runs a plugin's slash command and returns what it shows. */
-  command(name: string, args: string): Promise<string>;
+  /** Providers plugins added, which `/login` offers after Monchu's own. */
+  logins(): readonly LoginEntry[];
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
   skillInput(name: string, text: string): Promise<string>;
   /** The catalog model of a model reference, while its provider still offers it. */
@@ -197,7 +214,7 @@ export interface Client {
 
   login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<void>;
   /** What still needs a login. Never reads or returns credential values. */
-  loginNeeds(): Promise<{ chat: string[]; anyOf: boolean; classifier: string | undefined }>;
+  loginNeeds(): Promise<LoginNeeds>;
   mcpServers(): Promise<McpReport>;
   mcpLogin(name: string, prompt: McpSignInPrompt, signal: AbortSignal): Promise<string>;
   mcpLogout(name: string): Promise<string>;

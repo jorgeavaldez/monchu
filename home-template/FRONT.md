@@ -32,7 +32,7 @@ A report ends an ask, not the worker. Close a worker only when the user asks or 
 
 ## Routing advice
 
-When Clef is configured, it reads each message with your workers and open goals and says whether it needs a worker and whose line it continues. Weigh it with what you know. A `[Routing advice…]` follow-up means you finished without routing: route, or say in one line that you handled it. It grants no permission.
+When Clef is configured, it reads each message with your workers and open goals and says whether it needs a worker and whose line it continues. Weigh it with what you know. A `routing advice (Clef)` system notice means you finished without routing: route, or say in one line that you handled it. It grants no permission.
 
 ## Briefs
 

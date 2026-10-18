@@ -1,4 +1,5 @@
 import { createProvider, type OAuthCredential } from "@earendil-works/pi-ai";
+import { cloudflareWorkersAIProvider } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai";
 import { spawn } from "node:child_process";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,7 +17,6 @@ describe("Monchu models", () => {
     const models = await openModels(value.directory, value.faux.provider);
     expect(models.getProviders().map((provider) => provider.id)).toEqual([
       "openai-codex",
-      "cloudflare-workers-ai",
       "claude-code",
       "opencode-go",
       "opencode",
@@ -30,15 +30,6 @@ describe("Monchu models", () => {
     expect(await warnings({ worker: { ...fauxRole, modelId: "absent" } })).toEqual([
       expect.stringContaining("no configured model faux/absent"),
     ]);
-    expect(await warnings({ classifier: { provider: "faux", modelId: "faux-1" } })).toEqual([
-      expect.stringContaining("no configured classifier model faux/faux-1"),
-    ]);
-    expect(
-      await warnings({
-        classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
-      }),
-    ).toEqual([]);
-    expect(models.getModel("cloudflare-workers-ai", "@cf/cloudflare/clef")).toBeUndefined();
     expect(await readFile(join(value.directory, "auth.json"), "utf8")).toBe("{}\n");
   });
 
@@ -50,17 +41,14 @@ describe("Monchu models", () => {
       ...config,
       front: { ...fauxRole, modelId: "opus" },
       worker: { ...fauxRole, provider: "codex" },
-      classifier: { provider: "faux", modelId: "faux-1" },
     });
     expect(fixed.config.front).toEqual(defaultConfig().front);
     expect(fixed.config.worker).toEqual(defaultConfig().worker);
-    expect(fixed.config.classifier).toBeNull();
-    expect(fixed.warnings).toHaveLength(3);
+    expect(fixed.warnings).toHaveLength(2);
     expect(fixed.warnings[0]).toContain("no configured model faux/opus (front); faux has");
     expect(fixed.warnings[1]).toContain(
-      "providers: openai-codex, cloudflare-workers-ai, claude-code, opencode-go, opencode, openrouter",
+      "providers: openai-codex, claude-code, opencode-go, opencode, openrouter",
     );
-    expect(fixed.warnings[2]).toContain("Routing advice is off");
     expect(await configuredRoles(models, config)).toEqual({ config, warnings: [] });
     // On reload a bad role keeps the running one instead.
     const running = { ...config, front: { ...fauxRole, thinkingLevel: "low" as const } };
@@ -119,9 +107,10 @@ describe("Monchu models", () => {
     expect(front.config.worker.provider).toBe("claude-code");
   });
 
-  it("logs in to Cloudflare locally and reopens its key/account without exposing them to the catalog", async () => {
+  it("logs in to a plugin's provider (Cloudflare) and reopens its key/account without exposing them", async () => {
     const value = await setup();
     const models = await openModels(value.directory);
+    models.setProvider(cloudflareWorkersAIProvider());
     const prompts: string[] = [];
     await models.login("cloudflare-workers-ai", "api_key", {
       prompt: async (prompt) => {
@@ -134,6 +123,7 @@ describe("Monchu models", () => {
     // An existing valid credential file must also be restricted, not only newly created files.
     await chmod(join(value.directory, "auth.json"), 0o644);
     const reopened = await openModels(value.directory);
+    reopened.setProvider(cloudflareWorkersAIProvider());
     if (process.platform !== "win32")
       expect((await stat(join(value.directory, "auth.json"))).mode & 0o777).toBe(0o600);
     expect(await reopened.getAuth("cloudflare-workers-ai")).toEqual({
@@ -176,7 +166,7 @@ describe("Monchu models", () => {
     },
   );
 
-  it("resolves OpenCode and OpenRouter roles, and Zen's Jev as a classifier", async () => {
+  it("resolves OpenCode and OpenRouter roles, and offers Jev as a classifier", async () => {
     const value = await setup();
     const models = await openModels(value.directory);
     // Every /login entry is a registered provider offering the login it asks for.
@@ -194,10 +184,15 @@ describe("Monchu models", () => {
           ...config,
           front: { provider: "opencode-go", modelId: go.id, thinkingLevel: "low" },
           worker: { provider: "openrouter", modelId: router.id, thinkingLevel: "low" },
-          classifier: { provider: "opencode", modelId: "jev-1.13-free" },
         })
       ).warnings,
     ).toEqual([]);
+    // Jev, which the Clef plugin can use, is a classifier model of both OpenCode Zen and OpenRouter.
+    expect(models.getModelOfType("classifier", "opencode", "jev-1.13")?.api).toBe(
+      "typesafe-system-one",
+    );
+    expect(models.getModelOfType("classifier", "opencode", "jev-1.13-free")).toBeDefined();
+    expect(models.getModelOfType("classifier", "openrouter", "~typesafe/jev-latest")).toBeDefined();
   });
 
   it.each([

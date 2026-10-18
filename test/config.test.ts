@@ -106,7 +106,7 @@ describe("config", () => {
       front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
       worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
       profiles: {},
-      classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
+      plugins: {},
       settings: {},
       claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
       chosen: { front: false, worker: false },
@@ -216,11 +216,11 @@ describe("config", () => {
       await expect(loadWebConfig(await webHome(web))).rejects.toThrow(message);
   });
 
-  it("reads roles and turns the classifier off with null", async () => {
+  it("reads roles and each plugin's settings as written", async () => {
     const config = await loadConfig(
       await home({
         worker: { provider: "openai", modelId: "gpt-6-sol" },
-        classifier: null,
+        plugins: { clef: null, other: { url: "x" } },
       }),
     );
     expect(config.worker).toEqual({
@@ -228,7 +228,17 @@ describe("config", () => {
       modelId: "gpt-6-sol",
       thinkingLevel: "high",
     });
-    expect(config.classifier).toBeNull();
+    expect(config.plugins).toEqual({ clef: null, other: { url: "x" } });
+  });
+
+  it("reads an old top-level classifier as the Clef plugin's setting, with a warning to move it", async () => {
+    const jev = { provider: "opencode", modelId: "jev-1.13" };
+    const old = await loadConfig(await home({ classifier: jev }));
+    expect(old.plugins).toEqual({ clef: jev });
+    expect(old.warnings).toEqual([expect.stringContaining('is now "plugins": { "clef": ... }')]);
+    const both = await loadConfig(await home({ classifier: null, plugins: { clef: jev } }));
+    expect(both.plugins).toEqual({ clef: jev });
+    expect(both.warnings).toEqual([expect.stringContaining("is ignored")]);
   });
 
   it("reads worker profiles, filling an omitted thinking level from the worker default", async () => {
@@ -276,7 +286,8 @@ describe("config", () => {
       { cloudflareAccountId: "0123456789abcdef0123456789abcdef" },
       "unknown fields: cloudflareAccountId",
     ],
-    [{ classifier: "clef" }, "classifier must be an object"],
+    [{ plugins: [] }, "plugins must be a JSON object"],
+    [{ plugins: { Bad: 1 } }, "plugins.Bad"],
     [{ settings: { retry: { enabled: "yes" } } }, "settings.retry.enabled"],
     [{ settings: { retry: { provider: { timeoutMs: 0 } } } }, "settings.retry.provider.timeoutMs"],
     [{ settings: { compaction: { reserveTokens: -1 } } }, "settings.compaction.reserveTokens"],

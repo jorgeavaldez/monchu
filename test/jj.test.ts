@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { durableTool } from "../src/core/plugin-shapes.ts";
 import { tools as jjTools } from "../src/plugins/jj/index.ts";
 import {
   callTools,
@@ -18,7 +19,12 @@ import {
 
 afterEach(cleanup);
 
-const Jj = defineExtension({ name: "monchu.jj", tools: jjTools });
+const Jj = defineExtension({
+  name: "monchu.jj",
+  tools: jjTools.map((tool) =>
+    durableTool(tool, () => ({ notify: () => {}, setStatus: () => {} })),
+  ),
+});
 
 const mentions = (text: string): unknown => expect.stringContaining(text);
 
@@ -70,7 +76,9 @@ async function run(
 describe("jj", () => {
   it("declares object schemas, replay-safe reads and never-replayed writes", () => {
     const tools = Jj.tools ?? [];
-    expect(tools.map((tool) => [tool.name, tool.parameters.type, tool.replay])).toEqual([
+    expect(
+      tools.map((tool) => [tool.name, String(Reflect.get(tool.parameters, "type")), tool.replay]),
+    ).toEqual([
       ["jj", "object", "safe"],
       ["jj_write", "object", "unsafe"],
     ]);

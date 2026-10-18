@@ -22,7 +22,14 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Client, ModelChoice, ModelPick, RootSummary } from "../api/client.ts";
+import type {
+  Client,
+  LoginEntry,
+  LoginNeeds,
+  ModelChoice,
+  ModelPick,
+  RootSummary,
+} from "../api/client.ts";
 import type { Principal } from "../api/contract.ts";
 import { shortId } from "../api/ids.ts";
 import { parseRelease, type Release } from "../api/release.ts";
@@ -144,7 +151,6 @@ export class Monchu implements Client {
       extensions,
       checkPick: (pick) => this.checkPick(pick),
       saveDefault: (role, pick) => this.saveDefault(role, pick),
-      classifierNeedsLogin: async () => (await this.loginNeeds()).classifier !== undefined,
       show: (id) => this.show(id),
       findRoot: async (prefix) => findRoot(await this.records(), prefix),
     };
@@ -245,6 +251,7 @@ export class Monchu implements Client {
         context,
       );
       phase("store");
+      extensions.bind(harness);
       // Durable's reserved root is the first root; every root's agent and front role apply from its next request.
       const first = await harness.root(context, { agent: { cwd: home } });
       const roots = await harness.commit(async (tx) => {
@@ -312,27 +319,16 @@ export class Monchu implements Client {
 
   /** Plugins' slash commands as of the last successful load or reload. */
   commands(): readonly { name: string; usage: string; help: string }[] {
-    return this.extensions.commands.map(({ name, usage, help }) => ({
+    return this.extensions.commands.map(({ name, usage, description }) => ({
       name,
       usage: usage ?? "",
-      help,
+      help: description ?? "",
     }));
   }
 
-  /** Runs a plugin's slash command and returns what it shows; throws for an unknown one or the plugin's error. */
-  async command(name: string, args: string): Promise<string> {
-    const command = this.extensions.commands.find((entry) => entry.name === name);
-    if (command === undefined) throw new Error("Unknown command. /help lists commands.");
-    try {
-      return String(await command.run(args));
-    } catch (error) {
-      throw new Error(
-        `/${name} (plugin ${command.plugin}) failed: ${error instanceof Error ? error.message : String(error)}`,
-        {
-          cause: error,
-        },
-      );
-    }
+  /** Providers plugins added, which `/login` offers after Monchu's own. */
+  logins(): readonly LoginEntry[] {
+    return this.extensions.plugin.logins.map(({ id, label, auth }) => ({ id, label, auth }));
   }
 
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
@@ -368,10 +364,11 @@ export class Monchu implements Client {
 
   /**
    * What still needs a login: the front and worker providers without credentials (`anyOf` when logging in to any one
-   * of them is enough, since unchosen roles follow it), and Clef when it is configured but off for lack of them. Empty when nothing does. Never reads or returns credential values.
+   * of them is enough, since unchosen roles follow it), and the optional logins plugins want and lack. Empty when
+   * nothing does. Never reads or returns credential values.
    */
-  async loginNeeds(): Promise<{ chat: string[]; anyOf: boolean; classifier: string | undefined }> {
-    const { front, worker, classifier, chosen } = this.extensions.config;
+  async loginNeeds(): Promise<LoginNeeds> {
+    const { front, worker, chosen } = this.extensions.config;
     const missing = async (provider: string) =>
       (await this.models.checkAuth(provider).catch(() => undefined)) === undefined;
     const chat: string[] = [];
@@ -382,10 +379,13 @@ export class Monchu implements Client {
     return {
       chat: anyOf ? defaultProviders() : chat,
       anyOf,
-      classifier:
-        classifier !== null && (await missing(classifier.provider))
-          ? classifier.provider
-          : undefined,
+      optional: (
+        await Promise.all(
+          this.extensions.plugin.wants.map(async (want) =>
+            (await missing(want.provider)) ? [want] : [],
+          ),
+        )
+      ).flat(),
     };
   }
 

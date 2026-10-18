@@ -313,7 +313,7 @@ describe.each(["root", "worker"])("queued input to the %s shown", (target) => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     const backend = await Monchu.open(home, value.faux.provider);
@@ -383,7 +383,7 @@ it("keeps notices beside their entries through compaction and says the context w
     JSON.stringify({
       front: fauxRole,
       worker: fauxRole,
-      classifier: null,
+      plugins: { clef: null },
       settings: { compaction: { keepRecentTokens: 1 } },
     }),
   );
@@ -418,14 +418,14 @@ it("keeps notices beside their entries through compaction and says the context w
   }
 });
 
-it("keeps Cloudflare login prompts out of chat, editor history and raw terminal output", async () => {
-  const value = await setup({ provider: "cloudflare-workers-ai" });
+it("keeps API-key login prompts out of chat, editor history and raw terminal output", async () => {
+  const value = await setup({ provider: "opencode" });
   const home = join(value.directory, "home");
   await mkdir(home);
-  const role = { ...fauxRole, provider: "cloudflare-workers-ai" };
+  const role = { ...fauxRole, provider: "opencode" };
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: role, worker: role, classifier: null }),
+    JSON.stringify({ front: role, worker: role, plugins: { clef: null } }),
   );
   const provider = createProvider({
     id: value.faux.provider.id,
@@ -433,7 +433,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     api: value.faux.provider,
     auth: {
       apiKey: {
-        name: "Faux Cloudflare",
+        name: "Faux OpenCode",
         resolve: async () => ({ auth: {} }),
         login: async (interaction) => {
           const key = await interaction.prompt({ type: "secret", message: "Enter test API key" });
@@ -456,8 +456,8 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     await visible(screen, "/help · home");
     send(screen, "/login");
     await visible(screen, "Choose provider:");
-    screen.sendInput("\x1b[B");
-    screen.sendInput("\x1b[B");
+    // OpenCode Zen is fourth.
+    for (let down = 0; down < 3; down++) screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
     screen.sendInput("private-key-123");
@@ -466,7 +466,7 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     screen.sendInput("\r");
     await visible(screen, "Enter test account ID");
     send(screen, "test-account");
-    await visible(screen, "logged in · cloudflare-workers-ai");
+    await visible(screen, "logged in · opencode");
     expect(state.value.entries).toEqual([]);
     screen.sendInput("\x1b[A");
     const history = await visible(screen, "/login");
@@ -475,12 +475,11 @@ it("keeps Cloudflare login prompts out of chat, editor history and raw terminal 
     screen.sendInput("\x05"); // move to the history entry end before clearing it
     screen.sendInput("\x15");
     const auth: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
-    expect(auth).toMatchObject({ "cloudflare-workers-ai": { key: "private-key-123" } });
+    expect(auth).toMatchObject({ opencode: { key: "private-key-123" } });
     // Raw provider errors must not echo the submitted key, even after another login fails.
     send(screen, "/login");
     await visible(screen, "Choose provider:");
-    screen.sendInput("\x1b[B");
-    screen.sendInput("\x1b[B");
+    for (let down = 0; down < 3; down++) screen.sendInput("\x1b[B");
     screen.sendInput("\r");
     await visible(screen, "Enter test API key");
     send(screen, "never-echo-key");

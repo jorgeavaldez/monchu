@@ -1,6 +1,7 @@
 import { createHost, type FacetLoader, type Host } from "@earendil-works/chord";
 import { nodeLoader } from "@earendil-works/chord/node";
-import { Type, type Models } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/chord";
+import { Type, type Models, type MutableModels } from "@earendil-works/pi-ai";
 import type { Skill } from "./skills/index.ts";
 import {
   createRegistry,
@@ -9,6 +10,7 @@ import {
   defineTool,
   section,
   type Extension,
+  type Harness,
   type Registry,
 } from "@earendil-works/pi-durable";
 import { spawn } from "node:child_process";
@@ -29,13 +31,15 @@ import { McpClients } from "./mcp/index.ts";
 import {
   formatPluginStatus,
   Plugins,
+  saveDeviceSettings,
+  type PluginBuild,
   type PluginCommandEntry,
   type PluginStatus,
 } from "./plugins.ts";
-import type { EffortAssessment } from "./agents/classifier.ts";
 import type { BudgetLevel } from "./identity.ts";
 import {
   loadConfig,
+  savePluginSettings,
   saveRole,
   type ModelRole,
   type MonchuConfig,
@@ -109,7 +113,7 @@ export class Extensions {
   private readonly stopping = new AbortController();
   private hostClosed: Promise<void> | undefined;
   private reloading: Promise<readonly string[]> | undefined;
-  private saving: Promise<ModelRole> | undefined;
+  private saving: Promise<unknown> | undefined;
 
   private constructor(
     models: Models,
@@ -142,7 +146,7 @@ export class Extensions {
    * each reload; `onError` the host's background failures.
    */
   static async load(
-    models: Models,
+    models: MutableModels,
     config: MonchuConfig,
     home: string,
     report: (warning: string) => void,
@@ -172,7 +176,17 @@ export class Extensions {
       async (provider) => (await models.getAuth(provider))?.auth.apiKey,
     );
     const vault = options.vault ?? new Vault(join(home, "secrets"));
-    const plugins = new Plugins(home, report, vault, {
+    // Builds only run once their inputs are served; until construction they apply the startup config.
+    let extensions: Extensions | undefined;
+    const plugins = new Plugins({
+      home,
+      report,
+      vault,
+      models,
+      saveSettings: (name, value, where) => {
+        if (extensions === undefined) throw new Error("Monchu is still starting");
+        return extensions.savePluginSettings(name, value, where);
+      },
       onFault: (summary, text) => options.tellFront?.(summary, text),
     });
     const registry = createRegistry();
@@ -183,8 +197,6 @@ export class Extensions {
       loader,
       ...(options.onError === undefined ? {} : { onError: options.onError }),
     });
-    // Builds only run once their inputs are served; until construction they apply the startup config.
-    let extensions: Extensions | undefined;
     const homeCheck = new HomeCheck({
       home,
       models,
@@ -236,6 +248,8 @@ export class Extensions {
       await host.load(facets);
       build = await first.promise;
       installExtensions(registry, build.extensions);
+      // The first build runs: its plugins' providers join the home's models.
+      plugins.settle(build.plugins);
     } catch (error) {
       await host.close();
       plugins.close();
@@ -259,6 +273,11 @@ export class Extensions {
     extensions.warned = build.warnings;
     for (const warning of build.warnings) report(warning);
     return extensions;
+  }
+
+  /** Give plugins' `ctx.ui` the home's store, once it is open. */
+  bind(harness: Harness): void {
+    this.plugins.bind(harness);
   }
 
   /** Load more facets on the core's host, such as the wire's; every later reload swaps them too. */
@@ -340,6 +359,35 @@ export class Extensions {
     }
   }
 
+  /**
+   * Save a plugin's settings to `config.json` (see `savePluginSettings`); the next reload runs the plugin with them.
+   * Waits for a running reload, so a plugin never calls it while it loads.
+   */
+  async savePluginSettings(
+    name: string,
+    value: JsonValue | undefined,
+    where: "home" | "device",
+  ): Promise<void> {
+    while (this.reloading !== undefined || this.saving !== undefined)
+      await Promise.allSettled([this.reloading, this.saving]);
+    const saving =
+      where === "device"
+        ? saveDeviceSettings(this.home, name, value)
+        : savePluginSettings(this.home, name, value);
+    this.saving = saving;
+    try {
+      await saving;
+      if (where === "device") return;
+      const config = this.current.config;
+      const plugins = { ...config.plugins };
+      if (value === undefined) delete plugins[name];
+      else plugins[name] = value;
+      this.current = { ...this.current, config: { ...config, plugins } };
+    } finally {
+      this.saving = undefined;
+    }
+  }
+
   /** The loaded run settings. */
   get settings(): Settings {
     return this.current.settings;
@@ -355,10 +403,6 @@ export class Extensions {
     return this.current.preload;
   }
 
-  get assessment(): EffortAssessment | undefined {
-    return this.current.assessment;
-  }
-
   /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */
   get root(): readonly Extension[] {
     return this.current.root;
@@ -372,6 +416,11 @@ export class Extensions {
   /** Plugins' slash commands as of the last build. */
   get commands(): readonly PluginCommandEntry[] {
     return this.current.plugins.commands;
+  }
+
+  /** What the last build's plugins add to the front, `/login` and the clients. */
+  get plugin(): Pick<PluginBuild, "logins" | "wants" | "front"> {
+    return this.current.plugins;
   }
 
   /** What the last build loaded of each plugin. */
@@ -390,7 +439,6 @@ export class Extensions {
     for (const extension of [...this.current.root, ...this.current.groups, ...this.attached])
       names.delete(extension.name);
     names.add("monchu.reload");
-    // Disabled classifier definitions remain installed to finish already accepted assessment tasks.
     return this.registry
       .snapshot()
       .installed()

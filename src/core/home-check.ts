@@ -94,7 +94,7 @@ async function problems(inputs: HomeCheckInputs): Promise<string[]> {
   }
   const owned = new Set(running.owned);
   const own = running.extensions.filter((extension) => !owned.has(extension.name));
-  const loaded = await inputs.plugins.load();
+  const loaded = await inputs.plugins.load(config);
   try {
     const plugins = loaded.use({
       tools: new Set([

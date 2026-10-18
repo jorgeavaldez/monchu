@@ -34,7 +34,7 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
   await mkdir(home, { recursive: true });
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
   );
   prepareHome(home);
   return { home, backend: await Monchu.open(home, value.faux.provider) };

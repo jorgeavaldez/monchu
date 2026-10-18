@@ -34,7 +34,7 @@ async function openCore() {
   await mkdir(home);
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
   );
   prepareHome(home);
   const provider = createProvider({

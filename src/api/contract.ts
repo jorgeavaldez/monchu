@@ -8,7 +8,6 @@ import type { Api, AuthEvent, Model } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { hostNamed, method, remote } from "@earendil-works/chord";
 import { Type } from "typebox";
-import type { Assessment } from "../core/agents/classifier.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
@@ -19,7 +18,14 @@ import {
   UPLOAD_ID,
   type Attachment,
 } from "./attachments.ts";
-import type { ModelChoice, RootSummary, WorkerSummary } from "./client.ts";
+import type {
+  ClientNotice,
+  LoginEntry,
+  LoginNeeds,
+  ModelChoice,
+  RootSummary,
+  WorkerSummary,
+} from "./client.ts";
 import type { LogRecord } from "./logs.ts";
 import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
@@ -63,6 +69,8 @@ export type Hello = {
   skills: { name: string; description: string }[];
   /** Plugins' slash commands. */
   commands: { name: string; usage: string; help: string }[];
+  /** Providers plugins added, which `/login` offers after Monchu's own. */
+  logins: LoginEntry[];
   /** The chat model catalog, for context windows and reasoning support. */
   models: Model<Api>[];
   notes: string[];
@@ -157,7 +165,6 @@ const secretMethods = {
 
 const sessionMethods = {
   skillInput: method(Type.Object({ name: text, text }), trusted<string>()),
-  command: method(Type.Object({ name: text, text }), trusted<string>()),
   findRoot: method(Type.Object({ prefix: text }), trusted<string>()),
   currentRoot: method(undefined, trusted<string>()),
   createRoot: method(Type.Object({ requestId: text }), trusted<string>()),
@@ -166,10 +173,7 @@ const sessionMethods = {
   jobs: method(undefined, trusted<JobsState & { listing: string }>()),
   roleChoice: method(Type.Object({ role }), trusted<ModelChoice>()),
   saveDefault: method(Type.Object({ role, pick })),
-  loginNeeds: method(
-    undefined,
-    trusted<{ chat: string[]; anyOf: boolean; classifier: string | null }>(),
-  ),
+  loginNeeds: method(undefined, trusted<LoginNeeds>()),
   mcpServers: method(undefined, trusted<McpReport>()),
   mcpLogout: method(Type.Object({ name: text }), trusted<string>()),
   mcpReconnect: method(undefined, trusted<McpReport>()),
@@ -205,7 +209,7 @@ const sessionMethods = {
  * a service login gets `service`, which can't `update` or touch secrets.
  */
 export const Session = remote("monchu.session", {
-  version: 1,
+  version: 2,
   input: Type.Object({}),
   host: hostNamed("core"),
   variants: {
@@ -223,12 +227,12 @@ export const Session = remote("monchu.session", {
 
 /** One root's front and crew; methods with a `worker` act on that worker of the root. */
 export const Root = remote("monchu.root", {
-  version: 1,
+  version: 2,
   input: Type.Object({ root: id }),
   host: hostNamed("core"),
   variants: {
     owner: {
-      state: { assessments: trusted<Assessment[]>() },
+      state: { notices: trusted<ClientNotice[]>() },
       methods: {
         submit: method(Type.Object({ message: text, requestId: text, whenBusy, attachments })),
         messageWorker: method(
@@ -258,10 +262,8 @@ export const Root = remote("monchu.root", {
         handOff: method(Type.Object({ worker: text, toRoot: text })),
         goals: method(undefined, trusted<(Goal & { changed: boolean })[]>()),
         seeGoal: method(Type.Object({ id: text, updatedAt: Type.Number() })),
-        routing: method(
-          Type.Object({ paused: Type.Optional(Type.Boolean()) }),
-          trusted<{ configured: boolean; paused: boolean }>(),
-        ),
+        statusLines: method(undefined, trusted<string[]>()),
+        command: method(Type.Object({ name: text, text, worker }), trusted<string>()),
         modelChoice: method(Type.Object({ worker }), trusted<ModelChoice>()),
         pickModel: method(Type.Object({ pick, saveDefault: Type.Boolean(), worker })),
       },

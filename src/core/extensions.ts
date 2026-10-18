@@ -8,7 +8,6 @@ import { defineFacet, local } from "@earendil-works/chord";
 import { randomInt } from "node:crypto";
 import { Type } from "typebox";
 import type { Principal } from "../api/contract.ts";
-import { createEffortAssessment } from "./agents/classifier.ts";
 import { Goals } from "./agents/goals.ts";
 import { createMemory } from "./agents/memory.ts";
 import { Roots } from "./agents/roots.ts";
@@ -31,7 +30,7 @@ import { createToolSearch, groupExtensionName } from "./tools/tool-search.ts";
 /** Build every extension from this copy of the code, reading config, skills and MCP listings anew. */
 async function build(inputs: BuildInputs): Promise<Build> {
   const config = inputs.config();
-  const loaded = await inputs.plugins.load();
+  const loaded = await inputs.plugins.load(config);
   const context = createContext(inputs.home, config.settings, loaded.skills);
   const tools = createPiTools(context.settings, inputs.finders, inputs.vault);
   const memory = createMemory(inputs.home);
@@ -45,21 +44,9 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const jobs = (preload: readonly string[]) =>
     createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
   const herdr = createHerdr({ command: { executable: "herdr", args: [] }, env: process.env });
-  const assessment =
-    config.classifier === null
-      ? undefined
-      : createEffortAssessment(inputs.models, config.classifier, { profiles: config.profiles });
   // Tool and task names the plugins may not take: every core one, whatever the preload, and the reload controls.
   const core = [context.extension, tools.extension, workers([]), jobs([]), Roots, Codemode, Goals];
-  const own = [
-    ...core,
-    memory,
-    identity,
-    herdr,
-    mcp.extension,
-    secrets,
-    ...(assessment === undefined ? [] : [assessment.extension]),
-  ];
+  const own = [...core, memory, identity, herdr, mcp.extension, secrets];
   const plugins = loaded.use({
     tools: new Set([
       ...own.flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name)),
@@ -89,7 +76,6 @@ async function build(inputs: BuildInputs): Promise<Build> {
     // Last of the defaults: a tool new to a conversation joins the end of its list, not the middle.
     secrets,
     ...search.groups,
-    ...(assessment === undefined ? [] : [assessment.extension]),
     createPluginSections(plugins.sections),
     ...plugins.attached,
   ];
@@ -102,7 +88,6 @@ async function build(inputs: BuildInputs): Promise<Build> {
     settings: context.settings,
     skills: context.skills,
     config,
-    assessment,
     plugins,
     owned: [
       ...[...plugins.bundled, ...plugins.attached].map((extension) => extension.name),

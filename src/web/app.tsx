@@ -2,7 +2,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { RootSummary } from "../api/client.ts";
-import { escalationSummary, systemNoticeSummary } from "../api/notices.ts";
+import { systemNoticeSummary } from "../api/notices.ts";
 import {
   ARCHIVE_HELP,
   activeRoots,
@@ -433,10 +433,7 @@ const MODE_ICON = { steer: "↯", followUp: "⇢" };
  */
 function QueueRow({ item }: { item: QueuedItem }) {
   const open = editing.value?.id === item.id;
-  const editable =
-    item.mode !== "write" &&
-    escalationSummary(item.text) === undefined &&
-    systemNoticeSummary(item.text) === undefined;
+  const editable = item.mode !== "write" && systemNoticeSummary(item.text) === undefined;
   const line = item.text.split("\n")[0] ?? "";
   if (item.mode === "write") return <li class={item.mode}>write · {line}</li>;
   const other = item.mode === "steer" ? "follow-up" : "steer";

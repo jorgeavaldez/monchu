@@ -75,18 +75,6 @@ export function parseRootNotice(content: string): RootNotice | undefined {
   };
 }
 
-/** Marks the follow-up input an escalation submits, so a client can label it as system context. */
-export const ESCALATION_PREFIX = "[Routing advice";
-export const ESCALATION_SUFFIX = ". Not a new user instruction.]";
-
-/** The assessment an escalation input's text reports, for clients that label it; `undefined` for any other text. */
-export function escalationSummary(content: string): string | undefined {
-  const [label = ""] = content.split("\n", 1);
-  const start = `${ESCALATION_PREFIX}: `;
-  if (!label.startsWith(start) || !label.endsWith(ESCALATION_SUFFIX)) return undefined;
-  return label.slice(start.length, -ESCALATION_SUFFIX.length);
-}
-
 const SYSTEM_PREFIX = "[System notice: ";
 const SYSTEM_SUFFIX = ". Not a new user instruction.]";
 

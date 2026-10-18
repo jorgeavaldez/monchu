@@ -21,8 +21,8 @@ import { DEFAULT_IMAGE_LIMITS } from "@earendil-works/pi-durable/tools";
 import type { Attachment } from "../api/attachments.ts";
 import type { ModelChoice, ModelPick, QueueChange, RootClient } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
+import type { InputEvent, PluginCommandContext } from "../plugin.ts";
 import {
-  escalationSummary,
   noticeText,
   parseRootNotice,
   parseWorkerNotice,
@@ -30,7 +30,6 @@ import {
   type WhenBusy,
 } from "../api/notices.ts";
 import { attachedInput, storeAttachment, writeUpload, type ImageInput } from "./attachments.ts";
-import { AssessmentsDoc, RoutingDoc, type Assessment } from "./agents/classifier.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
 import { noteInput, rootRecord, RootsDoc, sendHandOff, type RootRecord } from "./agents/roots.ts";
 import {
@@ -45,6 +44,7 @@ import {
 } from "./agents/workers.ts";
 import { thinkingLevels, type ModelRole } from "./config.ts";
 import { FRONT_INSTRUCTIONS } from "./identity.ts";
+import { ClientNoticesDoc, setStatus } from "./plugin-shapes.ts";
 import type { Extensions } from "./reload.ts";
 import { IMAGE_BUDGET_BYTES, imageBytes, images } from "./tools/images.ts";
 import { attachPlugins, preloadGroups } from "./tools/tool-search.ts";
@@ -151,8 +151,6 @@ export type FrontHost = {
   /** Refuses a pick naming an unknown model or level, or once the core is closing. */
   checkPick(pick: ModelPick): void;
   saveDefault(role: "front" | "worker", pick: ModelPick): Promise<void>;
-  /** The provider Clef still needs a login for, if any. */
-  classifierNeedsLogin(): Promise<boolean>;
   /** Counts a client view of a root while it stays attached; the returned function releases it. */
   show(id: ConversationId): () => void;
   /** Another root's record, by any unique prefix of its id. */
@@ -240,20 +238,35 @@ export class Front implements RootClient {
     if ((!message.trim() && attachments.length === 0) || !requestId.trim())
       throw new Error("Message and request ID are required");
     const front = await this.conversation();
-    const input = await attachedInput(
-      this.host.home,
-      message,
-      attachments,
-      attachments.length ? await this.imageInput(front) : undefined,
-    );
     await front.commit(
       (tx) => noteInput(tx, front.id, message || attachments.map(({ name }) => name).join(", ")),
       context,
     );
-    const assessment = this.host.extensions.assessment;
-    if (assessment === undefined)
-      await front.submit({ type: "input", content: input.content, requestId, whenBusy }, context);
-    else await assessment.submit(front, input.text, requestId, whenBusy, context, input.content);
+    // Plugins see the text first, with the front's context as it was before it; one may change or take it.
+    let messages: ReturnType<InputEvent["messages"]> | undefined;
+    const seen = await this.host.extensions.plugin.front.input(
+      {
+        text: message,
+        source: "interactive",
+        streamingBehavior: whenBusy,
+        messages: () => (messages ??= front.context(context).then((view) => view.messages)),
+      },
+      front.id,
+    );
+    if (seen.text === undefined) return;
+    const input = await attachedInput(
+      this.host.home,
+      seen.text,
+      attachments,
+      attachments.length ? await this.imageInput(front) : undefined,
+    );
+    const submission = await front.submit(
+      { type: "input", content: input.content, requestId, whenBusy },
+      context,
+    );
+    // Each in its own commit: one plugin's failure, which it reports, never undoes another's.
+    for (const run of seen.admitted)
+      await front.commit((tx) => run(tx, submission.id), context).catch(() => {});
   }
 
   /** How the front's model takes images: its limits, and the image bytes its context holds now. */
@@ -283,38 +296,84 @@ export class Front implements RootClient {
     return writeUpload(this.host.home, chunk);
   }
 
-  /**
-   * The routing helper's state, pausing or resuming it first when `paused` is given. A pause is stored on the root, so
-   * it outlasts restarts; `configured` is false when config.json turns Clef off or its provider has no login.
-   */
-  async routing(paused?: boolean): Promise<{ configured: boolean; paused: boolean }> {
-    const front = await this.conversation();
-    const stored = await front.commit(async (tx) => {
-      const state = await tx.doc(RoutingDoc, front.id);
-      if (paused !== undefined) state.paused = paused;
-      return state.paused;
-    }, context);
-    return {
-      configured:
-        this.host.extensions.assessment !== undefined && !(await this.host.classifierNeedsLogin()),
-      paused: stored,
-    };
-  }
-
-  /** Routing assessments of this front's inputs as they settle, newest last. Returns a stop function. */
-  async watchAssessments(listener: (items: readonly Assessment[]) => void): Promise<() => void> {
+  /** Lines plugins show this root's clients once each, newest last. Returns a stop function. */
+  async watchNotices(
+    listener: (items: readonly { id: number; text: string }[]) => void,
+  ): Promise<() => void> {
     const front = await this.conversation();
     // Observation needs a stored document; reading it in a commit creates it on a fresh home.
     await front.commit(async (tx) => {
-      await tx.doc(AssessmentsDoc, front.id);
+      await tx.doc(ClientNoticesDoc, front.id);
     }, context);
-    const state = await this.host.harness.documentState(AssessmentsDoc, front.id, context);
-    if (state === undefined) throw new Error("Assessments document is missing");
+    const state = await this.host.harness.documentState(ClientNoticesDoc, front.id, context);
+    if (state === undefined) throw new Error("Client notices document is missing");
     const unsubscribe = state.subscribe((value) => listener(value?.items ?? []));
     return () => {
       unsubscribe();
       state.dispose();
     };
+  }
+
+  /** Plugins' status lines on this root, for a client opening it. */
+  async statusLines(): Promise<string[]> {
+    const state = await this.host.harness.snapshot(
+      ClientNoticesDoc,
+      (await this.conversation()).id,
+      context,
+    );
+    return Object.values(state?.status ?? {});
+  }
+
+  /**
+   * Runs a plugin's slash command for the shown conversation; what it sends to `ctx.ui.notify` is the answer. `caller`
+   * is who asked: a remote service token is `service`.
+   */
+  async command(
+    name: string,
+    text: string,
+    workerName?: string,
+    caller: "person" | "service" = "person",
+  ): Promise<string> {
+    const command = this.host.extensions.commands.find((entry) => entry.name === name);
+    if (command === undefined) throw new Error("Unknown command. /help lists commands.");
+    const front = await this.conversation();
+    const shown = await this.target(workerName);
+    const lines: string[] = [];
+    const ctx: PluginCommandContext = {
+      root: front.id,
+      conversationId: shown.id,
+      caller,
+      ui: {
+        notify: (message) => lines.push(String(message)),
+        setStatus: (key, value) =>
+          void this.host.harness
+            .commit(
+              (tx) =>
+                setStatus(
+                  tx,
+                  front.id,
+                  String(key),
+                  value === undefined ? undefined : String(value),
+                ),
+              context,
+            )
+            .catch((error: unknown) =>
+              lines.push(
+                `/${name}: status not saved: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            ),
+      },
+      commit: (work) => this.host.harness.commit(work, context),
+    };
+    try {
+      await command.handler(text, ctx);
+    } catch (error) {
+      throw new Error(
+        `/${name} (plugin ${command.plugin}) failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    return lines.join("\n") || `/${name} · done`;
   }
 
   /**
@@ -434,11 +493,11 @@ export class Front implements RootClient {
   ): Promise<boolean> {
     const front = await this.conversation();
     const conversation = await this.target(workerName);
-    // Only the front's inputs are assessed. A re-assessment reads the front's context first; the commit can't.
-    const assessment = workerName === undefined ? this.host.extensions.assessment : undefined;
-    const recent =
-      assessment !== undefined && change.kind === "text"
-        ? await assessment.recent(front, context)
+    // Plugins follow only the front's queue. An edit hands them the front's context, read first: the commit can't.
+    const events = workerName === undefined ? this.host.extensions.plugin.front : undefined;
+    const messages =
+      events?.changes === true && change.kind === "text"
+        ? (await front.context(context)).messages
         : [];
     return conversation.commit(async (tx) => {
       const inbox = await tx.doc(InboxDoc, conversation.id);
@@ -449,14 +508,14 @@ export class Front implements RootClient {
       else if (change.kind === "delete") {
         tx.settleSubmission(item.id, { status: "unanswered", reason: DELETED_FROM_QUEUE });
         inbox.items.splice(index, 1);
-        await assessment?.revise(tx, conversation.id, item.id, undefined);
+        await events?.change({ submission: item.id, text: undefined, messages: [] }, tx, front.id);
       } else {
         if (!change.text.trim()) throw new Error("A queued message needs text");
         if (typeof item.content !== "string") throw new Error("Only text messages can be edited");
         const notice = parseWorkerNotice(item.content);
         item.content =
           notice === undefined ? change.text : noticeText({ ...notice, text: change.text });
-        await assessment?.revise(tx, conversation.id, item.id, { message: change.text, recent });
+        await events?.change({ submission: item.id, text: change.text, messages }, tx, front.id);
       }
       return true;
     }, context);
@@ -485,7 +544,6 @@ export class Front implements RootClient {
                 .join("\n\n");
         return parseWorkerNotice(text) === undefined &&
           parseRootNotice(text) === undefined &&
-          escalationSummary(text) === undefined &&
           systemNoticeSummary(text) === undefined
           ? [{ id: item.id, text }]
           : [];
@@ -496,8 +554,12 @@ export class Front implements RootClient {
           inbox.items.findIndex((item) => item.id === id),
           1,
         );
-        // The front never gets it, so its assessment neither advises nor escalates.
-        await this.host.extensions.assessment?.revise(tx, front.id, id, undefined);
+        // The front never gets it, so plugins that follow it drop it too.
+        await this.host.extensions.plugin.front.change(
+          { submission: id, text: undefined, messages: [] },
+          tx,
+          front.id,
+        );
       }
       return mine.map((item) => item.text);
     }, context);

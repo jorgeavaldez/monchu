@@ -556,7 +556,7 @@ describe("Claude Code subscription provider", () => {
       JSON.stringify({
         front: role,
         worker: role,
-        classifier: null,
+        plugins: { clef: null },
         claude: config,
         settings: { compaction: { keepRecentTokens: 1 } },
       }),
@@ -616,7 +616,7 @@ describe("Claude Code subscription provider", () => {
     const value = await setup();
     await writeFile(
       join(value.directory, "config.json"),
-      JSON.stringify({ front: role, worker: role, classifier: null, claude: config }),
+      JSON.stringify({ front: role, worker: role, plugins: { clef: null }, claude: config }),
     );
     await writeFile(join(value.directory, "AGENTS.md"), "SHARED MANUAL");
     await writeFile(join(value.directory, "FRONT.md"), "FRONT ONLY");
@@ -672,7 +672,7 @@ PROJECT RULES
     const value = await setup();
     await writeFile(
       join(value.directory, "config.json"),
-      JSON.stringify({ front: role, worker: role, classifier: null, claude: config }),
+      JSON.stringify({ front: role, worker: role, plugins: { clef: null }, claude: config }),
     );
     await writeFile(join(value.directory, "FRONT.md"), "FRONT BEFORE");
     const script = scriptedClaude(value.directory, config, async function* () {
@@ -723,7 +723,7 @@ PROJECT RULES
         JSON.stringify({
           front: role,
           worker: role,
-          classifier: null,
+          plugins: { clef: null },
           claude: config,
         }),
       );

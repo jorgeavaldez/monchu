@@ -12,8 +12,7 @@ type Input =
         | "/reload"
         | "/restart"
         | "/login"
-        | "/thinking"
-        | "/detach";
+        | "/thinking";
     }
   | {
       command:
@@ -26,7 +25,6 @@ type Input =
         | "/model"
         | "/mcp"
         | "/logs"
-        | "/clef"
         | "/update"
         | "/attach";
       text: string;
@@ -36,11 +34,11 @@ type Input =
 
 /**
  * Every command once, in help order; parsing, help, and the editor's typeahead all read this table. `help` is short
- * enough to show beside the command on a phone.
+ * enough to show beside the command on a phone. A `terminal` one is left out of the web's help and typeahead.
  */
 export const commands: Record<
   Exclude<Input["command"], "message" | "skill" | "plugin">,
-  { usage: string; help: string }
+  { usage: string; help: string; terminal?: true }
 > = {
   "/agents": {
     usage: "[name|root]",
@@ -67,22 +65,20 @@ export const commands: Record<
     help: "stop the shown conversation, or the named worker; others keep going",
   },
   "/attach": {
-    usage: "[path]",
-    help: "attach a file or image to your next message (Ctrl+V pastes one)",
+    usage: "[path|clear]",
+    help: "attach a file or image to your next message (Ctrl+V pastes one); clear drops them",
   },
-  "/detach": { usage: "", help: "drop the files waiting for your next message" },
   "/new": { usage: "[handoff]", help: "fresh root context, optionally carrying a handoff" },
   "/compact": { usage: "[instructions]", help: "summarize the root's context now" },
   "/cd": { usage: "<path>", help: "change the shown conversation's directory (while idle)" },
   "/login": {
     usage: "",
-    help: "sign in to a model provider: Codex, Claude Code, Cloudflare, OpenCode, OpenRouter",
+    help: "sign in to a model provider: Codex, Claude Code, OpenCode, OpenRouter, plugins' providers",
   },
   "/mcp": {
     usage: "[login|logout|reconnect] [server]",
     help: "MCP servers and their tools; sign in, sign out, reconnect",
   },
-  "/clef": { usage: "[on|off]", help: "routing advice (Clef): show, pause or resume it" },
   "/reload": {
     usage: "",
     help: "apply config, skill and extension edits now; running work keeps going",
@@ -96,7 +92,7 @@ export const commands: Record<
     help: "install a release (edge: main's newest) and restart on it",
   },
   "/help": { usage: "", help: "commands and keys" },
-  "/quit": { usage: "", help: "save and close" },
+  "/quit": { usage: "", help: "save and close", terminal: true },
 };
 
 /** Providers /login offers, in menu order, in every client, with the login each takes. */
@@ -104,32 +100,44 @@ export const LOGIN_PROVIDERS: readonly { id: string; label: string; auth: "oauth
   [
     { id: "openai-codex", label: "OpenAI Codex (ChatGPT subscription)", auth: "oauth" },
     { id: "claude-code", label: "Claude Code (Pro/Max, via claude setup-token)", auth: "oauth" },
-    {
-      id: "cloudflare-workers-ai",
-      label: "Cloudflare Workers AI (optional routing advice)",
-      auth: "api_key",
-    },
     { id: "opencode-go", label: "OpenCode Go (API key)", auth: "api_key" },
     { id: "opencode", label: "OpenCode Zen (API key)", auth: "api_key" },
     { id: "openrouter", label: "OpenRouter (API key)", auth: "api_key" },
   ];
 
-/** The login a /login provider takes. */
-export function loginAuth(provider: string): "oauth" | "api_key" {
-  return LOGIN_PROVIDERS.find((entry) => entry.id === provider)?.auth ?? "oauth";
+/** What /login offers: Monchu's providers, then those plugins added. */
+export function loginProviders(
+  plugins: readonly { id: string; label: string; auth: "oauth" | "api_key" }[],
+): { id: string; label: string; auth: "oauth" | "api_key" }[] {
+  return [
+    ...LOGIN_PROVIDERS,
+    ...plugins.filter((entry) => !LOGIN_PROVIDERS.some((own) => own.id === entry.id)),
+  ];
 }
 
 /** Plugins' commands that a built-in command doesn't shadow, as `/name`. */
-export const pluginCommands = (
+const pluginCommands = (
   list: readonly { name: string; usage: string; help: string }[],
 ): [string, { usage: string; help: string }][] =>
   list.filter(({ name }) => !(`/${name}` in commands)).map((entry) => [`/${entry.name}`, entry]);
 
+/** The built-in commands a client offers, then plugins': the web leaves out terminal-only ones. */
+export const clientCommands = (
+  client: "terminal" | "web",
+  plugins: readonly { name: string; usage: string; help: string }[],
+): [string, { usage: string; help: string }][] => [
+  ...Object.entries(commands).filter(([, entry]) => client === "terminal" || !entry.terminal),
+  ...pluginCommands(plugins),
+];
+
 /** `/help`: every command, plugins' after the built-ins, and the keys. */
-export const helpText = (plugins: readonly { name: string; usage: string; help: string }[]) =>
+export const helpText = (
+  client: "terminal" | "web",
+  plugins: readonly { name: string; usage: string; help: string }[],
+) =>
   [
     "Commands:",
-    ...[...Object.entries(commands), ...pluginCommands(plugins)].map(([command, { usage, help }]) =>
+    ...clientCommands(client, plugins).map(([command, { usage, help }]) =>
       `${`${command} ${usage}`.padEnd(21)} ${help}`.trimEnd(),
     ),
     `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
@@ -159,7 +167,6 @@ export function parseInput(raw: string): Input | undefined {
     case "/thinking":
     case "/reload":
     case "/restart":
-    case "/detach":
       if (rest) throw new Error(`Usage: ${command}`);
       return { command };
     case "/new":
@@ -171,10 +178,6 @@ export function parseInput(raw: string): Input | undefined {
     case "/stop":
     case "/logs":
     case "/attach":
-      return { command, text: rest };
-    case "/clef":
-      if (rest !== "" && rest !== "on" && rest !== "off")
-        throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
     case "/update": {
       const release = parseRelease(rest || "edge");

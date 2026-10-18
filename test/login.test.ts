@@ -2,27 +2,27 @@ import { describe, expect, it } from "vitest";
 import { loginHints, pickTargets } from "../src/ui/login.ts";
 
 describe("first-run text every client shows", () => {
-  it("says which logins are needed, with the routing hint at startup or once chat is done", () => {
-    const fresh = {
-      chat: ["openai-codex", "claude-code"],
-      anyOf: true,
-      classifier: "cloudflare-workers-ai",
-    };
-    expect(loginHints(fresh, true)).toEqual([
+  it("says which logins are needed, with plugins' optional ones at startup or once chat is done", () => {
+    const clef = { provider: "cloudflare-workers-ai", purpose: "routing advice (Clef)" };
+    const plugins = [
+      { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", auth: "api_key" as const },
+    ];
+    const fresh = { chat: ["openai-codex", "claude-code"], anyOf: true, optional: [clef] };
+    expect(loginHints(fresh, true, plugins)).toEqual([
       expect.stringMatching(
         /^login needed · OpenAI Codex .* or Claude Code .*Run \/login and pick one/,
       ),
-      expect.stringMatching(/^routing advice \(Clef\) is off/),
+      "routing advice (Clef) is off · optional: /login → Cloudflare Workers AI turns it on",
     ]);
     // After a login that left chat still missing, only the chat line repeats.
-    expect(loginHints(fresh, false)).toHaveLength(1);
+    expect(loginHints(fresh, false, plugins)).toHaveLength(1);
     expect(
-      loginHints({ chat: ["claude-code"], anyOf: false, classifier: undefined }, true),
+      loginHints({ chat: ["claude-code"], anyOf: false, optional: [] }, true, plugins),
     ).toEqual([expect.stringMatching(/^login needed · Claude Code .*Run \/login and pick it/)]);
-    expect(
-      loginHints({ chat: [], anyOf: false, classifier: "cloudflare-workers-ai" }, false),
-    ).toEqual([expect.stringMatching(/^routing advice/)]);
-    expect(loginHints({ chat: [], anyOf: false, classifier: undefined }, true)).toEqual([]);
+    expect(loginHints({ chat: [], anyOf: false, optional: [clef] }, false, plugins)).toEqual([
+      expect.stringMatching(/^routing advice/),
+    ]);
+    expect(loginHints({ chat: [], anyOf: false, optional: [] }, true, plugins)).toEqual([]);
   });
 
   it("offers the shown conversation first, then the others, then both role defaults", () => {

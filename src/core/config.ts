@@ -21,6 +21,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
+import { isJsonValue, type JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { TerminalCapabilities } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
@@ -32,8 +33,6 @@ export type ModelRole = {
   modelId: string;
   thinkingLevel: ModelThinkingLevel;
 };
-
-export type ClassifierRole = { provider: string; modelId: string };
 
 /** A named worker model choice; `use` says what work it is for, which the front and the routing helper read. */
 export type WorkerProfile = ModelRole & { use: string };
@@ -165,8 +164,10 @@ export type MonchuConfig = {
   profiles: Record<string, WorkerProfile>;
   settings: RunSettings;
   claude: ClaudeConfig;
-  /** `null` turns classification off; otherwise it runs only while its provider has credentials. */
-  classifier: ClassifierRole | null;
+  /** Each plugin's own settings, by plugin name, as written; the plugin validates its own. */
+  plugins: Record<string, JsonValue>;
+  /** What reading the file noticed that the user should fix, such as a setting that moved. */
+  warnings?: string[];
   /** Roles `config.json` sets. The others follow the provider the user has logged in to. */
   chosen: { front: boolean; worker: boolean };
 };
@@ -175,7 +176,7 @@ const defaults: MonchuConfig = {
   front: { provider: "openai-codex", modelId: "gpt-6-luna", thinkingLevel: "low" },
   worker: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
   profiles: {},
-  classifier: { provider: "cloudflare-workers-ai", modelId: "@cf/cloudflare/clef" },
+  plugins: {},
   settings: {},
   claude: { executable: undefined, plan: "pro", longContextExtraUsage: false },
   chosen: { front: false, worker: false },
@@ -238,14 +239,36 @@ function profiles(value: unknown, worker: ModelRole): Record<string, WorkerProfi
   );
 }
 
-function classifierRole(value: unknown): ClassifierRole | null {
-  if (value === null) return null;
-  if (value === undefined) return defaults.classifier;
-  object(value, "classifier", ["provider", "modelId"]);
+/**
+ * `classifier` became the Clef plugin's `plugins.clef`: an old file keeps working, read there unless `plugins.clef` is
+ * set too, with a warning to move it.
+ */
+function movedClassifier(
+  value: unknown,
+  plugins: Record<string, JsonValue>,
+): { plugins: Record<string, JsonValue>; warnings?: string[] } {
+  if (value === undefined) return { plugins };
+  if (!isJsonValue(value)) throw new Error("classifier must be JSON");
+  const set = Object.hasOwn(plugins, "clef");
   return {
-    provider: text(value.provider, "classifier.provider"),
-    modelId: text(value.modelId, "classifier.modelId"),
+    plugins: set ? plugins : { ...plugins, clef: value },
+    warnings: [
+      set
+        ? '"classifier" in config.json is ignored: "plugins": { "clef": ... } sets Clef\'s classifier. Remove it'
+        : '"classifier" in config.json is now "plugins": { "clef": ... }; it still works there for now. Move it',
+    ],
   };
+}
+
+function pluginSettings(value: unknown): Record<string, JsonValue> {
+  if (value === undefined) return {};
+  if (!isObject(value) || !isJsonValue(value)) throw new Error("plugins must be a JSON object");
+  for (const name of Object.keys(value))
+    if (!/^[a-z][a-z0-9-]{0,47}$/.test(name))
+      throw new Error(`plugins.${name}: a plugin's name is lowercase letters, digits and dashes`);
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([name, item]) => (isJsonValue(item) ? [[name, item]] : [])),
+  );
 }
 
 function object(
@@ -524,10 +547,39 @@ export async function saveRole(
   const next = { ...value, [role]: { ...base, ...change } };
   const saved = parseConfig(next, path)[role];
   check(saved);
+  await replaceFile(path, next);
+  return saved;
+}
+
+/**
+ * Save a plugin's settings as `plugins.<name>` in `<home>/config.json` (`undefined` removes them), keeping every other
+ * field as written. As `saveRole`, the result passes the startup validator first and an invalid file is never rewritten.
+ */
+export async function savePluginSettings(
+  home: string,
+  name: string,
+  settings: JsonValue | undefined,
+): Promise<void> {
+  const path = join(home, "config.json");
+  const raw = await readRaw(path);
+  const value = raw === undefined ? {} : parseJson(raw, path);
+  parseConfig(value, path);
+  if (!isObject(value)) throw new Error(`Invalid ${path}: expected a JSON object`);
+  const plugins = isObject(value.plugins) ? { ...value.plugins } : {};
+  if (settings === undefined) delete plugins[name];
+  else plugins[name] = settings;
+  const next: Record<string, unknown> = { ...value, plugins };
+  if (Object.keys(plugins).length === 0) delete next.plugins;
+  parseConfig(next, path);
+  await replaceFile(path, next);
+}
+
+/** Atomically replace `path` with `value` as formatted JSON. */
+export async function replaceFile(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   await writeFile(
     temporary,
-    `${JSON.stringify(next, null, 2)}
+    `${JSON.stringify(value, null, 2)}
 `,
     { flag: "wx" },
   );
@@ -537,14 +589,14 @@ export async function saveRole(
     await rm(temporary, { force: true });
     throw error;
   }
-  return saved;
 }
 
 function parseConfig(value: unknown, path: string): MonchuConfig {
   try {
     if (!isObject(value)) throw new Error("expected a JSON object");
     if ("web" in value) throw new Error("web settings are per device now: move them to web.json");
-    const known = ["front", "worker", "profiles", "classifier", "settings", "claude"];
+
+    const known = ["front", "worker", "profiles", "plugins", "classifier", "settings", "claude"];
     const unknown = Object.keys(value).filter((key) => !known.includes(key));
     if (unknown.length) throw new Error(`unknown fields: ${unknown.join(", ")}`);
     let claude = defaults.claude;
@@ -570,7 +622,7 @@ function parseConfig(value: unknown, path: string): MonchuConfig {
       front: modelRole(value.front, "front", defaults.front),
       worker,
       profiles: profiles(value.profiles, worker),
-      classifier: classifierRole(value.classifier),
+      ...movedClassifier(value.classifier, pluginSettings(value.plugins)),
       settings: runSettings(value.settings),
       chosen: { front: value.front !== undefined, worker: value.worker !== undefined },
     };

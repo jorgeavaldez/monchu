@@ -21,7 +21,7 @@ import {
   UPLOAD_CHUNK_BYTES,
   type Attachment,
 } from "./attachments.ts";
-import type { Client, RootClient, RootSummary, Watched } from "./client.ts";
+import type { Client, LoginEntry, RootClient, RootSummary, Watched } from "./client.ts";
 import {
   Conversation,
   Root,
@@ -143,9 +143,9 @@ class RemoteRoot implements RootClient {
   seeGoal(id: string, updatedAt: number) {
     return this.run((root) => root.seeGoal({ id, updatedAt }));
   }
-  async watchAssessments(listener: Parameters<RootClient["watchAssessments"]>[0]) {
+  async watchNotices(listener: Parameters<RootClient["watchNotices"]>[0]) {
     const state = (await this.client.hold(Root, { root: this.id })).state(
-      (ref) => ref.assessments,
+      (ref) => ref.notices,
       true,
     );
     const stop = state.subscribe(listener);
@@ -154,8 +154,13 @@ class RemoteRoot implements RootClient {
       state.dispose();
     };
   }
-  routing(paused?: boolean) {
-    return this.run((root) => root.routing(paused === undefined ? {} : { paused }));
+  statusLines() {
+    return this.run((root) => root.statusLines());
+  }
+  command(name: string, text: string, workerName?: string) {
+    return this.run((root) =>
+      root.command({ name, text, ...(workerName === undefined ? {} : { worker: workerName }) }),
+    );
   }
   modelChoice(workerName?: string) {
     return this.run((root) =>
@@ -366,6 +371,10 @@ export class RemoteClient implements Client {
     return this.hello.commands;
   }
 
+  logins(): readonly LoginEntry[] {
+    return this.hello.logins;
+  }
+
   model(ref: ModelRef): Model<Api> | undefined {
     return this.hello.models.find(
       (model) => model.provider === ref.provider && model.id === ref.modelId,
@@ -410,9 +419,6 @@ export class RemoteClient implements Client {
   skillInput(name: string, text: string) {
     return this.run(() => this.session.ref.skillInput({ name, text }));
   }
-  command(name: string, text: string) {
-    return this.run(() => this.session.ref.command({ name, text }));
-  }
   jobs() {
     return this.run(() => this.session.ref.jobs());
   }
@@ -455,8 +461,7 @@ export class RemoteClient implements Client {
     return this.run(() => this.session.ref.saveDefault({ role, pick }));
   }
   async loginNeeds() {
-    const needs = await this.run(() => this.session.ref.loginNeeds());
-    return { ...needs, classifier: needs.classifier ?? undefined };
+    return this.run(() => this.session.ref.loginNeeds());
   }
   mcpServers() {
     return this.run(() => this.session.ref.mcpServers());

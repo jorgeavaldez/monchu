@@ -71,13 +71,12 @@ import { formatBytes, messageParts } from "../api/attachments.ts";
 import { shortId } from "../api/ids.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import {
-  escalationSummary,
   parseWorkerNotice,
   systemNoticeSummary,
   workerNotice,
   type WhenBusy,
 } from "../api/notices.ts";
-import { commands, pluginCommands } from "../ui/commands.ts";
+import { clientCommands } from "../ui/commands.ts";
 import { presentation, type QueuedItem } from "../ui/state.ts";
 
 /**
@@ -161,9 +160,6 @@ function queuedLine(item: QueuedItem): string {
       `${worker.name} ${kind}`,
     )}${muted(` · ${mode} · ${firstLine(worker.text)}`)}`;
   }
-  const assessment = escalationSummary(item.text);
-  if (assessment !== undefined)
-    return muted(`│ routing advice · ${mode} · ${firstLine(assessment)}`);
   const system = systemNoticeSummary(item.text);
   if (system !== undefined) return muted(`│ system · ${mode} · ${system}`);
   return `${theme.fg("warning", `│ you · ${mode}`)}${theme.fg("userMessageText", ` · ${firstLine(item.text)}`)}`;
@@ -622,7 +618,7 @@ export class MonchuTui {
     skills: readonly { name: string; description: string }[],
     plugins: readonly { name: string; usage: string; help: string }[] = [],
   ): void {
-    const all = [...Object.entries(commands), ...pluginCommands(plugins)];
+    const all = clientCommands("terminal", plugins);
     this.commandNames = new Set([
       ...all.map(([command]) => command),
       ...skills.map((skill) => `/skill:${skill.name}`),
@@ -878,10 +874,7 @@ export class MonchuTui {
             mode: item.mode === "steer" ? "followUp" : "steer",
           });
         else if (action === "delete") this.handlers.editQueued(item.id, { kind: "delete" });
-        else if (
-          escalationSummary(item.text) === undefined &&
-          systemNoticeSummary(item.text) === undefined
-        ) {
+        else if (systemNoticeSummary(item.text) === undefined) {
           this.editing = { id: item.id, draft: this.editor.getText() };
           this.restoreEditor();
           this.editor.setText(parseWorkerNotice(item.text)?.text ?? item.text);
@@ -923,7 +916,7 @@ export class MonchuTui {
   }
 
   /** Put withdrawn queued messages back in the editor, oldest first, ahead of anything already typed. */
-  /** Files for the next message, shown above the editor until it goes or `/detach` drops them. */
+  /** Files for the next message, shown above the editor until it goes or `/attach clear` drops them. */
   attachFiles(files: readonly LocalFile[]): void {
     this.files.push(...files);
     this.showTray();
@@ -953,7 +946,7 @@ export class MonchuTui {
       this.tray.addChild(
         new Text(
           getSelectListTheme().description(
-            `attached · ${this.files.map((file) => `${file.name} ${formatBytes(file.data.length)}`).join(", ")} · /detach drops`,
+            `attached · ${this.files.map((file) => `${file.name} ${formatBytes(file.data.length)}`).join(", ")} · /attach clear drops`,
           ),
           1,
           0,
@@ -1169,9 +1162,7 @@ export class MonchuTui {
       label(component);
     } else if (entry.kind === "pi.user" && message?.role === "user") {
       const { text, files } = messageParts(message.content);
-      const assessment = escalationSummary(text);
-      const system =
-        assessment === undefined ? systemNoticeSummary(text) : `routing advice · ${assessment}`;
+      const system = systemNoticeSummary(text);
       this.chat.addChild(new Spacer(1));
       if (system === undefined) {
         this.chat.addChild(new UserMessageComponent(text, files));

@@ -27,7 +27,7 @@ describe("prompt cache", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await writeFile(join(home, "FRONT.md"), "FRONT BEFORE");
@@ -119,7 +119,7 @@ describe("prompt cache", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await mkdir(join(home, "plugins", "base"), { recursive: true });
@@ -151,7 +151,7 @@ describe("prompt cache", () => {
         join(home, "plugins", "probe", "index.js"),
         `import { defineTool, Type } from "monchu/plugin";
 export default (monchu) => {
-  monchu.registerTool(defineTool({ name: "probe_now", description: "Probe", parameters: Type.Object({}), execute: async () => ({ output: [] }) }), { exposure: "direct" });
+  monchu.registerTool(defineTool({ name: "probe_now", description: "Probe", parameters: Type.Object({}), exposure: "direct", execute: async () => ({ content: [] }) }));
   monchu.registerSection("state", () => "probe state");
 };`,
       );

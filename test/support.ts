@@ -278,7 +278,7 @@ export async function setup(
   directories.add(directory);
   await writeFile(
     join(directory, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
   );
   const agentDir = join(directory, ".pi", "agent");
   prepareHome(directory);

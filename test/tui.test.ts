@@ -51,9 +51,10 @@ describe("terminal input boundary", () => {
       expect(parseInput(command)).toEqual({ command, text: "" });
     for (const command of ["/cd", "/stop", "/agents", "/new", "/compact"])
       expect(parseInput(`${command} target`)).toEqual({ command, text: "target" });
-    for (const text of ["", "on", "off"])
-      expect(parseInput(`/clef ${text}`)).toEqual({ command: "/clef", text });
-    expect(() => parseInput("/clef pause")).toThrow("Usage: /clef [on|off]");
+    // /clef is the Clef plugin's command now; /detach became /attach clear.
+    expect(parseInput("/clef off")).toEqual({ command: "plugin", name: "clef", text: "off" });
+    expect(parseInput("/attach clear")).toEqual({ command: "/attach", text: "clear" });
+    expect(parseInput("/detach")).toEqual({ command: "plugin", name: "detach", text: "" });
     // /update defaults to edge and takes only a release, which never reaches npm as anything else.
     expect(parseInput("/update")).toEqual({ command: "/update", text: "edge" });
     expect(parseInput("/update v1.2.0")).toEqual({ command: "/update", text: "1.2.0" });
@@ -72,10 +73,13 @@ describe("terminal input boundary", () => {
       "/restart yes",
     ])
       expect(() => parseInput(invalid)).toThrow();
-    const help = helpText([
+    const help = helpText("terminal", [
       { name: "weather", usage: "[city]", help: "a plugin's" },
       { name: "goals", usage: "", help: "shadowed" },
     ]);
+    expect(help).toContain("/quit");
+    // The web closes with its tab: no /quit there.
+    expect(helpText("web", [])).not.toContain("/quit");
     expect(help).toContain("/reload");
     expect(help).toContain("/restart");
     expect(help).toContain("/skill:<name>");
@@ -87,7 +91,7 @@ describe("terminal input boundary", () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home);
-    await writeFile(join(home, "config.json"), JSON.stringify({ classifier: null }));
+    await writeFile(join(home, "config.json"), JSON.stringify({ plugins: { clef: null } }));
     const eventsPath = join(home, "restart-events.txt");
     const script = join(value.directory, "restart.mjs");
     // Only the terminal transport is a fixture. Both processes use real Monchu and Durable storage.

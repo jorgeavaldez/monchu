@@ -9,21 +9,23 @@
  * fresh copy of a plugin's files only when one of them changed, and resolves its imports of Monchu's own packages to
  * the copies Monchu runs. Plugins are trusted code in Monchu's process, not a sandbox.
  */
-import type { Context } from "@earendil-works/chord";
+import { isJsonValue, type Context, type JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels, type MutableModels, type Provider } from "@earendil-works/pi-ai";
 import {
   CompactionTask,
   createRegistry,
   defineExtension,
   GenerationTask,
-  hook,
-  section,
   ToolTask,
+  section,
   type AnyTask,
+  type ConversationId,
   type Extension,
-  type HookRegistration,
-  type JsonObject,
+  type Harness,
   type PromptSection,
   type ToolRegistration,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -33,8 +35,25 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shortId } from "../api/ids.ts";
 import { noticeText, systemNoticeText } from "../api/notices.ts";
-import type { Plugin, PluginApi, PluginCommand, PluginEvents, ToolExposure } from "../plugin.ts";
+import {
+  PLUGIN_API_VERSION,
+  type AfterAdmission,
+  type InputChangeEvent,
+  type InputEvent,
+  type Plugin,
+  type PluginApi,
+  type PluginCommand,
+  type PluginContext,
+  type PluginEvents,
+  type PluginTool,
+  type PluginUI,
+  type ToolExposure,
+  type ToolNamespace,
+} from "../plugin.ts";
+import { GoalsDoc } from "./agents/goals.ts";
 import { messageWorker, parentOf, reopenWorker, WorkersDoc } from "./agents/workers.ts";
+import { replaceFile, type MonchuConfig } from "./config.ts";
+import { durableHooks, durableTool, rootUi, type Guard } from "./plugin-shapes.ts";
 import { fillPlaceholders, redacting } from "./secrets/tool.ts";
 import type { Vault } from "./secrets/vault.ts";
 import { PLUGIN_PREFIX, type ToolGroup } from "./tools/tool-search.ts";
@@ -44,13 +63,137 @@ const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const SECTION_KEY = /^[a-z][a-z0-9_-]*$/;
 const COMMAND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const SETUP_TIMEOUT_MS = 10_000;
-/** Deny list: `{ "disabled": ["name", ...] }`, gitignored, so each device decides. */
-const DENY_FILE = "plugins.local.json";
+/** How long a plugin's `input` handler may hold a message before it goes to the front without that plugin. */
+const INPUT_TIMEOUT_MS = 5_000;
+/**
+ * This device's plugin file, gitignored: `{ "disabled": ["name", ...], "settings": { "name": ... } }`. A plugin's
+ * settings are `plugins.<name>` in the synced `config.json`, with this device's `settings.<name>` over them.
+ */
+const LOCAL_FILE = "plugins.local.json";
+
+/** The device file's parts; throws for any other shape. */
+function parseLocal(value: unknown): {
+  disabled: ReadonlySet<string>;
+  settings: Record<string, JsonValue>;
+} {
+  const shape = 'expected { "disabled": ["plugin", ...], "settings": { "plugin": ... } }';
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(shape);
+  const list: unknown = Reflect.get(value, "disabled") ?? [];
+  const settings: unknown = Reflect.get(value, "settings") ?? {};
+  if (
+    Object.keys(value).some((key) => key !== "disabled" && key !== "settings") ||
+    !Array.isArray(list) ||
+    !list.every((name) => typeof name === "string") ||
+    typeof settings !== "object" ||
+    settings === null ||
+    Array.isArray(settings) ||
+    !isJsonValue(settings)
+  )
+    throw new Error(shape);
+  return {
+    disabled: new Set(list.filter((name): name is string => typeof name === "string")),
+    settings: Object.fromEntries(
+      Object.entries(settings).flatMap(([name, item]) => (isJsonValue(item) ? [[name, item]] : [])),
+    ),
+  };
+}
+
+/** Save a plugin's settings in this device's `plugins.local.json` (`undefined` removes them), keeping the rest. */
+export async function saveDeviceSettings(
+  home: string,
+  name: string,
+  value: JsonValue | undefined,
+): Promise<void> {
+  const path = join(home, LOCAL_FILE);
+  let raw: unknown = {};
+  try {
+    raw = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  const current = parseLocal(raw);
+  const settings = { ...current.settings };
+  if (value === undefined) delete settings[name];
+  else settings[name] = value;
+  await replaceFile(path, {
+    ...(current.disabled.size === 0 ? {} : { disabled: [...current.disabled] }),
+    ...(Object.keys(settings).length === 0 ? {} : { settings }),
+  });
+}
+
+/**
+ * The home's models as a plugin sees them while its providers wait for `settle`: catalog lookups see its own providers
+ * too, and calls go to the home's models, which have them once the plugin's build runs.
+ */
+function overlay(
+  models: MutableModels,
+  own: () => ReadonlyMap<string, Provider> | undefined,
+): PluginApi["models"] {
+  const catalog = () => {
+    const mine = own();
+    if (mine === undefined || mine.size === 0) return models;
+    const view = createModels();
+    for (const provider of models.getProviders()) view.setProvider(provider);
+    for (const provider of mine.values())
+      if (models.getProvider(provider.id) === undefined) view.setProvider(provider);
+    return view;
+  };
+  return {
+    getProviders: () => catalog().getProviders(),
+    getProvider: (id) => catalog().getProvider(id),
+    getModel: (provider, id) => catalog().getModel(provider, id),
+    getModels: (provider) => catalog().getModels(provider),
+    getModelOfType: (type, provider, id) => catalog().getModelOfType(type, provider, id),
+    getModelsOfType: (type, provider) => catalog().getModelsOfType(type, provider),
+    checkAuth: (...args) => models.checkAuth(...args),
+    getAvailable: (...args) => models.getAvailable(...args),
+    getAvailableOfType: (...args) => models.getAvailableOfType(...args),
+    complete: (...args) => models.complete(...args),
+    completeSimple: (...args) => models.completeSimple(...args),
+    classify: (...args) => models.classify(...args),
+  };
+}
+
+/** A plugin's settings: the synced ones, with this device's over them (field by field when both are objects). */
+function settingsOf(synced: JsonValue | undefined, device: JsonValue | undefined) {
+  const object = (value: JsonValue | undefined) =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+  const base = object(synced);
+  const over = object(device);
+  if (base !== undefined && over !== undefined) return { ...base, ...over };
+  return device ?? synced;
+}
 
 type PluginSource = "bundled" | "home" | "local";
 
 /** A plugin's slash command, with the plugin that registered it. */
 export type PluginCommandEntry = PluginCommand & { readonly name: string; readonly plugin: string };
+
+/** A provider a plugin added, as `/login` offers it. */
+type PluginLogin = {
+  readonly id: string;
+  readonly label: string;
+  readonly auth: "oauth" | "api_key";
+  readonly plugin: string;
+};
+
+/** An optional login a plugin works with, and what it turns on. */
+type PluginWant = { readonly provider: string; readonly purpose: string };
+
+/** The plugins' `input` and `input_change` handlers for a front, guarded like the rest. */
+type FrontEvents = {
+  /**
+   * Every plugin's `input`, in order, before admission: the text after any `transform`, `undefined` once one handled
+   * it, and the `admitted` functions to run after admission, each in its own commit.
+   */
+  input(
+    event: Omit<InputEvent, "type">,
+    front: ConversationId,
+  ): Promise<{ text: string | undefined; admitted: AfterAdmission[] }>;
+  /** Whether any plugin follows queue changes, so the caller reads the front's context only then. */
+  readonly changes: boolean;
+  change(event: Omit<InputChangeEvent, "type">, tx: Tx, front: ConversationId): Promise<void>;
+};
 
 export type PluginStatus = {
   readonly name: string;
@@ -61,7 +204,10 @@ export type PluginStatus = {
 };
 
 /** A running plugin function's lifetime: retired when a later build replaces it, or at close. */
-type Instance = { readonly controller: AbortController; readonly shutdown: (() => unknown)[] };
+type Instance = {
+  readonly controller: AbortController;
+  readonly shutdown: ((reason: "reload" | "quit") => unknown)[];
+};
 
 type Found = {
   readonly name: string;
@@ -79,6 +225,12 @@ type Contribution = {
   readonly groups: ToolGroup[];
   readonly tools: readonly string[];
   readonly commands: readonly PluginCommandEntry[];
+  readonly providers: readonly { readonly provider: Provider; readonly login: PluginLogin }[];
+  readonly wants: readonly PluginWant[];
+  readonly input: readonly PluginEvents["input"][];
+  readonly inputChange: readonly PluginEvents["input_change"][];
+  readonly guard: Guard;
+  readonly ui: (id: ConversationId, context: Context) => PluginUI;
   readonly skills: string | undefined;
   readonly instance: Instance;
 };
@@ -104,6 +256,10 @@ export type PluginBuild = {
   readonly sections: readonly PromptSection[];
   /** Slash commands by name; an earlier plugin's wins a clash. */
   readonly commands: readonly PluginCommandEntry[];
+  /** Providers the plugins added, which `/login` offers after Monchu's own. */
+  readonly logins: readonly PluginLogin[];
+  readonly wants: readonly PluginWant[];
+  readonly front: FrontEvents;
   readonly status: readonly PluginStatus[];
   readonly warnings: readonly string[];
   readonly instances: ReadonlySet<Instance>;
@@ -312,6 +468,21 @@ export class Plugins {
   private readonly home: string;
   private readonly report: (warning: string) => void;
   private readonly vault: Vault;
+  private readonly models: MutableModels;
+  private readonly saveSettings: (
+    name: string,
+    value: JsonValue | undefined,
+    where: "home" | "device",
+  ) => Promise<void>;
+  /** Providers Monchu itself sets, which no plugin may replace. */
+  private readonly own: ReadonlySet<string>;
+  /** Providers each live instance set, with its plugin's name. */
+  private readonly provided = new Map<
+    Instance,
+    { readonly plugin: string; readonly providers: Map<string, Provider> }
+  >();
+  /** Provider ids plugins set in the home's models. */
+  private readonly set = new Set<string>();
   private readonly bundledDir: string;
   /** The last import of each plugin folder, by entry path, with the fingerprint it was made from. */
   private readonly modules = new Map<string, { fingerprint: string; plugin: Plugin | Error }>();
@@ -321,21 +492,32 @@ export class Plugins {
   private readonly onFault: (summary: string, text: string) => void;
   /** Faults already told, by plugin and message. */
   private readonly faults = new Set<string>();
+  /** The home's store, once open: `ctx.ui` writes to it. */
+  private harness: Harness | undefined;
 
-  constructor(
-    home: string,
-    report: (warning: string) => void,
-    vault: Vault,
-    options: {
-      /** A plugin's fault for the front, beyond the warning every client shows. */
-      onFault?: (summary: string, text: string) => void;
-      bundledDir?: string;
-    } = {},
-  ) {
-    this.home = home;
-    this.report = report;
-    this.vault = vault;
+  constructor(options: {
+    home: string;
+    report: (warning: string) => void;
+    vault: Vault;
+    /** The home's models: plugins read them and add providers to them. */
+    models: MutableModels;
+    /** Writes a plugin's settings to `config.json`. */
+    saveSettings: (
+      name: string,
+      value: JsonValue | undefined,
+      where: "home" | "device",
+    ) => Promise<void>;
+    /** A plugin's fault for the front, beyond the warning every client shows. */
+    onFault?: (summary: string, text: string) => void;
+    bundledDir?: string;
+  }) {
+    this.home = options.home;
+    this.report = options.report;
+    this.vault = options.vault;
+    this.models = options.models;
+    this.saveSettings = options.saveSettings;
     this.onFault = options.onFault ?? (() => {});
+    this.own = new Set(options.models.getProviders().map((provider) => provider.id));
     this.bundledDir = options.bundledDir ?? fileURLToPath(new URL("../plugins/", import.meta.url));
     tellers.add(this);
   }
@@ -350,17 +532,23 @@ export class Plugins {
     this.onFault(`Plugin ${name} failed`, text);
   }
 
-  /** Find, import and run every enabled plugin. Never throws for a plugin's fault. */
-  async load(): Promise<PluginLoad> {
+  /** Give `ctx.ui` the home's store, once it is open. */
+  bind(harness: Harness): void {
+    this.harness = harness;
+  }
+
+  /** Find, import and run every enabled plugin with `config`. Never throws for a plugin's fault. */
+  async load(config: MonchuConfig): Promise<PluginLoad> {
     const warnings: string[] = [];
     const status: PluginStatus[] = [];
     const found = new Map<string, Found>();
     const bundled = await this.discover(this.bundledDir, "bundled", warnings);
     const home = await this.discover(join(this.home, "plugins"), "home", warnings);
-    const local = await this.discover(join(this.home, "plugins", "local"), "local", warnings);
+    const own = await this.discover(join(this.home, "plugins", "local"), "local", warnings);
     // A device's own plugin replaces a synced one of the same name, which replaces a bundled one.
-    for (const plugin of [...bundled, ...home, ...local]) found.set(plugin.name, plugin);
-    const disabled = await this.disabled(warnings);
+    for (const plugin of [...bundled, ...home, ...own]) found.set(plugin.name, plugin);
+    const device = await this.local(warnings);
+    const disabled = device.disabled;
     const contributions: Contribution[] = [];
     const instances = new Set<Instance>();
     const ordered = [...found.values()].sort(
@@ -373,7 +561,11 @@ export class Plugins {
         status.push({ name: plugin.name, source: plugin.source, state: "disabled" });
         continue;
       }
-      const loaded = await this.loadOne(plugin);
+      const loaded = await this.loadOne(
+        plugin,
+        config,
+        settingsOf(config.plugins[plugin.name], device.settings[plugin.name]),
+      );
       if ("error" in loaded) {
         const kept = loaded.contribution !== undefined;
         warnings.push(
@@ -452,6 +644,11 @@ export class Plugins {
                 );
               return first === index;
             }),
+          logins: used.flatMap((contribution) =>
+            contribution.providers.map((entry) => entry.login),
+          ),
+          wants: used.flatMap((contribution) => contribution.wants),
+          front: frontEvents(used),
           status,
           warnings,
           instances,
@@ -460,21 +657,39 @@ export class Plugins {
     };
   }
 
-  /** Retire every instance a build that is no longer running made: after a publication, or a failed reload. */
-  settle(running: PluginBuild | undefined): void {
-    for (const instance of this.live) if (!running?.instances.has(instance)) this.retire(instance);
+  /**
+   * Retire every instance a build that is no longer running made: after a publication, or a failed reload. Providers
+   * follow the running build: its plugins' are set again, and the rest leave the home's models.
+   */
+  settle(running: PluginBuild | undefined, reason: "reload" | "quit" = "reload"): void {
+    for (const instance of this.live)
+      if (!running?.instances.has(instance)) this.retire(instance, reason);
+    const wanted = new Map<string, Provider>();
+    for (const [instance, { providers }] of this.provided) {
+      if (!this.live.has(instance)) this.provided.delete(instance);
+      else for (const [id, provider] of providers) wanted.set(id, provider);
+    }
+    for (const id of this.set)
+      if (!wanted.has(id)) {
+        this.set.delete(id);
+        this.models.deleteProvider(id);
+      }
+    for (const [id, provider] of wanted) {
+      this.set.add(id);
+      this.models.setProvider(provider);
+    }
   }
 
   close(): void {
     tellers.delete(this);
-    this.settle(undefined);
+    this.settle(undefined, "quit");
   }
 
-  private retire(instance: Instance): void {
+  private retire(instance: Instance, reason: "reload" | "quit" = "reload"): void {
     if (!this.live.delete(instance)) return;
     instance.controller.abort(new Error("Plugin retired"));
     for (const shutdown of instance.shutdown) {
-      void (async () => shutdown())().catch((error: unknown) =>
+      void (async () => shutdown(reason))().catch((error: unknown) =>
         this.report(`A plugin's session_shutdown handler failed: ${message(error)}`),
       );
     }
@@ -513,38 +728,45 @@ export class Plugins {
     return found;
   }
 
-  /** The names this device turned off, or `all` home plugins when the deny list can't be read: it fails closed. */
-  private async disabled(warnings: string[]): Promise<ReadonlySet<string> | "all"> {
-    const path = join(this.home, DENY_FILE);
+  /**
+   * This device's plugin file: the names it turned off (`all` home plugins when the file can't be read: it fails
+   * closed) and its own plugin settings, which override the synced ones.
+   */
+  private async local(
+    warnings: string[],
+  ): Promise<{ disabled: ReadonlySet<string> | "all"; settings: Record<string, JsonValue> }> {
+    const path = join(this.home, LOCAL_FILE);
     let text: string;
     try {
       text = await readFile(path, "utf8");
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return new Set();
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return { disabled: new Set(), settings: {} };
       warnings.push(`${path} could not be read, so no home plugin loads: ${message(error)}`);
-      return "all";
+      return { disabled: "all", settings: {} };
     }
     try {
-      const parsed: unknown = JSON.parse(text);
-      const list: unknown =
-        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-          ? Reflect.get(parsed, "disabled")
-          : undefined;
-      if (!Array.isArray(list) || !list.every((name) => typeof name === "string"))
-        throw new Error('expected { "disabled": ["plugin", ...] }');
-      return new Set(list.filter((name): name is string => typeof name === "string"));
+      return parseLocal(JSON.parse(text));
     } catch (error) {
       warnings.push(`${path} is invalid, so no home plugin loads: ${message(error)}`);
-      return "all";
+      return { disabled: "all", settings: {} };
     }
   }
 
   /** Import (when its files changed) and run one plugin; on failure, run its last good code instead. */
   private async loadOne(
     found: Found,
+    config: MonchuConfig,
+    settings: JsonValue | undefined,
   ): Promise<{ contribution: Contribution } | { error: string; contribution?: Contribution }> {
     let error: string;
     try {
+      // A plugin that says which API versions it works with loads only on a Monchu that has one, before any import.
+      const apis = await packageApis(found.dir);
+      if (apis !== undefined && !apis.includes(PLUGIN_API_VERSION))
+        return {
+          error: `it works with plugin API ${apis.join(" or ")}; this Monchu has ${PLUGIN_API_VERSION}${Math.max(...apis) > PLUGIN_API_VERSION ? " (monchu update brings a newer one)" : ""}`,
+        };
       const print = await fingerprint(found.dir);
       let cached = this.modules.get(found.entry);
       if (cached?.fingerprint !== print) {
@@ -560,7 +782,7 @@ export class Plugins {
         this.modules.set(found.entry, cached);
       }
       if (cached.plugin instanceof Error) throw cached.plugin;
-      const contribution = await this.run(found, cached.plugin);
+      const contribution = await this.run(found, cached.plugin, config, settings);
       this.good.set(found.entry, cached.plugin);
       return { contribution };
     } catch (failure) {
@@ -569,20 +791,28 @@ export class Plugins {
     const good = this.good.get(found.entry);
     if (good === undefined || good === this.modules.get(found.entry)?.plugin) return { error };
     try {
-      return { error, contribution: await this.run(found, good) };
+      return { error, contribution: await this.run(found, good, config, settings) };
     } catch {
       return { error };
     }
   }
 
   /** Run a plugin's function and turn what it registered into a guarded extension and tool groups. */
-  private async run(found: Found, plugin: Plugin): Promise<Contribution> {
+  private async run(
+    found: Found,
+    plugin: Plugin,
+    config: MonchuConfig,
+    settings: JsonValue | undefined,
+  ): Promise<Contribution> {
     const instance: Instance = { controller: new AbortController(), shutdown: [] };
     this.live.add(instance);
-    const tools: { tool: ToolRegistration; exposure: ToolExposure }[] = [];
+    const tools: { tool: ToolRegistration; exposure: ToolExposure; namespace?: ToolNamespace }[] =
+      [];
     const sections: PromptSection[] = [];
     const tasks: AnyTask[] = [];
     const commands: PluginCommandEntry[] = [];
+    const providers: { provider: Provider; login: PluginLogin }[] = [];
+    const wants: PluginWant[] = [];
     const handlers: { [E in keyof PluginEvents]: PluginEvents[E][] } = {
       tool_call: [],
       tool_result: [],
@@ -592,42 +822,55 @@ export class Plugins {
       agent_before_settle: [],
       session_before_compact: [],
       session_shutdown: [],
+      input: [],
+      input_change: [],
     };
-    let namespace: Parameters<PluginApi["namespace"]>[0] | undefined;
     let open = true;
     const opened = () => {
       if (!open) throw new Error("Plugins register only while their function runs");
     };
     const reported = new Set<string>();
     const report = (warning: string) => this.report(`Plugin ${found.name}: ${warning}`);
-    /** A handler's failure, told once per instance and event, then treated as no result. */
-    const guard = async <T>(event: string, run: () => T | Promise<T>): Promise<T | undefined> => {
+    /** A handler's failure, told once per instance and event; the caller decides what a failure means. */
+    const guard: Guard = async (event, run) => {
       try {
         return await run();
       } catch (error) {
         if (!reported.has(event)) {
           reported.add(event);
-          report(`its ${event} handler failed and is ignored: ${message(error)}`);
+          report(`its ${event} handler failed: ${message(error)}`);
         }
-        return undefined;
+        return "failed";
       }
     };
+    const ui = (id: ConversationId, context: Context): PluginUI =>
+      rootUi(() => this.harness, report, id, context);
+    const redacted = new WeakSet<PluginTool>();
+    const vault = this.vault;
     const api: PluginApi = {
+      apiVersion: PLUGIN_API_VERSION,
       name: found.name,
       dir: found.dir,
       home: this.home,
       device: device(),
       signal: instance.controller.signal,
       report,
-      secrets: pluginSecrets(this.vault),
-      agents: AGENTS,
-      namespace: (options) => {
-        opened();
-        namespace = options;
+      config: settings,
+      saveConfig: (value, options) =>
+        this.saveSettings(found.name, value, options?.device === true ? "device" : "home"),
+      models: overlay(this.models, () => this.provided.get(instance)?.providers),
+      secrets: {
+        ...pluginSecrets(vault),
+        redacting: (tool) => {
+          redacted.add(tool);
+          return tool;
+        },
       },
-      registerTool: (tool, options) => {
+      agents: agents(config),
+      ui: (id) => ui(id, BACKGROUND_CONTEXT),
+      registerTool: (tool) => {
         opened();
-        const exposure = options?.exposure ?? "deferred";
+        const exposure = tool.exposure ?? "deferred";
         if (!["deferred", "direct", "codemode"].includes(exposure))
           throw new Error(`tool ${tool.name}: unknown exposure ${String(exposure)}`);
         if (!TOOL_NAME.test(tool.name))
@@ -636,7 +879,12 @@ export class Plugins {
           throw new Error(`tool ${tool.name} has no execute function`);
         if (tools.some((entry) => entry.tool.name === tool.name))
           throw new Error(`two tools are named ${tool.name}`);
-        tools.push({ tool, exposure });
+        const durable = durableTool(tool, ui);
+        tools.push({
+          tool: redacted.has(tool) ? redacting(durable, vault) : durable,
+          exposure,
+          ...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
+        });
       },
       registerSection: (key, render, options) => {
         opened();
@@ -648,8 +896,10 @@ export class Plugins {
         sections.push({
           key: name,
           tag: options?.tag ?? true,
-          render: async (input, context) =>
-            (await guard(`section ${key}`, () => render(input, context)))?.trim() || undefined,
+          render: async (input, context) => {
+            const text = await guard(`section ${key}`, () => render(input, context));
+            return text === "failed" ? undefined : text?.trim() || undefined;
+          },
         });
       },
       on: (event, handler) => {
@@ -667,17 +917,57 @@ export class Plugins {
         opened();
         if (!COMMAND_NAME.test(name))
           throw new Error(`command name ${JSON.stringify(name)} must match ${COMMAND_NAME.source}`);
-        if (typeof command.run !== "function")
-          throw new Error(`command /${name} has no run function`);
+        if (typeof command.handler !== "function")
+          throw new Error(`command /${name} has no handler function`);
         if (commands.some((entry) => entry.name === name))
           throw new Error(`two commands are named /${name}`);
         commands.push({
           name,
           plugin: found.name,
-          help: String(command.help),
+          ...(command.description === undefined
+            ? {}
+            : { description: String(command.description) }),
           ...(command.usage === undefined ? {} : { usage: String(command.usage) }),
-          run: command.run,
+          handler: (args, ctx) => command.handler(args, ctx),
         });
+      },
+      registerProvider: (provider) => {
+        opened();
+        if (this.own.has(provider.id)) throw new Error(`provider ${provider.id} is Monchu's own`);
+        for (const [other, entry] of this.provided)
+          if (
+            this.live.has(other) &&
+            entry.plugin !== found.name &&
+            entry.providers.has(provider.id)
+          )
+            throw new Error(`plugin ${entry.plugin} already adds provider ${provider.id}`);
+        if (providers.some((entry) => entry.provider.id === provider.id))
+          throw new Error(`two providers are named ${provider.id}`);
+        providers.push({
+          provider,
+          login: {
+            id: provider.id,
+            label: provider.name,
+            auth: provider.auth.oauth === undefined ? "api_key" : "oauth",
+            plugin: found.name,
+          },
+        });
+        // Only the running build's providers reach the home's models, when `settle` applies them: a reload that fails,
+        // or the home check's copy, changes nothing. Until then this plugin's own `models` sees them.
+        const entry = this.provided.get(instance) ?? { plugin: found.name, providers: new Map() };
+        entry.providers.set(provider.id, provider);
+        this.provided.set(instance, entry);
+      },
+      unregisterProvider: (id) => {
+        opened();
+        const at = providers.findIndex((entry) => entry.provider.id === id);
+        if (at === -1) return;
+        providers.splice(at, 1);
+        this.provided.get(instance)?.providers.delete(id);
+      },
+      wantsLogin: (provider, purpose) => {
+        opened();
+        wants.push({ provider: String(provider), purpose: String(purpose) });
       },
     };
     try {
@@ -688,11 +978,12 @@ export class Plugins {
     } finally {
       open = false;
     }
-    for (const handler of handlers.session_shutdown) instance.shutdown.push(handler);
+    for (const handler of handlers.session_shutdown)
+      instance.shutdown.push((reason) => handler({ type: "session_shutdown", reason }));
     const extension = defineExtension({
       name: found.source === "bundled" ? `monchu.${found.name}` : `${PLUGIN_PREFIX}${found.name}`,
       tools: tools.filter((entry) => entry.exposure === "direct").map((entry) => entry.tool),
-      hooks: guardedHooks(handlers, guard),
+      hooks: durableHooks(handlers, guard, ui),
       tasks,
     });
     try {
@@ -702,6 +993,8 @@ export class Plugins {
       this.retire(instance);
       throw error;
     }
+    const namespaces = tools.flatMap((entry) => entry.namespace ?? []);
+    const namespace = namespaces[0];
     const description =
       namespace?.description ??
       (await packageDescription(found.dir)) ??
@@ -734,6 +1027,12 @@ export class Plugins {
       groups: [...group("deferred"), ...group("codemode")],
       tools: tools.map((entry) => entry.tool.name),
       commands,
+      providers,
+      wants,
+      input: handlers.input,
+      inputChange: handlers.input_change,
+      guard,
+      ui,
       skills: existsSync(skills) ? skills : undefined,
       instance,
     };
@@ -741,7 +1040,7 @@ export class Plugins {
 }
 
 /** The home's secrets as plugins see them: by name, with values only for the plugin's own code. */
-function pluginSecrets(vault: Vault): PluginApi["secrets"] {
+function pluginSecrets(vault: Vault): Omit<PluginApi["secrets"], "redacting"> {
   return {
     info: async (name) => {
       const info = await vault.info(name);
@@ -756,11 +1055,11 @@ function pluginSecrets(vault: Vault): PluginApi["secrets"] {
     value: async (key, use) =>
       (await vault.owner(key)) === undefined ? undefined : (await vault.resolve([key], use))[key],
     fill: (texts, use) => fillPlaceholders(vault, texts, use),
-    redacting: (tool) => redacting(tool, vault),
   };
 }
 
-const AGENTS: PluginApi["agents"] = {
+/** Monchu's crew as plugins see it, with the worker profiles of the config this load applies. */
+const agents = (config: MonchuConfig): PluginApi["agents"] => ({
   shortId,
   whois: async (tx, id) => {
     if ((await tx.conversation(id)) === undefined) return undefined;
@@ -783,7 +1082,105 @@ const AGENTS: PluginApi["agents"] = {
   },
   updateText: (name, text) => noticeText({ name, status: "update", text }),
   noticeText: systemNoticeText,
-};
+  workers: async (tx, front) => {
+    const doc = await tx.doc(WorkersDoc, front);
+    return {
+      started: doc.started,
+      workers: doc.workers.map((worker) => ({
+        name: worker.name,
+        id: worker.conversationId,
+        closed: worker.closed === true,
+        ...(worker.brief === undefined ? {} : { brief: worker.brief }),
+      })),
+    };
+  },
+  deliveries: async (read, front, context) =>
+    (await read.snapshot(WorkersDoc, front, context))?.started ?? 0,
+  goals: async (tx, front) =>
+    (await tx.doc(GoalsDoc, front)).goals.map((goal) => ({
+      id: goal.id,
+      title: goal.title,
+      status: goal.status,
+      workstream: goal.workstream,
+      workers: [...goal.workers],
+    })),
+  profiles: config.profiles,
+});
+
+/** The plugins' front events, in plugin then registration order. */
+function frontEvents(used: readonly Contribution[]): FrontEvents {
+  const inputs = used.flatMap((contribution) =>
+    contribution.input.map((handler) => ({ handler, contribution })),
+  );
+  const changes = used.flatMap((contribution) =>
+    contribution.inputChange.map((handler) => ({ handler, contribution })),
+  );
+  const ctx = (contribution: Contribution, front: ConversationId): PluginContext => ({
+    conversationId: front,
+    ui: contribution.ui(front, BACKGROUND_CONTEXT),
+    signal: undefined,
+  });
+  return {
+    input: async (event, front) => {
+      let text = event.text;
+      const admitted: AfterAdmission[] = [];
+      for (const { handler, contribution } of inputs) {
+        // The message isn't admitted until every handler answers, so one that hangs must not hold up the front.
+        const result = await contribution.guard("input", () =>
+          withTimeout(
+            handler({ ...event, type: "input", text }, ctx(contribution, front)),
+            INPUT_TIMEOUT_MS,
+            "it did not answer",
+          ),
+        );
+        if (result === "failed" || result === undefined) continue;
+        if (result.action === "handled") return { text: undefined, admitted: [] };
+        if (result.action === "transform") text = result.text;
+        const after = result.admitted;
+        if (after !== undefined)
+          admitted.push(async (tx, submission) => {
+            // A throw rolls its own commit back; the message stays admitted.
+            const done = await contribution.guard("input admitted", () => after(tx, submission));
+            if (done === "failed") throw new Error(`plugin ${contribution.found.name} failed`);
+          });
+      }
+      return { text, admitted };
+    },
+    changes: changes.length > 0,
+    change: async (event, tx, front) => {
+      for (const { handler, contribution } of changes)
+        await contribution.guard("input_change", () =>
+          handler({ ...event, type: "input_change" }, tx, ctx(contribution, front)),
+        );
+    },
+  };
+}
+
+/**
+ * The plugin API versions `package.json` says the plugin works with, as `"monchu": { "api": 2 }` or `[1, 2]`;
+ * `undefined` when it says none. A malformed one throws.
+ */
+async function packageApis(dir: string): Promise<number[] | undefined> {
+  let text: string;
+  try {
+    text = await readFile(join(dir, "package.json"), "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const parsed: unknown = JSON.parse(text);
+  const section: unknown =
+    typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, "monchu") : undefined;
+  const api: unknown =
+    typeof section === "object" && section !== null ? Reflect.get(section, "api") : undefined;
+  if (api === undefined) return undefined;
+  const list: unknown[] = Array.isArray(api) ? api : [api];
+  if (list.length === 0 || !list.every((each) => Number.isInteger(each)))
+    throw new Error(
+      'package.json\'s "monchu": { "api" } must be a version number or a list of them',
+    );
+  return list.filter((each): each is number => typeof each === "number");
+}
 
 async function packageDescription(dir: string): Promise<string | undefined> {
   try {
@@ -796,106 +1193,4 @@ async function packageDescription(dir: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-}
-
-type Guard = <T>(event: string, run: () => T | Promise<T>) => Promise<T | undefined>;
-
-/** Durable hooks over a plugin's handlers, in registration order; a throwing handler counts as no result. */
-function guardedHooks(
-  handlers: { [E in keyof PluginEvents]: PluginEvents[E][] },
-  guard: Guard,
-): HookRegistration[] {
-  const hooks: HookRegistration[] = [];
-  const { tool_call, tool_result, context, message_end, turn_end, agent_before_settle } = handlers;
-  if (tool_call.length || tool_result.length)
-    hooks.push(
-      hook(ToolTask, {
-        ...(tool_call.length
-          ? {
-              beforeTool: async (call, api, ctx: Context) => {
-                let args: JsonObject | undefined;
-                for (const handler of tool_call) {
-                  const current = args === undefined ? call : { ...call, arguments: args };
-                  const decision = await guard("tool_call", () => handler(current, api, ctx));
-                  if (decision?.block !== undefined) return { block: decision.block };
-                  if (decision?.arguments !== undefined) args = decision.arguments;
-                }
-                return args === undefined ? undefined : { arguments: args };
-              },
-            }
-          : {}),
-        ...(tool_result.length
-          ? {
-              afterTool: async (call, result, api, ctx: Context) => {
-                let current = result;
-                for (const handler of tool_result)
-                  current =
-                    (await guard("tool_result", () => handler(call, current, api, ctx))) ?? current;
-                return current === result ? undefined : current;
-              },
-            }
-          : {}),
-      }),
-    );
-  if (context.length || message_end.length || turn_end.length || agent_before_settle.length)
-    hooks.push(
-      hook(GenerationTask, {
-        ...(context.length
-          ? {
-              beforeRequest: async (request, api, ctx: Context) => {
-                let messages = request.messages;
-                for (const handler of context)
-                  messages =
-                    (await guard("context", () => handler({ messages }, api, ctx)))?.messages ??
-                    messages;
-                return messages === request.messages ? undefined : { messages };
-              },
-            }
-          : {}),
-        ...(message_end.length
-          ? {
-              afterResponse: async (message, api, ctx: Context) => {
-                for (const handler of message_end)
-                  await guard("message_end", () => handler(message, api, ctx));
-              },
-            }
-          : {}),
-        ...(turn_end.length
-          ? {
-              afterTools: async (assistant, results, api, ctx: Context) => {
-                for (const handler of turn_end)
-                  await guard("turn_end", () => handler(assistant, results, api, ctx));
-              },
-            }
-          : {}),
-        ...(agent_before_settle.length
-          ? {
-              onYield: async (answer, api, ctx: Context) => {
-                for (const handler of agent_before_settle) {
-                  const decision = await guard("agent_before_settle", () =>
-                    handler(answer, api, ctx),
-                  );
-                  if (decision !== undefined) return decision;
-                }
-                return undefined;
-              },
-            }
-          : {}),
-      }),
-    );
-  if (handlers.session_before_compact.length)
-    hooks.push(
-      hook(CompactionTask, {
-        beforeCompact: async (compaction, api, ctx: Context) => {
-          for (const handler of handlers.session_before_compact) {
-            const decision = await guard("session_before_compact", () =>
-              handler(compaction, api, ctx),
-            );
-            if (decision !== undefined) return decision;
-          }
-          return undefined;
-        },
-      }),
-    );
-  return hooks;
 }

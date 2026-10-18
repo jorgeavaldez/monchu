@@ -1,10 +1,10 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { shortId } from "../api/ids.ts";
-import { escalationSummary } from "../api/notices.ts";
+import { systemNoticeSummary } from "../api/notices.ts";
 
 /**
  * The entries a client labels with their short id: the user's input, worker reports and updates, and replies with
- * text. Routing advice, tool results and context markers stay unlabeled.
+ * text. Monchu's own notices, tool results and context markers stay unlabeled.
  */
 export function addressable(entry: EntryRecord): boolean {
   const message = entry.model?.[0];
@@ -13,7 +13,7 @@ export function addressable(entry: EntryRecord): boolean {
       typeof message.content === "string"
         ? message.content
         : message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
-    return escalationSummary(text) === undefined;
+    return systemNoticeSummary(text) === undefined;
   }
   return (
     entry.kind === "pi.assistant" &&

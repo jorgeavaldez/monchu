@@ -9,12 +9,7 @@ import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageParts } from "../api/attachments.ts";
-import {
-  escalationSummary,
-  skillInvocation,
-  systemNoticeSummary,
-  workerNotice,
-} from "../api/notices.ts";
+import { skillInvocation, systemNoticeSummary, workerNotice } from "../api/notices.ts";
 import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
@@ -235,8 +230,6 @@ function entryNode(
   const message = entry.model?.[0];
   if (entry.kind === "pi.user" && message?.role === "user") {
     const { text, files, images } = messageParts(message.content);
-    const escalation = escalationSummary(text);
-    if (escalation !== undefined) return <div class="system">clef · escalated · {escalation}</div>;
     const system = systemNoticeSummary(text);
     if (system !== undefined) return <div class="system">system · {system}</div>;
     // A skill's instructions stay folded under its name; what the user typed with it shows as usual.

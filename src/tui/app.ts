@@ -15,10 +15,10 @@ import {
   type Attachment,
 } from "../api/attachments.ts";
 import type { WhenBusy } from "../api/notices.ts";
-import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
+import { formatReports } from "../api/reports.ts";
 import type { HerdrAgent } from "./herdr-agent.ts";
 import { releaseNotices } from "../api/release.ts";
-import { commands, helpText, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
+import { commands, helpText, loginProviders, parseInput } from "../ui/commands.ts";
 import { formatJobEvent, jobEventRoot } from "../ui/jobs.ts";
 import { activeRoots, parseRootsCommand, rootIds, rootLabel } from "../ui/roots.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
@@ -77,7 +77,7 @@ export async function runTerminal(
   let stopRoot: (() => void) | undefined;
   let stopReports: (() => void) | undefined;
   let stopRoots: (() => void) | undefined;
-  let stopAssessments: (() => void) | undefined;
+  let stopNotices: (() => void) | undefined;
   let stopJobs: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
   let stopReload: (() => void) | undefined;
@@ -313,9 +313,8 @@ export async function runTerminal(
     return refreshing;
   }
 
-  const seen: { failure?: string } = {};
   /**
-   * Shows a root: attaches its front, workers and routing advice, then lets go of the root shown before, which marks
+   * Shows a root: attaches its front, workers and plugins' lines, then lets go of the root shown before, which marks
    * that one seen. Notices stay with the root they were posted in.
    */
   async function openRoot(id: string): Promise<void> {
@@ -328,7 +327,7 @@ export async function runTerminal(
     generation++;
     await refreshing?.catch(() => {});
     stopRoot?.();
-    stopAssessments?.();
+    stopNotices?.();
     for (const worker of workers.values()) {
       worker.stop();
       worker.state.dispose();
@@ -354,20 +353,13 @@ export async function runTerminal(
         exit();
       }
     });
-    const shown = new Set<number>();
-    let hydrated = false;
-    stopAssessments = await next.watchAssessments((items) => {
-      for (const item of items) {
-        if (item.result === null || shown.has(item.taskId)) continue;
-        shown.add(item.taskId);
-        if (!hydrated) continue;
-        const text = assessmentNotice(item.result, seen);
-        if (text !== undefined) view.notice(text);
-      }
-      hydrated = true;
+    // Plugins' lines from before this view opened stay unshown; their status lines show once now.
+    let last: number | undefined;
+    stopNotices = await next.watchNotices((items) => {
+      for (const item of items) if (last !== undefined && item.id > last) view.notice(item.text);
+      last = Math.max(last ?? 0, ...items.map((item) => item.id));
     });
-    const routing = await next.routing();
-    if (routing.paused) view.notice(routingText(routing));
+    for (const line of await next.statusLines()) view.notice(line);
     await refreshWorkers();
     show(true);
   }
@@ -466,7 +458,7 @@ export async function runTerminal(
     startup: boolean,
     needs?: Awaited<ReturnType<Client["loginNeeds"]>>,
   ): Promise<void> {
-    for (const line of loginHints(needs ?? (await backend.loginNeeds()), startup))
+    for (const line of loginHints(needs ?? (await backend.loginNeeds()), startup, backend.logins()))
       view.notice(line);
   }
 
@@ -484,22 +476,22 @@ export async function runTerminal(
     if (!input) return;
     if (input.command !== "message" && input.command !== "skill") view.attachFiles(files);
     switch (input.command) {
-      case "/attach":
-        if (!input.text) view.notice(`Usage: /attach <path>`);
-        else await attachPaths([input.text]);
-        break;
-      case "/detach": {
-        const count = view.detachFiles();
-        view.notice(
-          count ? `dropped ${count} attachment${count === 1 ? "" : "s"}` : "nothing attached",
-        );
+      case "/attach": {
+        if (!input.text) view.notice(`Usage: /attach <path|clear>`);
+        else if (input.text !== "clear") await attachPaths([input.text]);
+        else {
+          const count = view.detachFiles();
+          view.notice(
+            count ? `dropped ${count} attachment${count === 1 ? "" : "s"}` : "nothing attached",
+          );
+        }
         break;
       }
       case "/quit":
         exit();
         break;
       case "/help":
-        view.notice(helpText(backend.commands()));
+        view.notice(helpText("terminal", backend.commands()));
         break;
       case "/mcp": {
         const [action, name, ...extra] = input.text.split(/\s+/).filter(Boolean);
@@ -607,11 +599,14 @@ export async function runTerminal(
             {
               type: "select",
               message: "Choose provider:",
-              options: LOGIN_PROVIDERS.map(({ id, label }) => ({ id, label })),
+              options: loginProviders(backend.logins()).map(({ id, label }) => ({ id, label })),
             },
             controller.signal,
           );
-          await backend.login(provider, loginAuth(provider), {
+          const auth =
+            loginProviders(backend.logins()).find((entry) => entry.id === provider)?.auth ??
+            "oauth";
+          await backend.login(provider, auth, {
             signal: controller.signal,
             prompt: (prompt) => view.promptLogin(prompt, controller.signal),
             notify: (event) => {
@@ -648,11 +643,6 @@ export async function runTerminal(
         if (loggedIn) await loginHint(false);
         break;
       }
-      case "/clef":
-        view.notice(
-          routingText(await front.routing(input.text === "" ? undefined : input.text === "off")),
-        );
-        return;
       case "/reload": {
         view.notice(`reloaded · ${(await backend.reload()).join(", ")}`);
         break;
@@ -735,7 +725,7 @@ export async function runTerminal(
         break;
       }
       case "plugin": {
-        view.notice(await backend.command(input.name, input.text));
+        view.notice(await front.command(input.name, input.text, selected));
         break;
       }
       case "/logs": {
@@ -905,7 +895,7 @@ export async function runTerminal(
     stopScheme?.();
     stopReports?.();
     stopRoots?.();
-    stopAssessments?.();
+    stopNotices?.();
     stopJobs?.();
     stopRoot?.();
     await refreshing?.catch(() => {});

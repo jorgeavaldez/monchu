@@ -12,8 +12,7 @@ import {
 } from "@earendil-works/chord";
 import type { AuthPrompt } from "@earendil-works/pi-ai";
 import type { ConversationView, WatchHandle } from "@earendil-works/pi-durable";
-import type { RootSummary } from "../api/client.ts";
-import type { Assessment } from "../core/agents/classifier.ts";
+import type { ClientNotice, RootSummary } from "../api/client.ts";
 import { Type, type TUnsafe } from "typebox";
 import { Check } from "typebox/value";
 import {
@@ -99,6 +98,7 @@ function hello(backend: Monchu): Hello {
     settings: backend.settings,
     skills: [...backend.skills()],
     commands: [...backend.commands()],
+    logins: [...backend.logins()],
     models: [...backend.catalog()],
     notes: [...backend.notes],
   };
@@ -348,7 +348,6 @@ export default defineFacet<Principal>(
           await monchu().declineSecret(name);
         },
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
-        command: ({ name, text }) => monchu().command(name, text),
         findRoot: ({ prefix }) => monchu().findRoot(prefix),
         currentRoot: () => monchu().currentRoot(),
         createRoot: ({ requestId }) => monchu().createRoot(requestId),
@@ -357,10 +356,7 @@ export default defineFacet<Principal>(
         jobs: () => monchu().jobs(),
         roleChoice: ({ role }) => monchu().roleChoice(role),
         saveDefault: ({ role, pick }) => monchu().saveDefault(role, pick),
-        loginNeeds: async () => {
-          const needs = await monchu().loginNeeds();
-          return { ...needs, classifier: needs.classifier ?? null };
-        },
+        loginNeeds: () => monchu().loginNeeds(),
         mcpServers: () => monchu().mcpServers(),
         mcpLogout: ({ name }) => monchu().mcpLogout(name),
         mcpReconnect: () => monchu().mcpReconnect(),
@@ -422,18 +418,18 @@ export default defineFacet<Principal>(
       return { ...service, variant: "service" };
     });
 
-    api.serve(Root, ({ root }, _principal, self) => {
+    api.serve(Root, ({ root }, principal, self) => {
       const core = self.get(Core, {});
       const front = () => frontOf(backendOf(core), root);
-      const assessments = fed<Assessment[]>(
+      const notices = fed<ClientNotice[]>(
         self,
-        "assessments",
+        "notices",
         async () => [],
-        (set) => front().watchAssessments((items) => set([...items])),
+        (set) => front().watchNotices((items) => set([...items])),
       );
       return {
         variant: "owner",
-        assessments,
+        notices,
         submit: ({ message, requestId, whenBusy, attachments }) =>
           front().submit(message, requestId, whenBusy, attachments),
         messageWorker: ({ worker, message, requestId, whenBusy, attachments }) =>
@@ -449,7 +445,14 @@ export default defineFacet<Principal>(
         handOff: ({ worker, toRoot }) => front().handOff(worker, toRoot),
         goals: async () => [...(await front().goals())],
         seeGoal: ({ id, updatedAt }) => front().seeGoal(id, updatedAt),
-        routing: ({ paused }) => front().routing(paused),
+        statusLines: () => front().statusLines(),
+        command: ({ name, text, worker }) =>
+          front().command(
+            name,
+            text,
+            worker,
+            principal.kind === "client" && !principal.person ? "service" : "person",
+          ),
         modelChoice: ({ worker }) => front().modelChoice(worker),
         pickModel: ({ pick, saveDefault, worker }) => front().pickModel(pick, saveDefault, worker),
       };

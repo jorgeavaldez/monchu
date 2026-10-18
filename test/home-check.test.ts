@@ -30,7 +30,7 @@ describe("home check", () => {
     await mkdir(join(home, "skills", "notes"), { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await writeFile(join(home, "skills", "notes", "SKILL.md"), BROKEN_SKILL);
@@ -139,7 +139,7 @@ describe("home check", () => {
     await mkdir(home, { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     const skill = join(home, "skills", "notes", "SKILL.md");
@@ -177,7 +177,7 @@ describe("home check", () => {
     await mkdir(join(home, "plugins", "evil"), { recursive: true });
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await writeFile(

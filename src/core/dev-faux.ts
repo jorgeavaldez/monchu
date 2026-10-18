@@ -17,7 +17,7 @@ export async function openDevMonchu(home: string): Promise<Monchu> {
     JSON.stringify({
       front: { provider: "faux", modelId: "front", thinkingLevel: "off" },
       worker: { provider: "faux", modelId: "worker", thinkingLevel: "off" },
-      classifier: null,
+      plugins: { clef: null },
     }),
   );
   return Monchu.open(home, createDevProvider(), { secretStore: new MemoryStore() });

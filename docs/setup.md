@@ -24,14 +24,14 @@ Installing is in the [README](../README.md). This page covers the first run, con
 {
   "front": { "provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low" },
   "worker": { "provider": "openai-codex", "modelId": "gpt-6.1-sol", "thinkingLevel": "high" },
-  "classifier": { "provider": "cloudflare-workers-ai", "modelId": "@cf/cloudflare/clef" },
+  "plugins": { "clef": { "provider": "cloudflare-workers-ai", "modelId": "@cf/cloudflare/clef" } },
   "claude": { "plan": "pro", "longContextExtraUsage": false },
   "settings": { "theme": "system" }
 }
 ```
 
-- Providers are `openai-codex`, `claude-code` (with `claude-opus-5-5`, `claude-sonnet-5-5`, or `claude-haiku-5-5`, for example), `opencode-go`, `opencode` (Zen) and `openrouter`. The last three use pi-ai's bundled model lists; `/model` shows them once logged in. Zen also serves the `jev-1.13` and `jev-1.13-free` classifiers. Set `claude.plan` to `max` on a Max plan. Leave `longContextExtraUsage` off for subscription-only use.
-- **Routing advice** (Clef, a small Cloudflare classifier) is optional. It nudges the front to delegate. It turns on once Cloudflare credentials exist, from `/login` or from `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`. `"classifier": null` turns it off.
+- Providers are `openai-codex`, `claude-code` (with `claude-opus-5-5`, `claude-sonnet-5-5`, or `claude-haiku-5-5`, for example), `opencode-go`, `opencode` (Zen) and `openrouter`. The last three use pi-ai's bundled model lists; `/model` shows them once logged in. Set `claude.plan` to `max` on a Max plan. Leave `longContextExtraUsage` off for subscription-only use.
+- **Routing advice** (Clef, the bundled `clef` plugin) is optional. A small classifier reads each message to a front and advises whether it needs a worker and whose; it nudges the front to delegate. By default it uses Cloudflare Workers AI's Clef and turns on once Cloudflare credentials exist (`/login`, or `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`). Any provider's classifier model works instead, such as OpenCode's Jev (`opencode/jev-1.13` or `jev-1.13-free` on Zen, `openrouter/~typesafe/jev-latest`): `/clef models` lists those with a login, and `/clef use <provider>/<model>` saves one as `plugins.clef`. It never falls back to another model. `"plugins": { "clef": null }` turns it off; `/clef off` pauses it for one root. `waitMs` (default 2500) bounds how long the front's first request waits for it.
 - **MCP servers** go in `<home>/mcp.json`, in Pi's format, so Pi entries copy over unchanged. Manage them like `pi mcp`: `monchu mcp add <name> --url <url>` or `monchu mcp add <name> -- <command> [args...]`, then `monchu mcp list`, `login`, `logout` and `remove` (`monchu mcp --help` has every option). An HTTP server without an `Authorization` header or `auth.provider` signs in with OAuth when it asks for it: `/mcp login <name>` or `monchu mcp login <name>`. In Monchu, `/mcp` shows each server's state and tools, and `/mcp reconnect` picks up changes. Tools are named `mcp__<server>__<tool>`; `exposure` is `codemode` (the default: scripts only), `deferred` (loaded by `tool_search`), `direct`, or `hidden`. Monchu adds one field: `"preload": true` loads a deferred server's tools from the start in Claude Code conversations, whose prompt cache a later load would miss.
 - Every setting is documented in [internals](internals.md#configuration-details).
 

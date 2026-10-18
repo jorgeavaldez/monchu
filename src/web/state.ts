@@ -16,10 +16,10 @@ import type {
 } from "../api/client.ts";
 import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { shortId } from "../api/ids.ts";
-import { assessmentNotice, formatReports, routingText } from "../api/reports.ts";
+import { formatReports } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
 import type { Connection } from "../api/remote.ts";
-import { helpText, LOGIN_PROVIDERS, loginAuth, parseInput } from "../ui/commands.ts";
+import { helpText, loginProviders, parseInput } from "../ui/commands.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
@@ -210,22 +210,16 @@ async function openRoot(id: string, push = false): Promise<void> {
         void refreshWorkers().catch(() => {});
       }),
     );
-  const shownAssessments = new Set<number>();
-  const seen: { failure?: string } = {};
-  let hydrated = false;
-  const stopAssessments = await from.watchAssessments((items) => {
-    for (const item of items) {
-      if (item.result === null || shownAssessments.has(item.taskId)) continue;
-      shownAssessments.add(item.taskId);
-      const text = hydrated ? assessmentNotice(item.result, seen) : undefined;
-      if (text !== undefined) notice(text, "event");
-    }
-    hydrated = true;
+  // Plugins' lines from before this view opened stay unshown; their status lines show once now.
+  let last: number | undefined;
+  const stopNotices = await from.watchNotices((items) => {
+    for (const item of items) if (last !== undefined && item.id > last) notice(item.text, "event");
+    last = Math.max(last ?? 0, ...items.map((item) => item.id));
   });
-  if (from !== current) return stopAssessments();
-  unbind.push(stopAssessments);
-  const routing = await from.routing();
-  if (routing.paused && from === current) notice(routingText(routing), "event");
+  if (from !== current) return stopNotices();
+  unbind.push(stopNotices);
+  const status = await from.statusLines();
+  if (from === current) for (const line of status) notice(line, "event");
 }
 
 /** Show another root from the panel or a command, saying which one it is. */
@@ -249,7 +243,8 @@ export async function start(connected: Client): Promise<void> {
     for (const line of releaseNotices(release, next)) notice(line, "system", true);
     release = next;
   });
-  for (const line of loginHints(await connected.loginNeeds(), true)) notice(line);
+  for (const line of loginHints(await connected.loginNeeds(), true, connected.logins()))
+    notice(line);
   await connected.watchRoots((list) => {
     roots.value = list;
   });
@@ -390,13 +385,15 @@ async function runLogin(): Promise<void> {
   login = controller;
   let loggedIn = false;
   try {
+    const providers = loginProviders(client().logins());
     const picked = await pick(
       "Choose provider:",
-      LOGIN_PROVIDERS.map(({ id, label }) => ({ id, label })),
+      providers.map(({ id, label }) => ({ id, label })),
     );
     if (picked === undefined) return;
     loginStatus.value = { message: "Starting…" };
-    await client().login(picked.id, loginAuth(picked.id), {
+    const auth = providers.find((entry) => entry.id === picked.id)?.auth ?? "oauth";
+    await client().login(picked.id, auth, {
       signal: controller.signal,
       prompt: (request) => answerPrompt(request, controller.signal),
       notify: loginEvent,
@@ -411,7 +408,9 @@ async function runLogin(): Promise<void> {
     loginStatus.value = undefined;
   }
   // As in the terminal: what still needs a login, once this one is done.
-  if (loggedIn) for (const line of loginHints(await client().loginNeeds(), false)) notice(line);
+  if (loggedIn)
+    for (const line of loginHints(await client().loginNeeds(), false, client().logins()))
+      notice(line);
 }
 
 async function runMcp(text: string): Promise<void> {
@@ -735,10 +734,11 @@ async function runInput(
       notice(`received · ${name ?? "root"}`);
       return true;
     }
-    case "/attach":
-      openPicker();
-      break;
-    case "/detach": {
+    case "/attach": {
+      if (input.text !== "clear") {
+        openPicker();
+        break;
+      }
       const count = clearPending();
       notice(count ? `dropped ${count} attachment${count === 1 ? "" : "s"}` : "nothing attached");
       break;
@@ -746,7 +746,7 @@ async function runInput(
     case "/roots":
       return await runRoots(parseRootsCommand(input.text));
     case "/help":
-      return notice(helpText(client().commands()));
+      return notice(helpText("web", client().commands()));
     case "/quit":
       return notice("close the tab to quit; Monchu keeps running");
     case "/agents":
@@ -781,10 +781,6 @@ async function runInput(
       return notice(`cwd · ${await root().changeDirectory(input.text, name)}`);
     case "/reload":
       return notice(`reloaded · ${(await client().reload()).join(", ")}`);
-    case "/clef":
-      return notice(
-        routingText(await root().routing(input.text === "" ? undefined : input.text === "off")),
-      );
     case "/restart":
       await client().restart();
       return notice("restart requested · reconnects when Monchu is back");
@@ -839,7 +835,7 @@ async function runInput(
       );
     }
     case "plugin":
-      return notice(await client().command(input.name, input.text));
+      return notice(await root().command(input.name, input.text, name));
     case "/login":
       return await runLogin();
     case "/mcp":

@@ -37,7 +37,7 @@ async function openBackend(value: Setup): Promise<{ home: string; backend: Monch
   await mkdir(home, { recursive: true });
   await writeFile(
     join(home, "config.json"),
-    JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+    JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
   );
   prepareHome(home);
   return { home, backend: await Monchu.open(home, value.faux.provider) };
@@ -138,7 +138,7 @@ describe("backend", () => {
         expect(config).toMatchObject({
           front: { provider: "faux" },
           worker: { provider: "faux" },
-          classifier: null,
+          plugins: { clef: null },
         });
       }
     },
@@ -154,7 +154,7 @@ describe("backend", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     const provider = createProvider({
       id: value.faux.provider.id,
@@ -201,7 +201,7 @@ describe("backend", () => {
     const role = { ...fauxRole, provider: "openai-codex" };
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: role, worker: role, classifier: null }),
+      JSON.stringify({ front: role, worker: role, plugins: { clef: null } }),
     );
     let method = "";
     const provider = createProvider({
@@ -289,7 +289,7 @@ describe("backend", () => {
         JSON.stringify({
           front: { ...fauxRole, modelId: "next-front" },
           worker: { ...fauxRole, modelId: "next-worker" },
-          classifier: null,
+          plugins: { clef: null },
           settings: {
             theme: "light",
             httpIdleTimeoutMs: 1234,
@@ -412,7 +412,7 @@ describe("backend", () => {
         JSON.stringify({
           front: fauxRole,
           worker: fauxRole,
-          classifier: null,
+          plugins: { clef: null },
           settings: { defaultTools: [tool] },
         }),
       );
@@ -499,7 +499,7 @@ describe("backend", () => {
       expect(await backend.loginNeeds()).toEqual({
         chat: ["openai-codex", "claude-code"],
         anyOf: true,
-        classifier: "cloudflare-workers-ai",
+        optional: [{ provider: "cloudflare-workers-ai", purpose: "routing advice (Clef)" }],
       });
     } finally {
       unsubscribe();
@@ -521,7 +521,7 @@ describe("backend", () => {
     try {
       await writeFile(
         join(home, "config.json"),
-        JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null, bogus: 1 }),
+        JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null }, bogus: 1 }),
       );
       await expect(backend.reload()).rejects.toThrow("unknown fields: bogus");
       // The failure is logged before reload rejects; the caller shows it, so subscribers don't get it twice.
@@ -533,7 +533,7 @@ describe("backend", () => {
         JSON.stringify({
           front: { ...fauxRole, provider: "openai-codex", modelId: "no-such-model" },
           worker: fauxRole,
-          classifier: null,
+          plugins: { clef: null },
         }),
       );
       await backend.reload();
@@ -552,7 +552,7 @@ describe("backend", () => {
         JSON.stringify({
           front: fauxRole,
           worker: fauxRole,
-          classifier: null,
+          plugins: { clef: null },
           settings: { defaultTools: ["fffind"] },
         }),
       );
@@ -693,7 +693,7 @@ describe("backend", () => {
         JSON.stringify({
           front: { ...fauxRole, modelId: "edited", thinkingLevel: "high" },
           worker: fauxRole,
-          classifier: null,
+          plugins: { clef: null },
         }),
       );
       await backend.reload();

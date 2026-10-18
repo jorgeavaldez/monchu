@@ -4,10 +4,9 @@
  * facet's fresh copies and the core's own agree without pulling the facet's code into the core.
  */
 import { defineRegistry, local, opaque, type Resource } from "@earendil-works/chord";
-import type { Models } from "@earendil-works/pi-ai";
+import type { MutableModels } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import type { EffortAssessment } from "./agents/classifier.ts";
 import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
 import type { HomeCheck } from "./home-check.ts";
 import type { BudgetLevel } from "./identity.ts";
@@ -19,7 +18,8 @@ import type { FffFinders } from "./tools/fff.ts";
 
 /** What a build reads and keeps using: it lives as long as the core, across reloads. */
 export type BuildInputs = {
-  models: Models;
+  /** The home's models; plugins add their providers to them. */
+  models: MutableModels;
   home: string;
   /** The config this build applies: the one a running reload read, else the current one. */
   config: () => MonchuConfig;
@@ -51,7 +51,6 @@ export type Build = {
   /** Home and bundled skills, which the editor offers as `/skill:name`. */
   skills: Skill[];
   config: MonchuConfig;
-  assessment: EffortAssessment | undefined;
   /** What the plugins added; their extensions and groups are also in `extensions`. */
   plugins: PluginBuild;
   /** Names of the installed extensions the plugins own, which a later build without them uninstalls. */

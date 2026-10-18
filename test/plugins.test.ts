@@ -4,6 +4,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
+import { defaultConfig } from "../src/core/config.ts";
+import { Plugins } from "../src/core/plugins.ts";
 import {
   callTools,
   cleanup,
@@ -29,13 +31,14 @@ import { version } from "./version.ts";
 
 export default function (monchu: PluginApi) {
   Reflect.set(globalThis, "monchuPluginProbe", { Type, TypeboxType });
-  monchu.namespace({ description: "Notes kept by the notes plugin", instructions: "notes guide: read before writing" });
   monchu.registerTool(
     defineTool({
       name: "note_read",
+      label: "Read note",
       description: "Read the newest note",
       parameters: Type.Object({}),
-      execute: async () => ({ output: [{ type: "text", text: "note " + version }] }),
+      namespace: { description: "Notes kept by the notes plugin", instructions: "notes guide: read before writing" },
+      execute: async () => ({ content: [{ type: "text", text: "note " + version }] }),
     }),
   );
   monchu.registerTool(
@@ -43,19 +46,25 @@ export default function (monchu: PluginApi) {
       name: "note_count",
       description: "Count the notes",
       parameters: Type.Object({}),
-      execute: async () => ({ output: [{ type: "text", text: "3 notes" }] }),
+      exposure: "direct",
+      execute: async () => ({ content: [{ type: "text", text: "3 notes" }] }),
     }),
-    { exposure: "direct" },
   );
   monchu.registerSection("status", () => "notes section " + version);
-  monchu.on("tool_call", (call) => (call.name === "bash" ? { block: "no bash while taking notes" } : undefined));
+  monchu.on("tool_call", (event) =>
+    event.toolName === "bash" ? { block: true, reason: "no bash while taking notes" } : undefined,
+  );
 }
 `;
 
-/** Every handler throws: each failure is reported once and ignored. */
+/**
+ * Handlers that throw, each reported once: a guard that throws fails closed (the call is blocked, the result withheld);
+ * any other handler counts as returning nothing.
+ */
 const THROWER = `
 export default function (monchu) {
-  monchu.on("tool_result", () => { throw new Error("result boom"); });
+  monchu.on("tool_call", (event) => { if (event.toolName === "read") throw new Error("call boom"); });
+  monchu.on("tool_result", (event) => { if (event.toolName === "note_count") throw new Error("result boom"); });
   monchu.on("context", () => { throw new Error("context boom"); });
   monchu.registerSection("broken", () => { throw new Error("section boom"); });
 }
@@ -74,7 +83,7 @@ describe("plugins", () => {
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await plugin(home, "notes", {
@@ -87,7 +96,7 @@ describe("plugins", () => {
     await plugin(home, "thrower", { "index.js": THROWER });
     await plugin(home, "clash", {
       "index.js": `import { defineTool, Type } from "monchu/plugin";
-export default (monchu) => monchu.registerTool(defineTool({ name: "bash", description: "x", parameters: Type.Object({}), execute: async () => ({ output: [] }) }));`,
+export default (monchu) => monchu.registerTool(defineTool({ name: "bash", description: "x", parameters: Type.Object({}), execute: async () => ({ content: [] }) }));`,
     });
     const requests: Message[][] = [];
     const answer = callTools({
@@ -95,6 +104,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       read: { tool: "note_read", args: {} },
       count: { tool: "note_count", args: {} },
       shell: { tool: "bash", args: { command: "echo hi" } },
+      file: { tool: "read", args: { path: "AGENTS.md" } },
       reload: { tool: "reload_extensions", args: {} },
     });
     route(value.faux, (request) => {
@@ -148,16 +158,21 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
 
       expect(await turn(backend, "load")).toContain("notes guide: read before writing");
       expect(await turn(backend, "read")).toBe("note v1");
-      expect(await turn(backend, "count")).toBe("3 notes");
+      expect(await turn(backend, "count")).toBe(
+        "A plugin's tool_result handler failed, so this result is withheld.",
+      );
       expect(await turn(backend, "shell")).toContain("no bash while taking notes");
+      expect(await turn(backend, "file")).toContain(
+        "A plugin's tool_call guard failed, so the call is blocked.",
+      );
       const warnings = await logText(home);
-      for (const event of ["tool_result", "context", "section broken"])
-        expect(warnings.split(`its ${event} handler failed and is ignored`).length - 1).toBe(1);
+      for (const event of ["tool_call", "tool_result", "context", "section broken"])
+        expect(warnings.split(`its ${event} handler failed`).length - 1).toBe(1);
 
       // An edit to any of its files reloads it; the reload tool says what loaded.
       await writeFile(join(home, "plugins", "notes", "version.ts"), `export const version = "v2";`);
       expect(await turn(backend, "reload")).toContain(
-        "Plugins: jj, notes, thrower; not loaded: broken (",
+        "Plugins: clef, jj, notes, thrower; not loaded: broken (",
       );
       expect(await turn(backend, "read")).toBe("note v2");
 
@@ -189,7 +204,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     await plugin(home, "pinger", {
@@ -218,7 +233,10 @@ export default function (monchu: PluginApi) {
       name: "ping",
       description: "Ping later",
       parameters: Type.Object({}),
-      execute: async (_args, api, context) => {
+      exposure: "direct",
+      execute: async (_id, _args, _signal, _update, ctx) => {
+        const { api, context } = ctx.durable;
+        ctx.ui.notify("ping started");
         const who = await api.commit(async (tx) => {
           const who = await monchu.agents.whois(tx, api.conversationId);
           await tx.createTask(Ping, { owner: api.conversationId }, {
@@ -228,15 +246,17 @@ export default function (monchu: PluginApi) {
           });
           return who;
         }, context);
-        return { output: [{ type: "text", text: "role " + who?.role + " " + monchu.agents.shortId(api.conversationId) }] };
+        return { content: [{ type: "text", text: "role " + who?.role + " " + monchu.agents.shortId(api.conversationId) }] };
       },
     }),
-    { exposure: "direct" },
   );
   monchu.registerCommand("hello", {
     usage: "[name]",
-    help: "say hello",
-    run: async (args) => "hi " + args + ", secret " + String(await monchu.secrets.value("NO_SUCH", { tool: "/hello", conversation: "user" })),
+    description: "say hello",
+    handler: async (args, ctx) => {
+      ctx.ui.notify("hi " + args + " (" + ctx.caller + "), secret " + String(await monchu.secrets.value("NO_SUCH", { tool: "/hello", conversation: "user" })));
+      ctx.ui.setStatus("hello", "said hello to " + args);
+    },
   });
 }
 `,
@@ -249,10 +269,27 @@ export default function (monchu: PluginApi) {
     });
     const backend = await Monchu.open(home, value.faux.provider);
     try {
-      expect(backend.commands()).toEqual([{ name: "hello", usage: "[name]", help: "say hello" }]);
-      expect(await backend.command("hello", "you")).toBe("hi you, secret undefined");
-      await expect(backend.command("nope", "")).rejects.toThrow("Unknown command");
-      await (await front(backend)).submit("ping", "ping:submit", "followUp");
+      expect(backend.commands()).toContainEqual({
+        name: "hello",
+        usage: "[name]",
+        help: "say hello",
+      });
+      const root = await front(backend);
+      expect(await root.command("hello", "you")).toBe("hi you (person), secret undefined");
+      expect(await root.command("hello", "a service", undefined, "service")).toBe(
+        "hi a service (service), secret undefined",
+      );
+      await expect(root.command("nope", "")).rejects.toThrow("Unknown command");
+      // A status line shows whenever a client opens the root.
+      await waitFor(async () => (await root.statusLines()).includes("said hello to a service"));
+      const lines: string[] = [];
+      const stop = await root.watchNotices((items) =>
+        lines.splice(0, lines.length, ...items.map((item) => item.text)),
+      );
+      await root.submit("ping", "ping:submit", "followUp");
+      // A tool's ctx.ui.notify reaches the root's clients, never the model.
+      await waitFor(() => lines.includes("ping started"));
+      stop();
       // The tool knows its caller is a front; its task outlives the turn and tells the front through Durable.
       await waitFor(() =>
         requests.some((request) => textOf(lastMessage(request)).includes("the task ran")),
@@ -266,17 +303,30 @@ export default function (monchu: PluginApi) {
     }
   });
 
-  it("lets a device's own plugin replace a synced one, and an invalid deny list loads no home plugin", async () => {
+  it("lets a device's own plugin and settings replace synced ones, and an invalid device file loads no home plugin", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home);
     await writeFile(
       join(home, "config.json"),
-      JSON.stringify({ front: fauxRole, worker: fauxRole, classifier: null }),
+      JSON.stringify({ front: fauxRole, worker: fauxRole, plugins: { clef: null } }),
     );
     prepareHome(home);
     const tool = (text: string) => `import { defineTool, Type } from "monchu/plugin";
-export default (monchu) => monchu.registerTool(defineTool({ name: "where", description: "Where this runs", parameters: Type.Object({}), execute: async () => ({ output: [{ type: "text", text: ${JSON.stringify(text)} }] }) }), { exposure: "direct" });`;
+export default (monchu) => monchu.registerTool(defineTool({ name: "where", description: "Where this runs", parameters: Type.Object({}), exposure: "direct", execute: async () => ({ content: [{ type: "text", text: ${JSON.stringify(text)} + " " + JSON.stringify(monchu.config) }] }) }));`;
+    // Shared settings sync in config.json; this device's override them field by field.
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({
+        front: fauxRole,
+        worker: fauxRole,
+        plugins: { clef: null, place: { who: "synced", port: 1 } },
+      }),
+    );
+    await writeFile(
+      join(home, "plugins.local.json"),
+      JSON.stringify({ settings: { place: { who: "device" } } }),
+    );
     await plugin(home, "place", { "index.js": tool("synced") });
     await plugin(home, "place", { "index.js": tool("device") }, true);
     const requests: Message[][] = [];
@@ -288,7 +338,11 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "where", descr
     let backend = await Monchu.open(home, value.faux.provider);
     try {
       await (await front(backend)).submit("where", "where:1", "followUp");
-      await waitFor(() => requests.some((request) => textOf(lastMessage(request)) === "device"));
+      await waitFor(() =>
+        requests.some(
+          (request) => textOf(lastMessage(request)) === 'device {"who":"device","port":1}',
+        ),
+      );
     } finally {
       await backend.close();
     }
@@ -309,5 +363,41 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "where", descr
     } finally {
       await backend.close();
     }
+  });
+
+  it("adds a plugin's provider to the home's models only when its build runs", async () => {
+    const value = await setup();
+    await plugin(value.directory, "maker", {
+      "index.js": `import { createProvider } from "@earendil-works/pi-ai";
+export default (monchu) => {
+  const provider = createProvider({ id: "made", name: "Made", auth: { apiKey: { name: "Made key", resolve: async () => undefined } }, models: [], classifiers: { none: { classify: async () => { throw new Error("unused"); } } } });
+  monchu.registerProvider(provider);
+  // The plugin's own view finds it at once.
+  Reflect.set(globalThis, "madeSeen", monchu.models.getProvider("made") === provider);
+};`,
+    });
+    const plugins = new Plugins({
+      home: value.directory,
+      report: (warning) => value.reports.push(warning),
+      vault: value.vault,
+      models: value.models,
+      saveSettings: async () => {},
+    });
+    const reserved = { tools: new Set<string>(), tasks: new Set<string>() };
+    const config = { ...defaultConfig(), plugins: { clef: null } };
+    const running = (await plugins.load(config)).use(reserved);
+    expect(running.status).toContainEqual({ name: "maker", source: "home", state: "loaded" });
+    expect(Reflect.get(globalThis, "madeSeen")).toBe(true);
+    expect(value.models.getProvider("made")).toBeUndefined();
+    plugins.settle(running);
+    const live = value.models.getProvider("made");
+    expect(live?.name).toBe("Made");
+    // A second copy, as the home check or a failed reload runs, never replaces the live one.
+    (await plugins.load(config)).use(reserved);
+    expect(value.models.getProvider("made")).toBe(live);
+    plugins.settle(running);
+    expect(value.models.getProvider("made")).toBe(live);
+    plugins.close();
+    expect(value.models.getProvider("made")).toBeUndefined();
   });
 });

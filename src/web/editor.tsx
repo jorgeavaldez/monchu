@@ -6,7 +6,7 @@
  */
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
-import { commands, pluginCommands } from "../ui/commands.ts";
+import { clientCommands } from "../ui/commands.ts";
 import {
   addFiles,
   AttachButton,
@@ -49,9 +49,11 @@ const WEB_COMMANDS: Suggestion[] = [
 function suggestions(text: string): Suggestion[] {
   if (!text.startsWith("/") || /\s/.test(text)) return [];
   const all: Suggestion[] = [
-    ...[...Object.entries(commands), ...pluginCommands(client().commands())].map(
-      ([command, { usage, help }]) => ({ value: command, usage, help }),
-    ),
+    ...clientCommands("web", client().commands()).map(([command, { usage, help }]) => ({
+      value: command,
+      usage,
+      help,
+    })),
     ...WEB_COMMANDS,
     ...client()
       .skills()
