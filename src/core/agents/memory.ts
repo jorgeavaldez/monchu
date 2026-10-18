@@ -1,12 +1,8 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
-
-const run = promisify(execFile);
 
 const LIMIT = 4000;
 const file = StringEnum(["user", "memory"] as const, {
@@ -15,80 +11,21 @@ const file = StringEnum(["user", "memory"] as const, {
 const entry = Type.String({ minLength: 1, pattern: "\\S", description: "One complete entry" });
 const match = Type.String({ minLength: 1, pattern: "\\S", description: "Unique entry substring" });
 
-function result(changed: boolean, file: string, text: string, delivery: string | undefined) {
+/** `details` says what changed, for a plugin that versions the home (the bundled jj plugin commits it). */
+function result(changed: boolean, file: "user" | "memory", text: string, action: string) {
   return {
     output: [
       {
         type: "text" as const,
-        text: `${changed ? "Changed" : "Unchanged"}. ${file} usage: ${text.length}/${LIMIT} characters${delivery === undefined ? "" : `. ${delivery}`}`,
+        text: `${changed ? "Changed" : "Unchanged"}. ${file} usage: ${text.length}/${LIMIT} characters`,
       },
     ],
+    details: {
+      changed,
+      action,
+      path: `memories/${file === "user" ? "USER.md" : "MEMORY.md"}`,
+    },
   };
-}
-
-/**
- * Commit only the memory file in a jj home and push main, so a memory edit never sits uncommitted. A home that isn't a
- * jj repository is left alone; a failed push leaves the commit local and says so, for the caller to push by hand.
- */
-async function deliver(
-  home: string,
-  args: { action: string; file: "user" | "memory" },
-  context: { abortSignal?: AbortSignal | undefined },
-): Promise<string | undefined> {
-  if (
-    !(await access(join(home, ".jj")).then(
-      () => true,
-      () => false,
-    ))
-  )
-    return undefined;
-  const relative = `memories/${args.file === "user" ? "USER.md" : "MEMORY.md"}`;
-  const jj = (...argv: string[]) =>
-    run("jj", ["--no-pager", "--color=never", ...argv], {
-      cwd: home,
-      timeout: 60_000,
-      ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
-    });
-  try {
-    // A replay may find the file already committed.
-    if ((await jj("diff", "--name-only", relative)).stdout.trim() !== "")
-      await jj("commit", relative, "-m", `memory: ${args.action} in ${relative}`);
-    const id = (
-      await jj(
-        "log",
-        "--no-graph",
-        "-r",
-        `latest(::@- & files("${relative}"))`,
-        "-T",
-        "commit_id.short(8)",
-      )
-    ).stdout.trim();
-    try {
-      // jj only warns, and exits 0, when main or its remote is missing: check the remote really has the commit.
-      await jj("bookmark", "move", "main", "--to", id);
-      await jj("git", "push", "--bookmark", "main");
-      const pushed = (
-        await jj("log", "--no-graph", "-r", "main@origin", "-T", "commit_id.short(8)")
-      ).stdout.trim();
-      if (pushed !== id) throw new Error(`main@origin is at ${pushed || "nothing"}`);
-      return `Committed and pushed as ${id}`;
-    } catch (error) {
-      return `Committed locally as ${id}; pushing main failed (${failure(error)}). Fetch, rebase, and push main from ${home}`;
-    }
-  } catch (error) {
-    return `Not committed (${failure(error)}). Commit ${relative} in ${home}`;
-  }
-}
-
-function failure(error: unknown): string {
-  const stderr =
-    typeof error === "object" &&
-    error !== null &&
-    "stderr" in error &&
-    typeof error.stderr === "string"
-      ? error.stderr.trim().split("\n").at(-1)
-      : undefined;
-  return stderr || (error instanceof Error ? error.message : String(error));
 }
 
 /** Memory edits for every role, always under the host's home, never the conversation's cwd.
@@ -135,7 +72,7 @@ export function createMemory(home: string) {
             const memo = `memory-write:${api.callId}`;
             const planned = await api.memo<{ before: string; after: string }>(memo, context);
             if (planned !== undefined && current === planned.after)
-              return result(true, args.file, current, await deliver(home, args, context));
+              return result(true, args.file, current, args.action);
             const entries = current
               .split(/^§\r?$/m)
               .map((text) => text.trim())
@@ -194,12 +131,7 @@ export function createMemory(home: string) {
                 await rm(temporary, { force: true });
               }
             }
-            return result(
-              changed,
-              args.file,
-              next,
-              changed ? await deliver(home, args, context) : undefined,
-            );
+            return result(changed, args.file, next, args.action);
           } finally {
             release();
           }

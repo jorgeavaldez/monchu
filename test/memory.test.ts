@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineExtension } from "@earendil-works/pi-durable";
 import { createMemory } from "../src/core/agents/memory.ts";
+import { defaultConfig } from "../src/core/config.ts";
+import { Plugins } from "../src/core/plugins.ts";
 import { callTools, cleanup, context, open, route, setup, textOf, toolResults } from "./support.ts";
 
 afterEach(cleanup);
@@ -102,9 +104,23 @@ describe("memory", () => {
     }
   });
 
-  it("commits only the memory file in a jj home and says when main can't be pushed", async () => {
+  it("commits only the memory file in a jj home through the jj plugin, and says when main can't be pushed", async () => {
     const value = await setup();
     value.registry.install(createMemory(value.directory));
+    // The bundled jj plugin as Monchu loads it: its tool_result handler versions the home.
+    const plugins = new Plugins({
+      home: value.directory,
+      report: (warning) => value.reports.push(warning),
+      vault: value.vault,
+      models: value.models,
+      saveSettings: async () => {},
+    });
+    const loaded = (await plugins.load({ ...defaultConfig(), plugins: { clef: null } })).use({
+      tools: new Set(),
+      tasks: new Set(),
+    });
+    for (const extension of loaded.bundled.filter(({ name }) => name === "monchu.jj"))
+      value.registry.install(extension);
     const jj = (...argv: string[]) =>
       execFileSync("jj", argv, { cwd: value.directory, encoding: "utf8" });
     // Like a seeded home, the store and config stay out of the working copy.

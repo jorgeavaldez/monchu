@@ -135,7 +135,7 @@ Background jobs run inside Monchu while it is open; there is no daemon, so nothi
 The `memory` tool, available to the root and workers alike, edits entries in `memories/USER.md` (about the user) and `memories/MEMORY.md` (Monchu's notes) under the explicit Monchu home, regardless of execution cwd.
 Use `add`, or `replace`/`remove` with a unique substring match; exact duplicate adds do nothing.
 Entries are separated by a line containing only `§`; each file is limited to 4000 characters including separators and newlines.
-The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls.
+The tool reports usage, rejects overflow without writing, and replaces files atomically. It makes no source-control calls itself: its result's `details` say what changed, and in a jj home the bundled `jj` plugin's `tool_result` handler commits only that file and pushes `main`, adding to the result whether the push went through.
 
 `/stop` on the root (or interactive Esc while it runs) stops the front only.
 `/stop <name>`, or `/stop` while a worker is shown, explicitly cancels a worker, its pending deliveries, and nested work, and withdraws its reports and updates still queued for the front; its conversation remains reusable.

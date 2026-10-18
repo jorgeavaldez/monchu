@@ -2,8 +2,10 @@
 import { isJsonValue } from "@earendil-works/chord";
 import { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
-import { spawn } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { definePlugin, defineTool } from "../../plugin.ts";
 
@@ -724,8 +726,115 @@ const write = defineTool({
 
 export const tools = [read, write];
 
-/** A bundled plugin, offered to every role in every conversation: agents use jj on most turns. */
+const run = promisify(execFile);
+
+function failure(error: unknown): string {
+  const stderr =
+    typeof error === "object" &&
+    error !== null &&
+    "stderr" in error &&
+    typeof error.stderr === "string"
+      ? error.stderr.trim().split("\n").at(-1)
+      : undefined;
+  return stderr || (error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * Commit only one home file in a jj home and push main, so a memory edit never sits uncommitted. A home that isn't a
+ * jj repository is left alone; a failed push leaves the commit local and says so, for the caller to push by hand.
+ */
+export async function deliverHomeFile(
+  home: string,
+  relative: string,
+  action: string,
+  signal: AbortSignal | undefined,
+): Promise<string | undefined> {
+  if (
+    !(await access(join(home, ".jj")).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return undefined;
+  const jj = (...argv: string[]) =>
+    run("jj", ["--no-pager", "--color=never", ...argv], {
+      cwd: home,
+      timeout: 60_000,
+      ...(signal === undefined ? {} : { signal }),
+    });
+  try {
+    // A replay may find the file already committed.
+    if ((await jj("diff", "--name-only", relative)).stdout.trim() !== "")
+      await jj("commit", relative, "-m", `memory: ${action} in ${relative}`);
+    const id = (
+      await jj(
+        "log",
+        "--no-graph",
+        "-r",
+        `latest(::@- & files("${relative}"))`,
+        "-T",
+        "commit_id.short(8)",
+      )
+    ).stdout.trim();
+    try {
+      // jj only warns, and exits 0, when main or its remote is missing: check the remote really has the commit.
+      await jj("bookmark", "move", "main", "--to", id);
+      await jj("git", "push", "--bookmark", "main");
+      const pushed = (
+        await jj("log", "--no-graph", "-r", "main@origin", "-T", "commit_id.short(8)")
+      ).stdout.trim();
+      if (pushed !== id) throw new Error(`main@origin is at ${pushed || "nothing"}`);
+      return `Committed and pushed as ${id}`;
+    } catch (error) {
+      return `Committed locally as ${id}; pushing main failed (${failure(error)}). Fetch, rebase, and push main from ${home}`;
+    }
+  } catch (error) {
+    return `Not committed (${failure(error)}). Commit ${relative} in ${home}`;
+  }
+}
+
+/** What the `memory` tool's details say it changed. */
+function memoryChange(details: unknown): { path: string; action: string } | undefined {
+  if (typeof details !== "object" || details === null) return undefined;
+  const changed: unknown = Reflect.get(details, "changed");
+  const path: unknown = Reflect.get(details, "path");
+  const action: unknown = Reflect.get(details, "action");
+  return changed === true && typeof path === "string" && typeof action === "string"
+    ? { path, action }
+    : undefined;
+}
+
+/**
+ * A bundled plugin, offered to every role in every conversation: agents use jj on most turns. In a jj home, it also
+ * commits each memory edit and pushes main.
+ */
 export default definePlugin((monchu) => {
   monchu.registerTool(read);
   monchu.registerTool(write);
+  // One home delivery at a time: codemode can run memory calls side by side, and jj would fork its operation log.
+  let pending = Promise.resolve();
+  monchu.on("tool_result", async (event, ctx) => {
+    if (event.toolName !== "memory" || event.isError) return undefined;
+    const change = memoryChange(event.details);
+    if (change === undefined) return undefined;
+    const previous = pending;
+    let release = () => {};
+    pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const delivered = await deliverHomeFile(monchu.home, change.path, change.action, ctx.signal);
+      if (delivered === undefined) return undefined;
+      return {
+        content: event.content.map((part, index) =>
+          index === 0 && part.type === "text"
+            ? { ...part, text: `${part.text}. ${delivered}` }
+            : part,
+        ),
+      };
+    } finally {
+      release();
+    }
+  });
 });
