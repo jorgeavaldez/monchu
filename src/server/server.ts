@@ -118,13 +118,12 @@ export async function runServer(options: {
     updating = true;
     await core.stop();
     options.say(`installing ${plan.url} into ${plan.prefix}`);
-    const { code, tail } = await install(plan, (line) => options.say(`npm · ${line}`));
+    const installed = await install(plan, (line) => options.say(`npm · ${line}`));
     ended.resolve({
       kind: "updated",
-      outcome:
-        code === 0
-          ? installOutcome(VERSION, installedVersion())
-          : `warning · update failed: npm exited ${code}; still on ${VERSION}\n${tail.join("\n")}`,
+      outcome: installed.ok
+        ? installOutcome(VERSION, installedVersion())
+        : `warning · update failed: ${installed.reason}; still on ${VERSION}\n${installed.tail.join("\n")}`,
     });
   };
   const server = openServerHost(

@@ -77,6 +77,10 @@ description = 'Drive the web client in a real browser (agent-browser): journeys,
 depends = ['install']
 run = 'node scripts/web-check.ts'
 
+[tasks."boot-check"]
+description = 'Start an installed release in smoke mode until its core is ready, as /update checks one'
+run = 'node scripts/boot-check.ts'
+
 [tasks.pack]
 description = 'Pack the built app as a tarball that npm installs globally'
 depends = ['build']

@@ -732,9 +732,10 @@ export async function waitFor(
 export async function logText(home: string): Promise<string> {
   const directory = join(home, "logs");
   const files = (await readdir(directory).catch(() => [])).toSorted((a, b) => a.localeCompare(b));
-  const lines = (await Promise.all(files.map((name) => readFile(join(directory, name), "utf8"))))
-    .join("")
-    .split("\n");
+  // Only whole lines: a process may be writing the last one as the test reads it.
+  const lines = (
+    await Promise.all(files.map((name) => readFile(join(directory, name), "utf8")))
+  ).flatMap((text) => text.split("\n").slice(0, -1));
   return lines
     .flatMap((line) => {
       if (!line) return [];

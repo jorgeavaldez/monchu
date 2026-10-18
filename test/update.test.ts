@@ -82,17 +82,31 @@ function globalPackage(prefix: string): string {
 }
 
 describe("/update's install", () => {
-  it("checks the release answers, then installs it into the prefix the running package lives in", async () => {
+  it("checks the release answers and starts, then installs it into the prefix the running package lives in", async () => {
     const { directory } = await setup();
-    // The package as the release built it: a tarball with only its package.json.
-    const source = join(directory, "source");
-    await mkdir(source);
+    // Releases as the build packs them: a package.json and an entry point. A good one serves until it is stopped.
     const manifest = { name: "monchu", version: "9.9.9", homepage: "https://github.com/o/r" };
-    await writeFile(join(source, "package.json"), JSON.stringify(manifest));
-    expect(await npm(source, "pack", "--pack-destination", directory)).toBe(0);
-    const tarball = await readFile(join(directory, "monchu-9.9.9.tgz"));
+    const pack = async (name: string, main: string) => {
+      const source = join(directory, name);
+      await mkdir(join(source, "dist"), { recursive: true });
+      await writeFile(join(source, "package.json"), JSON.stringify(manifest));
+      await writeFile(join(source, "dist", "main.js"), main);
+      await mkdir(join(directory, "packs", name), { recursive: true });
+      expect(await npm(source, "pack", "--pack-destination", join(directory, "packs", name))).toBe(
+        0,
+      );
+      return readFile(join(directory, "packs", name, "monchu-9.9.9.tgz"));
+    };
+    const tarballs: Record<string, Buffer> = {
+      "/good.tgz": await pack(
+        "good",
+        'console.log("monchu · core ready · pid 1");\nsetInterval(() => {}, 1000);\n',
+      ),
+      "/broken.tgz": await pack("broken", 'throw new Error("release boom");\n'),
+    };
     const server = createServer((request, response) => {
-      if (request.url !== "/monchu.tgz") return response.writeHead(404).end();
+      const tarball = tarballs[request.url ?? ""];
+      if (tarball === undefined) return response.writeHead(404).end();
       response.writeHead(200, { "content-type": "application/octet-stream" });
       response.end(request.method === "HEAD" ? undefined : tarball);
     });
@@ -112,14 +126,21 @@ describe("/update's install", () => {
       await expect(planUpdate("2.0.0", running, fetch, `${base}/missing.tgz`)).rejects.toThrow(
         "No release 2.0.0 at",
       );
-      await expect(planUpdate("edge", directory, fetch, `${base}/monchu.tgz`)).rejects.toThrow(
+      await expect(planUpdate("edge", directory, fetch, `${base}/good.tgz`)).rejects.toThrow(
         "is not a global npm install",
       );
-      const plan = await planUpdate("edge", running, fetch, `${base}/monchu.tgz`);
-      expect(plan).toEqual({ release: "edge", url: `${base}/monchu.tgz`, prefix });
 
+      // A release that doesn't start is never installed: the running copy stays.
+      const broken = await planUpdate("edge", running, fetch, `${base}/broken.tgz`);
+      const refused = await install(broken, () => {});
+      expect(refused).toMatchObject({ ok: false, reason: "the new release did not start" });
+      expect(refused.ok ? "" : refused.tail.join("\n")).toContain("release boom");
+      expect(installedVersion(running)).toBe("1.0.0");
+
+      const plan = await planUpdate("edge", running, fetch, `${base}/good.tgz`);
+      expect(plan).toEqual({ release: "edge", url: `${base}/good.tgz`, prefix });
       const result = await install(plan, () => {});
-      expect(result.code, result.tail.join("\n")).toBe(0);
+      expect(result, JSON.stringify(result)).toEqual({ ok: true });
       expect(installedVersion(running)).toBe("9.9.9");
       expect(installOutcome("1.0.0", installedVersion(running))).toBe("updated · 1.0.0 → 9.9.9");
       expect(await readdir(join(running, ".."))).toEqual(["monchu"]);
@@ -131,7 +152,7 @@ describe("/update's install", () => {
     } finally {
       server.close();
     }
-  }, 120_000);
+  }, 240_000);
 
   it("hints at a newer edge build only for an edge build whose commit differs", async () => {
     const root = join(import.meta.dirname, "..");

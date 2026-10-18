@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -100,25 +102,8 @@ export async function planUpdate(
   return { release, url, prefix };
 }
 
-/**
- * Install a planned release with npm, passing its output to `output` line by line. Resolves with npm's exit code and
- * the last lines it printed; a timeout counts as a failure. The caller must have closed the core first: npm replaces
- * files under the running process.
- */
-export function install(
-  plan: UpdatePlan,
-  output: (line: string) => void,
-): Promise<{ code: number; tail: string[] }> {
-  const args = [
-    "install",
-    "-g",
-    "--allow-remote=root",
-    "--no-audit",
-    "--no-fund",
-    "--prefix",
-    plan.prefix,
-    plan.url,
-  ];
+/** Run npm with `args`, passing its output to `output` line by line; resolves with its exit code and last lines. */
+function npm(args: readonly string[], output: (line: string) => void): Promise<Installed> {
   // npm is a .cmd script on Windows, which only a shell runs; the URL holds no shell metacharacters and a Windows path
   // no quotes.
   const child =
@@ -140,13 +125,125 @@ export function install(
   return new Promise((resolve) => {
     child.once("error", (error) => {
       clearTimeout(timer);
-      resolve({ code: 1, tail: [...tail, error.message] });
+      resolve({ ok: false, reason: "npm could not run", tail: [...tail, error.message] });
     });
     child.once("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? 1, tail });
+      resolve(code === 0 ? { ok: true } : { ok: false, reason: `npm exited ${code ?? 1}`, tail });
     });
   });
+}
+
+/** Where a global install under `prefix` puts the package, as npm lays it out on this platform. */
+function packageUnder(prefix: string): string {
+  return process.platform === "win32"
+    ? join(prefix, "node_modules", "monchu")
+    : join(prefix, "lib", "node_modules", "monchu");
+}
+
+/** How long a new release may take to start in its check before it counts as broken. */
+const CHECK_TIMEOUT_MS = 120_000;
+
+/**
+ * Start the package at `root` as `monchu serve` in smoke mode (faux models, a scratch home in the temp directory) until
+ * its core is ready, then stop it. Nothing of the user's home is read or written. Not ready, the last lines it printed
+ * say why.
+ */
+export async function bootCheck(root: string): Promise<Installed> {
+  const home = await mkdtemp(join(tmpdir(), "monchu-smoke-"));
+  try {
+    const child = spawn(process.execPath, [join(root, "dist", "main.js"), "serve"], {
+      env: { ...process.env, MONCHU_DEV_FAUX: "1", MONCHU_DEV_HOME: home, PI_OFFLINE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const closed = new Promise<void>((done) => child.once("close", () => done()));
+    let output = "";
+    const ready = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), CHECK_TIMEOUT_MS);
+      const settle = (value: boolean) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const read = (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+        if (output.includes("core ready")) settle(true);
+      };
+      child.stdout.on("data", read);
+      child.stderr.on("data", read);
+      child.once("error", (error) => {
+        output += `\n${error.message}`;
+        settle(false);
+      });
+      void closed.then(() => settle(false));
+    });
+    // A signal stops `serve` as Ctrl-C does: its core closes, then it exits.
+    child.kill();
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const gone = await Promise.race([
+      closed.then(() => true),
+      new Promise<boolean>((done) => (grace = setTimeout(() => done(false), 30_000))),
+    ]);
+    clearTimeout(grace);
+    if (!gone) child.kill("SIGKILL");
+    if (ready) return { ok: true };
+    return {
+      ok: false,
+      reason: "the new release did not start",
+      // Its error's message, not the stack frames under it.
+      tail: output
+        .split(/\r?\n/)
+        .filter((line) => line.trim() && !/^\s+at /.test(line))
+        .slice(-8),
+    };
+  } finally {
+    // A Windows core can still hold its store for a moment; a leftover scratch home is harmless.
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** An install's result: done, or why not with npm's or the release's last lines. */
+export type Installed = { ok: true } | { ok: false; reason: string; tail: string[] };
+
+/**
+ * Install a planned release, passing npm's output to `output` line by line. The release is downloaded once, installed
+ * into a scratch prefix and started there first (`bootCheck`); only a release that starts replaces the running copy, so
+ * a broken build never takes a device down. A timeout counts as a failure. The caller must have closed the core first:
+ * npm replaces files under the running process.
+ */
+export async function install(
+  plan: UpdatePlan,
+  output: (line: string) => void,
+): Promise<Installed> {
+  const scratch = await mkdtemp(join(tmpdir(), "monchu-update-"));
+  try {
+    const tarball = join(scratch, "monchu.tgz");
+    try {
+      const response = await fetch(plan.url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(INSTALL_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await writeFile(tarball, Buffer.from(await response.arrayBuffer()));
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "the download failed",
+        tail: [`${plan.url}: ${error instanceof Error ? error.message : String(error)}`],
+      };
+    }
+    const flags = ["install", "-g", "--no-audit", "--no-fund", "--prefix"];
+    const stage = join(scratch, "stage");
+    output("installing it aside first, to check it starts");
+    const staged = await npm([...flags, stage, tarball], output);
+    if (!staged.ok) return staged;
+    const checked = await bootCheck(packageUnder(stage));
+    if (!checked.ok) return checked;
+    output("it starts; installing it");
+    return await npm([...flags, plan.prefix, tarball], output);
+  } finally {
+    await rm(scratch, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** The installed version after an install, read fresh from disk. */
@@ -220,10 +317,11 @@ export async function runUpdate(args: readonly string[], io: UpdateIo): Promise<
     return 1;
   }
   io.log(`Installing ${plan.url} into ${plan.prefix}`);
-  const { code } = await install(plan, io.log);
-  if (code !== 0) {
-    io.error(`npm install failed (${code}); the installed version is unchanged.`);
-    return code;
+  const installed = await install(plan, io.log);
+  if (!installed.ok) {
+    io.error(`Update failed: ${installed.reason}; the installed version is unchanged.`);
+    for (const line of installed.tail) io.error(line);
+    return 1;
   }
   const after = installedVersion();
   io.log(installOutcome(VERSION, after));

@@ -77,6 +77,12 @@ jobs:
           npm pkg set version="$version"
           npm pack
           mv "monchu-$version.tgz" monchu.tgz
+      # Nothing publishes a build that doesn't start: installed as a user installs it, then served once.
+      - name: Boot check
+        shell: bash
+        run: |
+          npm install -g --no-audit --no-fund --prefix "$RUNNER_TEMP/stage" ./monchu.tgz
+          mise run boot-check -- "$RUNNER_TEMP/stage/lib/node_modules/monchu"
       - uses: actions/upload-artifact@v7
         with:
           name: monchu
