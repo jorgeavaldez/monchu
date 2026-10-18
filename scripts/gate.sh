@@ -46,7 +46,9 @@ main() {
     jj new --quiet main@origin
     jj file list | xargs -d '\n' rm -f
     # A directory a previous run left empty (a plugin dir, say) changes what the tests load.
-    find . -mindepth 1 \( -name .jj -o -name .git -o -name node_modules \) -prune -o -type d -empty -delete
+    # -delete would imply -depth, which turns -prune off and fails the run; rmdir -p takes parents left empty too.
+    find . -mindepth 1 \( -name .jj -o -name .git -o -name node_modules \) -prune -o -type d -empty -print0 |
+      xargs -0 -r rmdir -p --ignore-fail-on-non-empty
     tar -xf -
     target="stdin working copy"
   else
