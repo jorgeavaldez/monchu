@@ -26,6 +26,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { TerminalCapabilities } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { join } from "node:path";
 
 export type ModelRole = {
@@ -124,13 +125,21 @@ export type ClaudeConfig = {
 
 /**
  * The web client's server, from `<home>/web.json`: per device, never synced, since each device has its own host, port
- * and login client. Used only with `--web`. It listens on 127.0.0.1 alone; a tunnel on the same host publishes it. Every request needs an identity on `allow`, from an access proxy's signed JWT or this
- * server's own OIDC login; with neither configured, `--web` refuses to start.
+ * and login client. Used only with `--web`. It listens on `bind`, 127.0.0.1 unless set; a tunnel on the same host
+ * publishes it, or a LAN reaches it directly by `host`. Every request needs an identity on `allow`, from an access
+ * proxy's signed JWT or this server's own OIDC login; with neither configured, `--web` refuses to start.
  */
 export type WebConfig = {
+  /** 0: the system picks a free port at each start. */
   port: number;
-  /** The public host a tunnel serves it on; requests for any other host than it and localhost are refused. */
-  host: string | undefined;
+  /** The address it listens on: 127.0.0.1, or 0.0.0.0 (or `::`) to take connections from the network. */
+  bind: string;
+  /**
+   * The other host it answers besides localhost; requests for any other host are refused. `https`: a proxy serves it
+   * there over TLS (written as a bare name). Otherwise (written `http://<name>`) browsers reach this server directly at
+   * `<name>:<port>` over plain http, as on a LAN.
+   */
+  host: { name: string; https: boolean } | undefined;
   /** An identity-aware proxy that signs each request (`Cf-Access-Jwt-Assertion`), checked against its keys. */
   access:
     | {
@@ -317,8 +326,23 @@ function url(value: unknown, field: string): string {
   return raw.replace(/\/+$/, "");
 }
 
+/** `web.host`: a bare name a TLS proxy serves, or `http://<name>` reached directly on the server's own port. */
+function webHost(raw: string, port: number): NonNullable<WebConfig["host"]> {
+  const plain = raw.match(/^http:\/\/([a-z0-9.-]+)(?::(\d+))?\/?$/i);
+  if (plain?.[1] !== undefined) {
+    if (plain[2] !== undefined && Number(plain[2]) !== port)
+      throw new Error("web.host is served on web.port: leave the port out of it");
+    return { name: plain[1].toLowerCase(), https: false };
+  }
+  if (!/^[a-z0-9.-]+(:\d+)?$/i.test(raw))
+    throw new Error(
+      "web.host must be a host name a proxy serves over https, or http://<name> to be reached directly",
+    );
+  return { name: raw.toLowerCase(), https: true };
+}
+
 function webConfig(value: unknown): WebConfig {
-  object(value, "web", ["port", "host", "access", "oidc", "allow"]);
+  object(value, "web", ["port", "bind", "host", "access", "oidc", "allow"]);
   let access: WebConfig["access"];
   if (value.access !== undefined) {
     object(value.access, "web.access", ["teamDomain", "audience", "subjectClaim"]);
@@ -367,12 +391,15 @@ function webConfig(value: unknown): WebConfig {
     }
   if (!Array.isArray(listed) || allow.length !== listed.length)
     throw new Error("web.allow must list sub:<subject>, email:<address> or service:<client id>");
-  const host = value.host === undefined ? undefined : text(value.host, "web.host");
-  if (host !== undefined && !/^[a-z0-9.-]+(:\d+)?$/i.test(host))
-    throw new Error("web.host must be a host name, without a scheme or path");
+  const port = value.port === undefined ? 7420 : integer(value.port, "web.port");
+  if (port > 65535) throw new Error("web.port must be a port number, or 0 for any free port");
+  const bind = value.bind === undefined ? "127.0.0.1" : text(value.bind, "web.bind");
+  if (isIP(bind) === 0)
+    throw new Error("web.bind must be an IP address, such as 127.0.0.1 or 0.0.0.0");
   return {
-    port: value.port === undefined ? 7420 : integer(value.port, "web.port", 1),
-    host,
+    port,
+    bind,
+    host: value.host === undefined ? undefined : webHost(text(value.host, "web.host"), port),
     access,
     oidc,
     allow,

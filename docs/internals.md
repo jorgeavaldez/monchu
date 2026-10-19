@@ -179,16 +179,16 @@ Each home has one server process and, while anything needs it, one core process.
 
 ## Web
 
-`monchu --web` or `monchu serve --web` also serves the web client, from the server (a `monchu --web` that attaches to a running server asks it to serve the web client from then on), configured by the home's `web.json`. That file is per device and gitignored, since each device has its own host, port and login client; a `web` section in `config.json` is refused. It listens on `127.0.0.1` only; a tunnel on the same host (such as `cloudflared` behind an identity-aware proxy) publishes it. Any local process could reach that port, so nothing is trusted for being local:
+`monchu --web` or `monchu serve --web` also serves the web client, from the server (a `monchu --web` that attaches to a running server asks it to serve the web client from then on), configured by the home's `web.json`. That file is per device and gitignored, since each device has its own host, port and login client; a `web` section in `config.json` is refused. It listens on `web.port` (7420; 0 lets the system pick a free one at each start, and the `web ·` line says which) at `web.bind`, `127.0.0.1` unless set: a tunnel on the same host (such as `cloudflared` behind an identity-aware proxy) publishes it. With `web.bind` `0.0.0.0` (or `::`) and `web.host` `http://<name>`, browsers on the network reach it directly at `http://<name>:<port>`, over plain http, so only on a network you trust. Any process that reaches the port could talk to it, so nothing is trusted for being local:
 
 - Every request, and the WebSocket at `/api`, needs an identity on `web.allow`. Without `web.access` or `web.oidc`, or with nobody allowed, the web stays off and says why.
-- The `Host` must be `web.host` or this port's localhost (421 otherwise); the WebSocket's and sign-out's `Origin` must be `https://<web.host>` or the local one.
+- The `Host` must be `web.host` (`<name>:<port>` for an `http://` one) or this port's localhost (421 otherwise); the WebSocket's and sign-out's `Origin` must be `https://<web.host>`, `http://<name>:<port>`, or the local one.
 - Responses carry a strict content security policy, `nosniff`, no referrer and no framing.
 
 Identities come from either source:
 
 - `web.access`: an identity-aware proxy signs every request (`Cf-Access-Jwt-Assertion`). The server checks the RS256 signature against `<teamDomain>/cdn-cgi/access/certs`, the issuer, the audience and expiry, and refuses tokens without a key id. A service token's identity is `service:<common_name>`; a user's is `sub:<subjectClaim>` (a dotted path, such as `custom.sub` for the upstream provider's subject) and `email:<email>`. A bad token is refused, never ignored.
-- `web.oidc`: the server's own login, OpenID Connect authorization code with PKCE (S256), state and nonce, configured from the issuer's discovery document. The ID token's signature, issuer, audience and nonce are checked; `sub:` and a verified `email:` are the identities. A session cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, 7 days) follows; `web-sessions.json` (0600, never synced) keeps only token hashes. A client secret, when the provider needs one, comes from the environment variable `clientSecretEnv` names.
+- `web.oidc`: the server's own login, OpenID Connect authorization code with PKCE (S256), state and nonce, configured from the issuer's discovery document. The ID token's signature, issuer, audience and nonce are checked; `sub:` and a verified `email:` are the identities. A session cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, 7 days) follows, without `Secure` on an `http://` host, whose browsers would drop it; the login's callback is `<scheme>://<Host>/auth/callback`, which the provider must list; `web-sessions.json` (0600, never synced) keeps only token hashes. A client secret, when the provider needs one, comes from the environment variable `clientSecretEnv` names.
 
 ```json
 {

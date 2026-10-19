@@ -18,7 +18,7 @@ import type {
   WorkerSummary,
 } from "../api/client.ts";
 import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
-import { shortId } from "../api/ids.ts";
+import { randomId, shortId } from "../api/ids.ts";
 import { formatReports } from "../api/reports.ts";
 import { releaseNotices } from "../api/release.ts";
 import type { Connection } from "../api/remote.ts";
@@ -672,7 +672,7 @@ async function rootAction(run: () => Promise<string | undefined>): Promise<void>
 /** `/roots new`: start a root and show it; it names itself from its first message. */
 export function newRoot(): Promise<void> {
   return rootAction(async () => {
-    await switchRoot(await client().createRoot(crypto.randomUUID()));
+    await switchRoot(await client().createRoot(randomId()));
     return undefined;
   });
 }
@@ -709,7 +709,7 @@ async function runRoots(command: RootsCommand): Promise<void> {
     case "list":
       return toggleRoots(true);
     case "new":
-      return await switchRoot(await client().createRoot(crypto.randomUUID()));
+      return await switchRoot(await client().createRoot(randomId()));
     case "switch":
       return await switchRoot(await client().findRoot(command.prefix));
     case "rename":
@@ -825,9 +825,7 @@ export async function submit(
   // A message that failed may have reached the core all the same (its answer lost with the link): sent again as it was,
   // it keeps its request id, so the core takes it once.
   const failed = sessionStorage.getItem("retry");
-  const requestId = failed?.startsWith(`${raw}\u0000`)
-    ? failed.slice(raw.length + 1)
-    : crypto.randomUUID();
+  const requestId = failed?.startsWith(`${raw}\u0000`) ? failed.slice(raw.length + 1) : randomId();
   sessionStorage.setItem("retry", `${raw}\u0000${requestId}`);
   try {
     const input =

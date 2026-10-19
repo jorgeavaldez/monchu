@@ -97,7 +97,7 @@ export async function runServer(options: {
       await import("./web.ts")
     ).serveWeb(server.ingress, { home, log }, config, options.env);
     options.say(
-      `web · ${site.url}${config.host === undefined ? "" : ` · public host ${config.host}`}`,
+      `web · ${site.url}${config.host?.https === true ? ` · public host ${config.host.name}` : ""}${config.bind === "127.0.0.1" ? "" : ` · listening on ${config.bind}`}`,
     );
     return site.url;
   };

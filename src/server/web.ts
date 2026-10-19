@@ -1,7 +1,8 @@
 /**
- * The web client's server: 127.0.0.1 only, published by a tunnel on the same host. Any local process can reach it, so
- * nothing is trusted for being local: every request, the WebSocket included, needs an allowed identity, the Host must
- * be the configured public host or this port's localhost, and the WebSocket's Origin must match it.
+ * The web client's server: on 127.0.0.1 unless `web.bind` opens it to the network, published by a tunnel on the same
+ * host or reached directly by `web.host`. Any process that reaches the port can talk to it, so nothing is trusted for
+ * being local: every request, the WebSocket included, needs an allowed identity, the Host must be the configured host or
+ * this port's localhost, and the WebSocket's Origin must match it.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -138,12 +139,11 @@ export async function serveWeb(
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const auth = new WebAuth(config, home, env);
   const settingsPath = join(home, "web-client.json");
-  const local = [`127.0.0.1:${config.port}`, `localhost:${config.port}`];
-  const hosts = new Set([...(config.host === undefined ? [] : [config.host]), ...local]);
-  const origins = new Set([
-    ...(config.host === undefined ? [] : [`https://${config.host}`]),
-    ...local.map((host) => `http://${host}`),
-  ]);
+  /** Filled once listening, when the port is known (`web.port` 0 picks one). */
+  const hosts = new Set<string>();
+  const origins = new Set<string>();
+  /** The plain-http host on the network, whose browsers drop a `Secure` cookie (localhost keeps one). */
+  let plainHost: string | undefined;
   const log = (
     severity: "info" | "warn",
     body: string,
@@ -199,8 +199,9 @@ export async function serveWeb(
     void (async () => {
       if (!hosts.has(header(request, "host") ?? "")) return send(response, 421, "Unknown host");
       const url = new URL(request.url ?? "/", "http://localhost");
-      const publicHost = header(request, "host") === config.host;
-      const callback = `${publicHost ? "https" : "http"}://${header(request, "host") ?? ""}/auth/callback`;
+      const https = config.host?.https === true && header(request, "host") === config.host.name;
+      const secure = header(request, "host") === plainHost ? "" : " Secure;";
+      const callback = `${https ? "https" : "http"}://${header(request, "host") ?? ""}/auth/callback`;
       if (url.pathname === "/auth/login" && request.method === "GET") {
         if (!auth.oidc) return send(response, 404, "No login here");
         return send(response, 302, "", { location: await auth.loginUrl(callback) });
@@ -214,7 +215,7 @@ export async function serveWeb(
           log("info", "signed in");
           return send(response, 302, "", {
             location: "/",
-            "set-cookie": `monchu_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 86_400}`,
+            "set-cookie": `monchu_session=${token}; Path=/; HttpOnly;${secure} SameSite=Lax; Max-Age=${7 * 86_400}`,
           });
         } catch (error) {
           log("warn", "sign-in failed", { reason: error instanceof Error ? error.message : "" });
@@ -230,7 +231,7 @@ export async function serveWeb(
           await ingress.revoke(connection);
         if (token !== undefined) signedIn.delete(token);
         return send(response, 204, "", {
-          "set-cookie": "monchu_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+          "set-cookie": `monchu_session=; Path=/; HttpOnly;${secure} SameSite=Lax; Max-Age=0`,
         });
       }
       const identities = await guard(request, response);
@@ -314,13 +315,27 @@ export async function serveWeb(
 
   await new Promise<void>((done, fail) => {
     server.once("error", fail);
-    server.listen(config.port, "127.0.0.1", () => {
+    server.listen(config.port, config.bind, () => {
       server.off("error", fail);
       done();
     });
   });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : config.port;
+  for (const local of [`127.0.0.1:${port}`, `localhost:${port}`]) {
+    hosts.add(local);
+    origins.add(`http://${local}`);
+  }
+  if (config.host?.https === true) {
+    hosts.add(config.host.name);
+    origins.add(`https://${config.host.name}`);
+  } else if (config.host !== undefined) {
+    plainHost = `${config.host.name}:${port}`;
+    hosts.add(plainHost);
+    origins.add(`http://${plainHost}`);
+  }
   return {
-    url: `http://127.0.0.1:${config.port}/`,
+    url: `http://${plainHost ?? `127.0.0.1:${port}`}/`,
     close: () =>
       new Promise<void>((done) => {
         for (const client of sockets.clients) client.close(1012, "Monchu is restarting");

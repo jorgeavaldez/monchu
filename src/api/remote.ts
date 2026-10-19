@@ -21,6 +21,7 @@ import {
   UPLOAD_CHUNK_BYTES,
   type Attachment,
 } from "./attachments.ts";
+import { randomId } from "./ids.ts";
 import type { Client, LoginEntry, RootClient, RootSummary, Watched } from "./client.ts";
 import {
   Conversation,
@@ -73,7 +74,7 @@ class RemoteRoot implements RootClient {
       throw new Error(
         `${name} is larger than the ${formatBytes(ATTACHMENT_MAX_BYTES)} attachment limit`,
       );
-    const upload = crypto.randomUUID();
+    const upload = randomId();
     for (let offset = 0; ; offset += UPLOAD_CHUNK_BYTES) {
       const done = offset + UPLOAD_CHUNK_BYTES >= data.length;
       const chunk = toBase64(data.subarray(offset, offset + UPLOAD_CHUNK_BYTES));

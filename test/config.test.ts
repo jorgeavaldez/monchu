@@ -192,7 +192,8 @@ describe("config", () => {
       ),
     ).toEqual({
       port: 7420,
-      host: "monchu.example.test",
+      bind: "127.0.0.1",
+      host: { name: "monchu.example.test", https: true },
       access: { teamDomain: "https://team.example.test", audience: "aud", subjectClaim: "sub" },
       oidc: {
         issuer: "http://127.0.0.1:9000",
@@ -203,6 +204,16 @@ describe("config", () => {
       },
       allow: ["sub:abc", "email:a@example.test", "service:id"],
     });
+    expect(
+      await loadWebConfig(
+        await webHome({
+          port: 0,
+          bind: "0.0.0.0",
+          host: "http://Mac.Local/",
+          oidc: { issuer: "https://idp.example.test", clientId: "c" },
+        }),
+      ),
+    ).toMatchObject({ port: 0, bind: "0.0.0.0", host: { name: "mac.local", https: false } });
     for (const [web, message] of [
       [
         { oidc: { issuer: "http://idp.example.test", clientId: "c" } },
@@ -214,7 +225,11 @@ describe("config", () => {
       ],
       [{ allow: ["anyone"] }, "web.allow must list"],
       [{ host: "https://monchu.example.test/" }, "web.host must be a host name"],
-      [{ bind: "0.0.0.0" }, "web: unknown fields: bind"],
+      [{ bind: "lan" }, "web.bind must be an IP address"],
+      [{ port: 70000 }, "web.port must be a port number"],
+      [{ port: 7000, host: "http://mac.local:7420" }, "leave the port out"],
+      [{ host: "ftp://mac.local" }, "web.host must be a host name"],
+      [{ unknown: 1 }, "web: unknown fields: unknown"],
     ] as const)
       await expect(loadWebConfig(await webHome(web))).rejects.toThrow(message);
   });

@@ -157,6 +157,7 @@ describe("web server", () => {
       const port = await freePort();
       const bare: WebConfig = {
         port,
+        bind: "127.0.0.1",
         host: undefined,
         access: undefined,
         oidc: undefined,
@@ -190,7 +191,8 @@ describe("web server", () => {
       backend,
       {
         port,
-        host: "monchu.example.test",
+        bind: "127.0.0.1",
+        host: { name: "monchu.example.test", https: true },
         access: { teamDomain: provider.issuer, audience: "aud-1", subjectClaim: "custom.sub" },
         oidc: undefined,
         allow: ["sub:user-1", "service:svc-1"],
@@ -298,6 +300,7 @@ describe("web server", () => {
       backend,
       {
         port,
+        bind: "127.0.0.1",
         host: undefined,
         access: undefined,
         oidc: {
@@ -368,6 +371,70 @@ describe("web server", () => {
     }
   }, 30_000);
 
+  it("serves a LAN host over plain http on a port the system picks, with a cookie its browsers keep", async () => {
+    const provider = await identityProvider();
+    const { backend, host: core } = await openCore();
+    const site = await serveWeb(
+      ingress(core),
+      backend,
+      {
+        port: 0,
+        bind: "0.0.0.0",
+        host: { name: "mac.lan.test", https: false },
+        access: undefined,
+        oidc: {
+          issuer: provider.issuer,
+          clientId: "client-1",
+          clientSecretEnv: undefined,
+          scopes: ["openid", "email"],
+          subjectClaim: "sub",
+        },
+        allow: ["email:user@example.test"],
+      },
+      {},
+    );
+    try {
+      const port = Number(new URL(site.url).port);
+      expect(port).toBeGreaterThan(0);
+      expect(site.url).toBe(`http://mac.lan.test:${port}/`);
+      const lan = { host: `mac.lan.test:${port}`, accept: "text/html" };
+      expect((await get(port, "/", { ...lan, host: "mac.lan.test" })).status).toBe(421);
+      const login = await get(port, "/auth/login", lan);
+      const location = String(login.headers.location);
+      expect(new URL(location).searchParams.get("redirect_uri")).toBe(
+        `http://mac.lan.test:${port}/auth/callback`,
+      );
+      const state = provider.authorize(location);
+      const done = await get(port, `/auth/callback?state=${state}&code=code-1`, lan);
+      expect(done.status).toBe(302);
+      // Browsers drop a Secure cookie set over plain http on anything but localhost.
+      expect(String(done.headers["set-cookie"])).not.toMatch(/Secure/);
+      const cookie = String(done.headers["set-cookie"]).split(";")[0] ?? "";
+      expect([200, 503]).toContain((await get(port, "/", { ...lan, cookie })).status);
+      // Localhost on the same server keeps its Secure cookie.
+      const local = { host: `localhost:${port}`, accept: "text/html" };
+      const again = provider.authorize(
+        String((await get(port, "/auth/login", local)).headers.location),
+      );
+      const localDone = await get(port, `/auth/callback?state=${again}&code=code-1`, local);
+      expect(String(localDone.headers["set-cookie"])).toMatch(/HttpOnly; Secure; SameSite=Lax/);
+
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api`, {
+        headers: { ...lan, cookie, origin: `http://mac.lan.test:${port}` },
+      });
+      await new Promise<void>((done, fail) => {
+        socket.once("open", () => done());
+        socket.once("error", fail);
+      });
+      socket.close();
+    } finally {
+      await site.close();
+      await core.close();
+      await backend.close();
+      await provider.close();
+    }
+  }, 30_000);
+
   it("names this device's install manifest from client settings only a person's login changes", async () => {
     const provider = await identityProvider();
     const { home, backend, host: core } = await openCore();
@@ -377,7 +444,8 @@ describe("web server", () => {
       backend,
       {
         port,
-        host: "monchu.example.test",
+        bind: "127.0.0.1",
+        host: { name: "monchu.example.test", https: true },
         access: { teamDomain: provider.issuer, audience: "aud-1", subjectClaim: "sub" },
         oidc: undefined,
         allow: ["sub:user-1", "service:svc-1"],
