@@ -754,12 +754,37 @@ p.offer span {
 p.offer {
   margin: 0;
 }
+/* Laid out as a typed answer is: each line of words over its field, the save and cancel cells by the last one. */
+.secretForm {
+  display: flex;
+  align-items: flex-end;
+  border-top: 1px solid var(--line);
+}
 .secretForm .fields {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--s0);
+}
+.secretForm .fields > span:not(.kinds),
+.secretForm label {
+  display: block;
+  padding: var(--s0) var(--s1) 0;
+  overflow-wrap: anywhere;
+}
+.secretForm input {
+  display: block;
+  width: calc(100% + 2 * var(--s1));
+  min-height: var(--tap);
+  margin: var(--s0) calc(-1 * var(--s1)) 0;
+  padding: 0 var(--s1);
+  border-width: 1px 0 0;
+}
+.secretForm > button {
+  border-width: 1px 0 0 1px;
+}
+.secretForm .saving {
+  color: var(--accent);
 }
 .secretForm .kinds {
   display: flex;

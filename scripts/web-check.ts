@@ -1422,6 +1422,10 @@ async function journeys(
       );
       await browser("fill", ".secretForm input[type=password]", value);
       await capture("secret-form", home, origin);
+      // The form says it is saving until the core has stored it.
+      await page(
+        `(() => { window.sawSaving = false; new MutationObserver(() => { if (document.querySelector(".secretForm .saving")?.textContent.includes("SMOKE_TOKEN")) window.sawSaving = true; }).observe(document.body, { childList: true, subtree: true, characterData: true }); return true; })()`,
+      );
       await browser("press", "Enter");
       await browser(
         "wait",
@@ -1429,6 +1433,7 @@ async function journeys(
         `!document.querySelector(".secretForm") && !document.querySelector(".secretRequest")`,
       );
       check((await inPage()) === false, "the value stayed in the page after saving");
+      check((await page("window.sawSaving")) === true, "the form never said it was saving");
       // The agent that asked hears it is set, by name.
       await browser(
         "wait",

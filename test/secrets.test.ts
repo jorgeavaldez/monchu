@@ -1,4 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -269,5 +271,53 @@ describe("secrets in tools", () => {
       await harness.close(context);
     }
     expect(await storeBytes(value.directory)).not.toContain("gh-value-99");
+  });
+
+  it("tells an agent that carried on at its next step, not once its run ends", async () => {
+    const value = await setup();
+    value.registry.install(createSecrets(value.vault));
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    value.registry.install(
+      defineExtension({
+        name: "test.hold",
+        tools: [
+          defineTool({
+            name: "hold",
+            description: "Other work",
+            parameters: Type.Object({}),
+            execute: async () => {
+              started.resolve();
+              await release.promise;
+              return { output: [{ type: "text", text: "held" }] };
+            },
+          }),
+        ],
+      }),
+    );
+    const calls = [
+      fauxToolCall("secret", { action: "request", name: "GH_TOKEN", reason: "push to GitHub" }),
+      fauxToolCall("hold", {}),
+    ];
+    const finals: string[] = [];
+    route(value.faux, (request) => {
+      const call = calls.shift();
+      if (call !== undefined) return fauxAssistantMessage([call], { stopReason: "toolUse" });
+      finals.push(request.messages.map(textOf).join("\n"));
+      return fauxAssistantMessage("done");
+    });
+    const { harness, root } = await open(value);
+    try {
+      const run = await root.submit({ type: "input", content: "push" }, context);
+      await started.promise;
+      const info = await value.vault.set({ name: "GH_TOKEN", kind: "value", value: "gh-value-99" });
+      expect(await answerRequests(harness, "GH_TOKEN", info, context)).toBe(1);
+      release.resolve();
+      await run.wait(context);
+      // The run's own last step already heard it.
+      expect(finals[0]).toContain("secret GH_TOKEN is set");
+    } finally {
+      await harness.close(context);
+    }
   });
 });

@@ -99,7 +99,8 @@ export function SecretForm() {
   const site = useSignal("");
   const value = useSignal("");
   const username = useSignal("");
-  const busy = useSignal(false);
+  // The name being saved, while the core stores it and tells whoever asked.
+  const saving = useSignal<string | undefined>(undefined);
   const first = useRef<HTMLInputElement>(null);
   useEffect(() => {
     kind.value = entry?.kind ?? "value";
@@ -126,7 +127,7 @@ export function SecretForm() {
     // The page keeps no copy: the fields empty before the call settles.
     value.value = "";
     username.value = "";
-    busy.value = true;
+    saving.value = target;
     try {
       await client().setSecret(input);
       message.value = { text: `saved · ${target}`, failed: false };
@@ -134,7 +135,7 @@ export function SecretForm() {
     } catch (error) {
       message.value = { text: `not saved · ${failure(error)}`, failed: true };
     } finally {
-      busy.value = false;
+      saving.value = undefined;
     }
   };
   const field = (
@@ -167,13 +168,13 @@ export function SecretForm() {
   const status = message.value;
   return (
     <form
-      class="ask secretForm"
+      class="secretForm"
       onKeyDown={(event) => {
         if (event.key === "Escape") leave();
       }}
       onSubmit={(event) => {
         event.preventDefault();
-        if (!busy.value) void save();
+        if (saving.value === undefined) void save();
       }}
     >
       <span class="fields">
@@ -182,7 +183,13 @@ export function SecretForm() {
             ? "new secret · agents use it by name, never see it"
             : `${entry.name}${entry.by === undefined ? "" : ` · ${entry.by}`}${entry.reason === undefined ? "" : ` · ${entry.reason}`}`}
         </span>
-        {status?.failed === true ? <span class="warning">{status.text}</span> : null}
+        {saving.value !== undefined ? (
+          <span class="saving" role="status">
+            saving {saving.value}…
+          </span>
+        ) : status?.failed === true ? (
+          <span class="warning">{status.text}</span>
+        ) : null}
         {entry.name === undefined ? (
           <>
             {field("name", name, "text", first)}
@@ -217,9 +224,9 @@ export function SecretForm() {
         class="icon"
         aria-label="save"
         title="save (Enter)"
-        disabled={busy.value}
+        disabled={saving.value !== undefined}
       >
-        ✓
+        {saving.value === undefined ? "✓" : "…"}
       </button>
       <Close label="cancel" onClose={leave} />
     </form>

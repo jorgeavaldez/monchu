@@ -53,7 +53,8 @@ function answerText(request: SecretRequest, info: SecretInfo | undefined): strin
 
 /**
  * Answers every pending request for `name`: `info` when it was set, `undefined` when declined. A worker hears it as a
- * message from its parent, so its answer is reported as usual; a front gets it as follow-up input.
+ * message from its parent, so its answer is reported as usual; a front gets it as input. Either steers a run in progress,
+ * so an agent that carried on meanwhile hears it at its next step rather than once that run ends.
  */
 export async function answerRequests(
   harness: Harness,
@@ -80,14 +81,14 @@ export async function answerRequests(
         );
         // A closed or vanished worker has nobody to tell.
         if (worker === undefined || worker.closed) continue;
-        await messageWorker(tx, parent, worker.name, text, requestId, "followUp");
+        await messageWorker(tx, parent, worker.name, text, requestId, "steer");
       }
     return { roots, count: answered.length };
   }, context);
   for (const { id, text, requestId } of result.roots) {
     const conversation = await harness.conversation(id, context);
     await conversation?.submit(
-      { type: "input", content: text, requestId, whenBusy: "followUp" },
+      { type: "input", content: text, requestId, whenBusy: "steer" },
       context,
     );
   }
