@@ -129,17 +129,18 @@ const MARKS: Record<string, InboxKind> = {
 
 /**
  * The label a front writes at the start of its headline, `done · monchu: the inbox shipped` or `ask: ship now?`: the
- * kind (`ask`, `done`, `update`, `reply`), an optional goal id, and the headline after it. `undefined` without one.
+ * kind (`ask`, `done`, `update`, `reply`), an optional goal, and the headline after it. `undefined` without one. A
+ * model names the goal loosely (`ask · web push: `), so any short topic is taken, as a goal id with dashes for spaces.
  */
 export function markOf(
   headline: string,
 ): { kind: InboxKind; goal: string | undefined; headline: string } | undefined {
-  const match = /^(ask|done|update|reply)(?:\s*·\s*([a-z0-9][a-z0-9-]{0,47}))?\s*:\s+(\S.*)$/i.exec(
+  const match = /^(ask|done|update|reply)(?:\s*·\s*([^\s:·][^:·]{0,47}?))?\s*:\s+(\S.*)$/i.exec(
     headline,
   );
   const kind = MARKS[match?.[1]?.toLowerCase() ?? ""];
   if (match === null || kind === undefined) return undefined;
-  return { kind, goal: match[2]?.toLowerCase(), headline: match[3] ?? "" };
+  return { kind, goal: match[2]?.toLowerCase().replace(/\s+/g, "-"), headline: match[3] ?? "" };
 }
 
 /**

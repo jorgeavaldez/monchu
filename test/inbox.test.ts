@@ -217,6 +217,11 @@ describe("inbox", () => {
       goal: undefined,
       headline: "ship now or later?",
     });
+    expect(markOf("ask · Web Push: allow notifications?")).toEqual({
+      kind: "ask",
+      goal: "web-push",
+      headline: "allow notifications?",
+    });
     expect(markOf("done the thing")).toBeUndefined();
   });
 });
