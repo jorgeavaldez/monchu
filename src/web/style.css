@@ -542,11 +542,6 @@ pre {
 .menu .selected .tag {
   color: inherit;
 }
-.ask,
-.login {
-  border-top: 1px solid var(--line);
-  outline: none;
-}
 /* A menu row: the whole row taps, a › says it enters. */
 .panel .open {
   flex: 1;
@@ -571,34 +566,32 @@ pre {
   padding: 0 var(--s1);
   border-width: 0 0 0 1px;
 }
+/* A typed answer in the editor's place: its question, then the field with its ok and cancel cells. */
 .ask {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--s1);
-  padding: var(--s0) 0 0 var(--s1);
+  border-top: 1px solid var(--line);
 }
 .ask label {
-  flex: 1;
+  display: block;
+  padding: var(--s0) var(--s1);
+  overflow-wrap: anywhere;
+}
+.ask .row {
+  display: flex;
+  border-top: 1px solid var(--line);
 }
 .ask input {
-  display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: var(--tap);
-  margin-top: var(--s0);
   padding: 0 var(--s1);
+  border: none;
 }
 .ask button {
-  border-width: 1px 0 0 1px;
-}
-.login {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s1);
-  align-items: baseline;
-  padding: var(--s0) var(--s1);
+  border-width: 0 0 0 1px;
 }
 .login code {
   font-weight: bold;
+  margin-left: var(--s1);
   border: 1px solid var(--line);
   padding: 0 var(--s1);
 }
@@ -735,10 +728,20 @@ pre {
 .offer span {
   flex: 1;
 }
-.offer button {
+.offer button,
+.offer a {
   min-width: var(--tap);
   min-height: var(--tap);
   border-width: 0 0 0 1px;
+}
+/* A link in the line, the sign-in page say, is a cell like its buttons. */
+.offer a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--s1);
+  border-left: 1px solid var(--line);
+  text-decoration: none;
 }
 /* An agent's request for a secret, and the masked form that answers it in the editor's place. */
 .secretRequest {

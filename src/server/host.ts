@@ -67,6 +67,7 @@ export async function openCoreHost(backend: Monchu, upstream?: Link): Promise<Co
     Core,
     (_input, _principal, self) => ({
       monchu: self.expose(self.resource("monchu", { version: 1, open: () => backend })),
+      parked: self.expose(self.resource("parked", { version: 1, open: () => new Map() })),
     }),
     { lifetime: "host" },
   );

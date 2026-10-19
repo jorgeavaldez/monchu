@@ -184,6 +184,7 @@ function freePort(): Promise<number> {
 /**
  * An OpenID provider on loopback that approves every authorization at once: discovery, keys, and a token endpoint that
  * checks the PKCE verifier and signs an ID token for one fixed subject. The server's real login path runs unchanged.
+ * It is also an MCP server at `/mcp` that takes its own tokens, with no tools, for `/mcp login` to sign in to.
  */
 async function identityProvider(): Promise<{ issuer: string; server: Server }> {
   const { privateKey, publicKey } = await generateKeyPair("RS256");
@@ -204,6 +205,50 @@ async function identityProvider(): Promise<{ issuer: string; server: Server }> {
         jwks_uri: `${issuer}/jwks`,
       });
     if (url.pathname === "/jwks") return json({ keys: [jwk] });
+    if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
+      return json({ resource: `${issuer}/mcp`, authorization_servers: [issuer] });
+    if (url.pathname === "/.well-known/oauth-authorization-server")
+      return json({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        registration_endpoint: `${issuer}/register`,
+        response_types_supported: ["code"],
+        code_challenge_methods_supported: ["S256"],
+      });
+    if (url.pathname === "/register" || url.pathname === "/mcp") {
+      let body = "";
+      request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+      request.on("end", () => {
+        const message: unknown = body ? JSON.parse(body) : undefined;
+        if (url.pathname === "/register")
+          return json({ ...(isData(message) ? message : {}), client_id: "web-check-mcp" });
+        if (request.headers.authorization !== "Bearer -") {
+          response.writeHead(401, {
+            "www-authenticate": `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"`,
+          });
+          return response.end();
+        }
+        if (request.method !== "POST" || !isData(message) || message.id === undefined) {
+          response.writeHead(request.method === "POST" ? 202 : 405);
+          return response.end();
+        }
+        const params = isData(message.params) ? message.params : {};
+        json({
+          jsonrpc: "2.0",
+          id: message.id,
+          result:
+            message.method === "initialize"
+              ? {
+                  protocolVersion: params.protocolVersion,
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "web-check", version: "1" },
+                }
+              : { tools: [] },
+        });
+      });
+      return;
+    }
     if (url.pathname === "/authorize") {
       const code = randomBytes(16).toString("base64url");
       const query = url.searchParams;
@@ -261,6 +306,11 @@ async function startCore(
   await writeFile(
     join(home, "web.json"),
     JSON.stringify({ port, oidc: { issuer, clientId: "web-check" }, allow: [`sub:${SUBJECT}`] }),
+  );
+  // An MCP server that needs a sign-in, for `/mcp login`.
+  await writeFile(
+    join(home, "mcp.json"),
+    JSON.stringify({ mcpServers: { check: { url: `${issuer}/mcp` } } }),
   );
   // Compaction keeps only the newest reply, so `/compact` has something to summarize on a short transcript.
   await writeFile(
@@ -1702,6 +1752,32 @@ async function journeys(
         `!document.querySelector(".pick") && !document.querySelector(".login") && document.querySelector("textarea")`,
       );
       return `${providers} providers offered; Esc left with no sign-in started`;
+    },
+  );
+
+  await journey(
+    "login: /mcp login shows the sign-in page and a paste box; signing in closes both",
+    async () => {
+      await browser("fill", "textarea", "/mcp login check");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `!!document.querySelector(".login a") && !!document.querySelector("form.ask input")`,
+      );
+      await capture("mcp-login", home, origin);
+      // The browser the user signs in with: it follows the page to the loopback callback. The sign-in reloads the
+      // core's facets, so the next journey's dropped connection resumes its login across a reload.
+      const signIn = text(await page(`document.querySelector(".login a").href`));
+      check((await fetch(signIn)).ok, "the sign-in page didn't reach the callback");
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".login") && !document.querySelector("form.ask")`,
+      );
+      const notices = text(await page(`document.querySelector(".transcript").textContent`));
+      check(/mcp · .*check/.test(notices), `no sign-in notice: ${notices.slice(-200)}`);
+      return "the bar and the paste box showed together; signing in on the page closed both";
     },
   );
 

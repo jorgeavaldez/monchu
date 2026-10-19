@@ -230,14 +230,18 @@ function Ask() {
         current.answer(text);
       }}
     >
-      <label>
-        {current.title}
-        {current.secret ? <input type="password" {...input} /> : <input type="text" {...input} />}
-      </label>
-      <button type="submit" class="icon" aria-label="ok" title="ok (Enter)">
-        ›
-      </button>
-      <Close label="cancel" onClose={() => current.cancel()} />
+      <label for="ask">{current.title}</label>
+      <div class="row">
+        {current.secret ? (
+          <input id="ask" type="password" {...input} />
+        ) : (
+          <input id="ask" type="text" {...input} />
+        )}
+        <button type="submit" class="icon" aria-label="ok" title="ok (Enter)">
+          ›
+        </button>
+        <Close label="cancel" onClose={() => current.cancel()} />
+      </div>
     </form>
   );
 }
@@ -246,15 +250,17 @@ function Login() {
   const status = loginStatus.value;
   if (status === undefined) return null;
   return (
-    <div class="login">
-      <span>{status.message}</span>
-      {status.code === undefined ? null : <code>{status.code}</code>}
+    <div class="offer login" role="status">
+      <span>
+        {status.message}
+        {status.code === undefined ? null : <code>{status.code}</code>}
+      </span>
       {status.url === undefined ? null : (
         <a href={status.url} target="_blank" rel="noreferrer noopener">
-          open the sign-in page
+          open
         </a>
       )}
-      <button onClick={cancelLogin}>cancel</button>
+      <Close label="cancel the sign-in" onClose={cancelLogin} />
     </div>
   );
 }

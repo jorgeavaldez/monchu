@@ -580,6 +580,8 @@ async function runMcp(text: string): Promise<void> {
   } finally {
     login = undefined;
     loginStatus.value = undefined;
+    // The paste box still open belongs to a sign-in that is over.
+    controller.abort();
   }
 }
 

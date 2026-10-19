@@ -28,7 +28,7 @@ import {
 } from "../api/contract.ts";
 import type { Monchu } from "../core/backend.ts";
 import { Front } from "../core/front.ts";
-import { Core } from "./core.ts";
+import { Core, type HeldLogin, type LoginOwner } from "./core.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 
@@ -135,31 +135,22 @@ const PARKED_MS = 10 * 60_000;
 /** How long a finished login stays in its connection's state, for the client to read the outcome. */
 const DONE_MS = 30_000;
 
-/** One login in progress: owned by the connection that started or resumed it, else parked until one resumes it. */
-type Run = {
-  id: string;
-  person: boolean;
-  owner: Logins | undefined;
-  state: LoginState;
-  controller: AbortController;
-  answer(prompt: number, value: string | null): void;
-  timer: ReturnType<typeof setTimeout> | undefined;
-};
-
-/** Logins whose connection dropped, by id, until their client resumes them or they expire. */
-const parked = new Map<string, Run>();
+type Run = HeldLogin;
 
 /** One connection's logins: their prompts and events reach only its `logins` state. */
-class Logins extends Latest<Record<string, LoginState>> {
+class Logins extends Latest<Record<string, LoginState>> implements LoginOwner {
   private readonly runs = new Map<string, Run>();
   private readonly person: boolean;
+  /** Logins whose connection dropped, by id, until their client resumes them or they expire; the host keeps them. */
+  private readonly parked: Map<string, Run>;
 
-  constructor(person: boolean) {
+  constructor(person: boolean, parked: Map<string, Run>) {
     super({});
     this.person = person;
+    this.parked = parked;
   }
 
-  private show(run: Run): void {
+  show(run: Run): void {
     this.set({ ...this.value, [run.id]: run.state });
   }
 
@@ -171,7 +162,7 @@ class Logins extends Latest<Record<string, LoginState>> {
   }
 
   /** A finished login goes once its client had time to read the outcome. */
-  private expire(run: Run): void {
+  expire(run: Run): void {
     clearTimeout(run.timer);
     run.timer = setTimeout(() => {
       this.runs.delete(run.id);
@@ -252,10 +243,10 @@ class Logins extends Latest<Record<string, LoginState>> {
 
   resume(id: string): void {
     if (this.runs.has(id)) return;
-    const run = parked.get(id);
+    const run = this.parked.get(id);
     if (run === undefined || run.person !== this.person)
       throw new Error(`No login ${id} to resume`);
-    parked.delete(id);
+    this.parked.delete(id);
     clearTimeout(run.timer);
     run.timer = undefined;
     this.take(run);
@@ -267,9 +258,9 @@ class Logins extends Latest<Record<string, LoginState>> {
       clearTimeout(run.timer);
       run.owner = undefined;
       if (run.state.done !== null) continue;
-      parked.set(run.id, run);
+      this.parked.set(run.id, run);
       run.timer = setTimeout(() => {
-        parked.delete(run.id);
+        this.parked.delete(run.id);
         run.controller.abort();
       }, PARKED_MS);
       run.timer.unref();
@@ -380,7 +371,10 @@ export default defineFacet<Principal>(
       };
       const runs = self.resource("logins", {
         version: 1,
-        open: () => new Logins(principal.kind !== "client" || principal.person),
+        open: () => {
+          if (core.parked === undefined) throw new Error("Monchu's core is not open");
+          return new Logins(principal.kind !== "client" || principal.person, core.parked);
+        },
         close: (logins) => logins.close(),
       });
       const logins = self.state("logins", any<Record<string, LoginState>>(), {});
