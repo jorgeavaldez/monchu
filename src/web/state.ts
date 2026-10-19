@@ -353,9 +353,13 @@ export async function pickGoal(): Promise<void> {
   filter.value = picked.id ? { ...rest, goal: picked.id } : rest;
 }
 
-/** Start a reply to a message by its id in the editor, keeping what was typed after an earlier one. */
+/** Start a reply to a message by its id in the editor, keeping what was typed after an earlier one, and type there. */
 export function replyDraft(code: string): void {
   draft.value = `/reply ${code} ${draft.value.replace(/^\/reply \S+ ?/, "")}`;
+  // Focused within the tap, so a phone opens its keyboard; the caret goes after the draft once it renders.
+  const area = document.querySelector("textarea");
+  area?.focus();
+  requestAnimationFrame(() => area?.setSelectionRange(area.value.length, area.value.length));
 }
 
 export async function show(name: string | undefined): Promise<void> {

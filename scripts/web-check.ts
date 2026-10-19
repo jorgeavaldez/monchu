@@ -1872,10 +1872,17 @@ async function journeys(
         "the asks filter shows more than the ask",
       );
       // A filtered message's id is a tap away from a reply, as in every filter.
+      await page(`document.activeElement?.blur()`);
       await browser("click", ".askCard .stamp .code");
       check(
         (await page(`document.querySelector("textarea").value`)) === `/reply ${id} `,
         "tapping the id didn't draft /reply with it",
+      );
+      check(
+        (await page(
+          `(() => { const area = document.querySelector("textarea"); return document.activeElement === area && area.selectionStart === area.value.length; })()`,
+        )) === true,
+        "tapping the id didn't put the caret in the editor after the draft",
       );
       await browser("fill", "textarea", "");
       // A kind with nothing in it says so, and never shows the front's live status.
