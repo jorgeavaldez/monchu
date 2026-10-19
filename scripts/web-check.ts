@@ -1485,6 +1485,21 @@ async function journeys(
           (await page(`matchMedia("(pointer: coarse)").matches`)) === true,
           `no coarse pointer (${String(await page("navigator.maxTouchPoints"))} touch points)`,
         );
+        // A phone is offered push once; a dismissal outlives the page.
+        await browser("wait", ".offer");
+        check(
+          (await page(
+            `document.querySelector(".offer").textContent.includes("notify this phone")`,
+          )) === true,
+          "a phone isn't offered push",
+        );
+        await page(`document.querySelector(".offer [aria-label=close]").click()`);
+        check(
+          (await page(
+            `document.querySelector(".offer") === null && localStorage.getItem("monchu.push")`,
+          )) === "offered",
+          "a dismissed push offer stayed",
+        );
 
         const value = () => page(`document.querySelector("textarea").value`);
         const key = (label: string) =>
@@ -1737,7 +1752,7 @@ async function journeys(
   );
 
   await journey(
-    "inbox: an ask is boxed, filters by kind and goal with its briefer, answers by id, and #id links to it",
+    "inbox: an ask is boxed, filters by kind and goal with its briefer, a tapped id starts a reply, and #id links to it",
     async () => {
       const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
       const send = async (text: string) => {
@@ -1754,7 +1769,7 @@ async function journeys(
       );
       check(/^[k-z]{4,8}$/.test(id), `no message id: ${id}`);
       await send(`label ${id} ask smoke`);
-      await browser("wait", "--fn", `!!document.querySelector(".askCard .answer")`);
+      await browser("wait", "--fn", `!!document.querySelector(".askCard .reply")`);
       check(
         (await page(`document.querySelector(".filters .yellow")?.textContent`)) === "asks 1",
         "the filter bar doesn't count the open ask",
@@ -1766,6 +1781,13 @@ async function journeys(
           (await page(`document.querySelectorAll(".transcript .assistant").length`)) === 1,
         "the asks filter shows more than the ask",
       );
+      // A filtered message's id is a tap away from a reply, as in every filter.
+      await browser("click", ".askCard .stamp .code");
+      check(
+        (await page(`document.querySelector("textarea").value`)) === `/reply ${id} `,
+        "tapping the id didn't draft /reply with it",
+      );
+      await browser("fill", "textarea", "");
       // A kind with nothing in it says so, and never shows the front's live status.
       await browser("click", ".filters button:nth-child(3)");
       check(
@@ -1786,19 +1808,19 @@ async function journeys(
       );
       await capture("inbox-goal", home, origin);
       await browser("click", ".filters button:first-child");
-      await browser("click", ".askCard .answer");
+      await browser("click", ".askCard .reply");
       check(
-        (await page(`document.querySelector("textarea").value`)) === `/answer ${id} `,
-        "answer didn't draft /answer with the id",
+        (await page(`document.querySelector("textarea").value`)) === `/reply ${id} `,
+        "reply didn't draft /reply with the id",
       );
-      await browser("fill", "textarea", `/answer ${id} yes, ship it`);
+      await browser("fill", "textarea", `/reply ${id} yes, ship it`);
       await browser("press", "Enter");
       await browser("wait", "--fn", `!!document.querySelector(".askCard.answered")`);
       await send(`see #${id}`);
       await browser("wait", "--fn", `!!document.querySelector(".assistant a.ref")`);
       await browser("click", ".assistant a.ref");
-      await capture("inbox-answered", home, origin);
-      return `ask ${id} boxed, filtered, answered and linked`;
+      await capture("inbox-replied", home, origin);
+      return `ask ${id} boxed, filtered, replied to by its id and linked`;
     },
   );
 
