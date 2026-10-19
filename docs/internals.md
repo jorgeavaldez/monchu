@@ -8,7 +8,7 @@ How Monchu works under the hood. [Setup](setup.md) covers the first run and conf
 The front role is applied at startup and on `/reload`, from its next model request, except for a model or thinking level picked for the root with `/model` or `/thinking`; new workers use the current worker role. Existing workers keep their stored role.
 
 `settings` is validated by Monchu, not a Pi settings-file pass-through. Omitted fields use Monchu's defaults (see [Setup](setup.md#configuration)).
-It also accepts `shellPath`, `shellCommandPrefix`, `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
+It also accepts `shellPath`, `shellCommandPrefix`, `shellTimeout` (seconds a `bash` or `powershell` call without its own `timeout` may run, default 600; 0 for none), `steeringMode` and `followUpMode` (`all` or `one-at-a-time`), and `retry.provider` (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`). Provider retry-delay defaults to 60000 ms; timeout defaults to `httpIdleTimeoutMs` (0 disables the idle timeout).
 Themes are built-in `light`, `dark`, `system`, or a `light/dark` pair. Shell path/prefix are unset by default.
 `defaultTools` accepts exact built-in names, or only `+name`/`-name` modifiers. Monchu's own tools are separate from this selection.
 `terminal` accepts `hyperlinks` and `trueColor` (boolean or `auto`), and `images` (`false`, `auto`, `kitty`, `iterm2`); omitted values use SDK capability detection.

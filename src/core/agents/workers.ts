@@ -675,14 +675,18 @@ export async function listWorkers(
           busy:
             live?.run !== undefined ||
             (await pendingDelivery(state, worker.name, (id) => reader.getTask(id, context))),
+          // The tools its current round is running, so a call that hangs shows by name.
+          running: (live?.tools ?? []).flatMap(({ name, status }) =>
+            status === "running" ? [name] : [],
+          ),
         };
       }),
   );
 }
 
 /**
- * `listWorkers`, each with when it last did something (`activeAt`, undefined while busy) and the context size its
- * newest reply reported.
+ * `listWorkers`, each with when it last did something (`activeAt`: while busy, its newest message, so a long silence
+ * shows) and the context size its newest reply reported.
  */
 export async function listWorkersWithActivity(
   reader: Pick<Harness, "snapshot" | "getTask" | "commit">,
@@ -697,7 +701,7 @@ export async function listWorkersWithActivity(
   );
   return workers.map((worker, index) => {
     const { at, contextTokens } = activity[index] ?? {};
-    return { ...worker, activeAt: worker.busy ? undefined : at, contextTokens };
+    return { ...worker, activeAt: at, contextTokens };
   });
 }
 
@@ -896,13 +900,16 @@ export function createWorkerTools(
               {
                 type: "text",
                 text: JSON.stringify(
-                  workers.map(({ activeAt, ...worker }) => ({
-                    ...worker,
-                    idleMinutes:
+                  workers.map(({ activeAt, running, ...worker }) => {
+                    const minutes =
                       activeAt === undefined
                         ? undefined
-                        : Math.max(0, Math.floor((now - activeAt) / 60_000)),
-                  })),
+                        : Math.max(0, Math.floor((now - activeAt) / 60_000));
+                    // A busy worker's silence, with the calls it is running: a long one may be stuck.
+                    return worker.busy
+                      ? { ...worker, running, quietMinutes: minutes }
+                      : { ...worker, idleMinutes: minutes };
+                  }),
                 ),
               },
             ],

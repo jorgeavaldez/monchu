@@ -148,6 +148,29 @@ describe("Pi built-ins", () => {
     expect(value.reports).toEqual([]);
   });
 
+  it("stops a shell call without a timeout at shellTimeout, and keeps an explicit timeout", async () => {
+    const value = await setup();
+    value.registry.install(
+      createPiTools(resolveSettings({ shellTimeout: 1 }), value.finders, value.vault).extension,
+    );
+    const outputs = callInOrder(value, [
+      fauxToolCall("bash", { command: "printf started; sleep 5; printf finished" }),
+      fauxToolCall("bash", { command: "sleep 2; printf waited", timeout: 10 }),
+    ]);
+    const { harness, root } = await open(value);
+    try {
+      for (const content of ["hang", "wait"])
+        await (await root.submit({ type: "input", content }, context)).wait(context);
+    } finally {
+      await harness.close(context);
+    }
+    expect(outputs[0]).toContain("started");
+    expect(outputs[0]).toContain("Command stopped after 1 s");
+    expect(outputs[0]).not.toContain("finished");
+    expect(outputs[1]).toContain("waited");
+    expect(value.reports).toEqual([]);
+  });
+
   it("runs a configured prefix directly and through codemode, and fffind at execution cwd", async () => {
     const value = await setup();
     value.registry.install(

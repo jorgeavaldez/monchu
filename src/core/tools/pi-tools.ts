@@ -40,6 +40,33 @@ const FFF_PROMPT = {
 } as const;
 
 /**
+ * A shell call without its own timeout stops after `seconds` (0: never), so a hung command can't hold a worker, and
+ * the messages queued for it, until someone notices. The declaration stays Pi's, byte for byte, for the prompt cache;
+ * the error says what happened and what to do instead.
+ */
+function bounded(tool: ReturnType<typeof createBashTool>, seconds: number) {
+  if (seconds === 0) return tool;
+  const limit = seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} s`;
+  const execute: typeof tool.execute = async (args, api, context) => {
+    if (args.timeout !== undefined) return tool.execute(args, api, context);
+    try {
+      return await tool.execute({ ...args, timeout: seconds }, api, context);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== `Command timed out after ${seconds} seconds`
+      )
+        throw error;
+      throw new Error(
+        `Command stopped after ${limit}, the limit for a call without a timeout, so it never leaves you unreachable. If it may hang, fix the command. If it is long work, run it as a job of type bg (you stay free for messages and get its result when it ends), or pass a timeout to wait for it here.`,
+        { cause: error },
+      );
+    }
+  };
+  return { ...tool, execute };
+}
+
+/**
  * Config resolves defaultTools additions/removals; Monchu's own tools are separate.
  * Returns warnings for selections that would silently leave Monchu without built-ins.
  */
@@ -47,17 +74,24 @@ export function createPiTools(settings: Settings, finders: FffFinders, vault: Va
   const commandPrefix = settings.shellCommandPrefix;
   const prefix = commandPrefix === undefined ? {} : { commandPrefix };
   // Shells get the secrets a command names in its environment, and their live output is redacted.
+  const limit = settings.shellTimeout;
   const codingTools = [
     createReadTool({ images }),
     createWriteTool(),
     createEditTool(),
-    redacting(createBashTool({ ...prefix, prepare: injectSecrets(vault, "bash") }), vault),
+    redacting(
+      bounded(createBashTool({ ...prefix, prepare: injectSecrets(vault, "bash") }), limit),
+      vault,
+    ),
   ];
   const searchTools = createFffTools(finders);
   const tools = [
     ...codingTools,
     ...searchTools,
-    redacting(createPowerShellTool({ prepare: injectSecrets(vault, "powershell") }), vault),
+    redacting(
+      bounded(createPowerShellTool({ prepare: injectSecrets(vault, "powershell") }), limit),
+      vault,
+    ),
   ];
   const defaults =
     settings.defaultTools ?? [...codingTools, ...searchTools].map(({ name }) => name);

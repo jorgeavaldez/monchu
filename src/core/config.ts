@@ -51,6 +51,7 @@ export type RunSettings = {
   httpIdleTimeoutMs?: number;
   shellPath?: string;
   shellCommandPrefix?: string;
+  shellTimeout?: number;
   defaultTools?: string[];
   steeringMode?: "all" | "one-at-a-time";
   followUpMode?: "all" | "one-at-a-time";
@@ -110,6 +111,8 @@ export function resolveSettings(settings: RunSettings) {
     httpIdleTimeoutMs: settings.httpIdleTimeoutMs ?? 300000,
     shellPath: settings.shellPath,
     shellCommandPrefix: settings.shellCommandPrefix,
+    // Seconds a shell call without its own timeout may run; 0 lets it run until it ends.
+    shellTimeout: settings.shellTimeout ?? 600,
     defaultTools,
     steeringMode: settings.steeringMode ?? "one-at-a-time",
     followUpMode: settings.followUpMode ?? "one-at-a-time",
@@ -415,6 +418,7 @@ function runSettings(value: unknown): RunSettings {
     "httpIdleTimeoutMs",
     "shellPath",
     "shellCommandPrefix",
+    "shellTimeout",
     "defaultTools",
     "steeringMode",
     "followUpMode",
@@ -430,6 +434,8 @@ function runSettings(value: unknown): RunSettings {
     throw new Error("settings.theme must use built-in light/dark themes or system");
   if (value.httpIdleTimeoutMs !== undefined)
     settings.httpIdleTimeoutMs = integer(value.httpIdleTimeoutMs, "settings.httpIdleTimeoutMs");
+  if (value.shellTimeout !== undefined)
+    settings.shellTimeout = integer(value.shellTimeout, "settings.shellTimeout");
   for (const key of ["steeringMode", "followUpMode"] as const) {
     const mode = queue(value[key], `settings.${key}`);
     if (mode !== undefined) settings[key] = mode;

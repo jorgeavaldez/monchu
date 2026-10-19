@@ -635,15 +635,14 @@ export default () => {
 
   it("changes directories only while idle, stops a worker explicitly, and refuses reload once closing", async () => {
     const value = await setup();
-    // A worker holds its run until it is stopped; everything else answers at once.
-    route(value.faux, async (request, options) => {
-      if (textOf(lastMessage(request.messages)) === "hold") {
-        const signal = options?.signal;
-        if (signal === undefined) throw new Error("Worker hold requires cancellation");
-        if (!signal.aborted) await once(signal, "abort");
-      }
-      return fauxAssistantMessage("ok");
-    });
+    // A worker holds its run in a shell call until it is stopped; everything else answers at once.
+    route(value.faux, (request) =>
+      textOf(lastMessage(request.messages)) === "hold"
+        ? fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 60" })], {
+            stopReason: "toolUse",
+          })
+        : fauxAssistantMessage("ok"),
+    );
     const { backend } = await openBackend(value);
     try {
       const project = join(value.directory, "project");
@@ -651,10 +650,13 @@ export default () => {
       expect(await (await front(backend)).changeDirectory(project)).toBe(project);
       // A new worker starts in the root's directory.
       await (await front(backend)).startWorker("w", "hold", "start:w");
-      // A busy worker has no idle time; a stopped one counts from its last message.
+      // A busy worker shows the call it is running and its newest message, so a hung call shows.
+      await waitFor(async () =>
+        (await (await front(backend)).workers()).some(({ running }) => running.includes("bash")),
+      );
       const [busy] = await (await front(backend)).workers();
-      expect(busy).toMatchObject({ name: "w", cwd: project, busy: true });
-      expect(busy?.activeAt).toBeUndefined();
+      expect(busy).toMatchObject({ name: "w", cwd: project, busy: true, running: ["bash"] });
+      expect(typeof busy?.activeAt).toBe("number");
       await expect((await front(backend)).changeDirectory(value.directory, "w")).rejects.toThrow(
         "idle",
       );
@@ -664,7 +666,7 @@ export default () => {
 
       await (await front(backend)).stopWorker("w");
       const [stopped] = await (await front(backend)).workers();
-      expect(stopped).toMatchObject({ name: "w", busy: false });
+      expect(stopped).toMatchObject({ name: "w", busy: false, running: [] });
       expect(typeof stopped?.activeAt).toBe("number");
       expect(await (await front(backend)).changeDirectory(value.directory, "w")).toBe(
         value.directory,
