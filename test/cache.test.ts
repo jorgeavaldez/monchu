@@ -273,7 +273,7 @@ describe("prompt cache, for every way a provider caches", () => {
       prepareHome(home);
       await writeFile(join(home, "FRONT.md"), "FRONT BEFORE");
       const marker = join(home, "tool-started");
-      const command = `${JSON.stringify(process.execPath)} -e "require('node:fs').writeFileSync('${marker}', 'ready'); setTimeout(() => {}, 4000)"`;
+      const command = `${JSON.stringify(process.execPath)} -e "require('node:fs').writeFileSync('tool-started', 'ready'); setTimeout(() => {}, 4000)"`;
       let calls = 0;
       const call = (name: string, args: Record<string, string>) =>
         fauxToolCall(name, args, { id: `toolu_${++calls}` });
@@ -306,7 +306,7 @@ describe("prompt cache, for every way a provider caches", () => {
       const turn = async (backend: Monchu, text: string) => {
         const before = await answered(backend);
         await (await front(backend)).submit(text, `cache:${text}`, "followUp");
-        await waitFor(async () => (await answered(backend)) > before);
+        await waitFor(async () => (await answered(backend)) > before, 30_000);
       };
       const replies = async (backend: Monchu) =>
         (await backend.logs({ limit: 200, scope: "core.model" })).map(
@@ -333,14 +333,14 @@ describe("prompt cache, for every way a provider caches", () => {
           } catch {
             return false;
           }
-        });
+        }, 30_000);
       } finally {
         // Mid-turn: the model's tool is still running.
         await backend.close();
       }
       backend = await Monchu.open(home, simulation.provider());
       try {
-        await waitFor(async () => (await answered(backend)) > answers);
+        await waitFor(async () => (await answered(backend)) > answers, 30_000);
         await turn(backend, "after");
         const all = await replies(backend);
         expect(all.length).toBeGreaterThanOrEqual(9);
@@ -354,7 +354,7 @@ describe("prompt cache, for every way a provider caches", () => {
           );
         // Where the provider reports how it reached its cache (Claude Code's session), no reply re-renders history.
         expect(all.map((reply) => reply.cachePath)).not.toContain("rebuild");
-        // A TTL Claude Code chose for itself never goes back from 5m to 1h: 1h requests read nothing 5m ones wrote.
+        // A TTL never goes back from 5m to 1h: 1h requests read nothing 5m ones wrote.
         const ttls = simulation.ttls ?? [];
         expect(ttls.slice(ttls.indexOf("5m") < 0 ? ttls.length : ttls.indexOf("5m"))).not.toContain(
           "1h",

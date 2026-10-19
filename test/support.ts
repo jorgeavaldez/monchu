@@ -695,11 +695,7 @@ export function simulatedClaudeCode(
             if (!reported && account.overage)
               yield {
                 type: "rate_limit_event",
-                rate_limit_info: {
-                  status: "rejected",
-                  isUsingOverage: true,
-                  resetsAt: Math.floor(Date.now() / 1000) + 3600,
-                },
+                rate_limit_info: { status: "rejected", isUsingOverage: true },
                 uuid: randomUUID(),
                 session_id: session.sessionId,
               };

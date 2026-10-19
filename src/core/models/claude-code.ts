@@ -319,36 +319,8 @@ export function createClaudeCodeProvider(
     await mkdir(checkpoints, { recursive: true, mode: 0o700 });
     await writeFile(path, JSON.stringify(checkpoint), { mode: 0o600 });
   };
-  // Whether Claude Code last reported the account drawing on overage (extra usage), and until when: it outlives the
-  // process, and Claude Code reports limits only when they change, so a new process may never say it ended.
-  const overagePath = join(home, "claude", "overage.json");
-  let overage: Promise<{ on: boolean; until?: number }> | undefined;
-  const accountOverage = async () => {
-    overage ??= readFile(overagePath, "utf8").then(
-      (text) => {
-        try {
-          const value: unknown = JSON.parse(text);
-          return isJsonObject(value) && value.on === true
-            ? { on: true, ...(typeof value.until === "number" ? { until: value.until } : {}) }
-            : { on: false };
-        } catch {
-          return { on: false };
-        }
-      },
-      () => ({ on: false }),
-    );
-    const { on, until } = await overage;
-    return on && (until === undefined || Date.now() < until);
-  };
-  const noteOverage = async (info: { isUsingOverage?: boolean; resetsAt?: number }) => {
-    const on = info.isUsingOverage === true;
-    if (!on && !(await accountOverage())) return;
-    // The reset time is in seconds, as Anthropic's rate limit headers give it.
-    const next = on && info.resetsAt !== undefined ? { on, until: info.resetsAt * 1000 } : { on };
-    overage = Promise.resolve(next);
-    await mkdir(join(home, "claude"), { recursive: true, mode: 0o700 });
-    await writeFile(overagePath, JSON.stringify(next), { mode: 0o600 });
-  };
+  // Whether Claude Code last reported the account drawing on overage (extra usage), for the replies' diagnostics.
+  let overage = false;
   /**
    * Claude Code's own record that the server didn't recognize a request's prefix: a `thinking_drop` attachment, written
    * just before that request. Reads only the whole lines the query appended since its last scan.
@@ -506,10 +478,11 @@ export function createClaudeCodeProvider(
                 ? mapped
                 : undefined;
         if (effort !== undefined) output.providerThinkingLevel = effort;
-        // Claude Code's own choice, made to stick: it picks 1h within a subscription's limits and 5m once the account
-        // draws on overage, but every new process starts at 1h until a response reports the limits. A 5m request reads
-        // what 1h ones wrote; a 1h request reads nothing 5m ones wrote, so each new process re-wrote the conversation.
-        const ttl = options.cacheRetention === "long" && !(await accountOverage()) ? "1h" : "5m";
+        // Pinned, never Claude Code's automatic choice: that is 1h within a subscription's limits and 5m once the account
+        // draws on overage, and every new process starts at 1h until a response reports the limits. A 1h request reads
+        // nothing 5m ones wrote, so on overage each new process re-wrote the whole conversation. Long retention keeps
+        // 1h on overage too, by the user's choice.
+        const ttl = options.cacheRetention === "long" ? "1h" : "5m";
         if (options.reasoning !== undefined) output.thinkingLevel = options.reasoning;
         const turn = claudeTurn(transcript.history);
         const keys = claudeHistoryKeys(turn.history);
@@ -948,7 +921,8 @@ export function createClaudeCodeProvider(
             }
             break;
           }
-          if (message.type === "rate_limit_event") await noteOverage(message.rate_limit_info);
+          if (message.type === "rate_limit_event")
+            overage = message.rate_limit_info.isUsingOverage === true;
           if (message.type !== "stream_event") continue;
           if (message.parent_tool_use_id !== null)
             throw new Error("Claude Code started an unexpected subagent");
@@ -1137,7 +1111,7 @@ export function createClaudeCodeProvider(
               path: cachePath,
               ttl,
               ...(cacheReason === undefined ? {} : { reason: cacheReason }),
-              ...((await accountOverage()) ? { overage: true } : {}),
+              ...(overage ? { overage: true } : {}),
               ...(dropped === undefined || dropped.blocks === 0
                 ? {}
                 : { thinkingDropped: dropped.blocks, dropReason: dropped.reason }),
