@@ -334,9 +334,15 @@ export class Front implements RootClient {
   /**
    * `/answer`: the user's answer to one of the front's messages, named by a unique prefix of its id, goes to the front
    * as a message that quotes it, so it stands on its own whatever came between. Any message can be answered; an ask is
-   * marked answered, and a second answer says it corrects the first.
+   * marked answered, and a second answer says it corrects the first. Attachments go along as `submit` carries them.
    */
-  async answer(id: string, text: string, requestId: string, whenBusy: WhenBusy): Promise<void> {
+  async answer(
+    id: string,
+    text: string,
+    requestId: string,
+    whenBusy: WhenBusy,
+    attachments: readonly Attachment[] = [],
+  ): Promise<void> {
     if (!text.trim()) throw new Error("Usage: /answer <id> <text>");
     const front = await this.conversation();
     const item = findItem(
@@ -354,6 +360,7 @@ export class Front implements RootClient {
       }),
       requestId,
       whenBusy,
+      attachments,
     );
     await front.commit(async (tx) => {
       const stored = (await tx.doc(InboxItemsDoc, front.id)).items.find(

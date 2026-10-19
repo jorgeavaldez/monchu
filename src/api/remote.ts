@@ -165,8 +165,16 @@ class RemoteRoot implements RootClient {
       state.dispose();
     };
   }
-  answer(id: string, message: string, requestId: string, whenBusy: "steer" | "followUp") {
-    return this.run((root) => root.answer({ id, message, requestId, whenBusy }));
+  answer(
+    id: string,
+    message: string,
+    requestId: string,
+    whenBusy: "steer" | "followUp",
+    attachments?: readonly Attachment[],
+  ) {
+    return this.run((root) =>
+      root.answer({ id, message, requestId, whenBusy, ...sent(attachments) }),
+    );
   }
   command(name: string, text: string, workerName?: string) {
     return this.run((root) =>

@@ -468,13 +468,14 @@ export async function runTerminal(
     files: readonly LocalFile[] = [],
   ): Promise<void> {
     if (closing) return;
-    // Files alone make a message; with a command, they wait for the next message.
+    // Files alone make a message; an answer carries them, and with another command they wait for the next message.
     const input =
       raw.trim() || files.length === 0
         ? parseInput(raw)
         : { command: "message" as const, text: "" };
     if (!input) return;
-    if (input.command !== "message" && input.command !== "skill") view.attachFiles(files);
+    if (input.command !== "message" && input.command !== "skill" && input.command !== "/answer")
+      view.attachFiles(files);
     switch (input.command) {
       case "/attach": {
         if (!input.text) view.notice(`Usage: /attach <path|clear>`);
@@ -796,7 +797,13 @@ export async function runTerminal(
         view.notice("compaction started");
         break;
       case "/answer":
-        await front.answer(input.id, input.text, randomUUID(), whenBusy);
+        await front.answer(
+          input.id,
+          input.text,
+          randomUUID(),
+          whenBusy,
+          await Promise.all(files.map((file) => front.attach(file.name, file.data))),
+        );
         view.notice(`answered · ${input.id}`);
         break;
       case "/cd": {

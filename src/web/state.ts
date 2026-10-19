@@ -815,7 +815,7 @@ export function forgetRetry(): void {
 
 /**
  * One editor submission: a message, a skill, or a command, as the terminal handles it. Resolves `sent` once a message
- * carried `attachments` (files alone make a message, and with a command they wait for the next one), `failed` when it
+ * or an answer carried `attachments` (files alone make a message, and with another command they wait for the next one), `failed` when it
  * didn't go, so the editor takes the text back.
  */
 export async function submit(
@@ -953,7 +953,7 @@ async function runInput(
       return notice("new context · root");
     case "/answer":
       following.value++;
-      await root().answer(input.id, input.text, requestId, mode.value);
+      await root().answer(input.id, input.text, requestId, mode.value, attachments);
       notice(`answered · ${input.id}`);
       return true;
     case "/compact":

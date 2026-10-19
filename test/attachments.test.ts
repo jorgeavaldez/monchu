@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { messageParts, UPLOAD_CHUNK_BYTES } from "../src/api/attachments.ts";
 import { attachedInput, storeAttachment } from "../src/core/attachments.ts";
+import { shortId } from "../src/api/ids.ts";
 import { Monchu } from "../src/core/backend.ts";
 import { images } from "../src/core/tools/images.ts";
 import { ingress, openCoreHost } from "../src/server/host.ts";
@@ -90,6 +91,23 @@ describe("attachments", () => {
       expect(new Uint8Array(await readFile(files[0]?.path ?? ""))).toEqual(bytes);
       expect(await readFile(files[1]?.path ?? "", "utf8")).toBe("remember this");
       expect(files[0]?.path.startsWith(join(home, "attachments"))).toBe(true);
+
+      // An /answer carries its attachments the same way.
+      let reply: number | undefined;
+      const stop = await root.watchInbox((items) => {
+        reply = items.at(-1)?.entry ?? reply;
+      });
+      await waitFor(() => reply !== undefined);
+      stop();
+      const before = requests.length;
+      await root.answer(shortId(reply ?? 0), "like this", "attach:2", "followUp", [notes]);
+      await waitFor(() => requests.length > before && !presentation(view.value).busy);
+      const answer = requests.at(-1)?.at(-1);
+      if (answer?.role !== "user" || typeof answer.content === "string")
+        throw new Error("Expected the user's answer with attachments");
+      const answered = messageParts(answer.content);
+      expect(answered.text).toMatch(/^\[The user answers your message #.*\]\nlike this$/);
+      expect(answered.files.map((file) => file.name)).toEqual(["notes.txt"]);
       view.dispose();
     } finally {
       await attached?.close();
