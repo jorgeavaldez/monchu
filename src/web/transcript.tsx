@@ -24,6 +24,7 @@ import type { InboxItem } from "../api/client.ts";
 import { Briefer } from "./inbox.tsx";
 import {
   expandAll,
+  expandPresses,
   filter,
   following,
   inbox,
@@ -34,6 +35,13 @@ import {
 } from "./state.ts";
 
 const PREVIEW_LINES = 4;
+
+/** Whether a card is open, and a way to open or close it by hand until the next expand-all press. */
+function useFold(): [boolean, (open: boolean) => void] {
+  const own = useSignal<{ open: boolean; press: number } | undefined>(undefined);
+  const mine = own.value?.press === expandPresses.value ? own.value.open : undefined;
+  return [mine ?? expandAll.value, (open) => (own.value = { open, press: expandPresses.peek() })];
+}
 
 /** Plain text with links made clickable: what the user typed, tool output and notices. */
 function Text({ text }: { text: string }) {
@@ -70,14 +78,13 @@ function Card(props: {
   /** Lines shown while collapsed; none shows the header alone. */
   preview?: number;
 }) {
-  const open = useSignal<boolean | undefined>(undefined);
+  const [expanded, setOpen] = useFold();
   const preview = props.preview ?? PREVIEW_LINES;
   const lines = props.body.split("\n");
   // Whether the clamped preview hides wrapped lines; measured once it is laid out.
   const clipped = useSignal(false);
   const text = useRef<HTMLDivElement>(null);
   const long = lines.length > preview || clipped.value;
-  const expanded = open.value ?? expandAll.value;
   const folded = long && !expanded;
   useLayoutEffect(() => {
     const element = text.current;
@@ -89,7 +96,7 @@ function Card(props: {
       onClick={(event) => {
         if (!long || (event.target instanceof HTMLElement && event.target.closest("a, button")))
           return;
-        open.value = !expanded;
+        setOpen(!expanded);
       }}
     >
       <header>
@@ -144,8 +151,7 @@ function ToolCard(props: {
   result: ToolResultMessage | undefined;
   running: string | undefined;
 }) {
-  const open = useSignal<boolean | undefined>(undefined);
-  const expanded = open.value ?? expandAll.value;
+  const [expanded, setOpen] = useFold();
   const output = props.result === undefined ? (props.running ?? "") : textOf(props.result.content);
   const lines = output.split("\n").filter((line) => line.trim());
   const line = props.result === undefined ? lines.at(-1) : lines[0];
@@ -162,7 +168,7 @@ function ToolCard(props: {
         class="row"
         aria-expanded={expanded}
         onClick={() => {
-          open.value = !expanded;
+          setOpen(!expanded);
         }}
       >
         <span aria-hidden="true">{expanded ? "▾" : "▸"}</span> <b>{props.name}</b>{" "}
@@ -189,8 +195,7 @@ function ToolCard(props: {
  * its whole text. Its dotted box sets it apart from tool rows and workers' cards.
  */
 function JobBox(props: { name: string; what: string; text: string; at: ComponentChildren }) {
-  const open = useSignal<boolean | undefined>(undefined);
-  const expanded = open.value ?? expandAll.value;
+  const [expanded, setOpen] = useFold();
   const line = props.text.split("\n").find((each) => each.trim());
   return (
     <section class="job">
@@ -199,7 +204,7 @@ function JobBox(props: { name: string; what: string; text: string; at: Component
         class="row"
         aria-expanded={expanded}
         onClick={() => {
-          open.value = !expanded;
+          setOpen(!expanded);
         }}
       >
         <span aria-hidden="true">{expanded ? "▾" : "▸"} ⏱</span> {props.at} <b>{props.name}</b>{" "}

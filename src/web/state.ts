@@ -82,6 +82,16 @@ export const workers = signal<readonly WorkerSummary[]>([]);
 export const notices = signal<Notice[]>([]);
 export const mode = signal<WhenBusy>("followUp");
 export const expandAll = signal(false);
+/** Counts expand-all presses: a card opened or closed by hand keeps that only until the next press. */
+export const expandPresses = signal(0);
+
+/** Open or close every card, including the ones opened or closed by hand. */
+export function toggleExpandAll(): void {
+  batch(() => {
+    expandAll.value = !expandAll.value;
+    expandPresses.value++;
+  });
+}
 export const choice = signal<Choice | undefined>(undefined);
 export const ask = signal<Ask | undefined>(undefined);
 /** What a login shows while it waits: its message, a link to open, a code to read. */

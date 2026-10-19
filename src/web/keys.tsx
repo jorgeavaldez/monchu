@@ -10,6 +10,7 @@ import {
   editing,
   endEdit,
   expandAll,
+  toggleExpandAll,
   interrupt,
   mode,
   shown,
@@ -90,7 +91,7 @@ export function Keys({
         title="expand every card (Ctrl+O)"
         pressed={expandAll.value}
         onPress={() => {
-          expandAll.value = !expandAll.value;
+          toggleExpandAll();
         }}
       >
         {expandAll.value ? "⊟" : "⊞"}

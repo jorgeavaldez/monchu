@@ -1205,6 +1205,15 @@ async function journeys(
       check((await page(`!!${tool}.querySelector("pre")`)) === true, "a tap doesn't open the call");
       await page(`${tool}.querySelector(".row").click()`);
       check((await page(`!${tool}.querySelector("pre")`)) === true, "a second tap doesn't fold it");
+      // Expand all and back folds a call opened by hand too.
+      const expandAll = `document.querySelector("textarea").dispatchEvent(new KeyboardEvent("keydown", { key: "o", ctrlKey: true, bubbles: true, cancelable: true }))`;
+      await page(`${tool}.querySelector(".row").click()`);
+      await page(expandAll);
+      await page(expandAll);
+      check(
+        (await page(`!${tool}.querySelector("pre")`)) === true,
+        "expand all and back didn't fold the call opened by hand",
+      );
       // An image a tool returns, a screenshot say, shows under its folded row.
       const image = join(home, "tool-check.png");
       await writeFile(image, await gradientPng(240, 140));
@@ -1220,7 +1229,7 @@ async function journeys(
         "the image's call isn't folded",
       );
       await capture("tool-image", home, origin);
-      return "folded to one line, aligned with the messages, opened and folded by tap; a returned image shows under its row";
+      return "folded to one line, aligned with the messages, opened and folded by tap and by expand all; a returned image shows under its row";
     },
   );
 

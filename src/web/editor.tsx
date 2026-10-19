@@ -29,7 +29,7 @@ import {
   linkError,
   editing,
   endEdit,
-  expandAll,
+  toggleExpandAll,
   forgetRetry,
   interrupt,
   mode,
@@ -266,7 +266,7 @@ export function Editor() {
           }
           if (event.ctrlKey && event.key.toLowerCase() === "o") {
             event.preventDefault();
-            expandAll.value = !expandAll.value;
+            toggleExpandAll();
             return;
           }
           if (items.length > 0 && event.key === "Tab") {
