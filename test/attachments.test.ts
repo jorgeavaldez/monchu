@@ -92,7 +92,7 @@ describe("attachments", () => {
       expect(await readFile(files[1]?.path ?? "", "utf8")).toBe("remember this");
       expect(files[0]?.path.startsWith(join(home, "attachments"))).toBe(true);
 
-      // An /answer carries its attachments the same way.
+      // A /reply carries its attachments the same way.
       let reply: number | undefined;
       const stop = await root.watchInbox((items) => {
         reply = items.at(-1)?.entry ?? reply;
@@ -100,13 +100,13 @@ describe("attachments", () => {
       await waitFor(() => reply !== undefined);
       stop();
       const before = requests.length;
-      await root.answer(shortId(reply ?? 0), "like this", "attach:2", "followUp", [notes]);
+      await root.reply(shortId(reply ?? 0), "like this", "attach:2", "followUp", [notes]);
       await waitFor(() => requests.length > before && !presentation(view.value).busy);
       const answer = requests.at(-1)?.at(-1);
       if (answer?.role !== "user" || typeof answer.content === "string")
         throw new Error("Expected the user's answer with attachments");
       const answered = messageParts(answer.content);
-      expect(answered.text).toMatch(/^\[The user answers your message #.*\]\nlike this$/);
+      expect(answered.text).toMatch(/^\[The user replies to your message #.*\]\nlike this$/);
       expect(answered.files.map((file) => file.name)).toEqual(["notes.txt"]);
       view.dispose();
     } finally {

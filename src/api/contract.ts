@@ -262,7 +262,7 @@ export const Root = remote("monchu.root", {
       state: { notices: trusted<ClientNotice[]>(), inbox: trusted<InboxItem[]>() },
       methods: {
         submit: method(Type.Object({ message: text, requestId: text, whenBusy, attachments })),
-        answer: method(Type.Object({ id, message: text, requestId: text, whenBusy, attachments })),
+        reply: method(Type.Object({ id, message: text, requestId: text, whenBusy, attachments })),
         messageWorker: method(
           Type.Object({ worker: text, message: text, requestId: text, whenBusy, attachments }),
         ),

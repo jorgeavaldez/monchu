@@ -29,7 +29,7 @@ type Input =
         | "/attach";
       text: string;
     }
-  | { command: "/answer"; id: string; text: string }
+  | { command: "/reply"; id: string; text: string }
   | { command: "skill"; name: string; text: string }
   | { command: "plugin"; name: string; text: string };
 
@@ -50,9 +50,9 @@ export const commands: Record<
     help: "roots: switch, start, rename, archive; each has its own crew",
   },
   "/goals": { usage: "", help: "ongoing projects and commitments" },
-  "/answer": {
+  "/reply": {
     usage: "<id> <text>",
-    help: "answer one of Monchu's messages by its id; it reaches the front quoted",
+    help: "reply to one of Monchu's messages by its id (tap the id); it reaches the front quoted",
   },
   "/jobs": {
     usage: "",
@@ -193,7 +193,7 @@ export function parseInput(raw: string): Input | undefined {
     case "/cd":
       if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
-    case "/answer": {
+    case "/reply": {
       const id = rest.split(/\s+/, 1)[0] ?? "";
       const text = rest.slice(id.length).trim();
       if (!id || !text) throw new Error(`Usage: ${command} ${commands[command].usage}`);

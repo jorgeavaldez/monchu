@@ -93,10 +93,15 @@ export function sentAt(entry: EntryRecord): number | undefined {
   return message?.role === "user" ? message.timestamp : undefined;
 }
 
+/** A time of day in local time, written the one way every client shows times: the locale's short form. */
+export function clock(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { timeStyle: "short" });
+}
+
 /** When an entry was sent, in local time: the time alone today, with the date otherwise. */
 export function stamp(at: number, now = Date.now()): string {
   const date = new Date(at);
   return new Date(now).toDateString() === date.toDateString()
-    ? date.toLocaleTimeString(undefined, { timeStyle: "short" })
+    ? clock(at)
     : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }

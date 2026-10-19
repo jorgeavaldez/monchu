@@ -7,6 +7,7 @@ import { useEffect } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { Client, Goal } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
+import { clock } from "../ui/ids.ts";
 import { age, span } from "../ui/state.ts";
 import { Panel } from "./panel.tsx";
 import { client, jobEvent, root, rootId, view } from "./state.ts";
@@ -188,8 +189,6 @@ function jobWhen(job: Job): string {
     .filter(Boolean)
     .join(" · ");
 }
-
-const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
 /** `/jobs`: this root's jobs, then other roots'; finished `bg` commands last; the recent events under them. */
 export function JobsPanel() {

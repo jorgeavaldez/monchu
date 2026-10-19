@@ -10,25 +10,25 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageParts } from "../api/attachments.ts";
 import {
-  parseAnswer,
   parseJobNotice,
+  parseReply,
   skillInvocation,
   systemNoticeSummary,
   workerNotice,
 } from "../api/notices.ts";
-import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
+import { addressable, clock, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
 import { Markdown } from "./markdown.tsx";
 import type { InboxItem } from "../api/client.ts";
 import { Briefer } from "./inbox.tsx";
 import {
-  answerDraft,
   expandAll,
   filter,
   following,
   inbox,
   notices,
+  replyDraft,
   rootId,
   type Notice,
 } from "./state.ts";
@@ -215,20 +215,40 @@ function JobBox(props: { name: string; what: string; text: string; at: Component
   );
 }
 
-/** When an entry was sent and its short id, the unique prefix highlighted as jj does. */
-function Stamp(props: { entry: EntryRecord; ids: ShortIds }) {
+/**
+ * When an entry was sent and its short id, the unique prefix highlighted as jj does. A front's message takes a reply:
+ * tapping its id starts one in the editor.
+ */
+function Stamp(props: { entry: EntryRecord; ids: ShortIds; reply: boolean }) {
   const { code, unique, rest } = props.ids.split(props.entry.id);
+  const id = (
+    <>
+      <span class="prefix">{unique}</span>
+      {rest}
+    </>
+  );
   return (
     <span class="stamp" id={`m-${code}`}>
-      {stamp(sentAt(props.entry) ?? 0)} · <span class="prefix">{unique}</span>
-      {rest}
+      {stamp(sentAt(props.entry) ?? 0)} ·{" "}
+      {props.reply ? (
+        <button
+          type="button"
+          class="code"
+          title={`reply to ${code}`}
+          onClick={() => replyDraft(code)}
+        >
+          {id}
+        </button>
+      ) : (
+        id
+      )}
     </span>
   );
 }
 
 const KIND_LABELS = { ask: "ask", milestone: "done", update: "update", reply: "reply" };
 
-/** An inbox item's label after its stamp: kind, goal and an ask's state, with a way to answer it. */
+/** An inbox item's label after its stamp: kind, goal and an ask's state, with a way to reply to an open ask. */
 function Label({ item, code }: { item: InboxItem; code: string }) {
   if (item.kind === undefined) return null;
   return (
@@ -237,11 +257,13 @@ function Label({ item, code }: { item: InboxItem; code: string }) {
         {" · "}
         {KIND_LABELS[item.kind]}
         {item.goal ? ` · ${item.goal}` : ""}
-        {item.state === undefined || item.state === "open" ? "" : ` · ${item.state}`}
+        {item.state === undefined || item.state === "open"
+          ? ""
+          : ` · ${item.state === "answered" ? "replied" : item.state}`}
       </span>
       {item.kind === "ask" && item.state === "open" ? (
-        <button type="button" class="answer" onClick={() => answerDraft(code)}>
-          answer
+        <button type="button" class="reply" onClick={() => replyDraft(code)}>
+          reply
         </button>
       ) : null}
     </>
@@ -290,7 +312,9 @@ function entryNode(
   ids: ShortIds,
   item: InboxItem | undefined,
 ): VNode | null {
-  const shown = addressable(entry) ? <Stamp entry={entry} ids={ids} /> : undefined;
+  const shown = addressable(entry) ? (
+    <Stamp entry={entry} ids={ids} reply={item !== undefined} />
+  ) : undefined;
   const notice = workerNotice(entry);
   if (notice !== undefined) {
     const card = (
@@ -341,16 +365,16 @@ function entryNode(
           <div class="meta">{shown}</div>
         </>
       );
-    // An /answer shows what the user wrote under a link to the message it answers; the front gets the quote too.
-    const answer = parseAnswer(text);
-    if (answer !== undefined)
+    // A /reply shows what the user wrote under a link to the message it replies to; the front gets the quote too.
+    const reply = parseReply(text);
+    if (reply !== undefined)
       return (
         <>
           <div class="user">
-            <a class="ref" href={`#m-${answer.id}`}>
-              ↩ #{answer.id}
+            <a class="ref" href={`#m-${reply.id}`}>
+              ↩ #{reply.id}
             </a>{" "}
-            <Text text={answer.text} />
+            <Text text={reply.text} />
           </div>
           <div class="meta">{shown}</div>
         </>
@@ -394,19 +418,19 @@ const cache = new WeakMap<EntryRecord, { results: string; node: VNode | null }>(
 const shortIds = new Map<ConversationView["conversation"]["id"], ShortIds>();
 
 function NoticeLine({ item }: { item: Notice }) {
-  const clock = <span class="time">{new Date(item.at).toTimeString().slice(0, 5)} </span>;
+  const at = <span class="time">{clock(item.at)} </span>;
   if (item.job !== undefined)
     return (
       <JobBox
         name={item.job.job}
         what={`${item.job.kind}${item.job.worker === undefined ? "" : ` → ${item.job.worker}`}`}
         text={item.job.text}
-        at={clock}
+        at={at}
       />
     );
   return (
     <pre class={`notice ${item.kind}`}>
-      {clock}
+      {at}
       <Text text={item.text} />
     </pre>
   );

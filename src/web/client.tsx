@@ -1,13 +1,14 @@
 /**
  * `/client`: this client's own settings, which never reach the core. The app's name is this device's, kept by the web
  * server, which names its install manifest with it; the theme is this browser's. The install offer is here too: a
- * browser's own prompt, offered once and kept in the menu, since no page can install itself.
+ * browser's own prompt, offered once and kept in the menu, since no page can install itself. A phone is offered push
+ * once the same way, since that is where it matters and nobody looks for it in a menu.
  */
 import { signal, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Close, Panel } from "./panel.tsx";
 import type { InboxKind } from "../api/client.ts";
-import { client, panel } from "./state.ts";
+import { client, connection, panel } from "./state.ts";
 
 /** What Chrome hands a page it would install: its prompt, and how the person answered. */
 type InstallPrompt = Event & {
@@ -23,6 +24,7 @@ type Theme = "system" | "light" | "dark";
 const THEMES: readonly Theme[] = ["system", "light", "dark"];
 const THEME_KEY = "monchu.theme";
 const OFFER_KEY = "monchu.install";
+const PUSH_OFFER_KEY = "monchu.push";
 
 /** The app's name on this device, and whether this sign-in may change it (a service token may not). */
 const appName = signal("Monchu");
@@ -32,6 +34,8 @@ const offer = signal<InstallPrompt | undefined>(undefined);
 const installed = signal(false);
 /** The offer's dismissal outlives the page, so it is made once. */
 const offerDismissed = signal(false);
+/** The push offer's, likewise; set too once push is turned on from it. */
+const pushOffered = signal(false);
 
 /** The menu's last outcome. */
 const message = signal<{ text: string; failed: boolean } | undefined>(undefined);
@@ -47,6 +51,7 @@ export function startClient(): void {
   const saved = THEMES.find((each) => each === localStorage.getItem(THEME_KEY));
   if (saved !== undefined) applyTheme(saved);
   offerDismissed.value = localStorage.getItem(OFFER_KEY) === "dismissed";
+  pushOffered.value = localStorage.getItem(PUSH_OFFER_KEY) === "offered";
   installed.value = matchMedia("(display-mode: standalone)").matches;
   addEventListener("beforeinstallprompt", (event) => {
     // Held for the menu and the one-time offer, in place of the browser's own mini bar.
@@ -188,10 +193,14 @@ async function loadPush(): Promise<void> {
   pushed.value = current === null ? [] : ((await client().pushKinds(current.endpoint)) ?? []);
 }
 
-/** Push this browser one kind more or less: asks the browser's permission, and subscribes on the first. */
+/** Push this browser one kind more or less. */
 async function togglePush(kind: InboxKind): Promise<void> {
   const kinds = pushed.value ?? [];
-  const next = kinds.includes(kind) ? kinds.filter((each) => each !== kind) : [...kinds, kind];
+  await setPush(kinds.includes(kind) ? kinds.filter((each) => each !== kind) : [...kinds, kind]);
+}
+
+/** Push this browser these kinds: asks the browser's permission, and subscribes on the first. */
+async function setPush(next: InboxKind[]): Promise<void> {
   if (next.length > 0 && (await Notification.requestPermission()) !== "granted") {
     message.value = {
       text: "notifications are blocked for this site in the browser",
@@ -309,7 +318,58 @@ export function ClientPanel() {
   );
 }
 
-/** The browser's install offer, once: a line over the editor until it's taken or dismissed. */
+function pushOfferDone(): void {
+  pushOffered.value = true;
+  localStorage.setItem(PUSH_OFFER_KEY, "offered");
+}
+
+/** Push of asks and done on this phone, offered once until it's turned on or dismissed; the menu keeps it after. */
+function PushOffer() {
+  const phone = matchMedia("(pointer: coarse)").matches;
+  const wanted = phone && !pushOffered.value && panel.value !== "client";
+  const live = connection.value === "live";
+  useEffect(() => {
+    if (wanted && live) void loadPush().catch(() => {});
+  }, [wanted, live]);
+  if (
+    !wanted ||
+    pushed.value === undefined ||
+    pushed.value.length > 0 ||
+    Notification.permission === "denied"
+  )
+    return null;
+  return (
+    <div class="offer" role="status">
+      <span>notify this phone when Monchu needs you or finishes something</span>
+      <button
+        type="button"
+        onClick={() => {
+          pushOfferDone();
+          // Whatever goes wrong shows in the menu, where push can be tried again.
+          message.value = undefined;
+          void setPush(PUSH_KINDS.map(([kind]) => kind))
+            .catch((error: unknown) => {
+              message.value = {
+                text: `push: ${error instanceof Error ? error.message : String(error)}`,
+                failed: true,
+              };
+            })
+            .then(() => {
+              if (message.value?.failed === true) panel.value = "client";
+            });
+        }}
+      >
+        turn on
+      </button>
+      <Close label="close" onClose={pushOfferDone} />
+    </div>
+  );
+}
+
+/**
+ * The browser's install offer, once: a line over the editor until it's taken or dismissed. Push is offered on a phone
+ * in its place once there's no install to offer.
+ */
 export function InstallOffer() {
   if (
     offer.value === undefined ||
@@ -317,7 +377,7 @@ export function InstallOffer() {
     offerDismissed.value ||
     panel.value === "client"
   )
-    return null;
+    return <PushOffer />;
   return (
     <div class="offer" role="status">
       <span>install {appName.value} as an app</span>

@@ -502,8 +502,8 @@ export default defineFacet<Principal>(
         variant: "owner",
         notices,
         inbox,
-        answer: ({ id, message, requestId, whenBusy, attachments }) =>
-          front().answer(id, message, requestId, whenBusy, attachments),
+        reply: ({ id, message, requestId, whenBusy, attachments }) =>
+          front().reply(id, message, requestId, whenBusy, attachments),
         submit: ({ message, requestId, whenBusy, attachments }) =>
           front().submit(message, requestId, whenBusy, attachments),
         messageWorker: ({ worker, message, requestId, whenBusy, attachments }) =>

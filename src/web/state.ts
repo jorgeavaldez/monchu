@@ -343,9 +343,9 @@ export async function pickGoal(): Promise<void> {
   filter.value = picked.id ? { ...rest, goal: picked.id } : rest;
 }
 
-/** Start an answer to a message by its id in the editor. */
-export function answerDraft(code: string): void {
-  draft.value = `/answer ${code} `;
+/** Start a reply to a message by its id in the editor, keeping what was typed after an earlier one. */
+export function replyDraft(code: string): void {
+  draft.value = `/reply ${code} ${draft.value.replace(/^\/reply \S+ ?/, "")}`;
 }
 
 export async function show(name: string | undefined): Promise<void> {
@@ -951,10 +951,10 @@ async function runInput(
     case "/new":
       await root().reset(input.text || undefined);
       return notice("new context · root");
-    case "/answer":
+    case "/reply":
       following.value++;
-      await root().answer(input.id, input.text, requestId, mode.value, attachments);
-      notice(`answered · ${input.id}`);
+      await root().reply(input.id, input.text, requestId, mode.value, attachments);
+      notice(`replied · ${input.id}`);
       return true;
     case "/compact":
       await root().compact(input.text || undefined);

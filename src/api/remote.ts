@@ -165,7 +165,7 @@ class RemoteRoot implements RootClient {
       state.dispose();
     };
   }
-  answer(
+  reply(
     id: string,
     message: string,
     requestId: string,
@@ -173,7 +173,7 @@ class RemoteRoot implements RootClient {
     attachments?: readonly Attachment[],
   ) {
     return this.run((root) =>
-      root.answer({ id, message, requestId, whenBusy, ...sent(attachments) }),
+      root.reply({ id, message, requestId, whenBusy, ...sent(attachments) }),
     );
   }
   command(name: string, text: string, workerName?: string) {

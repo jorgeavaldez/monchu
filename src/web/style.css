@@ -320,6 +320,16 @@ pre {
   color: var(--yellow);
   font-weight: bold;
 }
+/* A front message's id, tapped to start a reply: the id as shown, with a tap target around it. */
+.stamp .code {
+  padding: 0 var(--s1);
+  margin: 0 calc(-1 * var(--s1));
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline dotted;
+}
 .card.report {
   border-left: 3px solid var(--accent);
 }
@@ -907,7 +917,7 @@ p.offer {
   color: var(--yellow);
   font-weight: bold;
 }
-.meta .answer {
+.meta .reply {
   margin-left: var(--s1);
   padding: 0 var(--s1);
 }

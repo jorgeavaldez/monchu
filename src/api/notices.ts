@@ -98,23 +98,28 @@ export function parseJobNotice(content: string): JobNotice | undefined {
 }
 
 /**
- * The user's `/answer` to one of the front's messages as the front gets it: the message quoted by id, kind and
+ * The user's `/reply` to one of the front's messages as the front gets it: the message quoted by id, kind and
  * headline, so it stands on its own, then what the user wrote.
  */
-export function answerText(answer: {
+export function replyText(reply: {
   id: string;
   about: string;
   headline: string;
   again: boolean;
   text: string;
 }): string {
-  const again = answer.again ? "; this corrects the user's earlier answer" : "";
-  return `[The user answers your message #${answer.id} (${answer.about}): "${answer.headline.replace(/\n/g, " ")}"${again}]\n${answer.text}`;
+  const again = reply.again ? "; this corrects the user's earlier reply" : "";
+  return `[The user replies to your message #${reply.id} (${reply.about}): "${reply.headline.replace(/\n/g, " ")}"${again}]\n${reply.text}`;
 }
 
-/** The id an answer's text replies to, and what the user wrote; `undefined` for any other text. */
-export function parseAnswer(content: string): { id: string; text: string } | undefined {
-  const match = /^\[The user answers your message #([k-z]+) \(.*\]\n([\s\S]*)$/.exec(content);
+const REPLY = /^\[The user (?:replies to|answers) your message #([k-z]+) \(.*\]\n([\s\S]*)$/;
+
+/**
+ * The id a reply's text names, and what the user wrote; `undefined` for any other text. Transcripts from before `/reply`
+ * hold the same quote worded as an answer.
+ */
+export function parseReply(content: string): { id: string; text: string } | undefined {
+  const match = REPLY.exec(content);
   return match === null ? undefined : { id: match[1] ?? "", text: match[2] ?? "" };
 }
 

@@ -28,7 +28,7 @@ import {
 afterEach(cleanup);
 
 describe("inbox", () => {
-  it("files the front's replies by id, takes its relabels and closes, and quotes an /answer to it", async () => {
+  it("files the front's replies by id, takes its relabels and closes, and quotes a /reply to it", async () => {
     const value = await setup();
     const home = join(value.directory, "home");
     await mkdir(home, { recursive: true });
@@ -89,7 +89,7 @@ describe("inbox", () => {
         by: "front",
       });
 
-      await front.answer(ask, "ship it", "r4", "followUp");
+      await front.reply(ask, "ship it", "r4", "followUp");
       await waitFor(() =>
         items.some((each) => each.entry === item.entry && each.state === "answered"),
       );
@@ -98,9 +98,9 @@ describe("inbox", () => {
         (await allEntries(conversation)).flatMap((entry) =>
           UserEntry.is(entry) ? [textOf(entry.model?.[0])] : [],
         );
-      const quoted = `[The user answers your message #${shortId(item.entry)} (ask): "Monchu inbox: ship it now, or after a review?"]\nship it`;
+      const quoted = `[The user replies to your message #${shortId(item.entry)} (ask): "Monchu inbox: ship it now, or after a review?"]\nship it`;
       await waitFor(async () => (await typed()).includes(quoted));
-      await expect(front.answer("zzzzzzz", "x", "r5", "followUp")).rejects.toThrow(/No message/);
+      await expect(front.reply("zzzzzzz", "x", "r5", "followUp")).rejects.toThrow(/No message/);
       stop();
     } finally {
       await backend.close();
@@ -199,13 +199,13 @@ describe("inbox", () => {
     }
   });
 
-  it("parses /answer and reads a headline", () => {
-    expect(parseInput("/answer kx ship it\nnow")).toEqual({
-      command: "/answer",
+  it("parses /reply and reads a headline", () => {
+    expect(parseInput("/reply kx ship it\nnow")).toEqual({
+      command: "/reply",
       id: "kx",
       text: "ship it\nnow",
     });
-    expect(() => parseInput("/answer kx")).toThrow(/Usage/);
+    expect(() => parseInput("/reply kx")).toThrow(/Usage/);
     expect(headlineOf("\n## **Done:** inbox shipped\nmore")).toBe("Done: inbox shipped");
     expect(markOf("done · monchu: inbox shipped")).toEqual({
       kind: "milestone",

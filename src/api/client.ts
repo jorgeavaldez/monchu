@@ -152,10 +152,10 @@ export interface RootClient {
   /** The root's inbox: its front's messages with their labels, newest last, as they change; returns a stop function. */
   watchInbox(listener: (items: readonly InboxItem[]) => void): Promise<() => void>;
   /**
-   * `/answer`: the user's answer to one of the front's messages, by a unique prefix of its id, quoted to the front with
+   * `/reply`: the user's reply to one of the front's messages, by a unique prefix of its id, quoted to the front with
    * its attachments as `submit` carries them.
    */
-  answer(
+  reply(
     id: string,
     text: string,
     requestId: string,

@@ -1,7 +1,7 @@
 /**
  * The inbox: every message a root's front sends the user with text in it is an item, named by the short id the clients
  * already show beside it, with its headline (the first line) and, once the routing helper or the front labels it, a
- * kind and the goal it belongs to. Clients filter the stream by them and push the kinds a person asks for; `/answer`
+ * kind and the goal it belongs to. Clients filter the stream by them and push the kinds a person asks for; `/reply`
  * replies to one by id. Items are kept in the front's own `monchu.inbox` document, so compaction and `/new` keep them.
  */
 import { StringEnum, Type } from "@earendil-works/pi-ai";
