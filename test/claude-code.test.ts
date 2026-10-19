@@ -446,6 +446,52 @@ describe("Claude Code subscription provider", () => {
     expect(script.requests[7]?.path).toBe(firstPath);
   });
 
+  it("pins Claude Code's cache TTL: 1h for long retention, 5m for short or while the account is on overage", async () => {
+    const value = await setup();
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" }]);
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const ask = (cacheRetention: "long" | "short") =>
+      models.completeSimple(
+        model,
+        { messages: [{ role: "user", content: "one", timestamp: 1 }] },
+        { sessionId: `ttl-${cacheRetention}`, cacheRetention },
+      );
+    const pinned = (request: (typeof script.requests)[number] | undefined) => {
+      const settings = request?.input.options?.settings;
+      return typeof settings === "object" ? settings.promptCacheTtl : undefined;
+    };
+    await ask("long");
+    await ask("short");
+    expect(script.requests.map(pinned)).toEqual(["1h", "5m"]);
+    // Overage Claude Code reported holds until that limit resets, in a later process too.
+    const overage = join(value.directory, "claude", "overage.json");
+    await writeFile(overage, JSON.stringify({ on: true, until: Date.now() + 60_000 }));
+    const later = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" }]);
+    });
+    const reopened = await openClaudeModels(value.directory, later.provider, token);
+    await reopened.completeSimple(
+      model,
+      { messages: [{ role: "user", content: "one", timestamp: 1 }] },
+      { sessionId: "ttl-overage", cacheRetention: "long" },
+    );
+    await writeFile(overage, JSON.stringify({ on: true, until: Date.now() - 1 }));
+    const lapsed = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" }]);
+    });
+    const again = await openClaudeModels(value.directory, lapsed.provider, token);
+    await again.completeSimple(
+      model,
+      { messages: [{ role: "user", content: "one", timestamp: 1 }] },
+      { sessionId: "ttl-lapsed", cacheRetention: "long" },
+    );
+    expect([pinned(later.requests[0]), pinned(lapsed.requests[0])]).toEqual(["5m", "1h"]);
+  });
+
   it("resumes its session after an abort, cut back to the last clean turn, and imports an orphaned tool result with the continuation prompt", async () => {
     const value = await setup();
     const entered = Promise.withResolvers<void>();

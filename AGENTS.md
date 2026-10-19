@@ -43,6 +43,7 @@ Providers cache each request's prefix (tools, system prompt, then messages). Any
 - A conversation's tools only grow. Never drop, reorder or redeclare one (restarts included), and keep tool descriptions stable; on the Claude Code bridge any change re-caches the conversation.
 - A restart, abort or retry resumes the provider's existing session; it never rebuilds one that renders differently.
 - Touching prompt, section, tool or provider code: run `test/cache.test.ts` and the Claude Code tests, and check `cacheMiss` in the `core.model` reply log.
+- `test/cache.test.ts` runs one scenario (tool rounds, a home edit, restarts idle and mid-turn, a miss after a restart) against a simulation of each way a provider caches. A provider that caches differently from those gets its own simulation there.
 
 ## Code rules
 

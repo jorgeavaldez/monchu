@@ -6,6 +6,7 @@ import {
   type Api,
   type AuthInteraction,
   type AuthType,
+  type Message,
   type Model,
   type Provider,
   type Models,
@@ -16,6 +17,7 @@ import {
   type CommitPublication,
   type ConversationId,
   type EntryId,
+  type EntryRecord,
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -126,6 +128,7 @@ export class Monchu implements Client {
   /** The structured log: warnings, timings, model replies and client events. */
   readonly log: Log;
   private readonly stopTelemetry: () => void;
+  private readonly telemetry: ReturnType<typeof modelTelemetry>;
   /** This device's browsers that asked for pushes, and what sends them. */
   private readonly pusher: Pusher;
   /** Inbox work per conversation, one run at a time. */
@@ -164,9 +167,10 @@ export class Monchu implements Client {
     this.pusher = new Pusher(home, (body, attributes) =>
       log.write("info", "core.push", body, attributes),
     );
-    const telemetry = modelTelemetry(log);
+    this.telemetry = modelTelemetry(log, harness);
+    const telemetry = this.telemetry;
     this.stopTelemetry = harness.subscribeCommits((publication) => {
-      telemetry(publication);
+      telemetry.observe(publication);
       if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
       for (const change of publication.changes)
         // A reply with text joins its root's inbox, as does input carrying a plugin's ask.
@@ -938,7 +942,9 @@ export class Monchu implements Client {
   }
 
   /** The newest log records, oldest first. */
-  logs(query: LogQuery): Promise<LogRecord[]> {
+  async logs(query: LogQuery): Promise<LogRecord[]> {
+    // A reply's record may wait on its conversation's previous prompt from the store.
+    await this.telemetry.settled();
     return this.log.tail(query);
   }
 
@@ -1210,8 +1216,9 @@ export class Monchu implements Client {
       // Clients' views and the build go first; a failed reload must not prevent storage from closing.
       await this.extensions.closeHost();
       await this.reloading?.catch(() => {});
-      // A home check notice in flight still reaches the store before it closes.
+      // A home check notice in flight still reaches the store before it closes, as do reply records reading it.
       await this.homeWork;
+      await this.telemetry.settled();
       // Close pauses accepted work for recovery; it does not cancel workers.
       await this.harness.close(context);
       await this.extensions.close();
@@ -1232,44 +1239,123 @@ export class Monchu implements Client {
 /** A prompt this large that reads under half of the conversation's previous prompt from cache is a cache miss. */
 const CACHE_MISS_TOKENS = 4096;
 
+type ReplyMessage = Extract<Message, { role: "assistant" }>;
+
+const promptOf = ({ usage }: ReplyMessage) => usage.input + usage.cacheRead + usage.cacheWrite;
+
+/**
+ * The prompt of a conversation's last reply before `entry` that sent one, from the store: after a restart the process
+ * has seen none of its replies, and the first request after one is the likeliest to miss.
+ */
+async function storedPrompt(
+  harness: Harness,
+  id: ConversationId,
+  entry: EntryId,
+): Promise<number | undefined> {
+  const conversation = await harness.conversation(id, context);
+  let cursor: Parameters<NonNullable<typeof conversation>["entries"]>[2];
+  for (let page = 0; conversation !== undefined && page < 10; page++) {
+    const found = await conversation.entries(
+      { maxEntryId: entry, order: "descending" },
+      50,
+      cursor,
+      context,
+    );
+    for (const item of found.items) {
+      const message = item.model?.[0];
+      if (item.id === entry || item.kind !== "pi.assistant" || message?.role !== "assistant")
+        continue;
+      if (promptOf(message) > 0) return promptOf(message);
+    }
+    if (found.next === undefined) break;
+    cursor = found.next;
+  }
+  return undefined;
+}
+
+/** What a provider reported about how it prepared the prompt cache (the Claude Code bridge's session path). */
+function cacheDiagnostic(message: ReplyMessage): LogAttributes {
+  const details = message.diagnostics?.find(
+    (diagnostic) => diagnostic.type === "prompt_cache",
+  )?.details;
+  const attributes: LogAttributes = {};
+  for (const [name, value] of Object.entries(details ?? {}))
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+      attributes[`cache${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`] = value;
+  return attributes;
+}
+
 /**
  * One log record per model reply, from the committed assistant entry: model, tokens, cache read ratio, time and stop
  * reason, never content. A reply whose prompt lost most of the previous one's cache is logged as a warning, so prompt
- * cache regressions show in the logs.
+ * cache regressions show in the logs, as is one whose provider reports the server rejected its prefix.
  */
-function modelTelemetry(log: Log): (publication: CommitPublication) => void {
-  const previous = new Map<string, number>();
-  return (publication) => {
-    for (const change of publication.changes) {
-      if (change.type !== "entry" || change.value.kind !== "pi.assistant") continue;
-      const message = change.value.model?.[0];
-      if (message?.role !== "assistant") continue;
-      const { input, cacheRead, cacheWrite } = message.usage;
-      const prompt = input + cacheRead + cacheWrite;
-      const conversation = String(change.value.conversationId);
-      const before = previous.get(conversation);
-      const cacheMiss =
-        prompt > 0 && before !== undefined && before >= CACHE_MISS_TOKENS && cacheRead < before / 2;
-      if (prompt > 0) previous.set(conversation, prompt);
-      log.write(
-        message.stopReason === "error" || cacheMiss ? "warn" : "info",
-        "core.model",
-        "reply",
-        {
-          conversation: change.value.conversationId,
-          entry: change.value.id,
-          model: `${message.provider}/${message.model}`,
-          input: message.usage.input,
-          output: message.usage.output,
-          cacheRead: message.usage.cacheRead,
-          cacheWrite: message.usage.cacheWrite,
-          cacheRatio: prompt > 0 ? Math.round((cacheRead / prompt) * 1000) / 1000 : null,
-          ...(cacheMiss ? { cacheMiss: true } : {}),
-          ms: message.durationMs ?? null,
-          stop: message.stopReason,
-        },
-      );
-    }
+function modelTelemetry(
+  log: Log,
+  harness: Harness,
+): { observe: (publication: CommitPublication) => void; settled: () => Promise<void> } {
+  // A conversation's previous prompt, or its lookup in the store while this process has seen none of its replies.
+  const previous = new Map<ConversationId, number | Promise<number | undefined>>();
+  const lookups = new Set<Promise<unknown>>();
+  const write = (entry: EntryRecord, message: ReplyMessage, before: number | undefined) => {
+    const { cacheRead } = message.usage;
+    const prompt = promptOf(message);
+    const cacheMiss =
+      prompt > 0 && before !== undefined && before >= CACHE_MISS_TOKENS && cacheRead < before / 2;
+    const diagnostic = cacheDiagnostic(message);
+    log.write(
+      message.stopReason === "error" || cacheMiss || Number(diagnostic.cacheThinkingDropped) > 0
+        ? "warn"
+        : "info",
+      "core.model",
+      "reply",
+      {
+        conversation: entry.conversationId,
+        entry: entry.id,
+        model: `${message.provider}/${message.model}`,
+        input: message.usage.input,
+        output: message.usage.output,
+        cacheRead,
+        cacheWrite: message.usage.cacheWrite,
+        cacheRatio: prompt > 0 ? Math.round((cacheRead / prompt) * 1000) / 1000 : null,
+        ...(cacheMiss ? { cacheMiss: true } : {}),
+        ...diagnostic,
+        ms: message.durationMs ?? null,
+        stop: message.stopReason,
+      },
+    );
+    return prompt > 0 ? prompt : before;
+  };
+  return {
+    observe: (publication) => {
+      for (const change of publication.changes) {
+        if (change.type !== "entry" || change.value.kind !== "pi.assistant") continue;
+        const entry = change.value;
+        const message = entry.model?.[0];
+        if (message?.role !== "assistant") continue;
+        const id = entry.conversationId;
+        const known = previous.get(id);
+        if (typeof known === "number") {
+          previous.set(id, write(entry, message, known) ?? known);
+          continue;
+        }
+        const next = (known ?? storedPrompt(harness, id, entry.id))
+          .catch(() => undefined)
+          .then((before) => write(entry, message, before));
+        previous.set(id, next);
+        lookups.add(next);
+        void next.then((prompt) => {
+          lookups.delete(next);
+          if (previous.get(id) === next) {
+            if (prompt === undefined) previous.delete(id);
+            else previous.set(id, prompt);
+          }
+        });
+      }
+    },
+    settled: async () => {
+      while (lookups.size) await Promise.all(lookups);
+    },
   };
 }
 

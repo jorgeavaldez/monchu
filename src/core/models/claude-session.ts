@@ -191,7 +191,7 @@ export function rebuildClaudeSession(
 /**
  * Reopen a session Claude Code wrote itself, cut back to `bytes` (a clean turn end it recorded), and append the history
  * since. Claude Code's own records keep the request bytes it already sent, so its cached prefix survives a restart or an
- * abort; a rebuilt mirror would not render them identically. Undefined when the file no longer holds that point.
+ * abort; a rebuilt mirror would not render them identically. Undefined when the file no longer holds that point, or the history since does not follow on from it.
  */
 export function restoreClaudeSession(
   missed: Message[],
@@ -211,13 +211,33 @@ export function restoreClaudeSession(
   if (bytes <= 0 || content.length < bytes || content[bytes - 1] !== 0x0a) return undefined;
   if (content.length > bytes) writeFileSync(path, content.subarray(0, bytes));
   const session = openSession({ sessionId, projectPath: cwd, claudeDir });
-  appendClaudeHistory(session, missed);
+  // A checkpoint at a parked tool boundary ends with tool calls the history since answers.
+  const open = new Set<string>();
+  for (const record of session.messages) {
+    const content = record.message.content;
+    if (typeof content === "string" || content.every((block) => block.type !== "tool_result"))
+      if (record.type === "user") open.clear();
+    if (typeof content !== "string")
+      for (const block of content)
+        if (block.type === "tool_use") open.add(block.id);
+        else if (block.type === "tool_result") open.delete(block.tool_use_id);
+  }
+  try {
+    appendClaudeHistory(session, missed, open);
+  } catch {
+    // History that doesn't follow on from that point is rebuilt instead.
+    return undefined;
+  }
   return session;
 }
 
-function appendClaudeHistory(session: Session, history: Message[]): void {
-  const pending = new Set<string>();
-  const ids = new Map<string, string>();
+function appendClaudeHistory(
+  session: Session,
+  history: Message[],
+  open: ReadonlySet<string> = new Set(),
+): void {
+  const pending = new Set(open);
+  const ids = new Map([...open].map((id) => [id, id]));
   // Both directions use the same sanitized id; collisions are rejected, not silently merged.
   function toolId(id: string): string {
     const existing = ids.get(id);

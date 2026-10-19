@@ -55,6 +55,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSync, Visitor, type Node } from "oxc-parser";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Codemode } from "../src/core/tools/codemode.ts";
 import {
   type ClaudeConfig,
@@ -564,6 +566,238 @@ export function scriptedClaude(
   };
 }
 
+/**
+ * Claude Code and Anthropic's prompt cache, as far as the cache depends on them. The session file is kept the way
+ * Claude Code keeps it: its own records, with a reminder attachment after every input that a rebuilt or re-rendered
+ * history doesn't have. A request is the system prompt and the file's records, and reads from cache the longest whole
+ * request sent before at a TTL it can read: a 5m request reads what 1h ones wrote, not the reverse (as measured on
+ * real sessions). Unpinned, it picks the TTL as Claude Code does: 1h, and 5m once a response in the process reported
+ * the account drawing on overage. `answer` gives the response to a turn's prompt in each round of tool calls.
+ */
+export function simulatedClaudeCode(
+  home: string,
+  config: ClaudeConfig,
+  answer: (prompt: string, round: number) => AssistantMessage["content"],
+  account: { overage: boolean },
+) {
+  let cache: { ttl: string; blocks: string[] }[] = [];
+  const ttls: string[] = [];
+  const query: ClaudeQuery = (input) => {
+    const options = input.options;
+    const signal = options?.abortController?.signal;
+    return {
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<SDKMessage> {
+        if (
+          options === undefined ||
+          options.cwd === undefined ||
+          options.env?.CLAUDE_CONFIG_DIR === undefined
+        )
+          throw new Error("Claude simulation needs explicit isolated options");
+        if (typeof input.prompt === "string")
+          throw new Error("Claude simulation needs streamed input");
+        const source = input.prompt[Symbol.asyncIterator]();
+        const first = await source.next();
+        if (first.done) throw new Error("Claude simulation needs an initial prompt");
+        void (async () => {
+          while (!(await source.next()).done);
+        })();
+        const session =
+          options.resume === undefined
+            ? createSession({
+                projectPath: options.cwd,
+                cwd: options.cwd,
+                claudeDir: options.env.CLAUDE_CONFIG_DIR,
+                model: options.model ?? "claude-sonnet-4-6",
+              })
+            : openSession({
+                sessionId: options.resume,
+                projectPath: options.cwd,
+                claudeDir: options.env.CLAUDE_CONFIG_DIR,
+              });
+        const server = options.mcpServers?.monchu;
+        const client = new McpClient({ name: "simulated-claude-code", version: "1" });
+        if (server?.type === "sdk") {
+          const [left, right] = InMemoryTransport.createLinkedPair();
+          await server.instance.connect(right);
+          await client.connect(left);
+        }
+        const content = first.value.message.content;
+        const prompt =
+          typeof content === "string"
+            ? content
+            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+        session.addUserMessage(prompt);
+        session.addAttachment({ type: "total_tokens_reminder" });
+        session.save();
+        yield {
+          type: "system",
+          subtype: "init",
+          uuid: randomUUID(),
+          session_id: session.sessionId,
+          apiKeySource: "none",
+          claude_code_version: "simulated",
+          cwd: options.cwd,
+          tools: [],
+          mcp_servers: [],
+          model: options.model ?? "claude-sonnet-4-6",
+          permissionMode: "default",
+          slash_commands: [],
+          output_style: "default",
+          skills: [],
+          plugins: [],
+        };
+        let reported = false;
+        try {
+          for (let round = 0; ; round++) {
+            const ttl =
+              options.settings !== undefined &&
+              typeof options.settings !== "string" &&
+              options.settings.promptCacheTtl !== undefined
+                ? options.settings.promptCacheTtl
+                : account.overage && reported
+                  ? "5m"
+                  : "1h";
+            ttls.push(ttl);
+            const blocks = [
+              JSON.stringify(options.systemPrompt),
+              ...session.records.map((record) =>
+                JSON.stringify(
+                  "message" in record
+                    ? record.message
+                    : "attachment" in record
+                      ? record.attachment
+                      : "",
+                ),
+              ),
+            ];
+            const size = (list: string[]) => list.reduce((sum, block) => sum + block.length, 0);
+            const read = Math.max(
+              0,
+              ...cache
+                .filter(
+                  (entry) =>
+                    (entry.ttl === ttl || entry.ttl === "1h") &&
+                    entry.blocks.length <= blocks.length &&
+                    entry.blocks.every((block, index) => blocks[index] === block),
+                )
+                .map((entry) => size(entry.blocks)),
+            );
+            cache.push({ ttl, blocks });
+            const reply = answer(prompt, round);
+            const calls = reply.flatMap((block) => (block.type === "toolCall" ? [block] : []));
+            const id = `msg_${randomUUID().replaceAll("-", "")}`;
+            yield* claudeResponse(reply, calls.length ? "tool_use" : "end_turn", {
+              id,
+              input: 0,
+              cacheRead: read,
+              cacheWrite: size(blocks) - read,
+            });
+            if (!reported && account.overage)
+              yield {
+                type: "rate_limit_event",
+                rate_limit_info: {
+                  status: "rejected",
+                  isUsingOverage: true,
+                  resetsAt: Math.floor(Date.now() / 1000) + 3600,
+                },
+                uuid: randomUUID(),
+                session_id: session.sessionId,
+              };
+            reported = true;
+            if (signal?.aborted) return;
+            session.addAssistantMessage(
+              reply.map((block): ContentBlock => {
+                if (block.type === "text") return { type: "text", text: block.text };
+                if (block.type === "thinking")
+                  return {
+                    type: "thinking",
+                    thinking: block.thinking,
+                    signature: block.thinkingSignature ?? "",
+                  };
+                return {
+                  type: "tool_use",
+                  id: block.id,
+                  name: `mcp__monchu__${block.name}`,
+                  input: block.arguments,
+                };
+              }),
+              { stopReason: calls.length ? "tool_use" : "end_turn" },
+            );
+            // Its records carry the response's own id, as Claude Code's do.
+            const written = session.messages.at(-1);
+            if (written?.type === "assistant") written.message.id = id;
+            session.save();
+            if (!calls.length) break;
+            const results = await Promise.all(
+              calls.map((call) =>
+                client.callTool({
+                  name: call.name,
+                  arguments: call.arguments,
+                  _meta: { "claudecode/toolUseId": call.id },
+                }),
+              ),
+            );
+            if (signal?.aborted) return;
+            session.addToolResults(
+              calls.map((call, index) => ({
+                toolUseId: call.id,
+                content: JSON.stringify(results[index]?.content ?? []),
+              })),
+            );
+            session.addAttachment({ type: "total_tokens_reminder" });
+            session.save();
+          }
+        } catch (error) {
+          if (signal?.aborted) return;
+          throw error;
+        } finally {
+          await client.close();
+        }
+        yield {
+          type: "result",
+          subtype: "success",
+          uuid: randomUUID(),
+          session_id: session.sessionId,
+          duration_ms: 0,
+          duration_api_ms: 0,
+          is_error: false,
+          num_turns: 1,
+          result: "",
+          stop_reason: "end_turn",
+          total_cost_usd: 0,
+          modelUsage: {},
+          permission_denials: [],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+            server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+            service_tier: "standard",
+            inference_geo: "",
+            iterations: [],
+            speed: "standard",
+            fallback_credit: null,
+            output_tokens_details: { thinking_tokens: 0 },
+          },
+        };
+      },
+      interrupt: () => Promise.resolve(),
+      close: () => {},
+    };
+  };
+  return {
+    provider: createClaudeCodeProvider(home, config, query),
+    /** Each request's TTL, in order. */
+    ttls,
+    /** Forget everything cached, as an expired cache would. */
+    bust: () => {
+      cache = [];
+    },
+  };
+}
+
 /** Authenticated test setup through Monchu's real credential and login seam. */
 export async function openClaudeModels(
   home: string,
@@ -600,12 +834,18 @@ export function bareToolCalls(messages: SDKMessage[]): SDKMessage[] {
 export function claudeResponse(
   content: AssistantMessage["content"],
   stopReason: "end_turn" | "tool_use" | "max_tokens" = "end_turn",
+  response: { id: string; input: number; cacheRead: number; cacheWrite: number } = {
+    id: "msg_script",
+    input: 10,
+    cacheRead: 20,
+    cacheWrite: 30,
+  },
 ): SDKMessage[] {
   const events: SDKPartialAssistantMessage["event"][] = [
     {
       type: "message_start",
       message: {
-        id: "msg_script",
+        id: response.id,
         type: "message",
         role: "assistant",
         model: "claude-sonnet-4-6",
@@ -617,10 +857,10 @@ export function claudeResponse(
         stop_sequence: null,
         stop_details: null,
         usage: {
-          input_tokens: 10,
+          input_tokens: response.input,
           output_tokens: 1,
-          cache_read_input_tokens: 20,
-          cache_creation_input_tokens: 30,
+          cache_read_input_tokens: response.cacheRead,
+          cache_creation_input_tokens: response.cacheWrite,
           cache_creation: null,
           fallback_credit: null,
           inference_geo: null,

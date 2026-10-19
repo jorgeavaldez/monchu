@@ -54,7 +54,7 @@ import {
 import { deleteSession, getSessionPath, normalizeProjectPath } from "cc-session-io";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ClaudeConfig } from "../config.ts";
@@ -196,6 +196,8 @@ type LiveQuery = {
   /** The tool declarations its MCP server lists; a parked query cannot take new ones. */
   tools: string;
   parked: boolean;
+  /** How far its session file has been read for Claude Code's own cache reports. */
+  scanned: number;
   preserveSharedSession: boolean;
   pushPrompt: (prompt: ReturnType<typeof claudeTurn>["prompt"]) => Promise<void>;
 };
@@ -205,7 +207,8 @@ type SessionState = {
   sessionId: string;
   cursor: number;
   history: string[];
-  needsRebuild: boolean;
+  /** Why the next request can't resume the session as it stands, if it can't. */
+  rebuild: string | undefined;
   forceRotate: boolean;
   checkpoint?: Checkpoint;
 };
@@ -276,7 +279,11 @@ export function createClaudeCodeProvider(
     const value: unknown = JSON.parse(text);
     return isCheckpoint(value) ? value : undefined;
   };
-  /** Record a clean point: the session file cut at its last complete line, and the history it holds. */
+  /**
+   * Record a clean point: the session file cut at its last complete line, and the history it holds. At a parked tool
+   * boundary the cut goes before the records of response `before`, once they hold the request's tool results `holds`;
+   * results Claude Code hasn't written yet keep the earlier point.
+   */
   const saveCheckpoint = async (
     key: string,
     state: SessionState,
@@ -284,6 +291,7 @@ export function createClaudeCodeProvider(
     keys: string[],
     cwd: string,
     claudeDir: string,
+    cut?: { before: string | undefined; holds: string[] },
   ) => {
     // Only the tail is read: a session holding tool results and images runs to megabytes.
     const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir));
@@ -292,7 +300,14 @@ export function createClaudeCodeProvider(
       const { size } = await file.stat();
       const tail = Buffer.alloc(Math.min(size, 1 << 20));
       await file.read(tail, 0, tail.length, size - tail.length);
-      const end = tail.lastIndexOf(0x0a);
+      const at = cut?.before === undefined ? -1 : tail.indexOf(`"id":"${cut.before}"`);
+      const held = at < 0 ? tail : tail.subarray(0, at);
+      const end = held.lastIndexOf(0x0a);
+      if (
+        cut !== undefined &&
+        (end < 0 || cut.holds.some((id) => !held.includes(`"tool_use_id":"${id}"`)))
+      )
+        return;
       bytes = end < 0 ? 0 : size - tail.length + end + 1;
     } finally {
       await file.close();
@@ -303,6 +318,78 @@ export function createClaudeCodeProvider(
     if (path === undefined) return;
     await mkdir(checkpoints, { recursive: true, mode: 0o700 });
     await writeFile(path, JSON.stringify(checkpoint), { mode: 0o600 });
+  };
+  // Whether Claude Code last reported the account drawing on overage (extra usage), and until when: it outlives the
+  // process, and Claude Code reports limits only when they change, so a new process may never say it ended.
+  const overagePath = join(home, "claude", "overage.json");
+  let overage: Promise<{ on: boolean; until?: number }> | undefined;
+  const accountOverage = async () => {
+    overage ??= readFile(overagePath, "utf8").then(
+      (text) => {
+        try {
+          const value: unknown = JSON.parse(text);
+          return isJsonObject(value) && value.on === true
+            ? { on: true, ...(typeof value.until === "number" ? { until: value.until } : {}) }
+            : { on: false };
+        } catch {
+          return { on: false };
+        }
+      },
+      () => ({ on: false }),
+    );
+    const { on, until } = await overage;
+    return on && (until === undefined || Date.now() < until);
+  };
+  const noteOverage = async (info: { isUsingOverage?: boolean; resetsAt?: number }) => {
+    const on = info.isUsingOverage === true;
+    if (!on && !(await accountOverage())) return;
+    // The reset time is in seconds, as Anthropic's rate limit headers give it.
+    const next = on && info.resetsAt !== undefined ? { on, until: info.resetsAt * 1000 } : { on };
+    overage = Promise.resolve(next);
+    await mkdir(join(home, "claude"), { recursive: true, mode: 0o700 });
+    await writeFile(overagePath, JSON.stringify(next), { mode: 0o600 });
+  };
+  /**
+   * Claude Code's own record that the server didn't recognize a request's prefix: a `thinking_drop` attachment, written
+   * just before that request. Reads only the whole lines the query appended since its last scan.
+   */
+  const scanDrops = async (live: LiveQuery, sessionId: string, cwd: string, claudeDir: string) => {
+    const found = { blocks: 0, reason: "" };
+    const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir)).catch(
+      () => undefined,
+    );
+    if (file === undefined) return found;
+    try {
+      const { size } = await file.stat();
+      const from = Math.max(live.scanned > size ? 0 : live.scanned, size - (8 << 20));
+      const chunk = Buffer.alloc(size - from);
+      await file.read(chunk, 0, chunk.length, from);
+      const end = chunk.lastIndexOf(0x0a);
+      if (end < 0) return found;
+      live.scanned = from + end + 1;
+      for (const line of chunk.subarray(0, end).toString("utf8").split("\n")) {
+        if (!line.includes('"thinking_drop"')) continue;
+        let record: unknown;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const dropped =
+          isJsonObject(record) &&
+          isJsonObject(record.attachment) &&
+          record.attachment.type === "thinking_drop" &&
+          isJsonObject(record.attachment.newlyDropped)
+            ? record.attachment.newlyDropped
+            : undefined;
+        if (dropped === undefined) continue;
+        if (typeof dropped.blockCount === "number") found.blocks += dropped.blockCount;
+        if (typeof dropped.reason === "string") found.reason = dropped.reason;
+      }
+    } finally {
+      await file.close();
+    }
+    return found;
   };
   const streamClaude: StreamFunction<Api, SimpleStreamOptions> = (model, context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -367,7 +454,7 @@ export function createClaudeCodeProvider(
       const onAbort = () => {
         const state = sessions.get(key);
         if (state !== undefined && !preserveSharedSession) {
-          state.needsRebuild = true;
+          state.rebuild = "abort";
           state.forceRotate = true;
         }
         live?.stop();
@@ -419,6 +506,10 @@ export function createClaudeCodeProvider(
                 ? mapped
                 : undefined;
         if (effort !== undefined) output.providerThinkingLevel = effort;
+        // Claude Code's own choice, made to stick: it picks 1h within a subscription's limits and 5m once the account
+        // draws on overage, but every new process starts at 1h until a response reports the limits. A 5m request reads
+        // what 1h ones wrote; a 1h request reads nothing 5m ones wrote, so each new process re-wrote the conversation.
+        const ttl = options.cacheRetention === "long" && !(await accountOverage()) ? "1h" : "5m";
         if (options.reasoning !== undefined) output.thinkingLevel = options.reasoning;
         const turn = claudeTurn(transcript.history);
         const keys = claudeHistoryKeys(turn.history);
@@ -430,7 +521,7 @@ export function createClaudeCodeProvider(
               sessionId: checkpoint.sessionId,
               cursor: checkpoint.hashes.length,
               history: [],
-              needsRebuild: true,
+              rebuild: "restart",
               forceRotate: false,
               checkpoint,
             });
@@ -440,7 +531,7 @@ export function createClaudeCodeProvider(
             if (sessionId !== undefined && sessionId !== key) return;
             const state = sessions.get(key);
             if (state !== undefined) {
-              state.needsRebuild = true;
+              state.rebuild = "cleanup";
               state.forceRotate ||= liveQueries.has(key);
             }
             liveQueries.get(key)?.stop();
@@ -467,7 +558,7 @@ export function createClaudeCodeProvider(
         if (existing !== undefined && (rewritten || toolsChanged || !results.length)) {
           const state = sessions.get(key);
           if (state !== undefined) {
-            state.needsRebuild = true;
+            state.rebuild = rewritten ? "rewritten" : toolsChanged ? "tools" : "unanswered";
             state.forceRotate = true;
           }
           existing.stop();
@@ -494,6 +585,9 @@ export function createClaudeCodeProvider(
           live.toolIds.clear();
         }
         let resume: string | undefined;
+        // How this request reaches Claude Code's session, for the reply's prompt-cache diagnostic.
+        let cachePath = live === undefined ? "new" : "continue";
+        let cacheReason: string | undefined;
         if (live === undefined) {
           const state = sessions.get(key);
           const priorKeys = claudeHistoryKeys(turn.prior);
@@ -504,22 +598,33 @@ export function createClaudeCodeProvider(
               .slice(0, priorKeys.length)
               .some((value, index) => priorKeys[index] !== value)
           )
-            state.needsRebuild = true;
+            state.rebuild ??= "history";
           // Without a live query, a tool-result continuation must import the actual results before resuming.
           if (state !== undefined && turn.history.at(-1)?.role === "toolResult")
-            state.needsRebuild = true;
-          if (state !== undefined && !state.needsRebuild && turn.prior.length >= state.cursor) {
+            state.rebuild ??= "tool results";
+          if (
+            state !== undefined &&
+            state.rebuild === undefined &&
+            turn.prior.length >= state.cursor
+          ) {
             const missed = turn.prior.slice(state.cursor);
             if (missed.length === 0 || (missed.length === 1 && missed[0]?.role === "assistant")) {
               resume = state.sessionId;
               state.cursor = turn.prior.length;
+              cachePath = "resume";
             }
           }
           if (resume === undefined) {
-            if (state !== undefined && !state.needsRebuild && turn.prior.length < state.cursor) {
+            if (
+              state !== undefined &&
+              state.rebuild === undefined &&
+              turn.prior.length < state.cursor
+            ) {
               // The bridge's shorter-context clean start must not overwrite the shared mirror.
               preserveSharedSession = true;
+              cachePath = "ephemeral";
             } else if (turn.prior.length) {
+              cacheReason = state?.rebuild ?? "no session";
               // Prefer Claude Code's own session up to its last clean turn: its records keep the cached request bytes.
               const checkpoint = state?.checkpoint;
               const restored =
@@ -540,6 +645,7 @@ export function createClaudeCodeProvider(
                 if (previousId !== undefined) deleteSession(previousId, cwd, claudeDir);
                 session = rebuildClaudeSession(turn.prior, cwd, claudeDir, model.id, previousId);
               }
+              cachePath = restored === undefined ? "rebuild" : "restore";
               session.save();
               await chmod(session.jsonlPath, 0o600);
               resume = session.sessionId;
@@ -548,7 +654,7 @@ export function createClaudeCodeProvider(
                   sessionId: resume,
                   cursor: turn.prior.length,
                   history: priorKeys,
-                  needsRebuild: false,
+                  rebuild: undefined,
                   forceRotate: false,
                 };
                 sessions.set(key, next);
@@ -608,6 +714,15 @@ export function createClaudeCodeProvider(
               });
             });
           }
+          if (isolated) cachePath = "isolated";
+          // Claude Code's own reports about this query's requests are what it appends from here on.
+          const scanned =
+            resume === undefined
+              ? 0
+              : await stat(getSessionPath(resume, normalizeProjectPath(cwd), claudeDir)).then(
+                  (info) => info.size,
+                  () => 0,
+                );
           options.signal?.throwIfAborted();
           let inputEnded = false;
           let inFlight: PromiseWithResolvers<void> | undefined;
@@ -651,6 +766,7 @@ export function createClaudeCodeProvider(
                 includeGitInstructions: false,
                 autoMemoryEnabled: false,
                 fastMode: false,
+                promptCacheTtl: ttl,
               },
               includePartialMessages: true,
               // Claude Code selects the model's supported thinking mode (Haiku is not adaptive).
@@ -700,6 +816,7 @@ export function createClaudeCodeProvider(
             history: keys,
             tools: JSON.stringify(declarations),
             parked: false,
+            scanned,
             preserveSharedSession,
             finished: finished.promise,
             pushPrompt: async (prompt) => {
@@ -745,7 +862,7 @@ export function createClaudeCodeProvider(
                     sessionId: message.session_id,
                     cursor: turn.history.length,
                     history: keys,
-                    needsRebuild: false,
+                    rebuild: undefined,
                     forceRotate: false,
                     ...(checkpoint === undefined ? {} : { checkpoint }),
                   });
@@ -773,7 +890,7 @@ export function createClaudeCodeProvider(
               events.push({ error });
               const state = sessions.get(key);
               if (state !== undefined && !preserveSharedSession) {
-                state.needsRebuild = true;
+                state.rebuild = "error";
                 state.forceRotate = true;
               }
               current.stop();
@@ -831,6 +948,7 @@ export function createClaudeCodeProvider(
             }
             break;
           }
+          if (message.type === "rate_limit_event") await noteOverage(message.rate_limit_info);
           if (message.type !== "stream_event") continue;
           if (message.parent_tool_use_id !== null)
             throw new Error("Claude Code started an unexpected subagent");
@@ -987,6 +1105,14 @@ export function createClaudeCodeProvider(
             if (output.stopReason === "toolUse") {
               live.parked = true;
               live.history = [...keys, ...claudeHistoryKeys([output])];
+              // A restart before the turn ends restores Claude Code's own records up to this request: a turn rendered
+              // again from Durable's copy lacks what Claude Code sent with it, and the request misses the cache.
+              const state = sessions.get(key);
+              if (state !== undefined && results.length && !preserveSharedSession && !isolated)
+                await saveCheckpoint(key, state, state.sessionId, keys, cwd, claudeDir, {
+                  before: output.responseId,
+                  holds: results.map((result) => result.toolCallId),
+                });
               break;
             }
           }
@@ -998,11 +1124,31 @@ export function createClaudeCodeProvider(
           updated.cursor = turn.history.length;
           updated.history = [...keys, ...claudeHistoryKeys([output])];
         }
+        const dropped =
+          updated === undefined || preserveSharedSession || isolated
+            ? undefined
+            : await scanDrops(live, updated.sessionId, cwd, claudeDir);
+        output.diagnostics = [
+          ...(output.diagnostics ?? []),
+          {
+            type: "prompt_cache",
+            timestamp: Date.now(),
+            details: {
+              path: cachePath,
+              ttl,
+              ...(cacheReason === undefined ? {} : { reason: cacheReason }),
+              ...((await accountOverage()) ? { overage: true } : {}),
+              ...(dropped === undefined || dropped.blocks === 0
+                ? {}
+                : { thinkingDropped: dropped.blocks, dropReason: dropped.reason }),
+            },
+          },
+        ];
       } catch (error) {
         if (live !== undefined) {
           const state = sessions.get(key);
           if (state !== undefined && !preserveSharedSession) {
-            state.needsRebuild = true;
+            state.rebuild = "error";
             state.forceRotate = true;
           }
           live.stop();
