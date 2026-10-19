@@ -13,6 +13,8 @@ import {
   toggleExpandAll,
   interrupt,
   mode,
+  openDrafts,
+  promptDrafts,
   shown,
   toggleMode,
   view,
@@ -84,6 +86,14 @@ export function Keys({
         onPress={toggleMode}
       >
         {steer ? "↯ steer" : "⇢ follow-up"}
+      </Key>
+      <Key
+        class="icon"
+        label="drafts"
+        title={`drafts: save or restore (${promptDrafts.value.length} saved)`}
+        onPress={() => void openDrafts()}
+      >
+        ✎
       </Key>
       <Key
         class="icon"

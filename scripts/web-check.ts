@@ -1399,6 +1399,89 @@ async function journeys(
   });
 
   await journey(
+    "drafts: save what is typed, restore it after a reload by typing to filter, Esc keeps the editor",
+    async () => {
+      const value = () => page(`document.querySelector("textarea").value`);
+      const drafts = `document.querySelector(".keys button[aria-label=drafts]")`;
+      const rows = async () =>
+        text(
+          await page(
+            `[...document.querySelectorAll(".pick li")].map((li) => li.textContent).join("|")`,
+          ),
+        );
+      const choose = async (label: string) => {
+        const at = Number(
+          await page(
+            `[...document.querySelectorAll(".pick li")].findIndex((li) => li.textContent.includes(${JSON.stringify(label)})) + 1`,
+          ),
+        );
+        check(at > 0, `no ${label} row: ${await rows()}`);
+        await browser("click", `.pick li:nth-child(${at}) .enter`);
+      };
+      const saved = "finish the plan\nfor   the drafts";
+      await browser("fill", "textarea", saved);
+      await page(`(${drafts}).click()`);
+      await browser("wait", ".pick li");
+      check(
+        /save.*finish the plan for the drafts/.test(await rows()),
+        `the menu doesn't offer save: ${await rows()}`,
+      );
+      await choose("save");
+      await browser("wait", "--fn", `document.querySelector("textarea").value === ""`);
+      // The draft is the core's: a new connection restores it.
+      await browser("reload");
+      await browser("wait", "--fn", `!!(${drafts})?.title.includes("1 saved")`);
+      await browser("fill", "textarea", "typed now");
+      await page(`(${drafts}).click()`);
+      await browser("wait", ".pick li");
+      await choose("restore");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
+      );
+      await browser("fill", "textarea", "plan finish");
+      check((await rows()).includes("finish the plan"), `typing didn't find it: ${await rows()}`);
+      await capture("drafts", home, origin);
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      check((await value()) === "typed now", "Esc lost what was typed");
+      await page(`(${drafts}).click()`);
+      await browser("wait", ".pick li");
+      await choose("restore");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
+      );
+      await choose("finish the plan");
+      // Restoring takes the draft from the core first.
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector("textarea").value === ${JSON.stringify(saved)}`,
+      );
+      // With nothing typed the key goes straight to restore, where the typed text waits in its place.
+      await browser("fill", "textarea", "");
+      await page(`(${drafts}).click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
+      );
+      const left = await rows();
+      check(
+        left.includes("typed now") && !left.includes("finish the plan"),
+        `restore list is wrong: ${left}`,
+      );
+      await choose("typed now");
+      await browser("wait", "--fn", `document.querySelector("textarea").value === "typed now"`);
+      await browser("fill", "textarea", "");
+      return "saved, reloaded, filtered and left with Esc keeping the editor, restored; what was typed came back from the list";
+    },
+  );
+
+  await journey(
     "secrets: an agent asks, the masked form answers, /secrets lists it by name only",
     async () => {
       const value = "smoke-secret-value-42";

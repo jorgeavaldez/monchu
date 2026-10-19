@@ -31,6 +31,7 @@ import { Front } from "../core/front.ts";
 import { Core, type HeldLogin, type LoginOwner } from "./core.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
+import type { DraftsState } from "../core/drafts.ts";
 
 /** A value of the core's, typed and not checked. */
 const any = <T>(): TUnsafe<T> => Type.Unsafe<T>(Type.Unknown());
@@ -364,6 +365,12 @@ export default defineFacet<Principal>(
         async () => ({ secrets: [], requests: [] }),
         (set) => monchu().watchSecrets(set),
       );
+      const drafts = fed<DraftsState>(
+        self,
+        "drafts",
+        async () => ({ drafts: [], next: 1 }),
+        (set) => monchu().watchDrafts(set),
+      );
       // A leaked service token must never enter, read back or remove a secret: its variant has none of these either.
       const person = () => {
         if (principal.kind === "client" && !principal.person)
@@ -390,6 +397,7 @@ export default defineFacet<Principal>(
         jobsState,
         logins,
         secrets,
+        drafts,
         setSecret: async ({ input }) => {
           person();
           await monchu().setSecret(input);
@@ -402,6 +410,8 @@ export default defineFacet<Principal>(
           person();
           await monchu().declineSecret(name);
         },
+        saveDraft: ({ text }) => monchu().saveDraft(text),
+        takeDraft: ({ id }) => monchu().takeDraft(id),
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
         pushKey: () => monchu().pushKey(),
         pushSubscribe: ({ subscription }) => monchu().pushSubscribe(subscription),

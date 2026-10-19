@@ -15,7 +15,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { JobEvent, RootClient } from "../src/api/client.ts";
+import type { Draft, JobEvent, RootClient } from "../src/api/client.ts";
 import type { RemoteClient } from "../src/api/remote.ts";
 import { Monchu } from "../src/core/backend.ts";
 import { attachSocket, socketPath } from "../src/server/socket.ts";
@@ -325,6 +325,24 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     const echoed = await ok("bash", { command: "echo $E2E_TOKEN" });
     expect(echoed).toContain("[secret E2E_TOKEN]");
     expect(JSON.stringify(monchu.messages())).not.toContain("e2e-secret-value-123");
+  });
+
+  it("keeps prompt drafts for every client: one saves, another restores it once", async () => {
+    const text = "finish the\nthought";
+    await monchu.client.saveDraft(text);
+    const other = await attachSocket(socketPath(monchu.home), () => {});
+    if (other === undefined) throw new Error("No second client");
+    try {
+      let drafts: readonly Draft[] = [];
+      await other.client.watchDrafts((state) => (drafts = state.drafts));
+      await waitFor(() => drafts.some((draft) => draft.text === text));
+      const id = drafts.find((draft) => draft.text === text)?.id ?? -1;
+      expect(await other.client.takeDraft(id)).toBe(text);
+      await expect(monchu.client.takeDraft(id)).rejects.toThrow("another client restored it");
+      await waitFor(() => !drafts.some((draft) => draft.id === id));
+    } finally {
+      await other.close();
+    }
   });
 
   it("runs a background job and tells its worker when it ends", async () => {

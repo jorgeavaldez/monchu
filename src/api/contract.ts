@@ -13,6 +13,7 @@ import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
+import type { DraftsState } from "../core/drafts.ts";
 import {
   ATTACHMENTS_PER_MESSAGE,
   UPLOAD_CHUNK_BYTES,
@@ -148,6 +149,8 @@ const sessionState = {
   logins: trusted<Record<string, LoginState>>(),
   /** Stored secrets by name and the pending requests: never values. */
   secrets: trusted<SecretsState>(),
+  /** The prompt drafts set aside on this device. */
+  drafts: trusted<DraftsState>(),
 };
 
 /** A secret as a person enters it. Values are plain strings, so a refusal never quotes one; the core checks the rest. */
@@ -173,6 +176,8 @@ const inboxKind = Type.Union([
 ]);
 
 const sessionMethods = {
+  saveDraft: method(Type.Object({ text })),
+  takeDraft: method(Type.Object({ id: count }), trusted<string>()),
   pushKey: method(undefined, trusted<string>()),
   pushSubscribe: method(
     Type.Object({

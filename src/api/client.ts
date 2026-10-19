@@ -20,13 +20,14 @@ import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { PushSubscription } from "../core/push.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
+import type { Draft, DraftsState } from "../core/drafts.ts";
 import type { SecretInput } from "../core/secrets/vault.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
-export type { Goal, InboxItem, InboxKind, JobEvent, SecretInput, SecretsState };
+export type { Draft, Goal, InboxItem, InboxKind, JobEvent, SecretInput, SecretsState };
 
 /** A provider `/login` offers, and the login it takes. */
 export type LoginEntry = { id: string; label: string; auth: "oauth" | "api_key" };
@@ -223,6 +224,13 @@ export interface Client {
   deleteSecret(name: string): Promise<void>;
   /** Declines the pending requests for a name: whoever asked is told. */
   declineSecret(name: string): Promise<void>;
+
+  /** The prompt drafts set aside on this device, oldest first, as they change; returns a stop function. */
+  watchDrafts(listener: (state: DraftsState) => void): Promise<() => void>;
+  /** Sets prompt text aside to finish later, in any client of this device. */
+  saveDraft(text: string): Promise<void>;
+  /** Takes a draft out and returns its text; throws when another client took it first. */
+  takeDraft(id: number): Promise<string>;
 
   /** This device's web push key, for a browser to subscribe with. */
   pushKey(): Promise<string>;

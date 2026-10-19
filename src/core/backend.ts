@@ -76,6 +76,7 @@ import {
 import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
+import { DraftsDoc, saveDraft, takeDraft, type DraftsState } from "./drafts.ts";
 import type { SecretStore } from "../plugin.ts";
 import { redact, Vault, type SecretInput } from "./secrets/vault.ts";
 
@@ -778,12 +779,14 @@ export class Monchu implements Client {
     const doc = await this.harness.documentState(SecretsDoc, context);
     if (doc === undefined) throw new Error("Secrets document is missing");
     let secrets = await this.vault.list();
-    let requests: SecretsState["requests"] = [];
+    const pending = (value: typeof doc.value) =>
+      (value?.requests ?? []).map(({ waiting: _waiting, ...request }) => ({ ...request }));
+    // A subscription hears only changes: the requests pending now come first.
+    let requests: SecretsState["requests"] = pending(doc.value);
     const emit = () => listener({ secrets, requests });
+    emit();
     const stopDoc = doc.subscribe((value) => {
-      requests = (value?.requests ?? []).map(({ waiting: _waiting, ...request }) => ({
-        ...request,
-      }));
+      requests = pending(value);
       emit();
     });
     const stopVault = this.vault.onChange((next) => {
@@ -814,6 +817,32 @@ export class Monchu implements Client {
   async declineSecret(name: string): Promise<void> {
     if ((await answerRequests(this.harness, name, undefined, context)) === 0)
       throw new Error(`No pending request for ${name}`);
+  }
+
+  /** The prompt drafts, now and after each change; returns a stop function. */
+  async watchDrafts(listener: (state: DraftsState) => void): Promise<() => void> {
+    // Observation needs a stored document; reading it in a commit creates it on a fresh home.
+    await this.harness.commit(async (tx) => {
+      await tx.doc(DraftsDoc);
+    }, context);
+    const doc = await this.harness.documentState(DraftsDoc, context);
+    if (doc === undefined) throw new Error("Drafts document is missing");
+    // A subscription hears only changes: the drafts as they are come first.
+    const emit = (value: DraftsState | null) => listener(value ?? { drafts: [], next: 1 });
+    emit(doc.value);
+    const stop = doc.subscribe(emit);
+    return () => {
+      stop();
+      doc.dispose();
+    };
+  }
+
+  saveDraft(text: string): Promise<void> {
+    return saveDraft(this.harness, text, context);
+  }
+
+  takeDraft(id: number): Promise<string> {
+    return takeDraft(this.harness, id, context);
   }
 
   async jobs(): Promise<Readonly<JobsState> & { listing: string }> {

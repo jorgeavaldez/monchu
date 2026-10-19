@@ -470,6 +470,15 @@ export class RemoteClient implements Client {
   async watchSecrets(listener: Parameters<Client["watchSecrets"]>[0]) {
     return this.followState((ref) => ref.secrets, listener);
   }
+  async watchDrafts(listener: Parameters<Client["watchDrafts"]>[0]) {
+    return this.followState((ref) => ref.drafts, listener);
+  }
+  saveDraft(text: string) {
+    return this.run(() => this.session.ref.saveDraft({ text }));
+  }
+  takeDraft(id: number) {
+    return this.run(() => this.session.ref.takeDraft({ id }));
+  }
   /** The owner's session, or a refusal for a service login, which has no secret methods. */
   private owner() {
     const session = this.session.ref;

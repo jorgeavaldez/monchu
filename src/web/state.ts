@@ -8,6 +8,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Attachment } from "../api/attachments.ts";
 import type {
   Client,
+  Draft,
   JobEvent,
   Goal,
   InboxItem,
@@ -82,6 +83,8 @@ export const workers = signal<readonly WorkerSummary[]>([]);
 export const notices = signal<Notice[]>([]);
 export const mode = signal<WhenBusy>("followUp");
 export const expandAll = signal(false);
+/** The prompt drafts set aside on this device, oldest first, from every client. */
+export const promptDrafts = signal<readonly Draft[]>([]);
 /** Counts expand-all presses: a card opened or closed by hand keeps that only until the next press. */
 export const expandPresses = signal(0);
 
@@ -307,6 +310,9 @@ export async function start(connected: Client): Promise<void> {
   await connected.watchRoots((list) => {
     roots.value = list;
   });
+  await connected.watchDrafts((state) => {
+    promptDrafts.value = state.drafts;
+  });
   await openRoot(await initialRoot(connected));
   // Back and Forward move between the roots this tab showed.
   addEventListener("popstate", () => {
@@ -356,10 +362,72 @@ export async function pickGoal(): Promise<void> {
 /** Start a reply to a message by its id in the editor, keeping what was typed after an earlier one, and type there. */
 export function replyDraft(code: string): void {
   draft.value = `/reply ${code} ${draft.value.replace(/^\/reply \S+ ?/, "")}`;
-  // Focused within the tap, so a phone opens its keyboard; the caret goes after the draft once it renders.
+  typeInEditor();
+}
+
+/** Put the caret at the end of the editor: focused within a tap, so a phone opens its keyboard. */
+function typeInEditor(): void {
   const area = document.querySelector("textarea");
   area?.focus();
+  // The draft renders on the next frame.
   requestAnimationFrame(() => area?.setSelectionRange(area.value.length, area.value.length));
+}
+
+/** A prompt on one line: its whitespace and line breaks as single spaces, cut at a word with … past `width`. */
+function oneLine(text: string, width = 60): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line.length <= width) return line;
+  const cut = line.slice(0, width);
+  const space = cut.lastIndexOf(" ");
+  return `${space > width / 2 ? cut.slice(0, space) : cut}…`;
+}
+
+/** The draft key: save what is typed, or restore one; with nothing typed it goes straight to restore. */
+export async function openDrafts(): Promise<void> {
+  try {
+    const text = draft.value;
+    if (text.trim() !== "") {
+      const count = promptDrafts.value.length;
+      const picked = await pick("Draft", [
+        { id: "save", label: "save", detail: oneLine(text) },
+        { id: "restore", label: "restore", detail: `${count} saved` },
+      ]);
+      if (picked === undefined) return;
+      if (picked.id === "save") {
+        await client().saveDraft(text);
+        if (draft.value === text) draft.value = "";
+        notice("draft saved");
+        return;
+      }
+    }
+    await restoreDraft();
+  } catch (error) {
+    reportFailure(error);
+  }
+}
+
+/** Pick a draft, newest first, typing to filter; it fills the editor and leaves the list. Esc keeps what was typed. */
+async function restoreDraft(): Promise<void> {
+  if (promptDrafts.value.length === 0) return notice("no drafts", "warning");
+  const picked = await pick(
+    "Restore a draft",
+    promptDrafts.value.toReversed().map((each) => ({
+      id: String(each.id),
+      // The label column is half the editor's width: a 14 px monospace character is about 8.4 px.
+      label: oneLine(
+        each.text,
+        Math.floor((document.querySelector("textarea")?.clientWidth ?? 0) / 17) - 2,
+      ),
+      detail: `${age(each.at)} ago`,
+    })),
+  );
+  if (picked === undefined) return;
+  const typed = draft.value;
+  const text = await client().takeDraft(Number(picked.id));
+  // What was typed is set aside in its place, never lost.
+  if (typed.trim() !== "") await client().saveDraft(typed);
+  draft.value = text;
+  typeInEditor();
 }
 
 export async function show(name: string | undefined): Promise<void> {
