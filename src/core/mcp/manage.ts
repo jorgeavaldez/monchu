@@ -1,5 +1,5 @@
 import type { McpSignInPrompt } from "./auth.ts";
-import { loadMcpConfig, usesOAuth, type McpServerConfig } from "./config.ts";
+import { loadMcpConfig, setMcpServerEnabled, usesOAuth, type McpServerConfig } from "./config.ts";
 import type { McpServerReport } from "../../api/reports.ts";
 import type { McpClients } from "./index.ts";
 
@@ -61,6 +61,13 @@ export async function mcpLogin(
   return result.signedIn
     ? `Signed in to MCP server "${name}" (${tools} tools).`
     : `Already signed in to MCP server "${name}" (${tools} tools).`;
+}
+
+/** Turn a configured server on or off on this device only; a reload then offers or drops its tools. */
+export async function mcpSetEnabled(home: string, name: string, enabled: boolean): Promise<string> {
+  await configured(home, name);
+  await setMcpServerEnabled(home, name, enabled);
+  return `Turned ${enabled ? "on" : "off"} MCP server "${name}" on this device.`;
 }
 
 export async function mcpLogout(home: string, clients: McpClients, name: string): Promise<string> {

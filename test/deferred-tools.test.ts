@@ -373,6 +373,19 @@ text(await tools[found.name]({ city: "Testville" }));`,
       }
       expect(await run("logout", "notes")).toBe(0);
       expect(out.at(-1)).toBe('Signed out of MCP server "notes".');
+      // Off on this device only: mcp.json is untouched, and on again leaves no override behind.
+      const synced = await readFile(join(value.directory, "mcp.json"), "utf8");
+      expect(await run("disable", "notes")).toBe(0);
+      expect(out.at(-1)).toBe('Turned off MCP server "notes" on this device.');
+      expect((await loadMcpConfig(value.directory)).servers.notes?.enabled).toBe(false);
+      expect(await readFile(join(value.directory, "mcp.json"), "utf8")).toBe(synced);
+      expect(await run("enable", "notes")).toBe(0);
+      expect(JSON.parse(await readFile(join(value.directory, "mcp.local.json"), "utf8"))).toEqual({
+        mcpServers: {},
+      });
+      expect((await loadMcpConfig(value.directory)).servers.notes?.enabled).toBeUndefined();
+      expect(await run("disable", "nothing")).toBe(1);
+      expect(errors.splice(0)).toEqual(['No MCP server named "nothing". Configured: notes.']);
       expect(await run("remove", "notes")).toBe(0);
       expect(await run("list")).toBe(0);
       expect(out.at(-1)).toBe("No MCP servers configured. Add one with monchu mcp add.");

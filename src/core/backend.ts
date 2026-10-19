@@ -435,6 +435,14 @@ export class Monchu implements Client {
     return this.extensions.mcpLogout(name);
   }
 
+  /** Turn an MCP server on or off on this device only, then reload so its tools come or go. */
+  async mcpSetEnabled(name: string, enabled: boolean): Promise<string> {
+    if (this.closing !== undefined) throw new Error("Monchu is closing");
+    const message = await this.extensions.mcpSetEnabled(name, enabled);
+    await this.reload();
+    return message;
+  }
+
   /** List every MCP server again, bypassing the cached listings, then reload so changed tools are offered. */
   async mcpReconnect(): Promise<{ servers: McpServerReport[]; errors: string[] }> {
     const report = await this.extensions.mcpServers();

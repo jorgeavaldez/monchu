@@ -158,6 +158,35 @@ describe("config", () => {
     ]);
   });
 
+  it("lays this device's mcp.local.json over the synced mcp.json, field by field", async () => {
+    const directory = await home();
+    const cloudflare = { url: "https://mcp.cloudflare.com/mcp", exposure: "deferred" };
+    const notion = { url: "https://mcp.notion.com/mcp" };
+    await writeFile(
+      join(directory, "mcp.json"),
+      JSON.stringify({ mcpServers: { cloudflare, notion } }),
+    );
+    await writeFile(
+      join(directory, "mcp.local.json"),
+      JSON.stringify({
+        mcpServers: {
+          cloudflare: { enabled: false },
+          notion: { timeout: "soon" },
+          local: { command: "tool" },
+        },
+      }),
+    );
+    const { servers, errors } = await loadMcpConfig(directory);
+    expect(servers).toEqual({
+      cloudflare: { ...cloudflare, enabled: false },
+      local: { command: "tool" },
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(
+      `${join(directory, "mcp.json")} with ${join(directory, "mcp.local.json")}: `,
+    );
+  });
+
   it.each([
     [{ url: "ftp://x" }, "url must be an http or https URL"],
     [{ type: "sse", url: "https://x" }, "legacy SSE transport is not supported"],

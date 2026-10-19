@@ -240,6 +240,8 @@ export interface Client {
   mcpServers(): Promise<McpReport>;
   mcpLogin(name: string, prompt: McpSignInPrompt, signal: AbortSignal): Promise<string>;
   mcpLogout(name: string): Promise<string>;
+  /** Turn a server on or off on the core's device only, then reload. */
+  mcpSetEnabled(name: string, enabled: boolean): Promise<string>;
   mcpReconnect(): Promise<McpReport>;
 
   /** Applies config, skill and extension edits in process; resolves with the reloaded modules. */

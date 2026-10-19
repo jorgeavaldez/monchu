@@ -423,6 +423,7 @@ export default defineFacet<Principal>(
         loginNeeds: () => monchu().loginNeeds(),
         mcpServers: () => monchu().mcpServers(),
         mcpLogout: ({ name }) => monchu().mcpLogout(name),
+        mcpSetEnabled: ({ name, enabled }) => monchu().mcpSetEnabled(name, enabled),
         mcpReconnect: () => monchu().mcpReconnect(),
         reload: async () => [...(await monchu().reload())],
         logs: ({ query }) => monchu().logs(query),

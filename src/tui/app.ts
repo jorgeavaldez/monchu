@@ -498,12 +498,18 @@ export async function runTerminal(
         const [action, name, ...extra] = input.text.split(/\s+/).filter(Boolean);
         if (
           extra.length ||
-          (action !== undefined && !["login", "logout", "reconnect"].includes(action))
+          (action !== undefined &&
+            !["login", "logout", "enable", "disable", "reconnect"].includes(action)) ||
+          ((action === "enable" || action === "disable") && name === undefined)
         ) {
           view.notice(`Usage: /mcp ${commands["/mcp"].usage}`);
           break;
         }
         try {
+          if ((action === "enable" || action === "disable") && name !== undefined) {
+            view.notice(`mcp · ${await backend.mcpSetEnabled(name, action === "enable")}`);
+            break;
+          }
           if (action === undefined || action === "reconnect") {
             view.notice("mcp · connecting to every server…");
             const report =

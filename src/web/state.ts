@@ -513,6 +513,22 @@ async function runLogin(): Promise<void> {
 async function runMcp(text: string): Promise<void> {
   const [action = "", server = ""] = text.split(/\s+/);
   if (action === "logout" && server) return notice(`mcp · ${await client().mcpLogout(server)}`);
+  if (action === "enable" || action === "disable") {
+    const enable = action === "enable";
+    let name = server;
+    if (!name) {
+      const { servers } = await client().mcpServers();
+      const picked = await pick(
+        `Turn ${enable ? "on" : "off"} on this device`,
+        servers
+          .filter((each) => each.enabled !== enable)
+          .map((each) => ({ id: each.name, label: each.name, detail: each.transport })),
+      );
+      if (picked === undefined) return;
+      name = picked.id;
+    }
+    return notice(`mcp · ${await client().mcpSetEnabled(name, enable)}`);
+  }
   if (action === "reconnect")
     return notice(
       formatReports(await client().mcpReconnect(), (name) => `/mcp login ${name}`).join("\n"),

@@ -81,8 +81,8 @@ export const commands: Record<
     help: "sign in to a model provider: Codex, Claude Code, Cloudflare, OpenCode, OpenRouter, plugins'",
   },
   "/mcp": {
-    usage: "[login|logout|reconnect] [server]",
-    help: "MCP servers and their tools; sign in, sign out, reconnect",
+    usage: "[login|logout|enable|disable|reconnect] [server]",
+    help: "MCP servers and their tools; sign in, sign out, turn on or off on this device, reconnect",
   },
   "/reload": {
     usage: "",

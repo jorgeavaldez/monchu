@@ -28,7 +28,7 @@ import { createInterface } from "node:readline/promises";
 import type { McpSignInPrompt } from "./auth.ts";
 import { addMcpServer, removeMcpServer, usesOAuth, validateMcpServer } from "./config.ts";
 import { formatReports } from "../../api/reports.ts";
-import { mcpLogin, mcpLogout, mcpReports } from "./manage.ts";
+import { mcpLogin, mcpLogout, mcpReports, mcpSetEnabled } from "./manage.ts";
 import { McpClients } from "./index.ts";
 
 const HELP = `Usage:
@@ -38,8 +38,10 @@ const HELP = `Usage:
   monchu mcp list [--json]
   monchu mcp login <server> [--timeout <seconds>]
   monchu mcp logout <server>
+  monchu mcp enable|disable <server>
 
 Configure and check MCP servers in <home>/mcp.json and sign in to OAuth servers, like pi mcp.
+enable and disable turn a server on or off on this device only, in <home>/mcp.local.json.
 A running Monchu offers changes after /reload (or /mcp reconnect).
 
 Options for add:
@@ -374,6 +376,15 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
           return 1;
         }
         log(await mcpLogout(options.home, clients, name));
+        return 0;
+      }
+      case "enable":
+      case "disable": {
+        if (name === undefined || extra.length) {
+          error(`Usage: monchu mcp ${command} <server>`);
+          return 1;
+        }
+        log(await mcpSetEnabled(options.home, name, command === "enable"));
         return 0;
       }
       default:

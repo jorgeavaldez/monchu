@@ -26,7 +26,7 @@ import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { McpServerReport } from "../api/reports.ts";
-import { mcpLogin, mcpLogout, mcpReports } from "./mcp/manage.ts";
+import { mcpLogin, mcpLogout, mcpReports, mcpSetEnabled } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
 import {
   formatPluginStatus,
@@ -505,6 +505,10 @@ export class Extensions {
 
   mcpLogout(name: string): Promise<string> {
     return mcpLogout(this.home, this.clients, name);
+  }
+
+  mcpSetEnabled(name: string, enabled: boolean): Promise<string> {
+    return mcpSetEnabled(this.home, name, enabled);
   }
 
   /**

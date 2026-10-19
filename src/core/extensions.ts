@@ -34,7 +34,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const tools = createPiTools(context.settings, inputs.finders, inputs.vault);
   const memory = createMemory(inputs.home);
   const identity = createIdentity(inputs.home, inputs.reportSkipped, inputs.observeBudget);
-  // A synced mcp.json that isn't JSON must not keep any device from opening: none of its servers load.
+  // An mcp.json or mcp.local.json that isn't JSON must not keep the device from opening: no server loads.
   const mcpConfig = await loadMcpConfig(inputs.home).catch((error: unknown) => {
     if (!inputs.startup()) throw error;
     return {

@@ -29,7 +29,7 @@ import { createPiTools } from "./tools/pi-tools.ts";
 import type { FffFinders } from "./tools/fff.ts";
 
 /** Home files Monchu loads; `skills/` and `plugins/` are walked. */
-const FILES = ["config.json", "mcp.json", "plugins.local.json"];
+const FILES = ["config.json", "mcp.json", "mcp.local.json", "plugins.local.json"];
 const DIRS = ["skills", "plugins"];
 
 export type HomeCheckInputs = {

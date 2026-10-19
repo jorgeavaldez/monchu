@@ -198,6 +198,7 @@ const sessionMethods = {
   loginNeeds: method(undefined, trusted<LoginNeeds>()),
   mcpServers: method(undefined, trusted<McpReport>()),
   mcpLogout: method(Type.Object({ name: text }), trusted<string>()),
+  mcpSetEnabled: method(Type.Object({ name: text, enabled: Type.Boolean() }), trusted<string>()),
   mcpReconnect: method(undefined, trusted<McpReport>()),
   reload: method(undefined, trusted<string[]>()),
   logs: method(Type.Object({ query: logQuery }), trusted<LogRecord[]>()),

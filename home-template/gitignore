@@ -64,4 +64,7 @@ plugins/local/
 plugins.local.json
 plugins/**/node_modules/
 
+# This device's MCP changes over the synced mcp.json (turn a server off, add one of its own).
+mcp.local.json
+
 # mcp.json is synced: put secrets in environment variables and reference them as ${NAME}, never inline.

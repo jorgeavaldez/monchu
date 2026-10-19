@@ -296,11 +296,25 @@ export function validateMcpServer(name: string, raw: unknown): McpServerConfig |
   return `server "${name}" needs either "command" (stdio) or "url" (streamable HTTP)`;
 }
 
-/** The servers of `<home>/mcp.json` and the entries that failed validation, which are left out. */
+/** The servers of `<home>/mcp.json` (with `mcp.local.json` over it) and the entries that failed validation, left out. */
 export type McpConfig = { servers: Record<string, McpServerConfig>; errors: string[] };
 
 function mcpPath(home: string): string {
   return join(home, "mcp.json");
+}
+
+/** This device's MCP file, gitignored: the same `mcpServers` shape, each entry's fields over the synced one's. */
+function localMcpPath(home: string): string {
+  return join(home, "mcp.local.json");
+}
+
+function serverEntries(
+  path: string,
+  value: Record<string, unknown> | undefined,
+): Record<string, unknown> | string {
+  const entries = value?.mcpServers;
+  if (entries === undefined) return {};
+  return isRecord(entries) ? entries : `${path}: mcpServers must be an object`;
 }
 
 async function readMcpFile(path: string): Promise<Record<string, unknown> | undefined> {
@@ -324,30 +338,41 @@ async function readMcpFile(path: string): Promise<Record<string, unknown> | unde
 /**
  * `<home>/mcp.json`, in the `mcpServers` shape Pi and other MCP clients use, so their entries copy over unchanged. Like
  * Pi, an invalid entry is reported and left out; the other servers still load. A file that is not JSON fails.
+ * `<home>/mcp.local.json` holds this device's changes: an entry there replaces the fields it names of the synced
+ * entry (`{ "enabled": false }` turns a server off on this device only), or adds a server of its own.
  */
 export async function loadMcpConfig(home: string): Promise<McpConfig> {
   const path = mcpPath(home);
-  const value = await readMcpFile(path);
-  if (value === undefined) return { servers: {}, errors: [] };
+  const localPath = localMcpPath(home);
+  const shared = serverEntries(path, await readMcpFile(path));
+  const local = serverEntries(localPath, await readMcpFile(localPath));
   const servers: Record<string, McpServerConfig> = {};
-  const errors: string[] = [];
-  const entries = value.mcpServers;
-  if (entries !== undefined && !isRecord(entries))
-    return { servers, errors: [`${path}: mcpServers must be an object`] };
-  for (const [name, raw] of Object.entries(entries ?? {})) {
+  const errors = [shared, local].filter((entries) => typeof entries === "string");
+  const sharedEntries = typeof shared === "string" ? {} : shared;
+  const localEntries = typeof local === "string" ? {} : local;
+  for (const name of new Set([...Object.keys(sharedEntries), ...Object.keys(localEntries)])) {
+    const base = sharedEntries[name];
+    const over = localEntries[name];
+    const raw = isRecord(base) && isRecord(over) ? { ...base, ...over } : (over ?? base);
     const validated = validateMcpServer(name, raw);
-    if (typeof validated === "string") errors.push(`${path}: ${validated}`);
+    const source =
+      name in sharedEntries && name in localEntries
+        ? `${path} with ${localPath}`
+        : name in localEntries
+          ? localPath
+          : path;
+    if (typeof validated === "string") errors.push(`${source}: ${validated}`);
     else servers[name] = validated;
   }
   return { servers, errors };
 }
 
-/** Rewrite `<home>/mcp.json` with one server changed, keeping every other key as written. */
+/** Rewrite `<home>/mcp.json` (or this device's `mcp.local.json`) with one server changed, keeping every other key. */
 async function changeMcpFile(
   home: string,
   change: (servers: Record<string, unknown>) => boolean,
+  path = mcpPath(home),
 ): Promise<boolean> {
-  const path = mcpPath(home);
   const value = (await readMcpFile(path)) ?? {};
   const servers = isRecord(value.mcpServers) ? { ...value.mcpServers } : {};
   if (!change(servers)) return false;
@@ -377,6 +402,32 @@ export async function addMcpServer(
     return true;
   });
   return replaced;
+}
+
+/**
+ * Turn a server on or off on this device only, in `<home>/mcp.local.json`: off is `"enabled": false` there; on drops
+ * that override, or overrides a synced `false`. An entry left empty is removed.
+ */
+export async function setMcpServerEnabled(
+  home: string,
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  const shared = serverEntries(mcpPath(home), await readMcpFile(mcpPath(home)));
+  const base = typeof shared === "string" ? undefined : shared[name];
+  const sharedEnabled = !isRecord(base) || base.enabled !== false;
+  await changeMcpFile(
+    home,
+    (servers) => {
+      const entry = isRecord(servers[name]) ? { ...servers[name] } : {};
+      if (enabled === sharedEnabled) delete entry.enabled;
+      else entry.enabled = enabled;
+      if (Object.keys(entry).length) servers[name] = entry;
+      else delete servers[name];
+      return true;
+    },
+    localMcpPath(home),
+  );
 }
 
 /** Remove a server from `<home>/mcp.json`. Resolves whether it was there. */

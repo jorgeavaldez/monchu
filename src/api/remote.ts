@@ -510,6 +510,9 @@ export class RemoteClient implements Client {
   mcpLogout(name: string) {
     return this.run(() => this.session.ref.mcpLogout({ name }));
   }
+  mcpSetEnabled(name: string, enabled: boolean) {
+    return this.run(() => this.session.ref.mcpSetEnabled({ name, enabled }));
+  }
   mcpReconnect() {
     return this.run(() => this.session.ref.mcpReconnect());
   }
