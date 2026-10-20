@@ -3,7 +3,7 @@
  * streaming token re-renders only the live tail. Tool calls fold to one line and worker reports to a header and a few
  * lines, as in the terminal; a click toggles one, and the expand-all switch opens every one.
  */
-import { useSignal } from "@preact/signals";
+import { signal, useSignal } from "@preact/signals";
 import { Fragment, type ComponentChildren, type VNode } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
@@ -31,6 +31,9 @@ import {
   notices,
   replyDraft,
   rootId,
+  shown as shownName,
+  view as viewOf,
+  type Filter,
   type Notice,
 } from "./state.ts";
 
@@ -466,6 +469,96 @@ function anchor(item: Notice, view: ConversationView): number {
   return found;
 }
 
+/** Whether an entry with this inbox label shows under `shown`, the feed's filter. */
+function inFeed(shown: Filter, item: InboxItem | undefined): boolean {
+  if (shown.kind === undefined && shown.goal === undefined) return true;
+  return (
+    item !== undefined &&
+    (shown.kind === undefined || item.kind === shown.kind) &&
+    (shown.goal === undefined || item.goal === shown.goal)
+  );
+}
+
+/** A message a search picked: the shown transcript scrolls to it and marks it. A new object each time, so the same one twice jumps twice. */
+export const jumpTo = signal<{ code: string } | undefined>(undefined);
+
+/** One message as search sees it: its short id, who wrote it, when, and its text with a lowercase copy. */
+export type FeedRow = { code: string; who: string; at: number; text: string; lower: string };
+
+const rowText = new WeakMap<EntryRecord, { who: string; text: string; lower: string }>();
+
+/** What search matches in an entry: what it says, and each tool call's name and arguments; cached by its immutable record. */
+function searchText(entry: EntryRecord): { who: string; text: string; lower: string } {
+  const known = rowText.get(entry);
+  if (known !== undefined) return known;
+  let who = "monchu";
+  let text = "";
+  const notice = workerNotice(entry);
+  const message = entry.model?.[0];
+  if (notice !== undefined) {
+    who = notice.name;
+    text = notice.text;
+  } else if (message?.role === "user") {
+    who = "you";
+    text = messageParts(message.content).text;
+    // A skill's instructions stay out, as they stay folded: its name and what was typed with it are searched.
+    const skill = skillInvocation(text);
+    if (skill !== undefined) text = `/skill:${skill.name} ${skill.text}`;
+  } else if (message?.role === "assistant")
+    text = message.content
+      .map((part) =>
+        part.type === "text"
+          ? part.text
+          : part.type === "toolCall"
+            ? `${part.name} ${argSummary(part.arguments)}`
+            : "",
+      )
+      .filter(Boolean)
+      .join("\n");
+  const row = { who, text, lower: text.toLowerCase() };
+  rowText.set(entry, row);
+  return row;
+}
+
+/** The messages of the feed on screen, oldest first: the shown conversation, under the front's filter. */
+export function feedRows(): FeedRow[] {
+  const name = shownName.value;
+  const state = viewOf(name)?.value;
+  if (state === undefined) return [];
+  const front = name === undefined;
+  const items = new Map(front ? inbox.value.map((item) => [item.entry, item]) : []);
+  const shownFilter = front ? filter.value : {};
+  const ids = shortIds.get(state.conversation.id);
+  if (ids === undefined) return [];
+  const rows: FeedRow[] = [];
+  for (const entry of state.entries) {
+    if (!addressable(entry) || !inFeed(shownFilter, items.get(entry.id))) continue;
+    const { who, text, lower } = searchText(entry);
+    if (text.trim() === "") continue;
+    rows.push({ code: ids.split(entry.id).code, who, at: sentAt(entry) ?? 0, text, lower });
+  }
+  return rows;
+}
+
+/** The front's open asks, newest first, by short id with their first words: what `/reply` completes. */
+export function openAsks(): { code: string; text: string }[] {
+  const state = viewOf(undefined)?.value;
+  const ids = state === undefined ? undefined : shortIds.get(state.conversation.id);
+  if (state === undefined || ids === undefined) return [];
+  const open = new Set(
+    inbox.value
+      .filter((item) => item.kind === "ask" && item.state === "open")
+      .map((item) => item.entry),
+  );
+  return state.entries
+    .filter((entry) => open.has(entry.id))
+    .toReversed()
+    .map((entry) => ({
+      code: ids.split(entry.id).code,
+      text: searchText(entry).text.replace(/\s+/g, " "),
+    }));
+}
+
 /** Whether the reader is at the newest line, give or take a line, so new content keeps them there. */
 const AT_END = 48;
 
@@ -475,15 +568,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
   const items = new Map(front ? inbox.value.map((item) => [item.entry, item]) : []);
   const shownFilter = front ? filter.value : {};
   const filtered = shownFilter.kind !== undefined || shownFilter.goal !== undefined;
-  const keep = (entry: EntryRecord) => {
-    if (!filtered) return true;
-    const item = items.get(entry.id);
-    return (
-      item !== undefined &&
-      (shownFilter.kind === undefined || item.kind === shownFilter.kind) &&
-      (shownFilter.goal === undefined || item.goal === shownFilter.goal)
-    );
-  };
+  const keep = (entry: EntryRecord) => inFeed(shownFilter, items.get(entry.id));
   const results = new Map<string, ToolResultMessage>();
   for (const entry of view.entries)
     for (const message of entry.model ?? [])
@@ -592,6 +677,18 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     reading();
     target.scrollIntoView({ block: "center" });
   };
+  useEffect(
+    () =>
+      jumpTo.subscribe((wanted) => {
+        if (wanted === undefined) return;
+        jumpTo.value = undefined;
+        jump(wanted.code);
+        const target = document.getElementById(`m-${wanted.code}`);
+        target?.classList.add("found");
+        setTimeout(() => target?.classList.remove("found"), 2000);
+      }),
+    [],
+  );
   useEffect(() => {
     const hash = location.hash;
     if (hash.startsWith("#m-")) requestAnimationFrame(() => jump(hash.slice(3)));

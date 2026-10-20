@@ -53,8 +53,14 @@ export type Choice = {
   query?: string;
   choose(id: string, alternate: boolean): void;
   cancel(): void;
-  /** The alternate action's label (Ctrl+S or a second button), such as saving a model as the default. */
+  /** The alternate action's label (Shift+Enter or the toggle), such as saving a model as the default. */
   alternate?: string;
+  /** The rows a filter shows, in place of the menu's own matching: search ranks its own. */
+  rows?: (query: string) => MenuItem[];
+  /** What an empty list says. */
+  empty?: string;
+  /** A style for the list: `search` gives the label the row and the detail a column after it. */
+  class?: string;
 };
 
 /** A typed answer the user gives in place of the editor: a login code, key or pasted URL. */
@@ -369,7 +375,7 @@ export function replyDraft(code: string): void {
 }
 
 /** Put the caret at the end of the editor: focused within a tap, so a phone opens its keyboard. */
-function typeInEditor(): void {
+export function typeInEditor(): void {
   const area = document.querySelector("textarea");
   area?.focus();
   // The draft renders on the next frame.
@@ -439,11 +445,12 @@ export async function show(name: string | undefined): Promise<void> {
 }
 
 /** Pick one of `options` in place of the editor; resolves with its id, or `undefined` when cancelled. */
-function pick(
+export function pick(
   title: string,
   options: Choice["options"],
   alternate?: string,
   query?: string,
+  more: Pick<Choice, "rows" | "empty" | "class"> = {},
 ): Promise<{ id: string; alternate: boolean } | undefined> {
   return new Promise((resolve) => {
     choice.value = {
@@ -451,6 +458,7 @@ function pick(
       options,
       ...(alternate === undefined ? {} : { alternate }),
       ...(query ? { query } : {}),
+      ...more,
       choose: (id, second) => {
         choice.value = undefined;
         resolve({ id, alternate: second });
@@ -663,7 +671,7 @@ async function runMcp(text: string): Promise<void> {
   }
 }
 
-/** `/model` and `/thinking`: first what to change, as the terminal asks, then the pick; Ctrl+S or a row's second button saves a role default. */
+/** `/model` and `/thinking`: first what to change, as the terminal asks, then the pick; Shift+Enter or the toggle saves a role default. */
 async function runModel(thinking: boolean, search: string): Promise<void> {
   await refreshWorkers();
   const targets = pickTargets(
@@ -672,7 +680,7 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   );
   const which = await pick(
     thinking ? "Pick the thinking level of" : "Pick the model of",
-    // The terminal's Ctrl+S is a button on each row of the next list here.
+    // The terminal's Ctrl+S is Shift+Enter or the toggle under the next list here.
     targets.map(({ label, target, description }) => ({
       id: label,
       label,
@@ -893,7 +901,7 @@ export function endEdit(text?: string): void {
   if (text !== undefined) void editQueued(current.id, { kind: "text", text }, current.name);
 }
 
-/** Alt+S: the busy mode new messages take. */
+/** The busy mode new messages take: steer joins a busy run, follow-up waits for it. */
 export function toggleMode(): void {
   mode.value = mode.value === "steer" ? "followUp" : "steer";
 }

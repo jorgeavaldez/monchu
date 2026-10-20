@@ -320,6 +320,12 @@ pre {
   color: var(--yellow);
   font-weight: bold;
 }
+/* The message a search jumped to, marked for a moment. */
+.stamp.found,
+.stamp.found .prefix {
+  color: var(--bg);
+  background: var(--accent);
+}
 /* A front message's id, tapped to start a reply: the id as shown, with a tap target around it. */
 .stamp .code {
   padding: 0 var(--s1);
@@ -497,6 +503,13 @@ pre {
   text-align: left;
   border: none;
   background: transparent;
+}
+/* Search: the matching text takes the row, who and when follow it. */
+.menu.search .enter {
+  grid-template-columns: 1fr auto;
+}
+.menu.search .enter b {
+  font-weight: normal;
 }
 .menu .enter b {
   overflow: hidden;

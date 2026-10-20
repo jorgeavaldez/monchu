@@ -1256,7 +1256,7 @@ async function journeys(
       await page(`${tool}.querySelector(".row").click()`);
       check((await page(`!${tool}.querySelector("pre")`)) === true, "a second tap doesn't fold it");
       // Expand all and back folds a call opened by hand too.
-      const expandAll = `document.querySelector("textarea").dispatchEvent(new KeyboardEvent("keydown", { key: "o", ctrlKey: true, bubbles: true, cancelable: true }))`;
+      const expandAll = `document.querySelector("[aria-label='expand all']").click()`;
       await page(`${tool}.querySelector(".row").click()`);
       await page(expandAll);
       await page(expandAll);
@@ -1326,6 +1326,48 @@ async function journeys(
     );
     return "picker opened over a still box, filtered, and closed";
   });
+
+  await journey(
+    "commands: an argument completes, /search jumps to a message, /palette runs an action",
+    async () => {
+      await browser("fill", "textarea", "/agents ");
+      await browser("wait", "[role=listbox]");
+      check(
+        (await page(
+          `document.querySelector("[role=option][aria-selected=true]")?.textContent.startsWith("root")`,
+        )) === true,
+        "/agents didn't offer root as its argument",
+      );
+      // A message of its own to find, so the journey runs alone too.
+      await browser("fill", "textarea", "find the needle");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", SETTLED);
+      await browser("fill", "textarea", "/search needle");
+      const searched = performance.now();
+      await browser("press", "Enter");
+      await browser("wait", ".search [role=option]");
+      report.metrics["search.openMs"] = ms(searched);
+      const first = text(
+        await page(
+          `document.querySelector(".search [role=option][aria-selected=true]").textContent`,
+        ),
+      );
+      check(first.includes("find the needle"), `search's first row is ${first}`);
+      await capture("search", home, origin);
+      await browser("press", "Enter");
+      await browser("wait", ".stamp.found");
+      await browser("fill", "textarea", "/palette");
+      await browser("press", "Enter");
+      await browser("wait", ".pick [role=option]");
+      await browser("fill", "textarea", "expand all");
+      await browser("press", "Enter");
+      const expand = `document.querySelector("[aria-label='expand all']").getAttribute("aria-pressed")`;
+      check((await page(expand)) === "true", "the palette's expand all didn't run");
+      await browser("click", "[aria-label='expand all']");
+      check((await page(expand)) === "false", "expand all didn't switch back");
+      return "argument offered, search jumped to the message, palette expanded every card";
+    },
+  );
 
   await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
     const shownRoot = async () =>

@@ -1,6 +1,6 @@
 import type { LogQuery, LogRecord, Severity } from "../api/logs.ts";
 
-const SEVERITIES: readonly Severity[] = ["debug", "info", "warn", "error"];
+export const SEVERITIES: readonly Severity[] = ["debug", "info", "warn", "error"];
 
 /** `/logs [severity|scope]`: a severity word filters by severity, anything else by scope prefix. */
 export function logQuery(text: string): LogQuery {

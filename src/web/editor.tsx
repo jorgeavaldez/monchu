@@ -1,14 +1,13 @@
 /**
- * The editor: Enter sends (adds a line on a touch screen), Shift-Enter adds a line, Esc stops a running front (or closes the typeahead, or leaves a
- * queued message's edit), Alt+S toggles steer and follow-up, Ctrl-O expands every card; the key bar under it taps the
- * same. Typeahead lists the terminal's commands with their help, then skills
- * as `/skill:<name>`, from the same command table. A pick (`choice`) opens in the same place: the editor's box filters
+ * The editor: Enter sends (adds a line on a touch screen), Shift-Enter adds a line, Esc stops a running front (or closes
+ * the typeahead, or leaves a queued message's edit); the key bar under it taps the same and toggles steer and expand.
+ * No key here is one a browser or the system binds. Typeahead lists the terminal's commands with their help, then skills
+ * as `/skill:<name>`, from the same command table, and after a command, what its first argument can be. A pick (`choice`) opens in the same place: the editor's box filters
  * it while the draft waits, so the box never moves and a touch keyboard stays up.
  */
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { Client } from "../api/client.ts";
-import { clientCommands } from "../ui/commands.ts";
 import {
   addFiles,
   AttachButton,
@@ -16,8 +15,8 @@ import {
   clearPending,
   readyAttachments,
 } from "./attachments.tsx";
-import { openClient } from "./client.tsx";
-import { openSecrets } from "./secrets.tsx";
+import { runWebCommand, slashCommands } from "./commands.ts";
+import { argumentRows } from "./completions.ts";
 import { Keys, PickKeys } from "./keys.tsx";
 import { matching, Menu, type MenuItem } from "./menu.tsx";
 import {
@@ -29,48 +28,40 @@ import {
   linkError,
   editing,
   endEdit,
-  toggleExpandAll,
   forgetRetry,
   interrupt,
   mode,
   notice,
+  roots,
   submit,
-  toggleMode,
+  workers,
 } from "./state.ts";
+import { openAsks } from "./transcript.tsx";
 
 const SIZES_ITSELF = CSS.supports("field-sizing", "content");
 
-const command = (label: string, usage: string, detail: string): MenuItem => ({
-  id: label,
-  label,
-  usage,
-  detail,
-});
-
-/** Commands only this page has, run here and never sent to the core. */
-const WEB_COMMANDS: MenuItem[] = [
-  command("/client", "", "web only · this client: app name, install, theme"),
-  command("/secrets", "", "web only · secrets agents use by name: requests, add, replace, delete"),
-];
-
 /**
- * What completes `text`, matched as every menu matches, the command typed exactly first: the core's commands and
- * skills once a client is there, this page's own commands always.
+ * What completes `text`, matched as every menu matches, the exact one first: a command's name while it is typed, then
+ * its first argument. Before the page connects only this page's commands complete.
  */
-function suggestions(text: string, core: Client | undefined): MenuItem[] {
-  if (!text.startsWith("/") || /\s/.test(text)) return [];
-  const all: MenuItem[] = [
-    ...(core === undefined ? [] : clientCommands("web", core.commands())).map(
-      ([name, { usage, help }]) => command(name, usage, help),
-    ),
-    ...WEB_COMMANDS,
-    ...(core?.skills() ?? []).map((skill) =>
-      command(`/skill:${skill.name}`, "[text]", skill.description),
-    ),
-  ];
-  return matching(all, text.slice(1))
+function suggestions(text: string, core: Client | undefined): { items: MenuItem[]; query: string } {
+  if (!text.startsWith("/")) return { items: [], query: "" };
+  const argument = argumentRows(text, {
+    workers: workers.value.map((worker) => worker.name),
+    roots: roots.value.filter((each) => !each.archived).map(({ id, label }) => ({ id, label })),
+    asks: core === undefined ? [] : openAsks(),
+  });
+  if (argument !== undefined) {
+    const items = matching(argument.items, argument.query)
+      .toSorted((x, y) => Number(y.id.trim() === text.trim()) - Number(x.id.trim() === text.trim()))
+      .slice(0, 12);
+    return { items, query: argument.query };
+  }
+  if (/\s/.test(text)) return { items: [], query: "" };
+  const items = matching(slashCommands(core), text.slice(1))
     .toSorted((x, y) => Number(y.label === text) - Number(x.label === text))
     .slice(0, 12);
+  return { items, query: text.slice(1) };
 }
 
 export function Editor() {
@@ -78,7 +69,7 @@ export function Editor() {
   const closed = useSignal(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const picking = choice.value;
-  // A pick's filter and whether its alternate (Ctrl+S) is on; both start afresh with each pick.
+  // A pick's filter and whether its alternate (Shift+Enter) is on; both start afresh with each pick.
   const query = useSignal("");
   const second = useSignal(false);
   useEffect(() => {
@@ -91,7 +82,7 @@ export function Editor() {
   // Typing (or a draft kept over a reload) can come before the page connects: then only this page's commands complete.
   const list = useComputed(() =>
     closed.value
-      ? []
+      ? { items: [], query: "" }
       : suggestions(draft.value, connection.value === "connecting" ? undefined : client()),
   );
   // Back from a pick or a prompt, typing goes to the editor again.
@@ -110,13 +101,9 @@ export function Editor() {
     const text = draft.value;
     closed.value = false;
     if (editing.value !== undefined) return endEdit(text);
-    if (text.trim() === "/client") {
+    if (runWebCommand(text)) {
       draft.value = "";
-      return openClient();
-    }
-    if (text.trim() === "/secrets") {
-      draft.value = "";
-      return openSecrets();
+      return;
     }
     const attachments = readyAttachments();
     if (attachments === undefined) return notice("still uploading · send when the files are up");
@@ -130,11 +117,15 @@ export function Editor() {
     });
   };
   const accept = (item: MenuItem) => {
-    draft.value = `${item.label}${item.usage ? " " : ""}`;
+    // A row's id is the whole text it completes to.
+    draft.value = `${item.id}${item.usage ? " " : ""}`;
     selected.value = 0;
     area.current?.focus();
   };
-  const items = picking === undefined ? list.value : matching(picking.options, query.value);
+  const items =
+    picking === undefined
+      ? list.value.items
+      : (picking.rows?.(query.value) ?? matching(picking.options, query.value));
   const take = (item: MenuItem | undefined, alternate = second.value) => {
     if (picking === undefined) {
       if (item !== undefined) accept(item);
@@ -159,19 +150,19 @@ export function Editor() {
       {picking !== undefined ? (
         <Menu
           label={picking.title}
-          class="pick"
+          class={`pick ${picking.class ?? ""}`}
           items={items}
           query={query.value}
           selected={selected.value}
-          empty="nothing matches"
+          empty={picking.empty ?? "nothing matches"}
           onTake={(item) => take(item)}
           header={
             <header>
               <span class="title">
                 {picking.title}
                 <span class="hint">
-                  {picking.alternate === undefined ? "" : ` · Ctrl+S ${picking.alternate}`} · Esc
-                  cancels
+                  {picking.alternate === undefined ? "" : ` · Shift+Enter ${picking.alternate}`} ·
+                  Esc cancels
                 </span>
               </span>
               <button
@@ -191,7 +182,7 @@ export function Editor() {
         <Menu
           label="commands"
           items={items}
-          query={draft.value.slice(1)}
+          query={list.value.query}
           selected={selected.value}
           onTake={accept}
         />
@@ -247,7 +238,7 @@ export function Editor() {
             if (event.key === "Escape") {
               event.preventDefault();
               picking.cancel();
-            } else if (event.ctrlKey && event.key.toLowerCase() === "s") {
+            } else if (event.key === "Enter" && event.shiftKey && !event.isComposing) {
               event.preventDefault();
               if (picking.alternate !== undefined) take(item, true);
             } else if (
@@ -257,16 +248,6 @@ export function Editor() {
               event.preventDefault();
               take(item);
             }
-            return;
-          }
-          if (event.altKey && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            toggleMode();
-            return;
-          }
-          if (event.ctrlKey && event.key.toLowerCase() === "o") {
-            event.preventDefault();
-            toggleExpandAll();
             return;
           }
           if (items.length > 0 && event.key === "Tab") {
@@ -288,7 +269,7 @@ export function Editor() {
             if (item === undefined && matchMedia("(pointer: coarse)").matches) return;
             event.preventDefault();
             // A half-typed command takes the suggestion; an exact one, or one with arguments, is sent as typed.
-            if (item !== undefined && item.label !== draft.value.trim()) accept(item);
+            if (item !== undefined && item.id !== draft.value.trim()) accept(item);
             else send();
           }
         }}

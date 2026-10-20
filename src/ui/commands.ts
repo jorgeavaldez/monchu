@@ -147,10 +147,18 @@ export const helpText = (
       `${`${command} ${usage}`.padEnd(21)} ${help}`.trimEnd(),
     ),
     `${"/skill:<name> [text]".padEnd(21)} send a skill's instructions with your text`,
-    "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
-    "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
-    "Ctrl+V (Alt+V on Windows) attaches a copied image or file, and a pasted image path attaches that image; in the web, use the attach button, paste or drop.",
-    "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
+    ...(client === "web"
+      ? [
+          "Esc interrupts a running front and puts your queued messages back in the editor. Shift-Enter inserts a newline.",
+          "/keys lists the keys, /palette every action and command, /search finds a message in the feed on screen. The key bar expands every card and switches steer and follow-up.",
+          "Attach with the attach button, paste or drop.",
+        ]
+      : [
+          "Esc interrupts a running front and puts your queued messages back in the editor. Ctrl-C clears the editor; twice quickly exits. Ctrl-D exits with an empty editor.",
+          "Ctrl-O expands tools and worker messages; click one to toggle it. Shift-Enter or backslash-Enter inserts a newline.",
+          "Ctrl+V (Alt+V on Windows) attaches a copied image or file, and a pasted image path attaches that image.",
+          "Alt+S toggles whether a message to a busy conversation steers its reply or follows up after it.",
+        ]),
     "Plain messages and /model, /thinking, /stop and /cd go to the conversation shown; /new and /compact always target the shown root. Footer dots are roots at work (●) or done unseen; /roots has them.",
   ].join("\n");
 

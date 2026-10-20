@@ -82,7 +82,7 @@ export function Keys({
       <Key
         class={`mode${steer ? " steer" : ""}`}
         label={steer ? "steer" : "follow-up"}
-        title={`${steer ? "steer: joins a busy run" : "follow-up: waits for a busy run"} · tap to switch (Alt+S)`}
+        title={`${steer ? "steer: joins a busy run" : "follow-up: waits for a busy run"} · tap to switch`}
         onPress={toggleMode}
       >
         {steer ? "↯ steer" : "⇢ follow-up"}
@@ -98,7 +98,7 @@ export function Keys({
       <Key
         class="icon"
         label="expand all"
-        title="expand every card (Ctrl+O)"
+        title="expand every card"
         pressed={expandAll.value}
         onPress={() => {
           toggleExpandAll();
@@ -134,7 +134,7 @@ export function Keys({
 
 /**
  * The bar under a pick's filter, the key bar's height so the box above stays put: the pick's alternate as a toggle
- * (Ctrl+S takes the row with it), and choose in send's place.
+ * (Shift+Enter takes the row with it), and choose in send's place.
  */
 export function PickKeys(props: {
   alternate: string | undefined;
@@ -148,7 +148,7 @@ export function PickKeys(props: {
         <Key
           class="alternate"
           label={props.alternate}
-          title={`${props.alternate} with the pick · tap to switch (Ctrl+S takes a row with it)`}
+          title={`${props.alternate} with the pick · tap to switch (Shift+Enter takes a row with it)`}
           pressed={props.on}
           onPress={props.toggle}
         >
