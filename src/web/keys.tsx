@@ -3,21 +3,17 @@
  * the keyboard's Enter adds a line and the bar's send sends. Each button shows its state rather than explaining it,
  * names its desktop key in its title, and keeps the editor's focus so the on-screen keyboard stays up.
  */
-import type { ComponentChildren, RefObject } from "preact";
+import type { ComponentChildren } from "preact";
 import { presentation } from "../ui/state.ts";
+import { run } from "./commands.ts";
 import {
   draft,
   editing,
-  endEdit,
   escapeLeaves,
   expandAll,
-  toggleExpandAll,
-  interrupt,
   mode,
-  openDrafts,
   promptDrafts,
   shown,
-  toggleMode,
   view,
 } from "./state.ts";
 
@@ -46,15 +42,7 @@ function Key(props: {
 }
 
 /** The bar; `children` go after the editing keys, before send (the attach button). */
-export function Keys({
-  area,
-  send,
-  children,
-}: {
-  area: RefObject<HTMLTextAreaElement | null>;
-  send: () => void;
-  children?: ComponentChildren;
-}) {
+export function Keys({ send, children }: { send: () => void; children?: ComponentChildren }) {
   const root = view(undefined)?.value;
   const stoppable = shown.value === undefined && root !== undefined && presentation(root).busy;
   const edit = editing.value !== undefined;
@@ -66,7 +54,7 @@ export function Keys({
           class="icon"
           label="leave the edit"
           title="leave the edit, unsaved (Esc)"
-          onPress={() => endEdit()}
+          onPress={() => run("edit.leave")}
         >
           ✕
         </Key>
@@ -75,7 +63,7 @@ export function Keys({
           class="icon"
           label="stop"
           title={escapeLeaves.value ? "stop the root's run" : "stop the root's run (Esc)"}
-          onPress={() => void interrupt()}
+          onPress={() => run("stop")}
         >
           ■
         </Key>
@@ -84,7 +72,7 @@ export function Keys({
         class={`mode${steer ? " steer" : ""}`}
         label={steer ? "steer" : "follow-up"}
         title={`${steer ? "steer: joins a busy run" : "follow-up: waits for a busy run"} · tap to switch`}
-        onPress={toggleMode}
+        onPress={() => run("mode")}
       >
         {steer ? "↯ steer" : "⇢ follow-up"}
       </Key>
@@ -92,7 +80,7 @@ export function Keys({
         class="icon"
         label="drafts"
         title={`drafts: save or restore (${promptDrafts.value.length} saved)`}
-        onPress={() => void openDrafts()}
+        onPress={() => run("drafts")}
       >
         ✎
       </Key>
@@ -101,22 +89,12 @@ export function Keys({
         label="expand all"
         title="expand every card"
         pressed={expandAll.value}
-        onPress={() => {
-          toggleExpandAll();
-        }}
+        onPress={() => run("expand")}
       >
         {expandAll.value ? "⊟" : "⊞"}
       </Key>
       {draft.value === "" ? (
-        <Key
-          class="icon"
-          label="commands"
-          title="commands (/)"
-          onPress={() => {
-            draft.value = "/";
-            area.current?.focus();
-          }}
-        >
+        <Key class="icon" label="commands" title="commands (/)" onPress={() => run("slash")}>
           /
         </Key>
       ) : null}

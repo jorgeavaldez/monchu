@@ -3,7 +3,7 @@
  * streaming token re-renders only the live tail. Tool calls fold to one line and worker reports to a header and a few
  * lines, as in the terminal; a click toggles one, and the expand-all switch opens every one.
  */
-import { signal, useSignal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { Fragment, type ComponentChildren, type VNode } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
@@ -23,6 +23,8 @@ import { ranges } from "./fuzzy.ts";
 import { Markdown } from "./markdown.tsx";
 import type { InboxItem } from "../api/client.ts";
 import { Briefer } from "./inbox.tsx";
+import { run } from "./commands.ts";
+import { type FeedRow, jumpTo, offerRows, offerScroll, type ScrollKind } from "./feed.ts";
 import {
   expandAll,
   expandPresses,
@@ -30,7 +32,6 @@ import {
   following,
   inbox,
   notices,
-  replyDraft,
   rootId,
   shown as shownName,
   view as viewOf,
@@ -244,7 +245,7 @@ function Stamp(props: { entry: EntryRecord; ids: ShortIds; reply: boolean }) {
           type="button"
           class="code"
           title={`reply to ${code}`}
-          onClick={() => replyDraft(code)}
+          onClick={() => run("reply", code)}
         >
           {id}
         </button>
@@ -271,7 +272,7 @@ function Label({ item, code }: { item: InboxItem; code: string }) {
           : ` · ${item.state === "answered" ? "replied" : item.state}`}
       </span>
       {item.kind === "ask" && item.state === "open" ? (
-        <button type="button" class="reply" onClick={() => replyDraft(code)}>
+        <button type="button" class="reply" onClick={() => run("reply", code)}>
           reply
         </button>
       ) : null}
@@ -480,12 +481,6 @@ function inFeed(shown: Filter, item: InboxItem | undefined): boolean {
   );
 }
 
-/**
- * A message a search picked: the shown transcript scrolls to it and marks it, and what the search typed in it. A new
- * object each time, so the same one twice jumps twice.
- */
-export const jumpTo = signal<{ code: string; query?: string } | undefined>(undefined);
-
 /** The text under `nodes`, and a way back from a place in it to a DOM position. */
 function domText(nodes: readonly Node[]): { text: string; at(index: number): [Text, number] } {
   const texts: Text[] = [];
@@ -568,9 +563,6 @@ function clearSearchMarks(): void {
   CSS.highlights.delete("search-current");
 }
 
-/** One message as search sees it: its short id, who wrote it, when, and its text with a lowercase copy. */
-export type FeedRow = { code: string; who: string; at: number; text: string; lower: string };
-
 const rowText = new WeakMap<EntryRecord, { who: string; text: string; lower: string }>();
 
 /** What search matches in an entry: what it says, and each tool call's name and arguments; cached by its immutable record. */
@@ -607,7 +599,7 @@ function searchText(entry: EntryRecord): { who: string; text: string; lower: str
 }
 
 /** The messages of the feed on screen, oldest first: the shown conversation, under the front's filter. */
-export function feedRows(): FeedRow[] {
+function feedRows(): FeedRow[] {
   const name = shownName.value;
   const state = viewOf(name)?.value;
   if (state === undefined) return [];
@@ -625,6 +617,8 @@ export function feedRows(): FeedRow[] {
   }
   return rows;
 }
+
+offerRows(feedRows);
 
 /** The front's open asks, newest first, by short id with their first words: what `/reply` completes. */
 export function openAsks(): { code: string; text: string }[] {
@@ -646,15 +640,6 @@ export function openAsks(): { code: string; text: string }[] {
 }
 
 /** How the shown transcript scrolls for an action; set while one is on screen. */
-let scroller: ((kind: "line" | "half" | "top" | "end", step: 1 | -1) => void) | undefined;
-
-/**
- * Scroll the shown feed by a line, half a page, or to either end, as the reader would: moving up stops following the
- * newest line, and reaching the end (or jumping there) follows it again.
- */
-export function scrollFeed(kind: "line" | "half" | "top" | "end", step: 1 | -1): void {
-  scroller?.(kind, step);
-}
 
 /** Whether the reader is at the newest line, give or take a line, so new content keeps them there. */
 const AT_END = 48;
@@ -772,7 +757,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     const target = document.getElementById(`m-${code}`);
     if (target === null) {
       if (retry && filtered) {
-        filter.value = {};
+        run("feed.clear");
         requestAnimationFrame(() => jump(code, false));
       }
       return;
@@ -781,7 +766,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     target.scrollIntoView({ block: "center" });
   };
   useEffect(() => {
-    const mine = (kind: "line" | "half" | "top" | "end", step: 1 | -1) => {
+    const scroll = (kind: ScrollKind, step: 1 | -1) => {
       const element = main.current;
       if (element === null) return;
       if (kind === "end") {
@@ -794,10 +779,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
         kind === "top" ? -element.scrollHeight : kind === "half" ? element.clientHeight / 2 : 48;
       element.scrollBy({ top: step * Math.abs(by) });
     };
-    scroller = mine;
-    return () => {
-      if (scroller === mine) scroller = undefined;
-    };
+    return offerScroll(scroll);
   }, []);
   useEffect(() => {
     // Esc that nothing else took (a menu, the prompt) clears the search's highlights.

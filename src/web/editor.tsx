@@ -8,14 +8,8 @@
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { Client } from "../api/client.ts";
-import {
-  addFiles,
-  AttachButton,
-  AttachmentTray,
-  clearPending,
-  readyAttachments,
-} from "./attachments.tsx";
-import { runWebCommand, slashCommands } from "./commands.ts";
+import { addFiles, AttachButton, AttachmentTray, readyAttachments } from "./attachments.tsx";
+import { run, runWebCommand, slashCommands } from "./commands.ts";
 import { argumentRows } from "./completions.ts";
 import { Keys, PickKeys } from "./keys.tsx";
 import { matching, Menu, type MenuItem } from "./menu.tsx";
@@ -23,22 +17,21 @@ import {
   attachFile,
   choice,
   client,
-  commandLine,
   connection,
   draft,
   linkError,
-  menuOpen,
   pageHint,
   editing,
-  endEdit,
   escapeLeaves,
   focusOnMount,
   forgetRetry,
-  interrupt,
+  keepCommandLine,
   mode,
   notice,
   roots,
-  submit,
+  setDraft,
+  setMenuOpen,
+  takeCommandLine,
   workers,
 } from "./state.ts";
 import { openAsks } from "./transcript.tsx";
@@ -111,33 +104,26 @@ export function Editor() {
   const send = () => {
     const text = draft.value;
     closed.value = false;
-    if (editing.value !== undefined) return endEdit(text);
+    if (editing.value !== undefined) return void run("edit.save", text);
     // A slash command begun from the page runs and gives back the draft it set aside, and focus to where it was.
-    const line = commandLine.value;
-    commandLine.value = undefined;
+    const line = takeCommandLine();
     if (line !== undefined && !line.fromPrompt) area.current?.blur();
     const rest = line?.draft ?? "";
     if (runWebCommand(text)) {
-      draft.value = rest;
+      setDraft(rest);
       return;
     }
     const attachments = readyAttachments();
     if (attachments === undefined) {
-      commandLine.value = line;
+      keepCommandLine(line);
       return notice("still uploading · send when the files are up");
     }
-    draft.value = rest;
-    void submit(text, attachments).then((outcome) => {
-      if (outcome === "sent") clearPending();
-      if (outcome !== "failed") return;
-      // Never lost: what didn't go comes back, ahead of anything typed since (then it's a new message).
-      if (draft.value !== "") forgetRetry();
-      draft.value = [text, draft.value].filter(Boolean).join("\n");
-    });
+    setDraft(rest);
+    run("send", text, attachments);
   };
   const accept = (item: MenuItem) => {
     // A row's id is the whole text it completes to.
-    draft.value = `${item.id}${item.usage ? " " : ""}`;
+    setDraft(`${item.id}${item.usage ? " " : ""}`);
     selected.value = 0;
     area.current?.focus();
   };
@@ -147,7 +133,7 @@ export function Editor() {
       : (picking.rows?.(query.value) ?? matching(picking.options, query.value));
   const menu = picking === undefined && items.length > 0;
   useEffect(() => {
-    menuOpen.value = menu;
+    setMenuOpen(menu);
   }, [menu]);
   const take = (item: MenuItem | undefined, alternate = second.value) => {
     if (picking === undefined) {
@@ -246,7 +232,7 @@ export function Editor() {
         autofocus
         onBlur={() => {
           // Leaving for elsewhere on the page ends a slash command begun from it; leaving the window doesn't.
-          if (document.hasFocus()) commandLine.value = undefined;
+          if (document.hasFocus()) takeCommandLine();
         }}
         onInput={(event) => {
           if (picking !== undefined) {
@@ -255,7 +241,7 @@ export function Editor() {
             return;
           }
           forgetRetry();
-          draft.value = event.currentTarget.value;
+          setDraft(event.currentTarget.value);
           selected.value = 0;
           closed.value = false;
         }}
@@ -293,15 +279,14 @@ export function Editor() {
           }
           if (event.key === "Escape") {
             event.preventDefault();
-            const line = commandLine.value;
-            commandLine.value = undefined;
+            const line = takeCommandLine();
             if (line !== undefined) {
-              draft.value = line.draft;
+              setDraft(line.draft);
               if (!line.fromPrompt) event.currentTarget.blur();
             } else if (items.length > 0) closed.value = true;
-            else if (editing.value !== undefined) endEdit();
+            else if (editing.value !== undefined) run("edit.leave");
             else if (escapeLeaves.value) event.currentTarget.blur();
-            else void interrupt();
+            else run("stop");
             return;
           }
           if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -323,7 +308,7 @@ export function Editor() {
           choose={() => take(items[selected.value])}
         />
       ) : (
-        <Keys area={area} send={send}>
+        <Keys send={send}>
           <AttachButton onFiles={attach} />
         </Keys>
       )}

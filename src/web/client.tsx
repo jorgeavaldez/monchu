@@ -8,7 +8,7 @@ import { signal, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Close, Panel } from "./panel.tsx";
 import type { InboxKind } from "../api/client.ts";
-import { client, connection, panel } from "./state.ts";
+import { client, connection, panel, setPanel } from "./state.ts";
 
 /** What Chrome hands a page it would install: its prompt, and how the person answered. */
 type InstallPrompt = Event & {
@@ -74,8 +74,8 @@ export function startClient(): void {
 }
 
 export function openClient(open = true): void {
-  if (open) panel.value = "client";
-  else if (panel.value === "client") panel.value = undefined;
+  if (open) setPanel("client");
+  else if (panel.value === "client") setPanel(undefined);
   message.value = undefined;
 }
 
@@ -355,7 +355,7 @@ function PushOffer() {
               };
             })
             .then(() => {
-              if (message.value?.failed === true) panel.value = "client";
+              if (message.value?.failed === true) setPanel("client");
             });
         }}
       >

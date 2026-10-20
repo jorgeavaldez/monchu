@@ -2,7 +2,8 @@
  * The front's stream as an inbox: a bar that filters it to asks, milestones or updates, and to one goal, with that
  * goal's briefer on top, so the person catches up on one workstream without the rest.
  */
-import { filter, goalList, inbox, pickGoal, type Filter } from "./state.ts";
+import { run } from "./commands.ts";
+import { filter, goalList, inbox, type Filter } from "./state.ts";
 
 const KINDS: [NonNullable<Filter["kind"]>, string][] = [
   ["ask", "asks"],
@@ -18,9 +19,7 @@ export function FilterBar() {
       <button
         type="button"
         aria-pressed={current.kind === undefined && current.goal === undefined}
-        onClick={() => {
-          filter.value = {};
-        }}
+        onClick={() => run("feed.clear")}
       >
         all
       </button>
@@ -30,10 +29,7 @@ export function FilterBar() {
           type="button"
           aria-pressed={current.kind === kind}
           class={kind === "ask" && open > 0 ? "yellow" : undefined}
-          onClick={() => {
-            const { kind: _kind, ...rest } = current;
-            filter.value = current.kind === kind ? rest : { ...rest, kind };
-          }}
+          onClick={() => run("feed.kind", current.kind === kind ? undefined : kind)}
         >
           {label}
           {kind === "ask" && open > 0 ? ` ${open}` : ""}
@@ -43,7 +39,7 @@ export function FilterBar() {
         type="button"
         class="goal"
         aria-pressed={current.goal !== undefined}
-        onClick={() => void pickGoal()}
+        onClick={() => run("feed.goal")}
       >
         {current.goal ?? "goal"} ▾
       </button>

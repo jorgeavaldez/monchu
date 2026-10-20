@@ -7,7 +7,7 @@ import { signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { Client, SecretInput, SecretsState } from "../api/client.ts";
 import { Close, Panel } from "./panel.tsx";
-import { client, panel } from "./state.ts";
+import { client, panel, setPanel } from "./state.ts";
 
 type Kind = SecretInput["kind"];
 
@@ -26,8 +26,8 @@ export async function startSecrets(connected: Client): Promise<void> {
 }
 
 export function openSecrets(open = true): void {
-  if (open) panel.value = "secrets";
-  else if (panel.value === "secrets") panel.value = undefined;
+  if (open) setPanel("secrets");
+  else if (panel.value === "secrets") setPanel(undefined);
   message.value = undefined;
 }
 

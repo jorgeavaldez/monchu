@@ -72,20 +72,28 @@ function Field({ label, value }: { label: string; value: string | undefined }) {
   );
 }
 
-/** What `load` gives, read again whenever `deps` change; a failure shows as the panel's outcome. */
+/**
+ * What `load` gives, read again whenever `deps` change; a failure shows as the panel's outcome. A load that a newer
+ * one replaced (another root shown meanwhile) changes nothing.
+ */
 function useLoaded<T>(load: () => Promise<T>, deps: unknown[]) {
   const value = useSignal<T | undefined>(undefined);
   const problem = useSignal<{ text: string; failed: boolean } | undefined>(undefined);
   useEffect(() => {
+    let latest = true;
     load().then(
       (loaded) => {
+        if (!latest) return;
         value.value = loaded;
         problem.value = undefined;
       },
       (error: unknown) => {
-        problem.value = { text: failure(error), failed: true };
+        if (latest) problem.value = { text: failure(error), failed: true };
       },
     );
+    return () => {
+      latest = false;
+    };
   }, deps);
   return { value, problem };
 }

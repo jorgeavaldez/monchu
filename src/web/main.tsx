@@ -7,13 +7,13 @@ import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
 import { startClient } from "./client.tsx";
 import { startSecrets } from "./secrets.tsx";
+import { run } from "./commands.ts";
 import {
-  cancelLogin,
-  connection,
-  linkError,
   loginStatus,
   MCP_CALLBACK,
   notice,
+  setConnection,
+  setLinkError,
   start,
   view,
 } from "./state.ts";
@@ -95,7 +95,7 @@ async function connect(): Promise<NonNullable<Awaited<ReturnType<typeof connectR
     try {
       const attached = await connectRemote(dial, options);
       if (attached !== undefined) {
-        linkError.value = undefined;
+        setLinkError(undefined);
         return attached;
       }
       if (await up()) {
@@ -111,7 +111,7 @@ async function connect(): Promise<NonNullable<Awaited<ReturnType<typeof connectR
         .replace(/ · next try in \d+s$/, "");
     }
     const wait = backoff();
-    linkError.value = `${reason} · trying again in ${wait / 1000}s`;
+    setLinkError(`${reason} · trying again in ${wait / 1000}s`);
     if (reason !== said) notice(`not connected · ${(said = reason)}`, "warning", true);
     await sleep(wait);
   }
@@ -122,7 +122,7 @@ let recovering = false;
 async function recover(): Promise<void> {
   if (recovering) return;
   recovering = true;
-  connection.value = "gone";
+  setConnection("gone");
   await sleep(backoff());
   await (await connect()).close();
   location.reload();
@@ -143,7 +143,7 @@ async function boot(): Promise<void> {
   addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || loginStatus.value === undefined) return;
     event.preventDefault();
-    cancelLogin();
+    run("login.cancel");
   });
   const { client } = await connect();
   page = { client, version: client.release.version };
@@ -153,13 +153,13 @@ async function boot(): Promise<void> {
     if (release.updating === null && release.version !== page?.version) location.reload();
   });
   client.onConnection((state) => {
-    connection.value = state;
+    setConnection(state);
     if (state === "gone") void recover();
   });
   await start(client);
   await startSecrets(client);
   startPages(client);
-  connection.value = client.connected ? "live" : "lost";
+  setConnection(client.connected ? "live" : "lost");
   sessionStorage.removeItem("wait");
   view(undefined)?.subscribe(() => watch.painted(performance.now()));
   client.record("web", "ready", { ms: Math.round(performance.now()) });

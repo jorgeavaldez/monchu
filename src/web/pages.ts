@@ -8,17 +8,17 @@
 import type { Client } from "../api/client.ts";
 import type { KeyHandler, KeyOwner, Overlay, PageApi, PageSnapshot } from "../plugin.ts";
 import { presentation } from "../ui/state.ts";
-import { actions, pluginKeys, runAction } from "./commands.ts";
+import { actions, pluginKeys, runListed } from "./commands.ts";
 import {
   ask,
   choice,
   editing,
-  escapeLeaves,
   loginStatus,
   menuOpen,
   notice,
-  pageHint,
   panel,
+  setEscapeLeaves,
+  setPageHint,
   shown,
   view,
 } from "./state.ts";
@@ -140,8 +140,8 @@ async function apply(list: readonly { plugin: string; url: string }[]): Promise<
           dispose: () => {
             handlers.length = 0;
             pluginKeys.value = pluginKeys.value.filter((row) => !rows.includes(row));
-            if (escapes) escapeLeaves.value = false;
-            pageHint.value = undefined;
+            if (escapes) setEscapeLeaves(false);
+            setPageHint(undefined);
             try {
               ended?.();
             } catch (error) {
@@ -152,7 +152,7 @@ async function apply(list: readonly { plugin: string; url: string }[]): Promise<
         const api: PageApi = {
           version: 1,
           actions,
-          run: runAction,
+          run: runListed,
           snapshot,
           onKey: (handler) => void handlers.push(handler),
           keys: (next) => {
@@ -161,10 +161,10 @@ async function apply(list: readonly { plugin: string; url: string }[]): Promise<
           },
           escape: (policy) => {
             escapes = policy === "leave";
-            escapeLeaves.value = escapes;
+            setEscapeLeaves(escapes);
           },
           hint: (text) => {
-            pageHint.value = text;
+            setPageHint(text);
           },
           notice: (text) => notice(text),
         };

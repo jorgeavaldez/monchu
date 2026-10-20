@@ -16,29 +16,21 @@ import { Editor } from "./editor.tsx";
 import { GoalsPanel, JobsPanel } from "./lists.tsx";
 import { Close, Panel } from "./panel.tsx";
 import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
+import { run } from "./commands.ts";
 import {
-  archiveRoot,
   ask,
-  beginEdit,
-  cancelLogin,
   choice,
   client,
   connection,
   linkError,
   editing,
-  editQueued,
   loginStatus,
-  newRoot,
-  renameRoot,
   rootId,
   roots,
   rootsMessage,
   panel,
   inbox,
-  show,
   shown,
-  switchRoot,
-  toggleRoots,
   view,
   workers,
 } from "./state.ts";
@@ -68,7 +60,7 @@ function RootTab() {
       aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
       aria-expanded={panel.value === "roots"}
       title={summary ? `${name} · ${summary}` : name}
-      onClick={() => toggleRoots()}
+      onClick={() => run("roots.toggle")}
     >
       {active.length === 0 ? (
         <span aria-hidden="true" class="dot">
@@ -97,7 +89,7 @@ function RootRow({ root, ids }: { root: RootSummary; ids: ReturnType<typeof root
   const here = root.id === rootId.value;
   return (
     <li class={here ? "here" : ""}>
-      <button class="open" onClick={() => void switchRoot(root.id)} aria-current={here}>
+      <button class="open" onClick={() => run("root.switch", root.id)} aria-current={here}>
         <span class="lines">
           <span class="name">
             <span aria-hidden="true" class={`dot ${root.status}`}>
@@ -123,11 +115,11 @@ function RootRow({ root, ids }: { root: RootSummary; ids: ReturnType<typeof root
         <span aria-hidden="true">›</span>
       </button>
       <span class="actions">
-        <button onClick={() => void renameRoot(root.id)} aria-label={`rename ${root.id}`}>
+        <button onClick={() => run("root.rename", root.id)} aria-label={`rename ${root.id}`}>
           rename
         </button>
         <button
-          onClick={() => void archiveRoot(root.id, !root.archived)}
+          onClick={() => run("root.archive", root.id, !root.archived)}
           aria-label={`${root.archived ? "unarchive" : "archive"} ${root.id}`}
         >
           {root.archived ? "unarchive" : "archive"}
@@ -149,7 +141,7 @@ function RootsPanel() {
       name="roots"
       status={rootsMessage.value}
       actions={
-        <button class="icon" aria-label="new root" title="new root" onClick={() => void newRoot()}>
+        <button class="icon" aria-label="new root" title="new root" onClick={() => run("root.new")}>
           +
         </button>
       }
@@ -182,7 +174,10 @@ function Agents() {
   return (
     <nav class="agents">
       <div class="tabs">
-        <button class={shown.value === undefined ? "on" : ""} onClick={() => void show(undefined)}>
+        <button
+          class={shown.value === undefined ? "on" : ""}
+          onClick={() => run("show", undefined)}
+        >
           {rootBusy ? "●" : "○"} root
         </button>
         {/* Working workers first, idle ones after, each in the order the crew lists them. */}
@@ -192,7 +187,7 @@ function Agents() {
             <button
               key={worker.name}
               class={shown.value === worker.name ? "on" : ""}
-              onClick={() => void show(worker.name)}
+              onClick={() => run("show", worker.name)}
             >
               {worker.busy ? "●" : "○"} {worker.name}
             </button>
@@ -260,7 +255,7 @@ function Login() {
           open
         </a>
       )}
-      <Close label="cancel the sign-in" onClose={cancelLogin} />
+      <Close label="cancel the sign-in" onClose={() => run("login.cancel")} />
     </div>
   );
 }
@@ -423,7 +418,7 @@ function QueueRow({ item }: { item: QueuedItem }) {
           class="text"
           aria-label={`edit: ${line}`}
           disabled={editing.value !== undefined}
-          onClick={() => beginEdit(item)}
+          onClick={() => run("queue.open", item)}
         >
           {line}
         </button>
@@ -435,7 +430,7 @@ function QueueRow({ item }: { item: QueuedItem }) {
         aria-label={`${item.mode === "steer" ? "steer" : "follow-up"}, make it ${other}`}
         title={`${item.mode === "steer" ? "steer" : "follow-up"} · tap for ${other}`}
         onClick={() =>
-          void editQueued(item.id, {
+          run("queue.change", item.id, {
             kind: "mode",
             mode: item.mode === "steer" ? "followUp" : "steer",
           })
@@ -448,7 +443,7 @@ function QueueRow({ item }: { item: QueuedItem }) {
         aria-label="delete it"
         title="delete it (Del in the terminal's queue)"
         disabled={open}
-        onClick={() => void editQueued(item.id, { kind: "delete" })}
+        onClick={() => run("queue.change", item.id, { kind: "delete" })}
       >
         ✕
       </button>

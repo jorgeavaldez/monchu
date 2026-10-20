@@ -218,6 +218,17 @@
               {
                 "group": ["../tui/*", "../../tui/*"],
                 "message": "Clients never import each other."
+              },
+              {
+                "group": ["./intents.ts"],
+                "message": "The page does things through one executor: run an action from ./commands.ts."
+              }
+            ],
+            "paths": [
+              {
+                "name": "./state.ts",
+                "importNames": ["page", "showing"],
+                "message": "The page's state is read here and written by its intents; use a setter or run an action from ./commands.ts."
               }
             ]
           }
