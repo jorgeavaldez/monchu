@@ -1,6 +1,6 @@
 /**
  * The keys plugin's bindings and the machine that reads them, pure so a replay of key sequences checks it against the
- * signed-off table. Outside the prompt plain keys act, vim-style; inside it only the leader (Ctrl+/) does, followed by
+ * key table. Outside the prompt plain keys act, vim-style; inside it only the leader (Ctrl+/) does, followed by
  * the same keys as Space. Nothing acts while a menu, pick, question, login or panel is open, or in another field.
  */
 

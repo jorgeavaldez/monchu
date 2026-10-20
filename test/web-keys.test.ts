@@ -19,7 +19,7 @@ const page: KeyContext = { owner: "page", overlay: "none" };
 const prompt: KeyContext = { owner: "prompt", overlay: "none" };
 
 // The intended key table, with the Ctrl+/ leader, written independently of the keymap: each sequence outside the prompt and the action it runs.
-const SIGNED_OFF: [string, string][] = [
+const BINDINGS: [string, string][] = [
   ["i", "prompt"],
   ["enter", "prompt"],
   [":", "slash"],
@@ -53,8 +53,8 @@ const SIGNED_OFF: [string, string][] = [
 ];
 
 describe("keys plugin", () => {
-  it("runs the signed-off action for every sequence outside the prompt, taking each key", () => {
-    for (const [keys, action] of SIGNED_OFF) {
+  it("runs the bound action for every sequence outside the prompt, taking each key", () => {
+    for (const [keys, action] of BINDINGS) {
       const { runs, taken, state } = replay(keys, page);
       expect({ keys, runs }).toEqual({ keys, runs: [action] });
       expect(taken.every(Boolean)).toBe(true);

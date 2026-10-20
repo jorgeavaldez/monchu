@@ -68,7 +68,7 @@ describe("feed search", () => {
 
 describe("slash argument completion", () => {
   const from = {
-    workers: ["vault", "monchu-web-keys"],
+    workers: ["reader", "builder"],
     roots: [{ id: "kqzt", label: "groceries" }],
     asks: [{ code: "mnop", text: "sign off the plan?" }],
   };
@@ -76,8 +76,8 @@ describe("slash argument completion", () => {
   it("offers a command's first argument once its name and a space are typed", () => {
     expect(argumentRows("/agents ", from)?.items.map((item) => item.label)).toEqual([
       "root",
-      "vault",
-      "monchu-web-keys",
+      "reader",
+      "builder",
     ]);
     expect(argumentRows("/agents va", from)?.query).toBe("va");
     expect(
