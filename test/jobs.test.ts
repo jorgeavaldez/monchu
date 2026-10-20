@@ -1,12 +1,20 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import type { Conversation, Harness, JsonObject } from "@earendil-works/pi-durable";
+import {
+  configure,
+  UserEntry,
+  type Conversation,
+  type Harness,
+  type JsonObject,
+} from "@earendil-works/pi-durable";
 import assert from "node:assert";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
+import { shortId } from "../src/api/ids.ts";
 import { parseJobNotice, workerNotice } from "../src/api/notices.ts";
+import { RootsDoc } from "../src/core/agents/root-records.ts";
 import { WorkersDoc } from "../src/core/agents/workers.ts";
 import {
   allEntries,
@@ -327,6 +335,106 @@ describe("jobs", () => {
     expect(textOf((await toolResults(root)).at(-1))).toContain("keeps for life");
     await send(root, "list");
     expect(textOf((await toolResults(root)).at(-1))).toMatch(/^- mine \(active\) command /);
+    await harness.close(context);
+  });
+});
+
+/** A second root, recorded like the backend records one. */
+async function secondRoot(harness: Harness, directory: string): Promise<Conversation> {
+  const id = await harness.commit(async (tx) => {
+    const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
+    await configure(tx, created.id, {
+      model: { provider: "faux", modelId: "faux-1" },
+      cwd: directory,
+    });
+    (await tx.doc(RootsDoc)).roots.push({
+      id: created.id,
+      label: "other",
+      named: true,
+      createdAt: Date.now(),
+    });
+    return created.id;
+  }, context);
+  return conversationOf(harness, id);
+}
+
+/** The job notices a conversation received as input. */
+async function jobInputs(conversation: Conversation) {
+  return (await allEntries(conversation)).flatMap((entry) => {
+    const message = UserEntry.is(entry) ? entry.model?.[0] : undefined;
+    if (message?.role !== "user" || typeof message.content !== "string") return [];
+    const notice = parseJobNotice(message.content);
+    return notice === undefined ? [] : [{ notice, text: message.content }];
+  });
+}
+
+describe("job notify", () => {
+  it("tells the fronts a job names, another root's too, with no worker in between", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    const other = await secondRoot(harness, value.directory);
+    FRONT_CALLS["ci for other"] = {
+      tool: "job",
+      args: {
+        action: "create",
+        name: "ci",
+        type: "bg",
+        command: "echo green",
+        prompt: "CI for the fix ended",
+        notify: ["front", `root:${shortId(other.id)}`],
+      },
+    };
+    await send(root, "ci for other");
+    const ended = await waitForEvent(harness, 2);
+    expect(ended[1]).toMatchObject({
+      kind: "exited",
+      worker: `front, root:${shortId(other.id)}`,
+    });
+    await waitFor(async () => (await jobInputs(other)).length === 1);
+    await waitFor(async () => (await jobInputs(root)).length === 1);
+    const [heard] = await jobInputs(other);
+    expect(heard?.notice.name).toBe("ci");
+    expect(heard?.notice.header).toMatch(/^bg exited 0 /);
+    expect(heard?.notice.text).toContain("CI for the fix ended");
+    expect(heard?.notice.text).toContain("green");
+    // A front gets a front's guidance, not a worker's NEEDS USER rule.
+    expect(heard?.text).not.toContain("NEEDS USER");
+    // No worker was started or woken for it.
+    expect((await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? []).toEqual([]);
+    await send(root, "list");
+    expect(textOf((await toolResults(root)).at(-1))).toContain(
+      `notify front, root:${shortId(other.id)}`,
+    );
+    await other.waitForIdle(context);
+    await harness.close(context);
+  });
+
+  it("wakes the job's own worker too when notify names it, and refuses a target that isn't there", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    FRONT_CALLS["ci for me"] = {
+      tool: "job",
+      args: {
+        action: "create",
+        name: "mine",
+        type: "bg",
+        command: "echo built",
+        notify: ["job-mine", "front"],
+      },
+    };
+    FRONT_CALLS["ci for nobody"] = {
+      tool: "job",
+      args: { action: "create", name: "lost", type: "bg", command: "true", notify: ["nobody"] },
+    };
+    await send(root, "ci for nobody");
+    expect(textOf((await toolResults(root)).at(-1))).toContain("no worker nobody");
+    expect((await harness.snapshot(JobsDoc, context))?.jobs ?? []).toEqual([]);
+    await send(root, "ci for me");
+    expect((await waitForEvent(harness, 2))[1]).toMatchObject({ worker: "job-mine, front" });
+    // The worker and the front each hear it once.
+    await waitFor(() => value.jobMessages.length === 2);
+    expect(value.jobMessages.filter((text) => text.includes("NEEDS USER"))).toHaveLength(1);
+    await root.waitForIdle(context);
     await harness.close(context);
   });
 });

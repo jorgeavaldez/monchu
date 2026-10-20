@@ -40,15 +40,8 @@ import { systemNoticeText } from "../api/notices.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "../api/logs.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { Log } from "../telemetry/log.ts";
-import {
-  currentRoot,
-  findRoot,
-  rootRecord,
-  RootsDoc,
-  summarize,
-  SUMMARY_KINDS,
-  type RootRecord,
-} from "./agents/roots.ts";
+import { findRoot, rootRecord, RootsDoc, type RootRecord } from "./agents/root-records.ts";
+import { currentRoot, summarize, SUMMARY_KINDS } from "./agents/roots.ts";
 import {
   isThinkingLevel,
   loadStartupConfig,

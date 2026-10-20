@@ -9,7 +9,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { homedir, hostname, release, type, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { rootRecord, RootsDoc } from "./agents/roots.ts";
+import { rootRecord, RootsDoc } from "./agents/root-records.ts";
 
 /**
  * Character budgets of the home files every request loads. Nothing is ever truncated: every file loads in full, and a

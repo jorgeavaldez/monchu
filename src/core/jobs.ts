@@ -15,6 +15,7 @@ import { mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { shortId } from "../api/ids.ts";
 import { jobNoticeText } from "../api/notices.ts";
+import { findRoot, RootsDoc } from "./agents/root-records.ts";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
 import {
   chooseRole,
@@ -38,6 +39,9 @@ type JobType = "agent" | "command" | "bg";
 /** The worker a job wakes: by name under `parentId`; the job starts it, on `role`, if it does not exist then. */
 type JobWorker = { parentId: ConversationId; name: string };
 
+/** Who hears a job by its `notify`: a root's front, or a worker by name under `parentId`. */
+type JobTarget = { kind: "front"; rootId: ConversationId } | ({ kind: "worker" } & JobWorker);
+
 export type Job = {
   name: string;
   type: JobType;
@@ -50,6 +54,8 @@ export type Job = {
   cwd: string;
   rootId: ConversationId;
   worker: JobWorker;
+  /** Opt-in: who hears the job, instead of its worker, whenever it would wake it. */
+  notify?: JobTarget[];
   /** The model a worker the job starts runs on; an existing worker keeps its own model for life. */
   role?: ModelRole;
   /** The worker or `front` that created it. */
@@ -138,6 +144,9 @@ export async function moveJobs(
   const fromRoot = await rootOf(tx, fromId);
   for (const job of state.jobs) {
     if (job.worker.parentId === fromId && job.worker.name === name) job.worker.parentId = toId;
+    for (const target of job.notify ?? [])
+      if (target.kind === "worker" && target.parentId === fromId && target.name === name)
+        target.parentId = toId;
     if (job.rootId === fromRoot) job.rootId = await rootOf(tx, job.worker.parentId);
   }
 }
@@ -252,7 +261,7 @@ const OUTPUT_KEPT = 8000;
 const COMMAND_TIMEOUT_S = 300;
 
 /** Finished `bg` jobs, and their logs, are kept this long. */
-const ENDED_KEPT_MS = 7 * 24 * 60 * 60_000;
+const ENDED_KEPT_MS = 24 * 60 * 60_000;
 
 type RunOutcome = { ok: true; output: string } | { ok: false; error: string };
 
@@ -270,12 +279,70 @@ function served(state: Readonly<JobsState>, name: string, taskId: TaskId): Job |
   return job?.status === "active" && job.taskId === taskId ? job : undefined;
 }
 
-function message(job: Job, header: string, body: string): string {
-  return jobNoticeText({
-    name: job.name,
-    header,
-    text: [job.prompt, body].filter(Boolean).join("\n\n"),
-  });
+/** What wakes someone: why (`slot …`, `change`, an exit) and what to tell them after the job's prompt. */
+type Wake = { header: string; body: string };
+
+function message(job: Job, why: Wake, front: boolean): string {
+  return jobNoticeText(
+    {
+      name: job.name,
+      header: why.header,
+      text: [job.prompt, why.body].filter(Boolean).join("\n\n"),
+    },
+    front,
+  );
+}
+
+/** A notify target as `list` shows it and the event names it, seen from the job's root. */
+function targetLabel(job: Job, target: JobTarget): string {
+  if (target.kind === "front")
+    return target.rootId === job.rootId ? "front" : `root:${shortId(target.rootId)}`;
+  return target.parentId === job.rootId || target.parentId === job.worker.parentId
+    ? target.name
+    : `${shortId(target.parentId)}/${target.name}`;
+}
+
+const sameWorker = (a: JobWorker, b: JobWorker) => a.parentId === b.parentId && a.name === b.name;
+
+/**
+ * The targets `notify` names, from the job's root: `front`, `root:<id>` for another root's front, a worker's name, or
+ * `<root id>/<worker>` for a worker in another root. Workers must exist, except the job's own, which it starts.
+ */
+async function resolveTargets(
+  tx: Tx,
+  rootId: ConversationId,
+  worker: JobWorker,
+  names: readonly string[],
+): Promise<JobTarget[]> {
+  const roots = (await tx.doc(RootsDoc)).roots;
+  const root = (prefix: string) => {
+    const found = findRoot(roots, prefix);
+    if (found.archived) throw new Error(`Root ${shortId(found.id)} is archived`);
+    return found.id;
+  };
+  const targets: JobTarget[] = [];
+  for (const text of names) {
+    let target: JobTarget;
+    const slash = text.indexOf("/");
+    if (text === "front") target = { kind: "front", rootId };
+    else if (text.startsWith("root:")) target = { kind: "front", rootId: root(text.slice(5)) };
+    else if (slash === -1 && text === worker.name) target = { kind: "worker", ...worker };
+    else {
+      const parentId = slash === -1 ? rootId : root(text.slice(0, slash));
+      const name = slash === -1 ? text : text.slice(slash + 1);
+      if (!(await tx.doc(WorkersDoc, parentId)).workers.some((item) => item.name === name))
+        throw new Error(
+          `notify: no worker ${text}; name front, root:<id>, a worker's name, or <root id>/<worker>`,
+        );
+      target = { kind: "worker", parentId, name };
+    }
+    const same = (other: JobTarget) =>
+      other.kind === "front"
+        ? target.kind === "front" && target.rootId === other.rootId
+        : target.kind === "worker" && sameWorker(target, other);
+    if (!targets.some(same)) targets.push(target);
+  }
+  return targets;
 }
 
 /** The last `chars` characters of a file, reading only its tail; empty when it is missing. */
@@ -345,6 +412,41 @@ async function removeLog(log: string): Promise<void> {
   await rm(join(log, ".."), { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
 }
 
+/**
+ * Hands a job's notice to a root's front as input, which starts its turn or waits for its current answer. Created in the
+ * commit that records the run; the request ID keeps a replay from sending it twice.
+ */
+const NotifyFront = defineTask<
+  { front: ConversationId; text: string; requestId: string },
+  { phase: "send" },
+  null
+>({
+  name: "monchu.job-notify",
+  version: 1,
+  initial: () => ({ phase: "send" }),
+  phases: {
+    send: async (task, runtime, context) => {
+      const front = await runtime.conversation(task.input.front, context);
+      if (front === undefined) throw new Error("Root conversation is missing");
+      await front.submit(
+        {
+          type: "input",
+          content: task.input.text,
+          whenBusy: "followUp",
+          requestId: task.input.requestId,
+        },
+        context,
+      );
+      await runtime.commit(
+        () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
+        context,
+      );
+    },
+  },
+  abort: (_task, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
 const ACTIONS = [
   "create",
   "list",
@@ -372,29 +474,56 @@ export function createJobs(
   preload: readonly string[] = [],
 ) {
   /**
-   * Wake the job's worker inside the commit that records the run: message it if it exists (reopened if closed), or
-   * start it on the job's model. Returns the worker's name.
+   * Tell whoever the job notifies, by default its worker, inside the commit that records the run. A worker is messaged
+   * (reopened if closed); the job's own is started on the job's model if it does not exist, and any other that is gone
+   * is skipped. A front gets the notice as input, by a task created in the same commit, with no model call before it.
+   * Returns who heard, for the event; `undefined` when nobody did.
    */
-  async function wake(tx: Tx, job: Job, text: string, requestId: string): Promise<string> {
-    const { parentId, name } = job.worker;
-    const worker = (await tx.doc(WorkersDoc, parentId)).workers.find((item) => item.name === name);
-    if (worker === undefined)
-      await startWorker(
-        tx,
-        parentId,
-        name,
-        text,
-        job.cwd,
-        requestId,
-        job.role ?? workerRole(),
-        preload,
-        true,
+  async function wake(tx: Tx, job: Job, why: Wake, requestId: string): Promise<string | undefined> {
+    const heard: string[] = [];
+    for (const target of job.notify ?? [{ kind: "worker", ...job.worker }]) {
+      const label = targetLabel(job, target);
+      if (target.kind === "front") {
+        await tx.createTask(
+          NotifyFront,
+          {
+            front: target.rootId,
+            text: message(job, why, true),
+            requestId: `${requestId}:front:${target.rootId}`,
+          },
+          { conversationId: target.rootId, ownership: { kind: "conversation" }, background: true },
+        );
+        heard.push(label);
+        continue;
+      }
+      const { parentId, name } = target;
+      const own = sameWorker(target, job.worker);
+      // The job's own worker keeps the request ID it always had.
+      const id = own ? requestId : `${requestId}:worker:${parentId}:${name}`;
+      const text = message(job, why, false);
+      const worker = (await tx.doc(WorkersDoc, parentId)).workers.find(
+        (item) => item.name === name,
       );
-    else {
-      if (worker.closed) await reopenWorker(tx, parentId, name);
-      await messageWorker(tx, parentId, name, text, requestId, "followUp", true);
+      if (worker === undefined && !own) continue;
+      if (worker === undefined)
+        await startWorker(
+          tx,
+          parentId,
+          name,
+          text,
+          job.cwd,
+          id,
+          job.role ?? workerRole(),
+          preload,
+          true,
+        );
+      else {
+        if (worker.closed) await reopenWorker(tx, parentId, name);
+        await messageWorker(tx, parentId, name, text, id, "followUp", true);
+      }
+      heard.push(label);
     }
-    return name;
+    return heard.length === 0 ? undefined : heard.join(", ");
   }
 
   const Runner = defineTask<{ name: string }, RunnerState, null>({
@@ -509,9 +638,8 @@ export function createJobs(
           job.runs++;
           job.lastRunAt = at;
           const requestId = `job:${job.name}:${job.createdAt}:${key}`;
-          const event = async (kind: JobEvent["kind"], text: string, wakeText?: string) => {
-            const worker =
-              wakeText === undefined ? undefined : await wake(tx, job, wakeText, requestId);
+          const event = async (kind: JobEvent["kind"], text: string, why?: Wake) => {
+            const worker = why === undefined ? undefined : await wake(tx, job, why, requestId);
             addEvent(state, job, {
               at,
               kind,
@@ -520,25 +648,19 @@ export function createJobs(
             });
           };
           if (job.type === "agent")
-            await event(
-              "fired",
-              manual ? "ran now" : `slot ${key}`,
-              message(job, manual ? "run now" : `slot ${key}`, ""),
-            );
+            await event("fired", manual ? "ran now" : `slot ${key}`, {
+              header: manual ? "run now" : `slot ${key}`,
+              body: "",
+            });
           else if (outcome !== null && !outcome.ok) {
             const failure = hash(outcome.error);
             // A failure wakes the worker once, until it changes or the command recovers.
             if (job.failure !== failure) {
               job.failure = failure;
-              await event(
-                "failed",
-                `command failed: ${outcome.error.split("\n", 1)[0] ?? ""}`,
-                message(
-                  job,
-                  "command failed",
-                  `The job's command \`${job.command ?? ""}\` failed:\n${outcome.error}`,
-                ),
-              );
+              await event("failed", `command failed: ${outcome.error.split("\n", 1)[0] ?? ""}`, {
+                header: "command failed",
+                body: `The job's command \`${job.command ?? ""}\` failed:\n${outcome.error}`,
+              });
             }
           } else {
             const output = outcome?.output ?? "";
@@ -549,11 +671,10 @@ export function createJobs(
             job.cursor = cursor;
             // Run now runs at once; like any run it wakes the worker only on a change.
             if (changed)
-              await event(
-                "changed",
-                "output changed",
-                message(job, "change", `Command output now:\n${output}`),
-              );
+              await event("changed", "output changed", {
+                header: "change",
+                body: `Command output now:\n${output}`,
+              });
             else if (first) await event("fired", "baseline taken");
           }
           const nextAt = nextSlot(parseCron(job.schedule ?? ""), runtime.now());
@@ -682,19 +803,18 @@ export function createJobs(
           current.ended = end;
           delete current.kill;
           const summary = endText(current, end);
-          const text = message(
-            current,
-            `bg ${summary}`,
-            [
+          const why = {
+            header: `bg ${summary}`,
+            body: [
               `Command: ${current.command ?? ""}`,
               output ? `Output tail:\n${output.trimEnd()}` : "No output.",
               `Full log: ${current.log ?? ""}`,
             ].join("\n"),
-          );
+          };
           const worker = await wake(
             tx,
             current,
-            text,
+            why,
             `job:${current.name}:${current.createdAt}:end`,
           );
           addEvent(state, current, {
@@ -708,7 +828,7 @@ export function createJobs(
                   ? "interrupted"
                   : "killed",
             text: summary.slice(0, 300),
-            worker,
+            ...(worker === undefined ? {} : { worker }),
           });
           return { status: "terminal", outcome: { status: "completed", result: null } };
         }, context);
@@ -745,12 +865,12 @@ export function createJobs(
 
   return defineExtension({
     name: "monchu.jobs",
-    tasks: [Runner, BgRunner],
+    tasks: [Runner, BgRunner, NotifyFront],
     tools: [
       defineTool({
         name: "job",
         description:
-          "Background jobs; every job is listed for everyone (list, /jobs). create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. Other actions take name: pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
+          "Background jobs; every job is listed for everyone (list, /jobs). create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. notify (opt-in) sends what would wake the worker to these instead, with no model call in between: front (your root's front), root:<id> (another root's front), a worker's name, or <root id>/<worker>; list the worker's own name to wake it too. When a front or another root waits on what a job finishes, notify it rather than relaying the result yourself. Other actions take name: pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
         parameters: Type.Object(
           {
             action: StringEnum(ACTIONS),
@@ -768,6 +888,13 @@ export function createJobs(
             ),
             worker: Type.Optional(
               Type.String({ minLength: 1, maxLength: 100, description: "Worker to wake" }),
+            ),
+            notify: Type.Optional(
+              Type.Array(Type.String({ minLength: 1, maxLength: 140 }), {
+                minItems: 1,
+                maxItems: 10,
+                description: "Who hears it instead of the worker: front, root:<id>, worker names",
+              }),
             ),
             profile: Type.Optional(Type.String({ minLength: 1 })),
             model: Type.Optional(
@@ -847,7 +974,7 @@ export function createJobs(
               const existing = state.jobs.find((item) => item.name === name);
               if (existing !== undefined && existing.callId === api.callId)
                 return { job: existing, pruned: [], replayed: true };
-              // Finished bg jobs leave the list a week after they end.
+              // Finished bg jobs leave the list a day after they end.
               const pruned: string[] = [];
               for (let index = state.jobs.length - 1; index >= 0; index--) {
                 const item = state.jobs[index];
@@ -865,6 +992,10 @@ export function createJobs(
                 self,
                 args.worker ?? self?.name ?? `job-${name}`,
               );
+              const notify =
+                args.notify === undefined
+                  ? undefined
+                  : await resolveTargets(tx, rootId, worker, args.notify);
               if (role !== undefined && worker.exists)
                 throw new Error(
                   `${worker.name} already runs on its own model, which it keeps for life (prompt cache); leave out profile, model and thinking, or name a new worker`,
@@ -883,6 +1014,7 @@ export function createJobs(
                 prompt: args.prompt ?? "",
                 cwd,
                 worker: { parentId: worker.parentId, name: worker.name },
+                ...(notify === undefined ? {} : { notify }),
                 ...(role === undefined ? {} : { role }),
                 createdBy: self?.name ?? "front",
                 createdAt,
@@ -988,7 +1120,11 @@ const time = (at: number | undefined) => (at === undefined ? "never" : slotKey(a
 
 /** One job on one line, as `list` and `/jobs` show it. */
 function formatJob(job: Job): string {
-  const who = `worker ${job.worker.name} · by ${job.createdBy}`;
+  const heard =
+    job.notify === undefined
+      ? `worker ${job.worker.name}`
+      : `notify ${job.notify.map((target) => targetLabel(job, target)).join(", ")}`;
+  const who = `${heard} · by ${job.createdBy}`;
   if (job.type === "bg") {
     const state =
       job.ended === undefined

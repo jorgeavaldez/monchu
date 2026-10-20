@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { shortId } from "../api/ids.ts";
 import { GoalsDoc } from "./agents/goals.ts";
-import { rootRecord, RootsDoc } from "./agents/roots.ts";
+import { rootRecord, RootsDoc } from "./agents/root-records.ts";
 
 const INBOX_KINDS = ["ask", "milestone", "update", "reply"] as const;
 /**

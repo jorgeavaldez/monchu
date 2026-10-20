@@ -71,7 +71,7 @@ import { FffFinders } from "../src/core/tools/fff.ts";
 import { createPiTools } from "../src/core/tools/pi-tools.ts";
 import { MemoryStore, Vault } from "../src/core/secrets/vault.ts";
 import { createWorkerTools, WorkersDoc } from "../src/core/agents/workers.ts";
-import { rootRecord, RootsDoc } from "../src/core/agents/roots.ts";
+import { rootRecord, RootsDoc } from "../src/core/agents/root-records.ts";
 import type { Client, RootClient } from "../src/api/client.ts";
 import type { Principal } from "../src/api/contract.ts";
 import type { CoreHost, CoreProcess } from "../src/server/host.ts";

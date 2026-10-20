@@ -32,7 +32,8 @@ import {
 } from "../api/notices.ts";
 import { attachedInput, storeAttachment, writeUpload, type ImageInput } from "./attachments.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
-import { noteInput, rootRecord, RootsDoc, sendHandOff, type RootRecord } from "./agents/roots.ts";
+import { rootRecord, RootsDoc, type RootRecord } from "./agents/root-records.ts";
+import { noteInput, sendHandOff } from "./agents/roots.ts";
 import {
   DELETED_FROM_QUEUE,
   hasPendingDelivery,
