@@ -232,6 +232,74 @@ describe("Claude Code subscription provider", () => {
     expect(failed.errorMessage).toContain("requested an undeclared tool codemode");
   });
 
+  it("defers a group's tools to Claude Code's own tool search, hides tool_search, and continues after a search", async () => {
+    const value = await setup();
+    let declared: Awaited<ReturnType<Client["listTools"]>> | undefined;
+    let builtins: unknown;
+    const script = scriptedClaude(
+      value.directory,
+      config,
+      async function* (input) {
+        builtins = input.options?.tools;
+        const server = input.options?.mcpServers?.monchu;
+        assert(server?.type === "sdk");
+        const client = new Client({ name: "script", version: "1" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await server.instance.connect(serverTransport);
+        await client.connect(clientTransport);
+        try {
+          declared = await client.listTools();
+        } finally {
+          await client.close();
+        }
+        // Claude Code runs its own search, then the model calls the tool it loaded in a new message.
+        yield* bareToolCalls(
+          claudeResponse(
+            [
+              { type: "text", text: "looking" },
+              fauxToolCall("ToolSearch", { query: "crawl" }, { id: "bare_search" }),
+            ],
+            "tool_use",
+          ),
+        );
+        yield* claudeResponse(
+          [
+            { type: "thinking", thinking: "found it" },
+            fauxToolCall("crawl_site", { url: "https://example.com" }, { id: "crawl_1" }),
+          ],
+          "tool_use",
+        );
+      },
+      () => ({ deferred: new Set(["crawl_site"]), hidden: new Set(["tool_search"]) }),
+    );
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const tool = (name: string) => ({ name, description: name, parameters: Type.Object({}) });
+    const stream = models.streamSimple(
+      model,
+      {
+        messages: [{ role: "user", content: "crawl it", timestamp: 1 }],
+        tools: [tool("ping"), tool("tool_search"), tool("crawl_site")],
+      },
+      { sessionId: "deferred" },
+    );
+    for await (const _ of stream);
+    const result = await stream.result();
+    expect(builtins).toEqual(["ToolSearch"]);
+    expect(declared?.tools.map((each) => [each.name, each._meta])).toEqual([
+      ["ping", { "anthropic/alwaysLoad": true }],
+      ["crawl_site", undefined],
+    ]);
+    expect(result).toMatchObject({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "looking" },
+        { type: "toolCall", id: "crawl_1", name: "crawl_site" },
+      ],
+    });
+  });
+
   it("leaves a bare tool call beside a declared one to Claude Code and runs only the declared one", async () => {
     const value = await setup();
     await writeFile(join(value.directory, "known.txt"), "durable-owned file");

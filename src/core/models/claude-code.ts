@@ -58,6 +58,7 @@ import { access, chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/p
 import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ClaudeConfig } from "../config.ts";
+import type { ClaudeTools } from "../tools/tool-search.ts";
 import {
   claudeHistoryKeys,
   claudeToolResult,
@@ -226,11 +227,16 @@ function isCheckpoint(value: unknown): value is Checkpoint {
   );
 }
 
+/** Claude Code's built-in tool that loads deferred tools; the only built-in the bridge offers. */
+const CLAUDE_TOOL_SEARCH = "ToolSearch";
+
 /** Durable owns history and tool execution; Claude owns one persisted query for the whole turn. */
 export function createClaudeCodeProvider(
   home: string,
   config: ClaudeConfig,
   queryImpl: ClaudeQuery = lazyQuery,
+  /** The current build's deferred and hidden tools; read on each request, so a reload applies to the next one. */
+  claudeTools: () => ClaudeTools | undefined = () => undefined,
 ): Provider {
   const models = anthropicProvider()
     .getModels()
@@ -448,7 +454,12 @@ export function createClaudeCodeProvider(
           throw new Error(
             "Refusing Claude Code prompt: Pi harness text or its documentation-path pair may trigger Extra Usage. Fix the source prompt before retrying.",
           );
-        const tools = options.toolChoice === "none" ? [] : getCurrentTools(context.messages);
+        const policy = claudeTools();
+        const tools = (
+          options.toolChoice === "none" ? [] : getCurrentTools(context.messages)
+        ).filter((tool) => policy?.hidden.has(tool.name) !== true);
+        // Claude Code's own tool search, offered only when it has deferred tools to load.
+        const searching = tools.some((tool) => policy?.deferred.has(tool.name) === true);
         const declarations = tools.map((tool) => {
           if (!/^[a-zA-Z0-9_-]+$/.test(tool.name))
             throw new Error(`Claude Code cannot declare tool ${tool.name}`);
@@ -458,7 +469,11 @@ export function createClaudeCodeProvider(
             name: tool.name,
             description: tool.description,
             inputSchema: tool.parameters,
-            _meta: { "anthropic/alwaysLoad": true },
+            // Claude Code's tool search loads a deferred tool without changing the declared list, so the prompt cache
+            // holds; every other tool is declared up front.
+            ...(policy?.deferred.has(tool.name) === true
+              ? {}
+              : { _meta: { "anthropic/alwaysLoad": true } }),
           });
         });
         executable = await resolveExecutable(config.executable, home);
@@ -726,7 +741,7 @@ export function createClaudeCodeProvider(
                 preset: "claude_code",
                 append: tools.length ? `${systemPrompt}\n\n${TOOL_NAMES_NOTE}` : systemPrompt,
               },
-              tools: [],
+              tools: searching ? [CLAUDE_TOOL_SEARCH] : [],
               skills: [],
               plugins: [],
               settingSources: [],
@@ -889,6 +904,10 @@ export function createClaudeCodeProvider(
         // neither the call nor that message's thinking: rebuilt, thinking after text is a shape Claude never sends.
         const skipped = new Set<number>();
         let rejected: string | undefined;
+        // Claude Code runs its own tool search and the model answers in a new message, like a rejected call; Durable's
+        // copy holds neither, and a resumed session calls the loaded tool without it.
+        let searched = false;
+        let searches = 0;
         let retries = 0;
         let retrying = false;
         let started = false;
@@ -939,11 +958,12 @@ export function createClaudeCodeProvider(
             retrying = false;
             skipped.clear();
             rejected = undefined;
+            searched = false;
           } else if (!started) throw new Error("Claude Code streamed content before message_start");
           else if (event.type === "content_block_start") {
             const block = event.content_block;
             const contentIndex = output.content.length;
-            if (block.type === "thinking" && retries > 0) {
+            if (block.type === "thinking" && (retries > 0 || searches > 0)) {
               skipped.add(event.index);
               continue;
             }
@@ -966,6 +986,14 @@ export function createClaudeCodeProvider(
                 thinkingSignature: block.signature,
               });
               stream.push({ type: "thinking_start", contentIndex, partial: output });
+            } else if (
+              block.type === "tool_use" &&
+              searching &&
+              block.name === CLAUDE_TOOL_SEARCH
+            ) {
+              skipped.add(event.index);
+              searched = true;
+              continue;
             } else if (block.type === "tool_use") {
               const tool = tools.find((tool) => `mcp__monchu__${tool.name}` === block.name);
               if (tool === undefined) {
@@ -1062,11 +1090,13 @@ export function createClaudeCodeProvider(
             if (blocks.size)
               throw new Error("Claude Code stream ended without completing its content blocks");
             if (
-              rejected !== undefined &&
+              (rejected !== undefined || searched) &&
               !output.content.some((block) => block.type === "toolCall")
             ) {
-              if (++retries > 2)
+              if (rejected !== undefined && ++retries > 2)
                 throw new Error(`Claude Code requested an undeclared tool ${rejected}`);
+              if (searched && ++searches > 5)
+                throw new Error("Claude Code searched for tools without calling one");
               retrying = true;
               continue;
             }

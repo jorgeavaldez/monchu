@@ -236,8 +236,12 @@ export class Monchu implements Client {
       // A broken config.json must not keep Monchu from opening: what is invalid keeps its default, and says why.
       const written = await loadStartupConfig(home);
       phase("config");
-      const models = await openModels(home, devProvider, written.claude, (warning) =>
-        reports.report(warning),
+      const models = await openModels(
+        home,
+        devProvider,
+        written.claude,
+        (warning) => reports.report(warning),
+        () => extensions?.claude,
       );
       const { config, warnings } = await configuredRoles(models, written);
       for (const warning of warnings) reports.report(warning);

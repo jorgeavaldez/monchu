@@ -564,7 +564,7 @@ text(await tools[found.name]({ city: "Testville" }));`,
     }
   });
 
-  it("preloads groups marked preload only for conversations on the Claude Code bridge", async () => {
+  it("loads every group on the Claude Code bridge and defers the ones not marked preload to its tool search", async () => {
     const value = await setup();
     const tool = (name: string) =>
       defineTool({
@@ -577,7 +577,9 @@ text(await tools[found.name]({ city: "Testville" }));`,
       { name: "small", summary: "small", tools: [tool("small_tool")], preload: true },
       { name: "big", summary: "big", tools: [tool("big_tool")] },
     ]);
-    expect(search.preload).toEqual(["monchu.group.small"]);
+    expect(search.preload).toEqual(["monchu.group.small", "monchu.group.big"]);
+    expect([...search.claude.deferred]).toEqual(["big_tool"]);
+    expect([...search.claude.hidden]).toEqual(["tool_search"]);
     const settings = install(value, [
       { name: "small", summary: "small", tools: [tool("small_tool")], preload: true },
       { name: "big", summary: "big", tools: [tool("big_tool")] },
@@ -598,8 +600,7 @@ text(await tools[found.name]({ city: "Testville" }));`,
         );
       const names = async (conversation: typeof root) =>
         (await conversation.agent(context)).tools.map((each) => each.name);
-      expect(await names(claude)).toContain("small_tool");
-      expect(await names(claude)).not.toContain("big_tool");
+      expect(await names(claude)).toEqual(expect.arrayContaining(["small_tool", "big_tool"]));
       // Codex and other providers load in place without a cache miss, so they keep searching.
       expect(await names(root)).not.toContain("small_tool");
     } finally {

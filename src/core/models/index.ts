@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { defaultConfig, type ClaudeConfig, type ModelRole, type MonchuConfig } from "../config.ts";
 import { OpenCodeGo, OpenCodeZen, OpenRouter } from "./api-key.ts";
 import { createClaudeCodeProvider } from "./claude-code.ts";
+import type { ClaudeTools } from "../tools/tool-search.ts";
 import { Cloudflare } from "./cloudflare.ts";
 import { createCodexProvider } from "./codex.ts";
 import { FileCredentials } from "./credentials.ts";
@@ -25,6 +26,8 @@ export async function openModels(
   devProvider?: Provider,
   claude: ClaudeConfig = { executable: undefined, plan: "pro", longContextExtraUsage: false },
   report: (warning: string) => void = () => {},
+  /** The current build's tool declarations on the Claude Code bridge. */
+  claudeTools: () => ClaudeTools | undefined = () => undefined,
 ): Promise<MutableModels> {
   const credentials = new FileCredentials(join(home, "auth.json"));
   // Validate existing credentials and initialize a fresh store before opening Durable. A broken file never keeps Monchu
@@ -39,7 +42,7 @@ export async function openModels(
   const models = createModels({ credentials });
   models.setProvider(createCodexProvider());
   models.setProvider(Cloudflare);
-  models.setProvider(createClaudeCodeProvider(home, claude));
+  models.setProvider(createClaudeCodeProvider(home, claude, undefined, claudeTools));
   models.setProvider(OpenCodeGo);
   models.setProvider(OpenCodeZen);
   models.setProvider(OpenRouter);

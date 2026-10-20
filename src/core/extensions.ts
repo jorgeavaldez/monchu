@@ -102,6 +102,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
     root: [Goals, memory, Roots, Inbox],
     groups: search.groups,
     preload: search.preload,
+    claude: search.claude,
     settings: context.settings,
     skills: context.skills,
     config,

@@ -58,6 +58,7 @@ import { parseSync, Visitor, type Node } from "oxc-parser";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Codemode } from "../src/core/tools/codemode.ts";
+import type { ClaudeTools } from "../src/core/tools/tool-search.ts";
 import {
   type ClaudeConfig,
   type ModelRole,
@@ -412,6 +413,7 @@ export function scriptedClaude(
   home: string,
   config: ClaudeConfig,
   respond: (input: Parameters<ClaudeQuery>[0]) => AsyncIterable<SDKMessage>,
+  claudeTools?: () => ClaudeTools,
 ) {
   const requests: {
     input: Parameters<ClaudeQuery>[0];
@@ -559,7 +561,7 @@ export function scriptedClaude(
     };
   };
   return {
-    provider: createClaudeCodeProvider(home, config, query),
+    provider: createClaudeCodeProvider(home, config, query, claudeTools),
     requests,
     closed: () => closed,
     interrupted: () => interrupted,

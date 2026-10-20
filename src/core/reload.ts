@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { principalKey, type Principal } from "../api/contract.ts";
 import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.ts";
 import { FffFinders } from "./tools/fff.ts";
+import type { ClaudeTools } from "./tools/tool-search.ts";
 import { HomeCheck } from "./home-check.ts";
 import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
@@ -405,6 +406,11 @@ export class Extensions {
   /** Group extension names that conversations on the Claude Code bridge load from the start. */
   get preload(): readonly string[] {
     return this.current.preload;
+  }
+
+  /** How the Claude Code bridge declares the tools of the last successful build. */
+  get claude(): ClaudeTools {
+    return this.current.claude;
   }
 
   /** Left out of the host default selection and added to the root; workers inherit them, since Durable copies the root's agent into each conversation it owns. */

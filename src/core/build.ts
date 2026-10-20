@@ -15,6 +15,7 @@ import type { PluginBuild, Plugins } from "./plugins.ts";
 import type { Skill } from "./skills/index.ts";
 import type { Vault } from "./secrets/vault.ts";
 import type { FffFinders } from "./tools/fff.ts";
+import type { ClaudeTools } from "./tools/tool-search.ts";
 
 /** What a build reads and keeps using: it lives as long as the core, across reloads. */
 export type BuildInputs = {
@@ -52,6 +53,8 @@ export type Build = {
   groups: Extension[];
   /** Group extension names that conversations on the Claude Code bridge load from the start. */
   preload: string[];
+  /** How the Claude Code bridge declares the tools. */
+  claude: ClaudeTools;
   settings: Settings;
   /** Home and bundled skills, which the editor offers as `/skill:name`. */
   skills: Skill[];
