@@ -7,5 +7,5 @@
     "noEmitOnError": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/web"]
+  "exclude": ["src/web", "src/plugins/*/page.ts"]
 }

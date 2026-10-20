@@ -26,8 +26,11 @@ import {
   connection,
   draft,
   linkError,
+  menuOpen,
+  pageHint,
   editing,
   endEdit,
+  escapeLeaves,
   forgetRetry,
   interrupt,
   mode,
@@ -130,6 +133,10 @@ export function Editor() {
     picking === undefined
       ? list.value.items
       : (picking.rows?.(query.value) ?? matching(picking.options, query.value));
+  const menu = picking === undefined && items.length > 0;
+  useEffect(() => {
+    menuOpen.value = menu;
+  }, [menu]);
   const take = (item: MenuItem | undefined, alternate = second.value) => {
     if (picking === undefined) {
       if (item !== undefined) accept(item);
@@ -191,6 +198,11 @@ export function Editor() {
           onTake={accept}
         />
       ) : null}
+      {pageHint.value === undefined ? null : (
+        <div class="pagehint" role="status">
+          {pageHint.value}
+        </div>
+      )}
       <AttachmentTray />
       <textarea
         ref={area}
@@ -231,6 +243,8 @@ export function Editor() {
           closed.value = false;
         }}
         onKeyDown={(event) => {
+          // Keys while an input method composes are its own (Esc there cancels the composition, not the run).
+          if (event.isComposing || event.keyCode === 229) return;
           if (items.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
             event.preventDefault();
             selected.value =
@@ -264,6 +278,7 @@ export function Editor() {
             event.preventDefault();
             if (items.length > 0) closed.value = true;
             else if (editing.value !== undefined) endEdit();
+            else if (escapeLeaves.value) event.currentTarget.blur();
             else void interrupt();
             return;
           }

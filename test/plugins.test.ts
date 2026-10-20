@@ -177,7 +177,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       // An edit to any of its files reloads it; the reload tool says what loaded.
       await writeFile(join(home, "plugins", "notes", "version.ts"), `export const version = "v2";`);
       expect(await turn(backend, "reload")).toContain(
-        "Plugins: classifier, fnox, jj, herdr, browser, notes, thrower; not loaded: broken (",
+        "Plugins: classifier, fnox, jj, herdr, browser, keys, notes, thrower; not loaded: broken (",
       );
       expect(await turn(backend, "read")).toBe("note v2");
 

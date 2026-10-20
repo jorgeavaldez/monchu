@@ -556,6 +556,12 @@ export interface PluginApi {
   /** `/<name>`: lowercase letters, digits and dashes. A built-in command of the same name wins. */
   registerCommand(name: string, command: PluginCommand): void;
   /**
+   * Monchu's own: the web client loads this plugin's page module (`page.ts` beside its entry, built with the client)
+   * while the plugin is on. Bundled plugins only for now. The module runs in every connected browser with the
+   * person's full authority: it is trusted code, like the plugin itself.
+   */
+  registerPage(): void;
+  /**
    * A pi-ai provider in the home's models, offered by `/login` under its `name`, with its credentials stored by its
    * id like any other provider's. A role (`front`, `worker`) on it applies from the first reload after it loads.
    */
@@ -578,6 +584,59 @@ export interface PluginApi {
    */
   registerTask(task: AnyTask): void;
 }
+
+/*
+ * A page module (`page.ts` beside a bundled plugin's entry, see `registerPage`): its default export receives a
+ * `PageApi` in the web client and may return a dispose function.
+ */
+
+/** What has the keys: the prompt, the page itself (the feed or nothing in particular), a button or link, or another field. */
+export type KeyOwner = "prompt" | "page" | "button" | "other";
+
+/** What is open over the page, if anything; `login` is the core's (a provider's prompt), never the person's. */
+export type Overlay = "none" | "menu" | "pick" | "ask" | "login" | "panel";
+
+export type PageSnapshot = {
+  readonly owner: KeyOwner;
+  readonly overlay: Overlay;
+  readonly editing: boolean;
+  /** Whether the shown root's front is running. */
+  readonly busy: boolean;
+};
+
+/** A key handler: true when it took the key, which then goes no further. */
+export type KeyHandler = (event: PageKey, snapshot: PageSnapshot) => boolean;
+
+/** A key as a page module sees it: the browser's KeyboardEvent, in the fields a module reads. */
+export type PageKey = {
+  readonly key: string;
+  readonly code: string;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+  readonly repeat: boolean;
+  readonly isComposing: boolean;
+};
+
+/** What a page module gets: the page's actions, its state, and its keys. */
+export type PageApi = {
+  readonly version: 1;
+  /** Every action the page has, with whether it can run now. */
+  actions(): { id: string; label: string; detail: string; available: boolean }[];
+  /** Run an action by id; false when it can't run now. */
+  run(id: string): boolean;
+  snapshot(): PageSnapshot;
+  /** Keys, before the page's own handlers see them. */
+  onKey(handler: KeyHandler): void;
+  /** The keys this module adds, for `/keys`. */
+  keys(rows: readonly { keys: string; label: string }[]): void;
+  /** What Esc does in the prompt once nothing else takes it: stop the run, or leave the prompt. */
+  escape(policy: "stop" | "leave"): void;
+  /** A passing hint over the editor, such as the keys that may follow a leader; undefined clears it. */
+  hint(text: string | undefined): void;
+  notice(text: string): void;
+};
 
 /** A plugin's default export. It may be async; Monchu waits for it (up to 10 seconds) before loading the next one. */
 export type Plugin = (monchu: PluginApi) => void | Promise<void>;

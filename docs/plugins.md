@@ -118,6 +118,10 @@ Guards fail closed, as in Pi: a `tool_call` handler that throws blocks the call,
 
 `registerCommand(name, { description, usage, handler })` adds `/<name>` to the terminal and the web: it shows in `/help` and the typeahead, and `handler(args, ctx)` runs in the core for the root and conversation the client shows. What it sends to `ctx.ui.notify` is the command's answer. `ctx.caller` is `person` for a person's login and `service` for a service token, so a command can keep a destructive action to people. A built-in command of the same name wins, and so does an earlier plugin's.
 
+### Page modules (bundled plugins)
+
+`registerPage()` makes the web client load the plugin's page module, `page.ts` beside its entry, while the plugin is on. The web build bundles each into one hashed file (`dist/web/pages.json` names them) that the service worker keeps, and the core lists it to clients after each load and `/reload`. Only plugins bundled with Monchu have one for now: a home plugin that calls it isn't loaded. The module's default export receives a `PageApi` (types in `monchu/plugin`) and may return a dispose function: the page's actions (`actions()`, `run(id)`), what has the keys and what is open (`snapshot()`), keys ahead of the page's own (`onKey`), rows for `/keys`, what Esc does in the prompt, a passing hint, and notices. Whatever it registers is dropped with it. It is trusted code: it runs in every connected browser with the person's full authority. The bundled `keys` plugin is the example.
+
 ### UI
 
 `ctx.ui.notify(message)` shows a line once in every client showing the conversation's root, and `ctx.ui.setStatus(key, text)` keeps a line per key that a client shows when it opens the root (`undefined` clears it). Neither reaches the model. Code outside a handler, such as a task, uses `monchu.ui(conversationId)`.

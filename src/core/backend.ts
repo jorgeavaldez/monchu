@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -76,6 +77,24 @@ import { redact, Vault, type SecretInput } from "./secrets/vault.ts";
 const context = BACKGROUND_CONTEXT;
 
 /** One runtime/store owner, and the in-process implementation of the client contract. No terminal, transport, or rendering dependencies. */
+/** The web build's page modules by plugin (`dist/web/pages.json`), in the package and a checkout alike. */
+function builtPages(): Readonly<Record<string, string>> {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(new URL("../../dist/web/pages.json", import.meta.url), "utf8"),
+    );
+    if (typeof parsed !== "object" || parsed === null) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === "string" && /^page-[a-z0-9-]+\.[0-9A-Z]{8}\.js$/.test(entry[1]),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
 export class Monchu implements Client {
   readonly home: string;
   private readonly owner: DatabaseSync;
@@ -351,6 +370,15 @@ export class Monchu implements Client {
       usage: usage ?? "",
       help: description ?? "",
     }));
+  }
+
+  /** The page modules of plugins that are on, as the web build named them; none while the client isn't built. */
+  pages(): readonly { plugin: string; url: string }[] {
+    const built = builtPages();
+    return this.extensions.plugin.pages.flatMap((plugin) => {
+      const file = built[plugin];
+      return file === undefined ? [] : [{ plugin, url: `/${file}` }];
+    });
   }
 
   /** Providers plugins added, which `/login` offers after Monchu's own. */

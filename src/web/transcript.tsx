@@ -559,6 +559,17 @@ export function openAsks(): { code: string; text: string }[] {
     }));
 }
 
+/** How the shown transcript scrolls for an action; set while one is on screen. */
+let scroller: ((kind: "line" | "half" | "top" | "end", step: 1 | -1) => void) | undefined;
+
+/**
+ * Scroll the shown feed by a line, half a page, or to either end, as the reader would: moving up stops following the
+ * newest line, and reaching the end (or jumping there) follows it again.
+ */
+export function scrollFeed(kind: "line" | "half" | "top" | "end", step: 1 | -1): void {
+  scroller?.(kind, step);
+}
+
 /** Whether the reader is at the newest line, give or take a line, so new content keeps them there. */
 const AT_END = 48;
 
@@ -683,6 +694,25 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     reading();
     target.scrollIntoView({ block: "center" });
   };
+  useEffect(() => {
+    const mine = (kind: "line" | "half" | "top" | "end", step: 1 | -1) => {
+      const element = main.current;
+      if (element === null) return;
+      if (kind === "end") {
+        left.value = undefined;
+        toEnd();
+        return;
+      }
+      if (step < 0 || kind === "top") reading();
+      const by =
+        kind === "top" ? -element.scrollHeight : kind === "half" ? element.clientHeight / 2 : 48;
+      element.scrollBy({ top: step * Math.abs(by) });
+    };
+    scroller = mine;
+    return () => {
+      if (scroller === mine) scroller = undefined;
+    };
+  }, []);
   useEffect(
     () =>
       jumpTo.subscribe((wanted) => {

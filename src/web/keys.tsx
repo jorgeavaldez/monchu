@@ -9,6 +9,7 @@ import {
   draft,
   editing,
   endEdit,
+  escapeLeaves,
   expandAll,
   toggleExpandAll,
   interrupt,
@@ -73,7 +74,7 @@ export function Keys({
         <Key
           class="icon"
           label="stop"
-          title="stop the root's run (Esc)"
+          title={escapeLeaves.value ? "stop the root's run" : "stop the root's run (Esc)"}
           onPress={() => void interrupt()}
         >
           ■

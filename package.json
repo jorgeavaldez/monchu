@@ -92,7 +92,8 @@
       "src/web/main.tsx",
       "src/web/worker/sw.ts",
       "src/plugin.ts",
-      "src/plugins/*/index.ts"
+      "src/plugins/*/index.ts",
+      "src/plugins/*/page.ts"
     ]
   }
 }

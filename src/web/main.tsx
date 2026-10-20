@@ -1,4 +1,5 @@
 /** Connect to the core over the page's own WebSocket, then render. A dropped connection reconnects by itself. */
+import { startPages } from "./pages.ts";
 import { render } from "preact";
 import { webSocketLink, type Link, type WebSocketLike } from "@earendil-works/chord";
 import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
@@ -157,6 +158,7 @@ async function boot(): Promise<void> {
   });
   await start(client);
   await startSecrets(client);
+  startPages(client);
   connection.value = client.connected ? "live" : "lost";
   sessionStorage.removeItem("wait");
   view(undefined)?.subscribe(() => watch.painted(performance.now()));

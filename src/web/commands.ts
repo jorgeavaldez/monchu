@@ -11,11 +11,14 @@ import { openClient } from "./client.tsx";
 import { search, snippet } from "./fuzzy.ts";
 import type { MenuItem } from "./menu.tsx";
 import { openSecrets } from "./secrets.tsx";
+import { signal } from "@preact/signals";
 import {
   client,
   connection,
   draft,
+  escapeLeaves,
   filter,
+  panel,
   interrupt,
   notice,
   openDrafts,
@@ -32,7 +35,7 @@ import {
   typeInEditor,
   view,
 } from "./state.ts";
-import { feedRows, jumpTo } from "./transcript.tsx";
+import { feedRows, jumpTo, scrollFeed } from "./transcript.tsx";
 import { clock } from "../ui/ids.ts";
 
 const command = (label: string, usage: string, detail: string): MenuItem => ({
@@ -112,6 +115,36 @@ function nextRoot(step: 1 | -1): Promise<void> | void {
   if (next !== undefined) return switchRoot(next.id);
 }
 
+const FEEDS = [undefined, "ask", "milestone", "update"] as const;
+
+/** The next or previous feed tab, wrapping around. */
+function cycleFeed(step: 1 | -1): void {
+  const at = FEEDS.indexOf(filter.value.kind);
+  const kind = FEEDS[(at + step + FEEDS.length) % FEEDS.length];
+  const { kind: _kind, ...rest } = filter.value;
+  filter.value = kind === undefined ? rest : { ...rest, kind };
+}
+
+/** The last search's hits, best first, which one is shown, and the feed they're from; `n` and `N` walk them. */
+let hits: { codes: readonly string[]; at: number; feed: string } = { codes: [], at: 0, feed: "" };
+
+/** The feed on screen: the root, the conversation shown and the front's filter. */
+const feedKey = () => JSON.stringify([rootId.value, shown.value, filter.value]);
+
+function nextHit(step: 1 | -1): void {
+  if (hits.codes.length === 0 || hits.feed !== feedKey())
+    return notice("no search in this feed yet · /search");
+  hits = { ...hits, at: (hits.at + step + hits.codes.length) % hits.codes.length };
+  const code = hits.codes[hits.at];
+  if (code !== undefined) jumpTo.value = { code };
+}
+
+/** Leave the prompt for the page, where a key plugin's keys act. */
+function leavePrompt(): void {
+  const area = document.querySelector("textarea");
+  if (document.activeElement === area) area?.blur();
+}
+
 const feed = (kind: "ask" | "milestone" | "update" | undefined, label: string): Action => ({
   id: `feed.${kind ?? "all"}`,
   label: `feed: ${label}`,
@@ -123,8 +156,74 @@ const feed = (kind: "ask" | "milestone" | "update" | undefined, label: string): 
   },
 });
 
+const scroll = (
+  id: string,
+  label: string,
+  kind: Parameters<typeof scrollFeed>[0],
+  step: 1 | -1,
+): Action => ({ id, label, detail: "the feed", run: () => scrollFeed(kind, step) });
+
 const ACTIONS: readonly Action[] = [
   { id: "prompt", label: "focus the prompt", detail: "type a message", run: typeInEditor },
+  {
+    id: "prompt.leave",
+    label: "leave the prompt",
+    detail: "for the page's keys",
+    run: leavePrompt,
+  },
+  {
+    id: "slash",
+    label: "slash command",
+    detail: "the prompt with /",
+    run: () => {
+      draft.value = "/";
+      typeInEditor();
+    },
+  },
+  { id: "palette", label: "palette", detail: "/palette", run: () => openPalette() },
+  {
+    id: "search.next",
+    label: "next search hit",
+    detail: "the last /search",
+    run: () => nextHit(1),
+  },
+  {
+    id: "search.previous",
+    label: "previous search hit",
+    detail: "the last /search",
+    run: () => nextHit(-1),
+  },
+  {
+    id: "feed.next",
+    label: "next feed",
+    detail: "all, asks, done, updates",
+    available: front,
+    run: () => cycleFeed(1),
+  },
+  {
+    id: "feed.previous",
+    label: "previous feed",
+    detail: "all, asks, done, updates",
+    available: front,
+    run: () => cycleFeed(-1),
+  },
+  scroll("scroll.down", "scroll down", "line", 1),
+  scroll("scroll.up", "scroll up", "line", -1),
+  scroll("scroll.halfDown", "half a page down", "half", 1),
+  scroll("scroll.halfUp", "half a page up", "half", -1),
+  scroll("scroll.top", "to the oldest", "top", -1),
+  scroll("scroll.end", "to the newest, following", "end", 1),
+  { id: "agents", label: "agents", detail: "/agents", run: () => void submit("/agents") },
+  { id: "model", label: "model", detail: "/model", run: () => void submit("/model") },
+  { id: "queue", label: "queue", detail: "/queue", run: () => void submit("/queue") },
+  {
+    id: "jobs",
+    label: "jobs",
+    detail: "/jobs",
+    run: () => {
+      panel.value = "jobs";
+    },
+  },
   { id: "search", label: "search this feed", detail: "/search", run: () => openSearch("") },
   feed(undefined, "all"),
   feed("ask", "asks"),
@@ -171,11 +270,37 @@ const ACTIONS: readonly Action[] = [
   { id: "keys", label: "keys", detail: "/keys", run: () => openKeys() },
 ];
 
+/** Every action the page has, with whether it can run now. */
+export function actions(): { id: string; label: string; detail: string; available: boolean }[] {
+  return ACTIONS.map(({ id, label, detail, available }) => ({
+    id,
+    label,
+    detail,
+    available: available?.() ?? true,
+  }));
+}
+
+/** Run an action by id, checking it can run now; false when it can't. */
+export function runAction(id: string): boolean {
+  const action = ACTIONS.find((each) => each.id === id);
+  if (action === undefined || !(action.available?.() ?? true)) return false;
+  void Promise.resolve(action.run()).catch((error: unknown) =>
+    notice(error instanceof Error ? error.message : String(error), "warning"),
+  );
+  return true;
+}
+
+/** Keys a page plugin added, for `/keys`: each key or sequence and what it does. */
+export const pluginKeys = signal<readonly { keys: string; label: string }[]>([]);
+
 /** Keys the page itself has, in the editor and its menus. */
-const EDITOR_KEYS: readonly [string, string][] = [
+const EDITOR_KEYS = (): readonly [string, string][] => [
   ["Enter", "send; in a menu, take the row"],
   ["Shift+Enter", "new line; in a pick, take the row with its toggle (such as save as default)"],
-  ["Esc", "close the menu, leave an edit, else stop the root's run"],
+  [
+    "Esc",
+    `close the menu, leave an edit, else ${escapeLeaves.value ? "leave the prompt" : "stop the root's run"}`,
+  ],
   ["Tab", "take the menu's row"],
   ["↑ ↓", "move in a menu"],
   ["/", "commands, as the first character"],
@@ -221,10 +346,14 @@ async function openPalette(): Promise<void> {
 
 /** `/keys`: every key and what it does. */
 async function openKeys(): Promise<void> {
-  await pick(
-    "Keys",
-    EDITOR_KEYS.map(([key, what]) => ({ id: key, label: key, detail: what })),
-  );
+  await pick("Keys", [
+    ...EDITOR_KEYS().map(([key, what]) => ({ id: key, label: key, detail: what })),
+    ...pluginKeys.value.map(({ keys, label }) => ({
+      id: `plugin:${keys}`,
+      label: keys,
+      detail: label,
+    })),
+  ]);
 }
 
 /**
@@ -234,17 +363,24 @@ async function openKeys(): Promise<void> {
 async function openSearch(text: string): Promise<void> {
   const rows = feedRows();
   if (rows.length === 0) return notice("nothing to search in this feed", "warning");
+  let listed: readonly string[] = [];
   const picked = await pick("Search this feed", [], undefined, text, {
     empty: "nothing matches",
     class: "search",
-    rows: (query) =>
-      query.trim() === ""
-        ? []
-        : search(rows, query).map(({ item, at, end }) => ({
-            id: item.code,
-            label: snippet(item.text, at, end),
-            detail: `${item.who} · ${clock(item.at)}`,
-          })),
+    rows: (query) => {
+      const found =
+        query.trim() === ""
+          ? []
+          : search(rows, query).map(({ item, at, end }) => ({
+              id: item.code,
+              label: snippet(item.text, at, end),
+              detail: `${item.who} · ${clock(item.at)}`,
+            }));
+      listed = found.map((row) => row.id);
+      return found;
+    },
   });
-  if (picked !== undefined) jumpTo.value = { code: picked.id };
+  if (picked === undefined) return;
+  hits = { codes: listed, at: Math.max(0, listed.indexOf(picked.id)), feed: feedKey() };
+  jumpTo.value = { code: picked.id };
 }

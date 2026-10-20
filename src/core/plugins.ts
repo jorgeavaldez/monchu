@@ -180,7 +180,7 @@ type PluginSource = "bundled" | "home" | "local";
  * Durable redeclares every tool when their order changes, so a new bundled plugin, or one moved out of the core in the
  * core's old place, never reorders the tools conversations already have.
  */
-const BUNDLED_ORDER = ["classifier", "fnox", "jj", "herdr", "browser"];
+const BUNDLED_ORDER = ["classifier", "fnox", "jj", "herdr", "browser", "keys"];
 
 function bundledPlace(plugin: { source: PluginSource; name: string }): number {
   const place = BUNDLED_ORDER.indexOf(plugin.name);
@@ -248,6 +248,8 @@ type Contribution = {
   readonly groups: ToolGroup[];
   readonly tools: readonly string[];
   readonly commands: readonly PluginCommandEntry[];
+  /** Whether it ships a page module for the web client. */
+  readonly page: boolean;
   readonly providers: readonly { readonly provider: Provider; readonly login: PluginLogin }[];
   readonly wants: readonly PluginWant[];
   /** The secret store it registered. */
@@ -282,6 +284,8 @@ export type PluginBuild = {
   readonly sections: readonly PromptSection[];
   /** Slash commands by name; an earlier plugin's wins a clash. */
   readonly commands: readonly PluginCommandEntry[];
+  /** Plugins whose page module the web client loads. */
+  readonly pages: readonly string[];
   /** Providers the plugins added, which `/login` offers after Monchu's own. */
   readonly logins: readonly PluginLogin[];
   readonly wants: readonly PluginWant[];
@@ -722,6 +726,9 @@ export class Plugins {
                 );
               return first === index;
             }),
+          pages: used.flatMap((contribution) =>
+            contribution.page ? [contribution.found.name] : [],
+          ),
           logins: used.flatMap((contribution) =>
             contribution.providers.map((entry) => entry.login),
           ),
@@ -916,6 +923,7 @@ export class Plugins {
     const sections: PromptSection[] = [];
     const tasks: AnyTask[] = [];
     const commands: PluginCommandEntry[] = [];
+    let page = false;
     const providers: { provider: Provider; login: PluginLogin }[] = [];
     const wants: PluginWant[] = [];
     let secrets: SecretStore | undefined;
@@ -1038,6 +1046,13 @@ export class Plugins {
           handler: (args, ctx) => command.handler(args, ctx),
         });
       },
+      registerPage: () => {
+        opened();
+        // Built with the web client, so only a plugin that ships with Monchu has one for now.
+        if (found.source !== "bundled")
+          throw new Error("only plugins bundled with Monchu have page modules for now");
+        page = true;
+      },
       registerProvider: (provider) => {
         opened();
         if (this.own.has(provider.id)) throw new Error(`provider ${provider.id} is Monchu's own`);
@@ -1151,6 +1166,7 @@ export class Plugins {
       groups: [...group("deferred"), ...group("codemode")],
       tools: tools.map((entry) => entry.tool.name),
       commands,
+      page,
       providers,
       wants,
       secrets,

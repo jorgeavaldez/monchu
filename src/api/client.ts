@@ -186,6 +186,8 @@ export interface Client {
   commands(): readonly { name: string; usage: string; help: string }[];
   /** Providers plugins added, which `/login` offers after Monchu's own. */
   logins(): readonly LoginEntry[];
+  /** Page modules of plugins that are on, which the web client loads. */
+  pages(): readonly { plugin: string; url: string }[];
   /** The named skill's instructions with the user's text, as one message; throws for an unknown skill. */
   skillInput(name: string, text: string): Promise<string>;
   /** The catalog model of a model reference, while its provider still offers it. */

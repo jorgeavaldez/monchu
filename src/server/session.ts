@@ -101,6 +101,7 @@ function hello(backend: Monchu): Hello {
     skills: [...backend.skills()],
     commands: [...backend.commands()],
     logins: [...backend.logins()],
+    pages: [...backend.pages()],
     models: [...backend.catalog()],
     notes: [...backend.notes],
   };

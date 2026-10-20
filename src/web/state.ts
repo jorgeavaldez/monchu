@@ -61,12 +61,16 @@ export type Choice = {
   empty?: string;
   /** A style for the list: `search` gives the label the row and the detail a column after it. */
   class?: string;
+  /** Asked for by the core, such as a provider's choice during a login: nothing the person opens replaces it. */
+  requested?: boolean;
 };
 
 /** A typed answer the user gives in place of the editor: a login code, key or pasted URL. */
 export type Ask = {
   title: string;
   secret: boolean;
+  /** Asked for by the core, such as a login code: nothing the person opens replaces it. */
+  requested?: boolean;
   placeholder?: string;
   answer(value: string): void;
   cancel(): void;
@@ -92,6 +96,12 @@ export const workers = signal<readonly WorkerSummary[]>([]);
 export const notices = signal<Notice[]>([]);
 export const mode = signal<WhenBusy>("followUp");
 export const expandAll = signal(false);
+/** What Esc does in the prompt once nothing else takes it: stop the run (the terminal's way), or, with a key plugin, leave the prompt. */
+export const escapeLeaves = signal(false);
+/** Whether the editor's typeahead is open, for a page plugin's sense of what has the keys. */
+export const menuOpen = signal(false);
+/** A page plugin's passing hint, such as the keys that may follow a leader. */
+export const pageHint = signal<string | undefined>(undefined);
 /** The prompt drafts set aside on this device, oldest first, from every client. */
 export const promptDrafts = signal<readonly Draft[]>([]);
 /** Counts expand-all presses: a card opened or closed by hand keeps that only until the next press. */
@@ -232,6 +242,9 @@ async function openRoot(id: string, push = false): Promise<void> {
   for (const each of views.value.values()) each.dispose();
   views.value = new Map();
   current = connected.root(id);
+  // A pick or question the person opened belongs to the root they left; the core's (a login) belongs to the connection.
+  if (choice.value?.requested !== true) choice.value?.cancel();
+  if (ask.value?.requested !== true) ask.value?.cancel();
   batch(() => {
     rootId.value = id;
     shown.value = undefined;
@@ -450,24 +463,41 @@ export function pick(
   options: Choice["options"],
   alternate?: string,
   query?: string,
-  more: Pick<Choice, "rows" | "empty" | "class"> = {},
+  more: Pick<Choice, "rows" | "empty" | "class" | "requested"> & { signal?: AbortSignal } = {},
 ): Promise<{ id: string; alternate: boolean } | undefined> {
+  // What the core asks during a login is never replaced by something the person opens; their own pick gives way.
+  if (
+    more.requested !== true &&
+    (choice.value?.requested === true || ask.value?.requested === true)
+  ) {
+    notice("finish the sign-in first", "warning");
+    return Promise.resolve(undefined);
+  }
+  const { signal: ends, ...looks } = more;
+  choice.value?.cancel();
+  // The core's prompt goes in front of the person's own question, which would otherwise hide it.
+  if (more.requested === true && ask.value?.requested !== true) ask.value?.cancel();
   return new Promise((resolve) => {
-    choice.value = {
+    // Settles once; a late call from a pick already replaced never touches the one shown now.
+    let settled = false;
+    const settle = (value: { id: string; alternate: boolean } | undefined) => {
+      if (settled) return;
+      settled = true;
+      if (choice.value === mine) choice.value = undefined;
+      resolve(value);
+    };
+    const mine: Choice = {
       title,
       options,
       ...(alternate === undefined ? {} : { alternate }),
       ...(query ? { query } : {}),
-      ...more,
-      choose: (id, second) => {
-        choice.value = undefined;
-        resolve({ id, alternate: second });
-      },
-      cancel: () => {
-        choice.value = undefined;
-        resolve(undefined);
-      },
+      ...looks,
+      choose: (id, second) => settle({ id, alternate: second }),
+      cancel: () => settle(undefined),
     };
+    // A login that ends takes its choice with it.
+    ends?.addEventListener("abort", () => settle(undefined), { once: true });
+    choice.value = mine;
   });
 }
 
@@ -477,27 +507,36 @@ function prompted(
   secret: boolean,
   signal: AbortSignal,
   placeholder?: string,
+  requested = true,
 ): Promise<string> {
+  if (!requested && (choice.value?.requested === true || ask.value?.requested === true))
+    return Promise.reject(new Error("finish the sign-in first"));
   return new Promise((resolve, reject) => {
+    let mine: Ask | undefined;
+    const close = () => {
+      signal.removeEventListener("abort", cancel);
+      if (ask.value === mine) ask.value = undefined;
+    };
     const cancel = () => {
-      ask.value = undefined;
+      close();
       reject(new Error("Cancelled"));
     };
     signal.addEventListener("abort", cancel, { once: true });
-    ask.value = {
+    mine = {
       title,
       secret,
+      requested,
       ...(placeholder === undefined ? {} : { placeholder }),
       answer: (value) => {
-        signal.removeEventListener("abort", cancel);
-        ask.value = undefined;
+        close();
         resolve(value);
       },
-      cancel: () => {
-        signal.removeEventListener("abort", cancel);
-        cancel();
-      },
+      cancel,
     };
+    ask.value?.cancel();
+    // The core's question goes in front of a pick the person opened, which would otherwise hide it.
+    if (requested && choice.value?.requested !== true) choice.value?.cancel();
+    ask.value = mine;
   });
 }
 
@@ -511,6 +550,9 @@ async function answerPrompt(request: AuthPrompt, signal: AbortSignal): Promise<s
         label: option.label,
         ...(option.description === undefined ? {} : { detail: option.description }),
       })),
+      undefined,
+      undefined,
+      { requested: true, signal },
     );
     if (picked === undefined) throw new Error("Cancelled");
     return picked.id;
@@ -799,6 +841,7 @@ export function renameRoot(id: string): Promise<void> {
       false,
       new AbortController().signal,
       roots.value.find((each) => each.named && each.id === id)?.label,
+      false,
     ).catch(() => undefined);
     if (label === undefined) return undefined;
     await client().renameRoot(id, label.trim());

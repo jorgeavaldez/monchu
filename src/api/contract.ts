@@ -73,6 +73,8 @@ export type Hello = {
   commands: { name: string; usage: string; help: string }[];
   /** Providers plugins added, which `/login` offers after Monchu's own. */
   logins: LoginEntry[];
+  /** Page modules of plugins that are on, which the web client loads. */
+  pages: { plugin: string; url: string }[];
   /** The chat model catalog, for context windows and reasoning support. */
   models: Model<Api>[];
   notes: string[];

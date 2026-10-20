@@ -504,6 +504,16 @@ pre {
   border: none;
   background: transparent;
 }
+/* A page plugin's passing hint, such as the keys after a leader, over the editor's right edge. */
+.pagehint {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  padding: var(--s0) var(--s1);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  white-space: pre;
+}
 /* Search: the matching text takes the row, who and when follow it. */
 .menu.search .enter {
   grid-template-columns: 1fr auto;

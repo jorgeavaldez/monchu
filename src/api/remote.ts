@@ -407,6 +407,10 @@ export class RemoteClient implements Client {
     return this.hello.logins;
   }
 
+  pages(): readonly { plugin: string; url: string }[] {
+    return this.hello.pages;
+  }
+
   model(ref: ModelRef): Model<Api> | undefined {
     return this.hello.models.find(
       (model) => model.provider === ref.provider && model.id === ref.modelId,

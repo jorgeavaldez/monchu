@@ -15,5 +15,5 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
-  "exclude": ["src/web"]
+  "exclude": ["src/web", "src/plugins/*/page.ts"]
 }

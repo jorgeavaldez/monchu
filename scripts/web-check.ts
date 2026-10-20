@@ -726,7 +726,9 @@ async function typing(): Promise<string> {
     const streaming = await typeKeys(send);
     const streamed = (await page(`!!document.querySelector(".live")`)) === true;
     await send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    // With the keys plugin, Esc leaves the prompt and X stops the run.
     await browser("press", "Escape");
+    await browser("press", "X");
     await browser("wait", "--fn", `!document.querySelector(".live")`);
     await browser("fill", "textarea", "");
     const metrics = {
@@ -1369,6 +1371,63 @@ async function journeys(
     },
   );
 
+  await journey(
+    "keys: Esc leaves the prompt, ? lists the keys, the leader works while typing, k holds a streaming feed, X stops it",
+    async () => {
+      // A headless browser has no pointer at all, which isn't a finger: the keys plugin is on.
+      check((await page(`matchMedia("(pointer: coarse)").matches`)) === false, "a coarse pointer");
+      const focused = `document.activeElement === document.querySelector("textarea")`;
+      await page(`document.querySelector("textarea").focus()`);
+      await browser("press", "Escape");
+      check((await page(focused)) === false, "Esc didn't leave the prompt");
+      await browser("press", "?");
+      await browser("wait", ".pick [role=option]");
+      const keys = text(await page(`document.querySelector(".pick").textContent`));
+      check(
+        keys.includes("spc spc") && keys.includes("Ctrl+/"),
+        `/keys lacks the plugin's keys: ${keys.slice(0, 200)}`,
+      );
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      // The leader while typing: the panel opens and nothing lands in the draft.
+      await browser("fill", "textarea", "half typed");
+      await browser("press", "Control+/");
+      await browser("press", "r");
+      await browser("wait", ".rootsPanel");
+      check(
+        (await page(`document.querySelector("textarea").value`)) === "half typed",
+        "the leader's keys landed in the draft",
+      );
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
+      // Ctrl pressed again for the second slash, as people do.
+      await browser("press", "Control+/");
+      await browser("press", "Control+/");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick header")?.textContent.includes("Palette")`,
+      );
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      await browser("fill", "textarea", "");
+      // Reading back while a reply streams stays where the reader went.
+      await browser("fill", "textarea", `stream ${"z ".repeat(3000)}`);
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!document.querySelector(".live")`);
+      await page(`document.querySelector("textarea").blur()`);
+      for (let index = 0; index < 6; index++) await browser("press", "k");
+      const gap = `(() => { const m = document.querySelector(".transcript"); return m.scrollHeight - m.scrollTop - m.clientHeight; })()`;
+      await browser("wait", "800");
+      check(Number(await page(gap)) > 100, "k while streaming snapped back to the end");
+      await browser("press", "G");
+      await browser("wait", "--fn", `${gap} <= 48`);
+      await browser("press", "X");
+      await browser("wait", "--fn", `!document.querySelector(".live")`);
+      return "Esc left the prompt, ? listed the keys, Ctrl+/ r opened roots mid-draft, k held the feed, G followed, X stopped";
+    },
+  );
+
   await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
     const shownRoot = async () =>
       new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
@@ -1673,6 +1732,14 @@ async function journeys(
         check(
           (await page(`matchMedia("(pointer: coarse)").matches`)) === true,
           `no coarse pointer (${String(await page("navigator.maxTouchPoints"))} touch points)`,
+        );
+        // The keys plugin is desktop only: a phone's keyboard never triggers it.
+        await page(`document.querySelector("textarea").blur()`);
+        await browser("press", "?");
+        await browser("wait", "300");
+        check(
+          (await page(`document.querySelector(".pick") === null`)) === true,
+          "a key binding fired on a touch screen",
         );
         // A phone is offered push once; a dismissal outlives the page.
         await browser("wait", ".offer");
