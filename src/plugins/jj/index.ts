@@ -694,9 +694,8 @@ const write = defineTool({
           const command = [
             "git",
             "push",
-            ...(request.remote === undefined
-              ? []
-              : ["--remote=" + literal("exact", request.remote)]),
+            // Unlike fetch, push takes a plain remote name, not a string pattern.
+            ...(request.remote === undefined ? [] : ["--remote=" + request.remote]),
             ...request.bookmarks.map((name) => "--bookmark=" + literal("exact", name)),
             ...(request.dry_run ? ["--dry-run"] : []),
           ];
