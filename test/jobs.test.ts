@@ -133,6 +133,21 @@ const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
       command: "echo line1; echo line2; sleep 30 & echo $! > child.pid; wait",
     },
   },
+  "secret watch": {
+    tool: "job",
+    args: {
+      action: "create",
+      name: "api",
+      type: "command",
+      schedule: NEVER,
+      command: 'printf %s "$JOB_TOKEN" > seen.txt; cat state.txt; echo "token $JOB_TOKEN"',
+    },
+  },
+  "poll api": { tool: "job", args: { action: "run_now", name: "api" } },
+  "secret build": {
+    tool: "job",
+    args: { action: "create", name: "deploy", type: "bg", command: 'echo "using ${JOB_TOKEN}"' },
+  },
   "tail long": { tool: "job", args: { action: "output", name: "long", lines: 1 } },
   "kill long": { tool: "job", args: { action: "kill", name: "long" } },
   "delete long": { tool: "job", args: { action: "delete", name: "long" } },
@@ -140,7 +155,7 @@ const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
 
 async function withJobs() {
   const value = await setup();
-  value.registry.install(createJobs(() => fauxRole, value.directory));
+  value.registry.install(createJobs(() => fauxRole, value.directory, value.vault));
   await writeFile(join(value.directory, "state.txt"), "pending\n");
   /** What a job's worker answers; the front's requests follow `FRONT_CALLS`. */
   let answer = "ok";
@@ -312,6 +327,44 @@ describe("jobs", () => {
     expect(textOf((await toolResults(root)).at(-1))).toContain("keeps for life");
     await send(root, "list");
     expect(textOf((await toolResults(root)).at(-1))).toMatch(/^- mine \(active\) command /);
+    await harness.close(context);
+  });
+});
+
+describe("job secrets", () => {
+  const token = "job-token-value-42";
+
+  it("gives a command job the secrets it names, and redacts them from what it keeps and sends", async () => {
+    const value = await withJobs();
+    await value.vault.set({ name: "JOB_TOKEN", kind: "value", value: token });
+    const { harness, root } = await open(value);
+    await send(root, "secret watch");
+    await waitForEvent(harness, 2);
+    expect(await readFile(join(value.directory, "seen.txt"), "utf8")).toBe(token);
+    await writeFile(join(value.directory, "state.txt"), "rotated\n");
+    await send(root, "poll api");
+    expect((await waitForEvent(harness, 3))[2]).toMatchObject({ kind: "changed" });
+    await waitFor(() => value.jobMessages.length === 1);
+    expect(value.jobMessages[0]).toContain("rotated\ntoken [secret JOB_TOKEN]");
+    expect(value.jobMessages[0]).not.toContain(token);
+    expect((await value.vault.info("JOB_TOKEN"))?.usedAt).toBeTypeOf("number");
+    await harness.close(context);
+  });
+
+  it("gives a bg job the secrets it names, and keeps them out of its log and message", async () => {
+    const value = await withJobs();
+    await value.vault.set({ name: "JOB_TOKEN", kind: "value", value: token });
+    const { harness, root } = await open(value);
+    await send(root, "secret build");
+    expect((await waitForEvent(harness, 2))[1]).toMatchObject({
+      kind: "exited",
+      text: /^exited 0/,
+    });
+    await waitFor(() => value.jobMessages.length === 1);
+    expect(value.jobMessages[0]).toContain("using [secret JOB_TOKEN]");
+    expect(value.jobMessages[0]).not.toContain(token);
+    const log = (await harness.snapshot(JobsDoc, context))?.jobs[0]?.log ?? "";
+    expect(await readFile(log, "utf8")).toBe("using [secret JOB_TOKEN]\n");
     await harness.close(context);
   });
 });

@@ -68,6 +68,19 @@ export function injectSecrets(vault: Vault, tool: "bash" | "powershell"): BashPr
 }
 
 /**
+ * The stored secrets a shell command names as `$NAME`, for a command Monchu runs outside a tool call (a job), with what
+ * its output must be redacted of.
+ */
+export async function commandSecrets(
+  vault: Vault,
+  command: string,
+  use: { tool: string; conversation: string },
+): Promise<{ env: Record<string, string>; redactor: StreamRedactor }> {
+  const env = await vault.resolve(captured(SHELL_REFERENCE, command), use);
+  return { env, redactor: new StreamRedactor(await vault.known()) };
+}
+
+/**
  * A tool whose live output is redacted as it streams, so a stored value never reaches the live view either. The
  * output window goes, since an environment skipping text would bypass the redactor; the Harness still keeps the tail.
  */

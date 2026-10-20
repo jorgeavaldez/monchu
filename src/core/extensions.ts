@@ -49,7 +49,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const workers = (preload: readonly string[]) =>
     createWorkerTools(inputs.workerRole, config.profiles, preload);
   const jobs = (preload: readonly string[]) =>
-    createJobs(inputs.workerRole, inputs.home, config.profiles, preload);
+    createJobs(inputs.workerRole, inputs.home, inputs.vault, config.profiles, preload);
   // Tool and task names the plugins may not take: every core one, whatever the preload, and the reload controls.
   const core = [
     context.extension,

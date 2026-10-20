@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { shortId } from "../api/ids.ts";
 import { jobNoticeText } from "../api/notices.ts";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "./config.ts";
 import {
@@ -24,6 +25,8 @@ import {
   startWorker,
   WorkersDoc,
 } from "./agents/workers.ts";
+import { commandSecrets } from "./secrets/tool.ts";
+import type { Vault } from "./secrets/vault.ts";
 
 /**
  * What a job is. `agent`: on a cron schedule, wake a worker with the job's prompt. `command`: on a cron schedule, run a
@@ -320,6 +323,23 @@ function endText(job: Job, end: BgEnd): string {
   }
 }
 
+/**
+ * The secrets a job's command names, for its environment, and the redactor its output goes through before anything
+ * keeps it; an error says why they could not be read.
+ */
+async function secretsFor(vault: Vault, job: Job, command: string) {
+  try {
+    return await commandSecrets(vault, command, {
+      tool: `job ${job.name}`,
+      conversation: shortId(job.rootId),
+    });
+  } catch (error) {
+    return {
+      error: `secrets could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /** Remove a `bg` job's log directory. A process a delete is still killing may hold it a moment longer. */
 async function removeLog(log: string): Promise<void> {
   await rm(join(log, ".."), { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
@@ -341,11 +361,13 @@ const ACTIONS = [
  * on the root conversation, so stopping a worker never stops its jobs. Runners are replay-safe. A scheduled run commits
  * what it changes (the command's cursor, its event, the worker it wakes) atomically with the runner's next checkpoint,
  * so a restart never wakes anyone twice for one slot or change. A `bg` command runs as Durable runs a tool, inside its
- * runner's invocation, so quitting Monchu kills it; its replay reports it interrupted, once.
+ * runner's invocation, so quitting Monchu kills it; its replay reports it interrupted, once. A command gets the stored
+ * secrets it names as `$NAME`, like a shell tool's, and its output is redacted before it is kept or sent.
  */
 export function createJobs(
   workerRole: () => ModelRole,
   home: string,
+  vault: Vault,
   profiles: Record<string, WorkerProfile> = {},
   preload: readonly string[] = [],
 ) {
@@ -447,21 +469,25 @@ export function createJobs(
         );
         let outcome: RunOutcome | null = null;
         if (job?.type === "command" && job.command !== undefined) {
+          const secrets = await secretsFor(vault, job, job.command);
           const env = await runtime.env(context);
-          if (env === undefined) outcome = { ok: false, error: "no execution environment" };
+          if ("error" in secrets) outcome = { ok: false, error: secrets.error };
+          else if (env === undefined) outcome = { ok: false, error: "no execution environment" };
           else {
             let output = "";
             const result = await env.exec(
               job.command,
               {
                 cwd: job.cwd,
+                env: secrets.env,
                 timeout: COMMAND_TIMEOUT_S,
                 onOutput: (text) => {
-                  output = (output + text).slice(-OUTPUT_KEPT);
+                  output = (output + secrets.redactor.push(text)).slice(-OUTPUT_KEPT);
                 },
               },
               context,
             );
+            output = (output + secrets.redactor.end()).slice(-OUTPUT_KEPT);
             if (!result.ok) outcome = { ok: false, error: `${result.error.message}\n${output}` };
             else if (result.value.exitCode !== 0)
               outcome = { ok: false, error: `exit ${result.value.exitCode}\n${output}` };
@@ -578,6 +604,9 @@ export function createJobs(
             at: runtime.now(),
             error: "no execution environment",
           });
+        const secrets = await secretsFor(vault, job, job.command);
+        if ("error" in secrets)
+          return finish({ reason: "exited", code: null, at: runtime.now(), error: secrets.error });
         await mkdir(join(job.log, ".."), { recursive: true });
         const log = createWriteStream(job.log, { flags: "w" });
         const run = withCancel(context);
@@ -604,7 +633,11 @@ export function createJobs(
             stop === undefined
               ? await env.exec(
                   job.command,
-                  { cwd: job.cwd, onOutput: (text) => log.write(text) },
+                  {
+                    cwd: job.cwd,
+                    env: secrets.env,
+                    onOutput: (text) => log.write(secrets.redactor.push(text)),
+                  },
                   run.context,
                 )
               : undefined;
@@ -628,6 +661,7 @@ export function createJobs(
         } finally {
           run.cancel();
           await watch?.stop();
+          log.write(secrets.redactor.end());
           await new Promise<void>((resolve) => log.end(resolve));
         }
       },
