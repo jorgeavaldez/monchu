@@ -177,7 +177,8 @@ describe("deferred tools", () => {
           ["mcp__fix__crawl_site", false],
         ]);
         expect(textOf(results[0])).toBe('echo:{"text":"hi"}');
-        expect(textOf(results[1])).toContain("Loaded mcp-fix");
+        expect(textOf(results[1])).toContain("Loaded 1 tool.");
+        expect(textOf(results[1])).toContain("- mcp__fix__crawl_site:");
         expect(textOf(results[1])).toContain("fixture guide: crawl politely");
         expect(textOf(results[2])).toBe('crawl_site:{"url":"https://example.com"}');
         // One server process served the listing and every call.
@@ -257,6 +258,54 @@ describe("deferred tools", () => {
       expect(workerTools).toContain("tool_search");
       expect(workerTools).not.toContain("save_note");
       expect((await root.agent(context)).tools.map((tool) => tool.name)).toContain("save_note");
+    } finally {
+      await harness.close(context);
+    }
+  });
+
+  it("loads only the matching tools of a group, like Pi, and its guide once", async () => {
+    const value = await setup();
+    const tool = (name: string, description: string) =>
+      defineTool({
+        name,
+        description,
+        parameters: Type.Object({}),
+        execute: async () => ({ output: [{ type: "text", text: name }] }),
+      });
+    const settings = install(value, [
+      {
+        name: "pages",
+        summary: "a workspace of pages",
+        tools: [
+          tool("page_search", "Search pages by keyword"),
+          tool("calendar_events", "List calendar events"),
+        ],
+        details: async () => "pages guide",
+      },
+    ]);
+    const queries = ["search pages", "calendar events"];
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const query = last?.role === "user" ? queries[Number(textOf(last))] : undefined;
+      return query === undefined
+        ? fauxAssistantMessage("ok")
+        : fauxAssistantMessage([fauxToolCall("tool_search", { query, limit: 1 })], {
+            stopReason: "toolUse",
+          });
+    });
+    const { harness, root } = await open(value, settings);
+    const offered = async () => (await root.agent(context)).tools.map((each) => each.name);
+    try {
+      await (await root.submit({ type: "input", content: "0" }, context)).wait(context);
+      expect(await offered()).toContain("page_search");
+      expect(await offered()).not.toContain("calendar_events");
+      await (await root.submit({ type: "input", content: "1" }, context)).wait(context);
+      expect(await offered()).toEqual(expect.arrayContaining(["page_search", "calendar_events"]));
+      const [first, second] = (await toolResults(root)).map((result) => textOf(result));
+      expect(first).toContain("Loaded 1 tool.");
+      expect(first).toContain("pages guide");
+      expect(second).toContain("- calendar_events: List calendar events");
+      expect(second).not.toContain("pages guide");
     } finally {
       await harness.close(context);
     }

@@ -43,7 +43,8 @@ const GROUP_PREFIX = "monchu.group.";
 const CODEMODE_PREFIX = "monchu.codemode.";
 
 /**
- * Tools kept out of the prompt until a conversation needs them. A group loads as a whole and never unloads: providers
+ * Tools kept out of the prompt until a conversation needs them. `tool_search` offers the tools it matches and never
+ * unloads them; a preloaded group is offered whole. Providers
  * keep the prompt cache only while a conversation's tools are added, never removed or redeclared.
  */
 export type ToolGroup = {
@@ -91,6 +92,8 @@ export async function unloadGroups(tx: Tx, conversationId: ConversationId): Prom
       ...selected,
       add: selected.add.filter((name) => !isGroupExtension(name)),
     };
+  // Only `loadTools` hides tools, and only those of loaded groups.
+  if (agent.tools !== undefined && !Array.isArray(agent.tools)) delete agent.tools;
 }
 
 /** Extension names of home plugins, which every conversation selects by appending them (see `attachPlugins`). */
@@ -133,6 +136,41 @@ export async function preloadGroups(
   if (preload.length === 0) return;
   const agent = await tx.doc(AgentDoc, conversationId);
   if (agent.model?.provider === PRELOAD_PROVIDER) await loadExtensions(tx, conversationId, preload);
+}
+
+/**
+ * Offer matched tools of groups from a conversation's next request: select each group's extension, and filter out its
+ * other tools when the group is new to the conversation. A tool already filtered out is offered again.
+ */
+async function loadTools(
+  tx: Tx,
+  conversationId: ConversationId,
+  loads: readonly { extension: string; tools: readonly string[]; matched: readonly string[] }[],
+): Promise<void> {
+  const agent = await tx.doc(AgentDoc, conversationId);
+  const before = Array.isArray(agent.extensions) ? agent.extensions : (agent.extensions?.add ?? []);
+  const shown = loads.flatMap((load) => load.matched);
+  const hidden = loads.flatMap((load) =>
+    before.includes(load.extension)
+      ? []
+      : load.tools.filter((name) => !load.matched.includes(name)),
+  );
+  await loadExtensions(
+    tx,
+    conversationId,
+    loads.map((load) => load.extension),
+  );
+  const tools = agent.tools;
+  if (Array.isArray(tools)) {
+    agent.tools = [...tools, ...shown.filter((name) => !tools.includes(name))];
+    return;
+  }
+  const remove = [
+    ...(tools?.remove ?? []).filter((name) => !shown.includes(name)),
+    ...hidden.filter((name) => !(tools?.remove ?? []).includes(name)),
+  ];
+  if (remove.length > 0) agent.tools = { remove };
+  else delete agent.tools;
 }
 
 /** Select extensions for a conversation from its next request, keeping its other choices. */
@@ -307,7 +345,7 @@ export function createToolSearch(all: readonly ToolGroup[]) {
   const prompt = [
     ...(groups.length
       ? [
-          "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching groups, with any guide they carry, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
+          "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching tools, with their group's guide, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
           ...groups.map(
             (group) =>
               `- ${group.name}: ${group.summary} (${group.tools.map((tool) => tool.name).join(", ")})`,
@@ -324,10 +362,10 @@ export function createToolSearch(all: readonly ToolGroup[]) {
   const toolSearch = defineTool({
     name: "tool_search",
     description:
-      "Load deferred tools (see Deferred tools in your instructions) by searching their names, descriptions and groups. Matching groups join your tools from your next call and stay for the rest of this conversation; the result lists them and includes any guide they carry, so read it before using them.",
+      "Load deferred tools (see Deferred tools in your instructions) by searching their names, descriptions and groups. The matching tools join your tools from your next call and stay for the rest of this conversation; the result lists them and includes their group's guide, so read it before using them.",
     parameters: Type.Object(
       {
-        query: Type.String({ minLength: 1, description: "What you need, or a group name" }),
+        query: Type.String({ minLength: 1, description: "What you need" }),
         limit: Type.Optional(
           Type.Integer({
             minimum: 1,
@@ -340,57 +378,48 @@ export function createToolSearch(all: readonly ToolGroup[]) {
     ),
     // Loading only adds names to the agent, so a rerun loads the same groups.
     replay: "safe",
+    // Pi's `searchAndLoad`: rank the deferred tools not offered yet and offer the matches, one by one.
     execute: async ({ query, limit }, api, context) => {
       const agent = await api.agent(context);
+      const offered = new Set(agent.tools.map((tool) => tool.name));
       const selected = new Set(agent.extensions.map((extension) => extension.name));
-      const candidates = groups.filter((group) => {
+      const candidates = groups.flatMap((group) => {
         const extension = extensions.get(group.name);
-        return (
-          extension !== undefined &&
-          !selected.has(extension.name) &&
-          api.registry.extension(extension.name) !== undefined
-        );
+        if (extension === undefined || api.registry.extension(extension.name) === undefined)
+          return [];
+        return group.tools
+          .filter((tool) => !offered.has(tool.name))
+          .map((tool) => ({ group, extension: extension.name, tool }));
       });
-      const loaded = groups.filter((group) => selected.has(extensions.get(group.name)?.name ?? ""));
-      const named = candidates.filter((group) => group.name === query.trim().toLowerCase());
-      const keys = rankDocuments(
+      const matched = rankDocuments(
         query,
-        candidates.flatMap((group) =>
-          group.tools.map((tool) => toolDocument(`${group.name}\0${tool.name}`, tool, group)),
-        ),
+        candidates.map(({ group, tool }) => toolDocument(tool.name, tool, group)),
         limit ?? DEFAULT_LIMIT,
-      );
-      const matched = [
-        ...named,
-        ...candidates.filter(
-          (group) =>
-            !named.includes(group) && keys.some((key) => key.startsWith(`${group.name}\0`)),
+      ).flatMap((name) => candidates.find((candidate) => candidate.tool.name === name) ?? []);
+      if (matched.length === 0)
+        return {
+          output: [{ type: "text", text: "No matching tools found." }],
+          details: { loaded: [] },
+        };
+      const loads = groups.flatMap((group) => {
+        const extension = extensions.get(group.name)?.name;
+        const tools = matched.flatMap((match) => (match.group === group ? match.tool.name : []));
+        return extension === undefined || tools.length === 0
+          ? []
+          : [{ extension, tools: group.tools.map((tool) => tool.name), matched: tools }];
+      });
+      await api.commit((tx) => loadTools(tx, api.conversationId, loads), context);
+      const lines = [
+        `Loaded ${matched.length} tool${matched.length === 1 ? "" : "s"}. They are available from your next call:`,
+        ...matched.map(
+          ({ tool }) => `- ${tool.name}: ${tool.description.trim().split(/\r?\n/)[0] ?? ""}`,
         ),
       ];
-      if (matched.length === 0) {
-        const lines = ["No deferred tools matched."];
-        if (candidates.length)
-          lines.push(`Not loaded: ${candidates.map((group) => group.name).join(", ")}.`);
-        if (loaded.length)
-          lines.push(
-            `Already in your tools: ${loaded.map((group) => `${group.name} (${group.tools.map((tool) => tool.name).join(", ")})`).join("; ")}.`,
-          );
-        return { output: [{ type: "text", text: lines.join("\n") }], details: { loaded: [] } };
-      }
-      await api.commit(
-        (tx) =>
-          loadExtensions(
-            tx,
-            api.conversationId,
-            matched.flatMap((group) => extensions.get(group.name)?.name ?? []),
-          ),
-        context,
-      );
-      const sections: string[] = [];
-      for (const group of matched) {
-        const lines = [`Loaded ${group.name}. Its tools are available from your next call:`];
-        for (const tool of group.tools)
-          lines.push(`- ${tool.name}: ${tool.description.trim().split(/\r?\n/)[0] ?? ""}`);
+      // A group's guide comes once, with the first of its tools.
+      for (const group of groups) {
+        const extension = extensions.get(group.name)?.name;
+        if (extension === undefined || selected.has(extension)) continue;
+        if (!matched.some((match) => match.group === group)) continue;
         let details: string | undefined;
         try {
           details = (await group.details?.(api, context))?.trim();
@@ -398,11 +427,10 @@ export function createToolSearch(all: readonly ToolGroup[]) {
           details = `Its guide failed to load: ${error instanceof Error ? error.message : String(error)}`;
         }
         if (details) lines.push("", `<${group.name}_guide>`, details, `</${group.name}_guide>`);
-        sections.push(lines.join("\n"));
       }
       return {
-        output: [{ type: "text", text: sections.join("\n\n") }],
-        details: { loaded: matched.map((group) => group.name) },
+        output: [{ type: "text", text: lines.join("\n") }],
+        details: { loaded: matched.map(({ tool }) => tool.name) },
       };
     },
   });

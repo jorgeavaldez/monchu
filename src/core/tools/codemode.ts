@@ -137,10 +137,10 @@ export const Codemode = defineExtension({
         context.abortSignal?.addEventListener("abort", forward, { once: true });
         let calls = 0;
         const offered = new Set(agent.tools.map((tool) => tool.name));
-        const selected = new Set(agent.extensions.map((extension) => extension.name));
+        // Deferred tools not offered yet: unloaded groups, and the unmatched tools of loaded ones.
         const deferred = api.registry
           .installed()
-          .filter((extension) => isScriptExtension(extension.name) && !selected.has(extension.name))
+          .filter((extension) => isScriptExtension(extension.name))
           .flatMap((extension) => extension.tools ?? [])
           .filter((tool) => !offered.has(tool.name));
         const callable = [...agent.tools.filter((tool) => tool.name !== NAME), ...deferred];
