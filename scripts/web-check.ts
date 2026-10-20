@@ -1389,8 +1389,33 @@ async function journeys(
       );
       await browser("press", "Escape");
       await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      // Leaving the pick goes back to the page it was opened from, not into its typeahead.
+      check(
+        (await page(focused)) === false,
+        "Esc in a pick from the page left focus in the prompt",
+      );
+      // `:` from the page, then Esc: the draft comes back and so does the page.
+      await browser("fill", "textarea", "kept");
+      await page(`document.querySelector("textarea").blur()`);
+      await browser("press", ":");
+      await browser("wait", "--fn", `document.querySelector("textarea").value === "/"`);
+      await browser("press", "Escape");
+      check(
+        (await page(`document.querySelector("textarea").value`)) === "kept" &&
+          (await page(focused)) === false,
+        "Esc after : didn't give back the draft and the page",
+      );
       // The leader while typing: the panel opens and nothing lands in the draft.
       await browser("fill", "textarea", "half typed");
+      // The leader's hint shows while it waits; Esc ends both and stays in the prompt.
+      await browser("press", "Control+/");
+      await browser("wait", ".pagehint");
+      await browser("press", "Escape");
+      check(
+        (await page(`!document.querySelector(".pagehint")`)) === true &&
+          (await page(focused)) === true,
+        "Esc after the leader didn't just close its hint",
+      );
       await browser("press", "Control+/");
       await browser("press", "r");
       await browser("wait", ".rootsPanel");
@@ -1400,6 +1425,10 @@ async function journeys(
       );
       await browser("press", "Escape");
       await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
+      check(
+        (await page(focused)) === true,
+        "closing a panel opened from the prompt left the prompt",
+      );
       // Ctrl pressed again for the second slash, as people do.
       await browser("press", "Control+/");
       await browser("press", "Control+/");
@@ -1424,7 +1453,7 @@ async function journeys(
       await browser("wait", "--fn", `${gap} <= 48`);
       await browser("press", "X");
       await browser("wait", "--fn", `!document.querySelector(".live")`);
-      return "Esc left the prompt, ? listed the keys, Ctrl+/ r opened roots mid-draft, k held the feed, G followed, X stopped";
+      return "Esc left the prompt, ? listed the keys and Esc went back to the page, : Esc gave back the draft, Ctrl+/ r opened roots mid-draft and Esc came back to it, k held the feed, G followed, X stopped";
     },
   );
 

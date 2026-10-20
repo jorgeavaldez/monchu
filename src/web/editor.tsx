@@ -23,6 +23,7 @@ import {
   attachFile,
   choice,
   client,
+  commandLine,
   connection,
   draft,
   linkError,
@@ -31,6 +32,7 @@ import {
   editing,
   endEdit,
   escapeLeaves,
+  focusOnMount,
   forgetRetry,
   interrupt,
   mode,
@@ -88,8 +90,10 @@ export function Editor() {
       ? { items: [], query: "" }
       : suggestions(draft.value, connection.value === "connecting" ? undefined : client()),
   );
-  // Back from a pick or a prompt, typing goes to the editor again.
-  useEffect(() => area.current?.focus(), []);
+  // On load, and back from a question asked from the prompt, typing goes to the editor again.
+  useEffect(() => {
+    if (focusOnMount()) area.current?.focus();
+  }, []);
   // The box grows with its text up to the stylesheet's max-height, then scrolls: by itself where the browser sizes a
   // field to its content, else measured here, which lays the page out again on every keystroke. The editor holds its
   // height while the box is measured, so the transcript above never shrinks and grows back (Firefox moves its scroll).
@@ -108,13 +112,21 @@ export function Editor() {
     const text = draft.value;
     closed.value = false;
     if (editing.value !== undefined) return endEdit(text);
+    // A slash command begun from the page runs and gives back the draft it set aside, and focus to where it was.
+    const line = commandLine.value;
+    commandLine.value = undefined;
+    if (line !== undefined && !line.fromPrompt) area.current?.blur();
+    const rest = line?.draft ?? "";
     if (runWebCommand(text)) {
-      draft.value = "";
+      draft.value = rest;
       return;
     }
     const attachments = readyAttachments();
-    if (attachments === undefined) return notice("still uploading · send when the files are up");
-    draft.value = "";
+    if (attachments === undefined) {
+      commandLine.value = line;
+      return notice("still uploading · send when the files are up");
+    }
+    draft.value = rest;
     void submit(text, attachments).then((outcome) => {
       if (outcome === "sent") clearPending();
       if (outcome !== "failed") return;
@@ -231,6 +243,10 @@ export function Editor() {
                     : "queued message"
         }
         autofocus
+        onBlur={() => {
+          // Leaving for elsewhere on the page ends a slash command begun from it; leaving the window doesn't.
+          if (document.hasFocus()) commandLine.value = undefined;
+        }}
         onInput={(event) => {
           if (picking !== undefined) {
             query.value = event.currentTarget.value;
@@ -276,7 +292,12 @@ export function Editor() {
           }
           if (event.key === "Escape") {
             event.preventDefault();
-            if (items.length > 0) closed.value = true;
+            const line = commandLine.value;
+            commandLine.value = undefined;
+            if (line !== undefined) {
+              draft.value = line.draft;
+              if (!line.fromPrompt) event.currentTarget.blur();
+            } else if (items.length > 0) closed.value = true;
             else if (editing.value !== undefined) endEdit();
             else if (escapeLeaves.value) event.currentTarget.blur();
             else void interrupt();

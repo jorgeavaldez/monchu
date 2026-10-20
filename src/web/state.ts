@@ -102,6 +102,8 @@ export const escapeLeaves = signal(false);
 export const menuOpen = signal(false);
 /** A page plugin's passing hint, such as the keys that may follow a leader. */
 export const pageHint = signal<string | undefined>(undefined);
+/** A slash command begun from a key (`:`), with the draft it set aside and where focus was: Esc puts both back. */
+export const commandLine = signal<{ draft: string; fromPrompt: boolean } | undefined>(undefined);
 /** The prompt drafts set aside on this device, oldest first, from every client. */
 export const promptDrafts = signal<readonly Draft[]>([]);
 /** Counts expand-all presses: a card opened or closed by hand keeps that only until the next press. */
@@ -395,6 +397,41 @@ export function typeInEditor(): void {
   requestAnimationFrame(() => area?.setSelectionRange(area.value.length, area.value.length));
 }
 
+const inPrompt = (element: Element | null) =>
+  element instanceof HTMLTextAreaElement && element.closest(".editor") !== null;
+
+/** Whether the editor takes focus when it appears again; false once a question asked from the page is answered. */
+let promptOnMount = true;
+
+/** For the editor as it mounts: whether to take focus, once. */
+export function focusOnMount(): boolean {
+  const take = promptOnMount;
+  promptOnMount = true;
+  return take;
+}
+
+/**
+ * Where focus goes when an overlay closes: back where it was when it opened, the prompt or the page, so leaving a pick
+ * or a question never lands in the prompt by itself. Call it as the overlay opens; call what it returns as it closes.
+ */
+export function focusReturn(): () => void {
+  const before = document.activeElement;
+  const prompt = inPrompt(before);
+  return () => {
+    const area = document.querySelector<HTMLTextAreaElement>(".editor textarea");
+    if (prompt) {
+      // A question stands in for the editor, which focuses itself as it comes back.
+      area?.focus();
+      return;
+    }
+    if (area === null) promptOnMount = false;
+    if (before instanceof HTMLElement && before !== document.body && before.isConnected)
+      return before.focus({ preventScroll: true });
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  };
+}
+
 /** A prompt on one line: its whitespace and line breaks as single spaces, cut at a word with … past `width`. */
 function oneLine(text: string, width = 60): string {
   const line = text.replace(/\s+/g, " ").trim();
@@ -477,13 +514,17 @@ export function pick(
   choice.value?.cancel();
   // The core's prompt goes in front of the person's own question, which would otherwise hide it.
   if (more.requested === true && ask.value?.requested !== true) ask.value?.cancel();
+  const back = focusReturn();
   return new Promise((resolve) => {
     // Settles once; a late call from a pick already replaced never touches the one shown now.
     let settled = false;
     const settle = (value: { id: string; alternate: boolean } | undefined) => {
       if (settled) return;
       settled = true;
-      if (choice.value === mine) choice.value = undefined;
+      if (choice.value === mine) {
+        choice.value = undefined;
+        back();
+      }
       resolve(value);
     };
     const mine: Choice = {
@@ -513,9 +554,12 @@ function prompted(
     return Promise.reject(new Error("finish the sign-in first"));
   return new Promise((resolve, reject) => {
     let mine: Ask | undefined;
+    let back = () => {};
     const close = () => {
       signal.removeEventListener("abort", cancel);
-      if (ask.value === mine) ask.value = undefined;
+      if (ask.value !== mine) return;
+      ask.value = undefined;
+      back();
     };
     const cancel = () => {
       close();
@@ -536,6 +580,7 @@ function prompted(
     ask.value?.cancel();
     // The core's question goes in front of a pick the person opened, which would otherwise hide it.
     if (requested && choice.value?.requested !== true) choice.value?.cancel();
+    back = focusReturn();
     ask.value = mine;
   });
 }

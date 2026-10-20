@@ -102,6 +102,8 @@ describe("keys plugin", () => {
   it("ends a sequence on an unbound key or Esc, without running anything", () => {
     expect(replay("spc z j", page).runs).toEqual(["scroll.down"]);
     expect(replay("spc esc", page)).toMatchObject({ runs: [], state: IDLE });
+    // In the prompt Esc after the leader only ends it: taken, so it never leaves the prompt or stops the run.
+    expect(replay("C-/ esc", prompt)).toMatchObject({ runs: [], taken: [true, true], state: IDLE });
     expect(replay("g j", page).runs).toEqual([]);
   });
 });

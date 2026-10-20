@@ -14,6 +14,7 @@ import { openSecrets } from "./secrets.tsx";
 import { signal } from "@preact/signals";
 import {
   client,
+  commandLine,
   connection,
   draft,
   escapeLeaves,
@@ -176,6 +177,9 @@ const ACTIONS: readonly Action[] = [
     label: "slash command",
     detail: "the prompt with /",
     run: () => {
+      // Like vim's `:`: Esc gives back the draft and where focus was.
+      const area = document.querySelector(".editor textarea");
+      commandLine.value = { draft: draft.value, fromPrompt: document.activeElement === area };
       draft.value = "/";
       typeInEditor();
     },

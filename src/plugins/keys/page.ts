@@ -8,8 +8,8 @@ import { GROUP_HINT, IDLE, keyRows, REPEATS, step, type KeyState, type Token } f
 
 const TOUCH = "(pointer: coarse)";
 /** How long a sequence waits for its next key, and when its hint shows. */
-const WAIT_MS = 2000;
-const HINT_MS = 300;
+const WAIT_MS = 2500;
+const HINT_MS = 200;
 
 /** The machine's token for a key, or undefined for one it never reads (another modifier, a dead key). */
 function token(event: PageKey): Token | undefined {

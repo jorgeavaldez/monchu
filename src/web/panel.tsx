@@ -1,7 +1,7 @@
 /** What every panel in place of the transcript shares: its header, a ✕ and Esc to close, focus once it opens. */
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import { panel } from "./state.ts";
+import { focusReturn, panel } from "./state.ts";
 
 /** A way out, the touch Esc: a menu's, a panel's, a line's. */
 export function Close({ label, onClose }: { label: string; onClose: () => void }) {
@@ -32,8 +32,12 @@ export function Panel(props: {
   children: ComponentChildren;
 }) {
   const element = useRef<HTMLElement>(null);
-  // Focus moves into the panel once when it opens, not on every update of its list.
-  useEffect(() => element.current?.focus(), []);
+  // Focus moves into the panel once when it opens, not on every update of its list, and back where it was as it closes.
+  useEffect(() => {
+    const back = focusReturn();
+    element.current?.focus();
+    return back;
+  }, []);
   return (
     <main
       class={`panel ${props.name}Panel ${props.class ?? ""}`}
