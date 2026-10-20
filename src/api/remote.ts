@@ -702,7 +702,12 @@ export class RemoteClient implements Client {
     prompt: Parameters<Client["mcpLogin"]>[1],
     signal: AbortSignal,
   ): Promise<string> {
-    const id = await this.run(() => this.session.ref.mcpLogin({ server: name }));
+    const id = await this.run(() =>
+      this.session.ref.mcpLogin({
+        server: name,
+        ...(prompt.redirectUrl === undefined ? {} : { redirect: prompt.redirectUrl }),
+      }),
+    );
     return this.follow(
       id,
       signal,

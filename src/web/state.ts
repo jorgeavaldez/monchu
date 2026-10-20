@@ -67,6 +67,9 @@ export type Ask = {
 };
 
 /** The link to the core, as the status bar's dot shows it; a drop and its redial never write to the transcript. */
+/** This server's page an MCP sign-in redirects to, and the channel it hands the redirect to the waiting page on. */
+export const MCP_CALLBACK = "/mcp/callback";
+
 export const connection = signal<Connection | "connecting">("connecting");
 /** Every root, archived ones included, as the core reports them. */
 export const roots = signal<readonly RootSummary[]>([]);
@@ -629,15 +632,18 @@ async function runMcp(text: string): Promise<void> {
     const message = await client().mcpLogin(
       name,
       {
-        showAuthorizationUrl: (url) => {
-          loginStatus.value = { message: "Sign in on the page · Esc cancels", url };
-        },
+        showAuthorizationUrl: (url) => loginEvent({ type: "auth_url", url }),
+        // The sign-in comes back to this server's own page, which hands it here (main.tsx); pasting it still works.
+        redirectUrl: location.origin + MCP_CALLBACK,
         promptForRedirectUrl: (signal) =>
-          prompted(
-            "If the browser cannot reach this machine, paste the URL it was redirected to",
-            false,
-            signal,
-          ).catch(() => undefined),
+          new Promise((resolve) => {
+            const channel = new BroadcastChannel(MCP_CALLBACK);
+            signal.addEventListener("abort", () => channel.close());
+            channel.onmessage = ({ data }) => resolve(String(data));
+            prompted("Or paste the URL the sign-in page went to", false, signal).then(resolve, () =>
+              resolve(undefined),
+            );
+          }),
       },
       controller.signal,
     );

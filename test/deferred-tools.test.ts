@@ -445,6 +445,44 @@ text(await tools[found.name]({ city: "Testville" }));`,
     }
   });
 
+  it("signs in through a client's own callback page, as the web client from a phone, with no loopback", async () => {
+    const value = await setup();
+    const server = await oauthServer(value.directory);
+    await writeFile(
+      join(value.directory, "mcp.json"),
+      JSON.stringify({ mcpServers: { notes: { url: server.url } } }),
+    );
+    const clients = new McpClients(value.directory, process.env, () => {});
+    const redirected = Promise.withResolvers<string>();
+    try {
+      const config = (await loadMcpConfig(value.directory)).servers.notes;
+      if (config === undefined) throw new Error("notes missing");
+      const result = await clients.login(
+        "notes",
+        config,
+        {
+          redirectUrl: "https://monchu.example/mcp/callback",
+          // The browser lands on the client's page, which hands the URL back as a paste would.
+          showAuthorizationUrl: (url) => {
+            expect(new URL(url).searchParams.get("redirect_uri")).toBe(
+              "https://monchu.example/mcp/callback",
+            );
+            void fetch(url, { redirect: "manual" }).then((response) =>
+              redirected.resolve(response.headers.get("location") ?? ""),
+            );
+          },
+          promptForRedirectUrl: () => redirected.promise,
+        },
+        AbortSignal.timeout(20_000),
+      );
+      expect(result.signedIn).toBe(true);
+      expect(result.listing.tools.map((tool) => tool.name)).toEqual(["find_page"]);
+    } finally {
+      await clients.close();
+      server.stop();
+    }
+  });
+
   it("sends a /login provider's token to an auth.provider server instead of OAuth", async () => {
     const value = await setup();
     const server = await oauthServer(value.directory);

@@ -1844,7 +1844,7 @@ async function journeys(
   );
 
   await journey(
-    "login: /mcp login shows the sign-in page and a paste box; signing in closes both",
+    "login: /mcp login shows the sign-in page and a paste box; signing in in another tab closes both",
     async () => {
       await browser("fill", "textarea", "/mcp login check");
       await browser("press", "Enter");
@@ -1854,10 +1854,22 @@ async function journeys(
         `!!document.querySelector(".login a") && !!document.querySelector("form.ask input")`,
       );
       await capture("mcp-login", home, origin);
-      // The browser the user signs in with: it follows the page to the loopback callback. The sign-in reloads the
-      // core's facets, so the next journey's dropped connection resumes its login across a reload.
+      // Signing in in a new tab, as a phone does: the redirect lands on this server's own callback page, which hands
+      // it to the waiting tab. The sign-in reloads the core's facets, so the next journey's dropped connection resumes
+      // its login across a reload.
       const signIn = text(await page(`document.querySelector(".login a").href`));
-      check((await fetch(signIn)).ok, "the sign-in page didn't reach the callback");
+      check(
+        new URL(signIn).searchParams.get("redirect_uri") ===
+          `${text(await page("location.origin"))}/mcp/callback`,
+        `the sign-in redirects elsewhere: ${signIn}`,
+      );
+      const app = list((await browser("tab", "list")).tabs).find(
+        (tab) => isData(tab) && tab.active === true,
+      );
+      await browser("tab", "new", signIn);
+      await browser("wait", "--fn", `location.pathname === "/mcp/callback"`);
+      await browser("tab", "close");
+      await browser("tab", isData(app) ? text(app.tabId) : "t1");
       await browser(
         "wait",
         "--fn",
@@ -1865,7 +1877,7 @@ async function journeys(
       );
       const notices = text(await page(`document.querySelector(".transcript").textContent`));
       check(/mcp · .*check/.test(notices), `no sign-in notice: ${notices.slice(-200)}`);
-      return "the bar and the paste box showed together; signing in on the page closed both";
+      return "the bar and the paste box showed together; signing in on another tab closed both";
     },
   );
 

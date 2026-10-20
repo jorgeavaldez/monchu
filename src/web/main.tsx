@@ -6,7 +6,16 @@ import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
 import { startClient } from "./client.tsx";
 import { startSecrets } from "./secrets.tsx";
-import { cancelLogin, connection, linkError, loginStatus, notice, start, view } from "./state.ts";
+import {
+  cancelLogin,
+  connection,
+  linkError,
+  loginStatus,
+  MCP_CALLBACK,
+  notice,
+  start,
+  view,
+} from "./state.ts";
 import { telemetry } from "./telemetry.ts";
 
 /**
@@ -121,6 +130,12 @@ async function recover(): Promise<void> {
 async function boot(): Promise<void> {
   const root = document.getElementById("app");
   if (root === null) return;
+  if (location.pathname === MCP_CALLBACK) {
+    // An MCP sign-in came back: the page that started it takes it from here.
+    new BroadcastChannel(MCP_CALLBACK).postMessage(location.href);
+    root.textContent = "Back to Monchu to finish signing in.";
+    return;
+  }
   startClient();
   render(<App />, root);
   // As in the terminal, Esc cancels a login wherever focus is, such as while a device code waits.

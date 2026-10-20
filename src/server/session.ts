@@ -106,6 +106,14 @@ function hello(backend: Monchu): Hello {
   };
 }
 
+/** A client's own OAuth callback: an http(s) URL with no fragment, or the sign-in refuses to start. */
+function httpUrl(value: string): string {
+  const url = URL.canParse(value) ? new URL(value) : undefined;
+  if (url === undefined || !/^https?:$/.test(url.protocol) || url.hash !== "")
+    throw new Error("The sign-in callback must be an http(s) URL");
+  return url.href;
+}
+
 function wirePrompt(prompt: AuthPrompt): LoginPrompt {
   switch (prompt.type) {
     case "select":
@@ -449,11 +457,12 @@ export default defineFacet<Principal>(
             });
             return `logged in · ${provider}`;
           }),
-        mcpLogin: ({ server }) =>
+        mcpLogin: ({ server, redirect }) =>
           start((update, ask, signal) =>
             monchu().mcpLogin(
               server,
               {
+                ...(redirect === undefined ? {} : { redirectUrl: httpUrl(redirect) }),
                 showAuthorizationUrl: (url) =>
                   update((state) => ({
                     ...state,

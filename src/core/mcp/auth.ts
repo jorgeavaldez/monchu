@@ -24,11 +24,14 @@ export type McpOAuthSettings = Omit<McpOAuthConfig, "clientSecret"> & { clientSe
 
 /**
  * How a sign-in reaches the user, as in Pi: the authorization URL to show and open, and optionally the URL the browser
- * was redirected to, pasted by the user when the browser cannot reach this machine's loopback callback.
+ * was redirected to, pasted by the user when the browser cannot reach this machine's loopback callback. A client the
+ * browser can reach (the web client) names its own `redirectUrl` instead and hands the redirect back through
+ * `promptForRedirectUrl`; a server whose OAuth settings pin a callback keeps the loopback.
  */
 export type McpSignInPrompt = {
   showAuthorizationUrl: (url: string) => void;
   promptForRedirectUrl?: (signal: AbortSignal) => Promise<string | undefined>;
+  redirectUrl?: string;
 };
 
 const DEFAULT_CALLBACK = "http://127.0.0.1/callback";
@@ -89,14 +92,24 @@ export class McpOAuth {
     if (settings.authServerMetadataUrl !== undefined)
       throw new Error(`${name}: oauth.authServerMetadataUrl is not supported by Monchu yet`);
     const previous = (await this.read())[name];
-    const callback = await listen(
-      settings.callbackUrl ?? DEFAULT_CALLBACK,
-      settings.callbackPort ??
-        (previous?.url === url && previous.redirectUrl !== undefined
-          ? Number(new URL(previous.redirectUrl).port)
-          : undefined),
-      settings.callbackPort !== undefined || settings.callbackUrl !== undefined,
-    );
+    const fixed = settings.callbackPort !== undefined || settings.callbackUrl !== undefined;
+    const callback =
+      prompt.redirectUrl !== undefined && !fixed
+        ? {
+            redirectUrl: prompt.redirectUrl,
+            received: new Promise<never>(() => {}),
+            close: () => {},
+          }
+        : await listen(
+            settings.callbackUrl ?? DEFAULT_CALLBACK,
+            settings.callbackPort ??
+              (previous?.url === url &&
+              previous.redirectUrl !== undefined &&
+              isLoopback(previous.redirectUrl)
+                ? Number(new URL(previous.redirectUrl).port)
+                : undefined),
+            fixed,
+          );
     try {
       const state = randomBytes(16).toString("hex");
       const provider = this.create(name, url, settings, callback.redirectUrl, {
@@ -105,7 +118,7 @@ export class McpOAuth {
       });
       const scope = settings.scope === undefined ? {} : { scope: settings.scope };
       if ((await auth(provider, { serverUrl: url, ...scope })) === "AUTHORIZED") return;
-      const code = await callback.code(state, signal, prompt.promptForRedirectUrl);
+      const code = await redirected(callback.received, state, signal, prompt.promptForRedirectUrl);
       if (
         (await auth(provider, { serverUrl: url, authorizationCode: code, ...scope })) !==
         "AUTHORIZED"
@@ -275,15 +288,7 @@ async function listen(
   callback: string,
   port: number | undefined,
   fixed: boolean,
-): Promise<{
-  redirectUrl: string;
-  code: (
-    state: string,
-    signal: AbortSignal,
-    paste: McpSignInPrompt["promptForRedirectUrl"],
-  ) => Promise<string>;
-  close: () => void;
-}> {
+): Promise<{ redirectUrl: string; received: Promise<URLSearchParams>; close: () => void }> {
   const target = new URL(callback);
   const host = target.hostname === "[::1]" ? "::1" : target.hostname;
   const received = Promise.withResolvers<URLSearchParams>();
@@ -324,41 +329,53 @@ async function listen(
   target.port = String(address.port);
   return {
     redirectUrl: target.href,
-    code: async (state, signal, paste) => {
-      const stop = new AbortController();
-      const abort = () => stop.abort();
-      signal.addEventListener("abort", abort, { once: true });
-      try {
-        const aborted = new Promise<never>((_resolve, reject) => {
-          if (signal.aborted) reject(new Error("sign-in cancelled"));
-          signal.addEventListener("abort", () => reject(new Error("sign-in cancelled")), {
-            once: true,
-          });
-        });
-        const pasted =
-          paste === undefined
-            ? new Promise<never>(() => {})
-            : paste(stop.signal).then((value) => {
-                if (value === undefined || !URL.canParse(value.trim()))
-                  return new Promise<never>(() => {});
-                return new URL(value.trim()).searchParams;
-              });
-        const params = await Promise.race([received.promise, pasted, aborted]);
-        const error = params.get("error");
-        if (error !== null)
-          throw new Error(`sign-in refused: ${params.get("error_description") ?? error}`);
-        if (params.get("state") !== state) throw new Error("sign-in state did not match");
-        const code = params.get("code");
-        if (code === null) throw new Error("sign-in returned no code");
-        return code;
-      } finally {
-        stop.abort();
-        signal.removeEventListener("abort", abort);
-      }
-    },
+    received: received.promise,
     close: () => {
       server.close();
       server.closeAllConnections();
     },
   };
+}
+
+function isLoopback(url: string): boolean {
+  return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname);
+}
+
+/** The code from the redirect the callback `received` or the user pasted, checked against `state`. */
+async function redirected(
+  received: Promise<URLSearchParams>,
+  state: string,
+  signal: AbortSignal,
+  paste: McpSignInPrompt["promptForRedirectUrl"],
+): Promise<string> {
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    const aborted = new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) reject(new Error("sign-in cancelled"));
+      signal.addEventListener("abort", () => reject(new Error("sign-in cancelled")), {
+        once: true,
+      });
+    });
+    const pasted =
+      paste === undefined
+        ? new Promise<never>(() => {})
+        : paste(stop.signal).then((value) => {
+            if (value === undefined || !URL.canParse(value.trim()))
+              return new Promise<never>(() => {});
+            return new URL(value.trim()).searchParams;
+          });
+    const params = await Promise.race([received, pasted, aborted]);
+    const error = params.get("error");
+    if (error !== null)
+      throw new Error(`sign-in refused: ${params.get("error_description") ?? error}`);
+    if (params.get("state") !== state) throw new Error("sign-in state did not match");
+    const code = params.get("code");
+    if (code === null) throw new Error("sign-in returned no code");
+    return code;
+  } finally {
+    stop.abort();
+    signal.removeEventListener("abort", abort);
+  }
 }

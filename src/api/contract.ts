@@ -223,8 +223,11 @@ const sessionMethods = {
     }),
     trusted<string>(),
   ),
-  /** Starts an MCP sign-in for this connection, as for `login`. */
-  mcpLogin: method(Type.Object({ server: text }), trusted<string>()),
+  /**
+   * Starts an MCP sign-in for this connection, as for `login`. `redirect` is a callback URL the client receives itself
+   * (the web client's own page) and answers the paste prompt with, in place of the core's loopback.
+   */
+  mcpLogin: method(Type.Object({ server: text, redirect: Type.Optional(text) }), trusted<string>()),
   /**
    * Takes a login an earlier connection of this client started into this one's `logins`: a dropped connection's
    * logins wait a while for it, since a phone drops the page's socket whenever it goes away to fetch what is asked.
