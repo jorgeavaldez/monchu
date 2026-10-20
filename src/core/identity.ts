@@ -96,7 +96,7 @@ export function budgetNotice(
       "Home files load in full into every request under a character budget each, and in total. These crossed a threshold (near is 90%):",
       ...risen.map(line),
       "Nothing is truncated or dropped: a file over its budget still loads in full and costs context on every request. The memory tool refuses to grow memories/USER.md or memories/MEMORY.md past their budget; no other edit is stopped.",
-      "Route a curation now to whoever keeps the home files (FRONT.md says who): trim or compress, and move detail that not every request needs to the vault or a skill. Tell the user in one line. You hear about a budget again only when it rises a level or falls back under 90% and crosses again.",
+      "Route a curation now to whoever keeps the home files (FRONT.md says who): trim or compress, and move detail that not every request needs to the user's notes or a skill. Tell the user in one line. You hear about a budget again only when it rises a level or falls back under 90% and crosses again.",
     ].join("\n"),
   };
 }

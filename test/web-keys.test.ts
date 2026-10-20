@@ -18,8 +18,7 @@ function replay(keys: string, context: KeyContext) {
 const page: KeyContext = { owner: "page", overlay: "none" };
 const prompt: KeyContext = { owner: "prompt", overlay: "none" };
 
-// The table Jorge signed off on 2026-10-20 (vault projects/monchu/web-keys.md), with the leader he chose (Ctrl+/),
-// written from the plan, not from the keymap: each sequence outside the prompt and the action it runs.
+// The intended key table, with the Ctrl+/ leader, written independently of the keymap: each sequence outside the prompt and the action it runs.
 const SIGNED_OFF: [string, string][] = [
   ["i", "prompt"],
   ["enter", "prompt"],

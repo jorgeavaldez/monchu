@@ -1,7 +1,7 @@
 # Working on Monchu
 
 Monchu is a personal agent built on Pi Durable: a fast front conversation that routes work to durable background workers.
-Read `README.md` and `docs/internals.md` before changing it. Product intent and the roadmap live in the maintainer's notes, not in this repo. If `OBSIDIAN_VAULT_PATH` holds `projects/monchu.md`, read it.
+Read `README.md` and `docs/internals.md` before changing it.
 
 ## Invariants
 
