@@ -325,6 +325,57 @@ describe("background workers", () => {
     await harness.close(context);
   });
 
+  it("steers a sub-worker's update and report into its busy worker parent's run", async () => {
+    const value = await setup();
+    const call = (tool: string, args: Record<string, string>) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "spawn")
+        return call("start_worker", { name: "child", task: "quick child" });
+      // The child posts and reports while this tool round still runs.
+      if (last?.role === "toolResult" && last.toolName === "start_worker")
+        return call("bash", { command: "sleep 2" });
+      if (last?.role === "toolResult" && last.toolName === "bash")
+        return fauxAssistantMessage([fauxText("child not seen")]);
+      if (last?.role === "user" && text === "quick child")
+        return call("post_update", { text: "halfway" });
+      if (last?.role === "toolResult" && last.toolName === "post_update")
+        return fauxAssistantMessage([fauxText("child done")]);
+      if (last?.role === "user" && text.startsWith("[Worker child update"))
+        return call("bash", { command: "true" });
+      if (last?.role === "user" && text.startsWith("[Background worker child"))
+        return fauxAssistantMessage([fauxText("saw child")]);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "spawn", value.directory, "start:0", fauxRole),
+      context,
+    );
+    const worker = await conversationOf(harness, workerId);
+    await waitFor(async () => (await reports(root)).length === 1);
+    await settle(harness, worker);
+    // Both joined the run right after its tool round, before it could answer without them.
+    expect(await transcript(worker)).toEqual([
+      "user",
+      "call",
+      "toolResult",
+      "call",
+      "toolResult",
+      "update:child",
+      "call",
+      "toolResult",
+      "worker:child",
+      "answer",
+    ]);
+    expect(textOf((await reports(root))[0]?.model?.[0])).toContain("saw child");
+    await settle(harness, root);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
   it("reports once when the store closes while the report is queued", async () => {
     const value = await setup();
     let holding = true;

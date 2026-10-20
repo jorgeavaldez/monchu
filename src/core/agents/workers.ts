@@ -362,6 +362,14 @@ const NOT_THE_USER = /^\[(Worker |Background worker |Root [k-z]+ |Routing advice
 /** The settlement reason of an input the user deleted from a queue; a deleted report is dropped, not posted again. */
 export const DELETED_FROM_QUEUE = "deleted";
 
+/**
+ * How a worker's report or update reaches its busy parent. A worker parent is often waiting on it, so it joins that run
+ * after the current tool round; a front hears it after its answer.
+ */
+async function reportWhenBusy(tx: Tx, parentId: ConversationId): Promise<WhenBusy> {
+  return (await parentOf(tx, parentId)) === undefined ? "followUp" : "steer";
+}
+
 /** A report is posted again after stopping the front withdraws it; each post has its own request ID. */
 function reportRequestId(taskId: TaskId, attempt: number): string {
   return attempt === 0 ? `worker-report:${taskId}` : `worker-report:${taskId}:${attempt}`;
@@ -399,7 +407,7 @@ function needsUser(text: string): boolean {
 
 const Delivery = defineTask<
   DeliveryInput,
-  { phase: "deliver" } | { phase: "report"; result: WorkerResult | null },
+  { phase: "deliver" } | { phase: "report"; result: WorkerResult | null; whenBusy: WhenBusy },
   null
 >({
   name: "monchu.worker-delivery",
@@ -461,23 +469,30 @@ const Delivery = defineTask<
             }
           }
         }
-        return { status: "running", checkpoint: { phase: "report", result } };
+        return {
+          status: "running",
+          checkpoint: {
+            phase: "report",
+            result,
+            whenBusy: await reportWhenBusy(tx, task.input.parentId),
+          },
+        };
       }, context);
     },
     report: async (task, runtime, context) => {
       const { parentId } = task.input;
-      const result = task.state.checkpoint.result;
+      const { result, whenBusy } = task.state.checkpoint;
       if (result !== null) {
         const parent = await runtime.conversation(parentId, context);
         if (parent === undefined) throw new Error("Worker parent conversation is missing");
-        // A follow-up starts the parent's turn when idle, or waits for its current answer. Stopping the front withdraws queued
-        // input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
+        // The report starts the parent's turn when idle, or joins it as `reportWhenBusy` says. Stopping the parent withdraws
+        // queued input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
         for (let attempt = 0; ; attempt++) {
           const submission = await parent.submit(
             {
               type: "input",
               content: noticeText(result),
-              whenBusy: "followUp",
+              whenBusy,
               requestId: reportRequestId(task.id, attempt),
             },
             context,
@@ -975,15 +990,16 @@ export function createWorkerTools(
           const parent = await api.conversation(parentId, context);
           if (parent === undefined) throw new Error("Worker parent conversation is missing");
           // Registered before admission, so every later call and a stop's withdrawal see it once it is admitted.
-          await api.commit(async (tx) => {
+          const whenBusy = await api.commit(async (tx) => {
             const state = await tx.doc(WorkerUpdatesDoc, api.conversationId);
             if (!state.queued.includes(requestId)) state.queued.push(requestId);
+            return reportWhenBusy(tx, parentId);
           }, context);
           await parent.submit(
             {
               type: "input",
               content: noticeText({ name: record.name, status: "update", text: args.text }),
-              whenBusy: "followUp",
+              whenBusy,
               requestId,
             },
             context,
