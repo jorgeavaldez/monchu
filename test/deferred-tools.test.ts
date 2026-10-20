@@ -239,7 +239,8 @@ describe("deferred tools", () => {
       // One section in the first system message: loading a group never rewrites the prompt.
       for (const texts of sections) {
         expect(texts).toHaveLength(1);
-        expect(texts[0]).toContain("- notes: save and find notes (save_note)");
+        expect(texts[0]).toContain("- notes: save and find notes");
+        expect(texts[0]).not.toContain("save_note");
       }
       const [loaded] = await toolResults(root);
       expect(textOf(loaded)).toContain("<notes_guide>\nnotes guide\n</notes_guide>");

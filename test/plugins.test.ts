@@ -152,7 +152,7 @@ export default (monchu) => monchu.registerTool(defineTool({ name: "bash", descri
       expect(tools().at(-1)).toBe("note_count");
       expect(sectionTexts(first).join("\n")).toContain("notes section v1");
       expect(sectionTexts(first).join("\n")).toContain(
-        "- plugin-notes: Notes kept by the notes plugin (note_read)",
+        "- plugin-notes: Notes kept by the notes plugin",
       );
       // A section whose render throws is left out.
       expect(sectionTexts(first, "plugins")).toEqual([

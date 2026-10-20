@@ -346,10 +346,9 @@ export function createToolSearch(all: readonly ToolGroup[]) {
     ...(groups.length
       ? [
           "Deferred tools: these groups are not in your tools until you load them (on some models a few are loaded from the start). Call tool_search with what you need; it loads the matching tools, with their group's guide, from your next call on. Codemode scripts can call deferred tools without loading them: find them with searchTools(query).",
-          ...groups.map(
-            (group) =>
-              `- ${group.name}: ${group.summary} (${group.tools.map((tool) => tool.name).join(", ")})`,
-          ),
+          // Summaries only, like Pi's fixed tool_search description: tool names would grow the prompt and change it
+          // whenever a server's tool list does.
+          ...groups.map((group) => `- ${group.name}: ${group.summary}`),
         ]
       : []),
     ...(scripted.length
