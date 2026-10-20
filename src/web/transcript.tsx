@@ -624,7 +624,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
   const main = useRef<HTMLElement>(null);
   // Follow the newest line while the reader is at it. Reading back (a wheel, drag, touch or key scroll up) stops that
   // and never moves the view again until they scroll back down to the end or tap the pill; layout alone never stops it.
-  const follow = useRef({ count: 0, top: 0, pressed: false, touch: 0 });
+  const follow = useRef({ count: 0, top: 0, height: 0, pressed: false, touching: false, touch: 0 });
   follow.current.count = count;
   /** How many items there were when the reader left the end; undefined while following. */
   const left = useSignal<number | undefined>(undefined);
@@ -633,12 +633,18 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     if (element !== null) element.scrollTop = element.scrollHeight;
   };
   // The end moves when an item arrives or grows (a streamed reply, a card sizing on first paint) and when the editor
-  // grows. Watched once, after layout, so neither a render nor a keystroke forces a layout of its own.
+  // grows. Watched once, after layout, so neither a render nor a keystroke forces a layout of its own. Reading back,
+  // the box getting shorter or taller (the editor growing, a keyboard opening) keeps what sits at its bottom in place.
   useLayoutEffect(() => {
     const element = main.current;
     if (element === null) return;
+    follow.current.height = element.clientHeight;
     const sized = new ResizeObserver(() => {
+      const height = element.clientHeight;
+      const shrunk = follow.current.height - height;
+      follow.current.height = height;
       if (left.peek() === undefined) toEnd();
+      else if (shrunk !== 0) element.scrollTop += shrunk;
     });
     sized.observe(element);
     for (const child of element.children) sized.observe(child);
@@ -706,7 +712,14 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
         if (event.deltaY < 0) reading();
       }}
       onTouchStart={(event) => {
+        follow.current.touching = true;
         follow.current.touch = event.touches[0]?.clientY ?? 0;
+      }}
+      onTouchEnd={(event) => {
+        follow.current.touching = event.touches.length > 0;
+      }}
+      onTouchCancel={(event) => {
+        follow.current.touching = event.touches.length > 0;
       }}
       onTouchMove={(event) => {
         const y = event.touches[0]?.clientY ?? 0;
@@ -738,6 +751,15 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
         // Only the reader moving down reaches the end again; a smooth scroll up starts there too.
         if (end && down) left.value = undefined;
         else if (!down && state.pressed && !end) reading();
+        // Following, nothing but the reader moves the view off the end: a browser that shifted it while laying the
+        // page out (Firefox, as the editor measures itself) is put back before it paints.
+        else if (
+          left.peek() === undefined &&
+          !state.pressed &&
+          !state.touching &&
+          element.scrollHeight - element.scrollTop - element.clientHeight > 1
+        )
+          toEnd();
       }}
     >
       {nodes}

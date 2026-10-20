@@ -88,12 +88,16 @@ export function Editor() {
   // Back from a pick or a prompt, typing goes to the editor again.
   useEffect(() => area.current?.focus(), []);
   // The box grows with its text up to the stylesheet's max-height, then scrolls: by itself where the browser sizes a
-  // field to its content, else measured here, which lays the page out again on every keystroke.
+  // field to its content, else measured here, which lays the page out again on every keystroke. The editor holds its
+  // height while the box is measured, so the transcript above never shrinks and grows back (Firefox moves its scroll).
   useLayoutEffect(() => {
     const element = area.current;
-    if (element === null || SIZES_ITSELF) return;
+    const box = element?.parentElement ?? null;
+    if (element === null || box === null || SIZES_ITSELF) return;
+    box.style.height = `${box.offsetHeight}px`;
     element.style.height = "auto";
     element.style.height = `${element.scrollHeight + element.offsetHeight - element.clientHeight}px`;
+    box.style.height = "";
   }, [draft.value, query.value, picking]);
 
   const attach = (files: Iterable<File>) => addFiles(files, attachFile);
