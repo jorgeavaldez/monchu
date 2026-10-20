@@ -8,7 +8,7 @@ import { clientCommands } from "../ui/commands.ts";
 import { listedRoots } from "../ui/roots.ts";
 import { presentation } from "../ui/state.ts";
 import { openClient } from "./client.tsx";
-import { search, snippet } from "./fuzzy.ts";
+import { ranges, search, snippet } from "./fuzzy.ts";
 import type { MenuItem } from "./menu.tsx";
 import { openSecrets } from "./secrets.tsx";
 import { signal } from "@preact/signals";
@@ -127,7 +127,12 @@ function cycleFeed(step: 1 | -1): void {
 }
 
 /** The last search's hits, best first, which one is shown, and the feed they're from; `n` and `N` walk them. */
-let hits: { codes: readonly string[]; at: number; feed: string } = { codes: [], at: 0, feed: "" };
+let hits: { codes: readonly string[]; at: number; feed: string; query: string } = {
+  codes: [],
+  at: 0,
+  feed: "",
+  query: "",
+};
 
 /** The feed on screen: the root, the conversation shown and the front's filter. */
 const feedKey = () => JSON.stringify([rootId.value, shown.value, filter.value]);
@@ -137,7 +142,7 @@ function nextHit(step: 1 | -1): void {
     return notice("no search in this feed yet · /search");
   hits = { ...hits, at: (hits.at + step + hits.codes.length) % hits.codes.length };
   const code = hits.codes[hits.at];
-  if (code !== undefined) jumpTo.value = { code };
+  if (code !== undefined) jumpTo.value = { code, query: hits.query };
 }
 
 /** Leave the prompt for the page, where a key plugin's keys act. */
@@ -368,10 +373,13 @@ async function openSearch(text: string): Promise<void> {
   const rows = feedRows();
   if (rows.length === 0) return notice("nothing to search in this feed", "warning");
   let listed: readonly string[] = [];
+  let typed = text;
   const picked = await pick("Search this feed", [], undefined, text, {
     empty: "nothing matches",
     class: "search",
+    marks: ranges,
     rows: (query) => {
+      typed = query;
       const found =
         query.trim() === ""
           ? []
@@ -385,6 +393,11 @@ async function openSearch(text: string): Promise<void> {
     },
   });
   if (picked === undefined) return;
-  hits = { codes: listed, at: Math.max(0, listed.indexOf(picked.id)), feed: feedKey() };
-  jumpTo.value = { code: picked.id };
+  hits = {
+    codes: listed,
+    at: Math.max(0, listed.indexOf(picked.id)),
+    feed: feedKey(),
+    query: typed,
+  };
+  jumpTo.value = { code: picked.id, query: typed };
 }

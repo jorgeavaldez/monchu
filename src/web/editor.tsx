@@ -178,6 +178,7 @@ export function Editor() {
           query={query.value}
           selected={selected.value}
           empty={picking.empty ?? "nothing matches"}
+          marks={picking.marks}
           onTake={(item) => take(item)}
           header={
             <header>

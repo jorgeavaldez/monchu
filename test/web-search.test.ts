@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { argumentRows } from "../src/web/completions.ts";
-import { score, search, snippet } from "../src/web/fuzzy.ts";
+import { ranges, score, search, snippet } from "../src/web/fuzzy.ts";
 
 const rows = (...texts: string[]) => texts.map((text) => ({ text, lower: text.toLowerCase() }));
 const found = (texts: string[], query: string) =>
@@ -38,6 +38,18 @@ describe("feed search", () => {
 
   it("finds nothing for an empty query", () => {
     expect(found(["anything"], "  ")).toEqual([]);
+  });
+
+  it("highlights each term everywhere, letters in order at their best span, overlaps joined", () => {
+    const text = "Deploy the web app, then deploy web keys";
+    const marked = (query: string, letters?: boolean) =>
+      ranges(text, query, letters).map(({ at, end }) => text.slice(at, end + 1));
+    expect(marked("deploy web")).toEqual(["Deploy", "web", "deploy", "web"]);
+    expect(marked("Deploy")).toEqual(["Deploy"]);
+    expect(marked("kys")).toEqual(["keys"]);
+    expect(marked("kys", false)).toEqual([]);
+    expect(marked("we eb")).toEqual(["web", "web"]);
+    expect(marked("deploy zzz")).toEqual([]);
   });
 
   it("cuts a one-line snippet around the match, marking cuts", () => {

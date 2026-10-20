@@ -44,14 +44,22 @@ export function matching<T extends MenuItem>(items: readonly T[], query: string)
   return ranked.flat();
 }
 
-/** `text` with the first place each word of `query` appears in it underlined. */
-function Marked({ text, query }: { text: string; query: string }) {
+/** Where to mark `query` in a row's text: what it matched, as first and last characters. */
+export type Marks = (text: string, query: string) => readonly { at: number; end: number }[];
+
+/** The first place each word of `query` appears in `text`, as `matching` finds them. */
+const firstPlaces: Marks = (text, query) => {
   const lower = text.toLowerCase();
-  const hit = Array.from({ length: text.length }, () => false);
-  for (const word of words(query)) {
+  return words(query).flatMap((word) => {
     const at = lower.indexOf(word);
-    if (at >= 0) hit.fill(true, at, at + word.length);
-  }
+    return at < 0 ? [] : [{ at, end: at + word.length - 1 }];
+  });
+};
+
+/** `text` with what `query` matched in it underlined. */
+function Marked({ text, query, marks }: { text: string; query: string; marks: Marks }) {
+  const hit = Array.from({ length: text.length }, () => false);
+  for (const { at, end } of marks(text, query)) hit.fill(true, at, end + 1);
   const parts: { text: string; hit: boolean }[] = [];
   for (let index = 0; index < text.length; index++) {
     const last = parts.at(-1);
@@ -83,6 +91,8 @@ export function Menu(props: {
   query: string;
   selected: number;
   empty?: string;
+  /** How rows mark what the query matched; by default each word's first place, as `matching` finds them. */
+  marks?: Marks | undefined;
   onTake: (item: MenuItem) => void;
 }) {
   const longest = Math.max(1, ...props.items.map((item) => item.label.length));
@@ -110,7 +120,7 @@ export function Menu(props: {
           >
             <span class="enter">
               <b>
-                <Marked text={item.label} query={props.query} />
+                <Marked text={item.label} query={props.query} marks={props.marks ?? firstPlaces} />
               </b>
               <span class="more">
                 {(item.tags ?? []).map((tag) => (

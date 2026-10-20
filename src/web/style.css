@@ -321,6 +321,14 @@ pre {
   font-weight: bold;
 }
 /* The message a search jumped to, marked for a moment. */
+/* What a search matched: its words wherever the feed shows them, and its match in the message it went to. */
+::highlight(search) {
+  background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+::highlight(search-current) {
+  color: var(--bg);
+  background-color: var(--accent);
+}
 .stamp.found,
 .stamp.found .prefix {
   color: var(--bg);

@@ -119,6 +119,36 @@ export function search<T extends Searchable>(
   return found.toSorted((x, y) => y.score - x.score).slice(0, limit);
 }
 
+/**
+ * What to highlight of `query` in `text`, as first and last characters, in order and apart: each term everywhere it
+ * appears, or, where it only matches by its letters in order (unless `letters` is false), its best span. Empty when a
+ * term doesn't match.
+ */
+export function ranges(text: string, query: string, letters = true): { at: number; end: number }[] {
+  const lower = text.toLowerCase();
+  const found: { at: number; end: number }[] = [];
+  for (const { term, exact } of terms(query)) {
+    const haystack = exact ? text : lower;
+    let at = haystack.indexOf(term);
+    if (at < 0) {
+      const hit = letters ? matchTerm(haystack, term) : undefined;
+      if (hit === undefined) return [];
+      found.push({ at: hit.at, end: hit.end });
+      continue;
+    }
+    for (; at >= 0; at = haystack.indexOf(term, at + term.length))
+      found.push({ at, end: at + term.length - 1 });
+  }
+  // Overlapping terms ("ab" and "b") join into one.
+  const merged: { at: number; end: number }[] = [];
+  for (const range of found.toSorted((x, y) => x.at - y.at)) {
+    const last = merged.at(-1);
+    if (last !== undefined && range.at <= last.end + 1) last.end = Math.max(last.end, range.end);
+    else merged.push({ ...range });
+  }
+  return merged;
+}
+
 /** About `width` characters of `text` around a match, on one line, with … where it was cut. */
 export function snippet(text: string, at: number, end: number, width = 80): string {
   const flat = text.replace(/\s+/g, " ");

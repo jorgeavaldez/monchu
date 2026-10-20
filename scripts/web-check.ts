@@ -1358,6 +1358,20 @@ async function journeys(
       await capture("search", home, origin);
       await browser("press", "Enter");
       await browser("wait", ".stamp.found");
+      // What it matched is highlighted: brighter in the message it went to, and wherever else the feed shows it.
+      const marked = (name: string) =>
+        `[...(CSS.highlights.get(${JSON.stringify(name)}) ?? [])].map((range) => range.toString()).join(",")`;
+      check(
+        (await page(marked("search-current"))) === "needle" &&
+          text(await page(marked("search")))
+            .split(",")
+            .every((word) => word === "needle"),
+        `search highlighted ${String(await page(marked("search-current")))}`,
+      );
+      await capture("search-found", home, origin);
+      await page(`document.querySelector("textarea").blur()`);
+      await browser("press", "Escape");
+      check((await page(marked("search"))) === "", "Esc on the page left the search highlighted");
       await browser("fill", "textarea", "/palette");
       await browser("press", "Enter");
       await browser("wait", ".pick [role=option]");
@@ -1367,7 +1381,7 @@ async function journeys(
       check((await page(expand)) === "true", "the palette's expand all didn't run");
       await browser("click", "[aria-label='expand all']");
       check((await page(expand)) === "false", "expand all didn't switch back");
-      return "argument offered, search jumped to the message, palette expanded every card";
+      return "argument offered, search jumped to the message and highlighted its match, palette expanded every card";
     },
   );
 

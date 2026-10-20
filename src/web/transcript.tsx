@@ -19,6 +19,7 @@ import {
 import { addressable, clock, sentAt, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
+import { ranges } from "./fuzzy.ts";
 import { Markdown } from "./markdown.tsx";
 import type { InboxItem } from "../api/client.ts";
 import { Briefer } from "./inbox.tsx";
@@ -479,8 +480,93 @@ function inFeed(shown: Filter, item: InboxItem | undefined): boolean {
   );
 }
 
-/** A message a search picked: the shown transcript scrolls to it and marks it. A new object each time, so the same one twice jumps twice. */
-export const jumpTo = signal<{ code: string } | undefined>(undefined);
+/**
+ * A message a search picked: the shown transcript scrolls to it and marks it, and what the search typed in it. A new
+ * object each time, so the same one twice jumps twice.
+ */
+export const jumpTo = signal<{ code: string; query?: string } | undefined>(undefined);
+
+/** The text under `nodes`, and a way back from a place in it to a DOM position. */
+function domText(nodes: readonly Node[]): { text: string; at(index: number): [Text, number] } {
+  const texts: Text[] = [];
+  const starts: number[] = [];
+  let text = "";
+  for (const node of nodes) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let each: Node | null = walker.currentNode; each !== null; each = walker.nextNode()) {
+      const node = each;
+      if (!(node instanceof globalThis.Text)) continue;
+      starts.push(text.length);
+      texts.push(node);
+      text += node.data;
+    }
+  }
+  return {
+    text,
+    at(index) {
+      let low = 0;
+      let high = starts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if ((starts[middle] ?? 0) <= index) low = middle;
+        else high = middle - 1;
+      }
+      const node = texts[low];
+      if (node === undefined) throw new Error("no text");
+      return [node, index - (starts[low] ?? 0)];
+    },
+  };
+}
+
+/** Each of `found` in `nodes`' text as a DOM range. */
+function domRanges(nodes: readonly Node[], found: (text: string) => { at: number; end: number }[]) {
+  const text = domText(nodes);
+  return found(text.text).map(({ at, end }) => {
+    const range = new Range();
+    range.setStart(...text.at(at));
+    range.setEnd(...text.at(end + 1));
+    return range;
+  });
+}
+
+/**
+ * Show what a search matched, as vim's hlsearch does: the query's words wherever the feed shows them, and its match in
+ * the message it went to brighter. Highlights paint over the text without changing it, so nothing re-renders; they
+ * stay until the next search or Esc. A browser without the highlight API shows the message's mark alone.
+ */
+function markSearch(feed: HTMLElement, stamp: HTMLElement | null, query: string | undefined): void {
+  if (typeof Highlight === "undefined" || !("highlights" in CSS)) return;
+  CSS.highlights.delete("search");
+  CSS.highlights.delete("search-current");
+  if (stamp === null || query === undefined || query.trim() === "") return;
+  // Each term as typed, everywhere it shows; its letters in order only where the message it went to has them.
+  const words = query.split(/\s+/).filter(Boolean);
+  CSS.highlights.set(
+    "search",
+    new Highlight(
+      ...domRanges([feed], (text) => words.flatMap((word) => ranges(text, word, false))),
+    ),
+  );
+  // The message's own nodes: the feed's children after the last one with another message's stamp, up to its own.
+  let last: Node | null = stamp;
+  while (last !== null && last.parentNode !== feed) last = last.parentNode;
+  const nodes: Node[] = [];
+  for (let node = last; node !== null; node = node.previousSibling) {
+    if (node !== last && node instanceof Element && node.querySelector(".stamp") !== null) break;
+    nodes.unshift(node);
+  }
+  CSS.highlights.set(
+    "search-current",
+    new Highlight(...domRanges(nodes, (text) => ranges(text, query))),
+  );
+}
+
+/** Clear a search's highlights, as vim's `:noh` does. */
+function clearSearchMarks(): void {
+  if (typeof Highlight === "undefined" || !("highlights" in CSS)) return;
+  CSS.highlights.delete("search");
+  CSS.highlights.delete("search-current");
+}
 
 /** One message as search sees it: its short id, who wrote it, when, and its text with a lowercase copy. */
 export type FeedRow = { code: string; who: string; at: number; text: string; lower: string };
@@ -713,6 +799,14 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
       if (scroller === mine) scroller = undefined;
     };
   }, []);
+  useEffect(() => {
+    // Esc that nothing else took (a menu, the prompt) clears the search's highlights.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) clearSearchMarks();
+    };
+    addEventListener("keydown", escape);
+    return () => removeEventListener("keydown", escape);
+  }, []);
   useEffect(
     () =>
       jumpTo.subscribe((wanted) => {
@@ -720,6 +814,7 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
         jumpTo.value = undefined;
         jump(wanted.code);
         const target = document.getElementById(`m-${wanted.code}`);
+        if (main.current !== null) markSearch(main.current, target, wanted.query);
         target?.classList.add("found");
         setTimeout(() => target?.classList.remove("found"), 2000);
       }),

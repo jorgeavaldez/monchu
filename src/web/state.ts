@@ -30,7 +30,7 @@ import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
 import { age, contextUsage, lastActive, presentation, type QueuedItem } from "../ui/state.ts";
 import { clearPending, openPicker } from "./attachments.tsx";
-import type { MenuItem, Tone } from "./menu.tsx";
+import type { Marks, MenuItem, Tone } from "./menu.tsx";
 
 /** A line under the transcript; one with a `root` shows only while that root is shown. */
 export type Notice = {
@@ -57,6 +57,8 @@ export type Choice = {
   alternate?: string;
   /** The rows a filter shows, in place of the menu's own matching: search ranks its own. */
   rows?: (query: string) => MenuItem[];
+  /** How its rows mark what the filter matched, where it isn't each word's first place: search marks its own. */
+  marks?: Marks;
   /** What an empty list says. */
   empty?: string;
   /** A style for the list: `search` gives the label the row and the detail a column after it. */
@@ -500,7 +502,9 @@ export function pick(
   options: Choice["options"],
   alternate?: string,
   query?: string,
-  more: Pick<Choice, "rows" | "empty" | "class" | "requested"> & { signal?: AbortSignal } = {},
+  more: Pick<Choice, "rows" | "marks" | "empty" | "class" | "requested"> & {
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ id: string; alternate: boolean } | undefined> {
   // What the core asks during a login is never replaced by something the person opens; their own pick gives way.
   if (
