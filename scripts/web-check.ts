@@ -2006,6 +2006,18 @@ async function journeys(
         `!!document.querySelector(".login a") && !!document.querySelector("form.ask input")`,
       );
       await capture("mcp-login", home, origin);
+      // The core's paste box holds the editor's place: a question the person opens (renaming a root) gives way to it.
+      await browser("click", "button.roots");
+      await browser("wait", ".rootsPanel");
+      await browser("click", `.rootsPanel button[aria-label^="rename"]`);
+      check(
+        text(await page(`document.querySelector("form.ask label").textContent`)).startsWith(
+          "Or paste",
+        ),
+        "renaming a root replaced the sign-in's paste box",
+      );
+      await browser("click", "button.roots");
+      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
       // Signing in in a new tab, as a phone does: the redirect lands on this server's own callback page, which hands
       // it to the waiting tab. The sign-in reloads the core's facets, so the next journey's dropped connection resumes
       // its login across a reload.
@@ -2029,7 +2041,7 @@ async function journeys(
       );
       const notices = text(await page(`document.querySelector(".transcript").textContent`));
       check(/mcp · .*check/.test(notices), `no sign-in notice: ${notices.slice(-200)}`);
-      return "the bar and the paste box showed together; signing in on another tab closed both";
+      return "the bar and the paste box showed together, a rename gave way to them; signing in on another tab closed both";
     },
   );
 

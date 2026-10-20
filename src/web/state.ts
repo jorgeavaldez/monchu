@@ -94,8 +94,10 @@ export const page = {
   commandLine: signal<{ draft: string; fromPrompt: boolean } | undefined>(undefined),
   /** The prompt drafts set aside on this device, oldest first, from every client. */
   promptDrafts: signal<readonly Draft[]>([]),
-  choice: signal<Choice | undefined>(undefined),
-  ask: signal<Ask | undefined>(undefined),
+  /** What stands in for the editor: one pick or one typed answer at a time, never both. */
+  standing: signal<{ kind: "pick"; pick: Choice } | { kind: "ask"; ask: Ask } | undefined>(
+    undefined,
+  ),
   /** What a login shows while it waits: its message, a link to open, a code to read. */
   loginStatus: signal<{ message: string; url?: string; code?: string } | undefined>(undefined),
   /** The newest job event this page heard, so the jobs panel lists them afresh. */
@@ -126,8 +128,6 @@ export const {
   menuOpen,
   pageHint,
   promptDrafts,
-  choice,
-  ask,
   loginStatus,
   jobEvent,
   following,
@@ -138,6 +138,28 @@ export const {
 // What a reload of the tab brings back: the draft, or the one set aside while a queued message is open; that one stays
 // queued.
 effect(() => sessionStorage.setItem("draft", editing.value?.draft ?? draft.value));
+
+/** The pick standing in for the editor, if that's what does. */
+export const choice = computed(() =>
+  page.standing.value?.kind === "pick" ? page.standing.value.pick : undefined,
+);
+/** The typed answer standing in for the editor, if that's what does. */
+export const ask = computed(() =>
+  page.standing.value?.kind === "ask" ? page.standing.value.ask : undefined,
+);
+
+/**
+ * Take the editor's place for a pick or a question. What stands there now settles first, cancelled, so every one
+ * opened resolves exactly once; but what the core asks during a login (`requested`) never gives way to the person's
+ * own, which is refused instead (false).
+ */
+function claim(requested: boolean): boolean {
+  const now = page.standing.value;
+  const held = now?.kind === "pick" ? now.pick : now?.ask;
+  if (held?.requested === true && !requested) return false;
+  held?.cancel();
+  return true;
+}
 
 /** The root on screen. */
 const here = signal<Showing | undefined>(undefined);
@@ -444,18 +466,11 @@ export function pick(
     signal?: AbortSignal;
   } = {},
 ): Promise<{ id: string; alternate: boolean } | undefined> {
-  // What the core asks during a login is never replaced by something the person opens; their own pick gives way.
-  if (
-    more.requested !== true &&
-    (choice.value?.requested === true || ask.value?.requested === true)
-  ) {
+  if (!claim(more.requested === true)) {
     notice("finish the sign-in first", "warning");
     return Promise.resolve(undefined);
   }
   const { signal: ends, ...looks } = more;
-  choice.value?.cancel();
-  // The core's prompt goes in front of the person's own question, which would otherwise hide it.
-  if (more.requested === true && ask.value?.requested !== true) ask.value?.cancel();
   const back = focusReturn();
   return new Promise((resolve) => {
     // Settles once; a late call from a pick already replaced never touches the one shown now.
@@ -464,7 +479,7 @@ export function pick(
       if (settled) return;
       settled = true;
       if (choice.value === mine) {
-        page.choice.value = undefined;
+        page.standing.value = undefined;
         back();
       }
       resolve(value);
@@ -480,7 +495,7 @@ export function pick(
     };
     // A login that ends takes its choice with it.
     ends?.addEventListener("abort", () => settle(undefined), { once: true });
-    page.choice.value = mine;
+    page.standing.value = { kind: "pick", pick: mine };
   });
 }
 
@@ -492,15 +507,14 @@ export function prompted(
   placeholder?: string,
   requested = true,
 ): Promise<string> {
-  if (!requested && (choice.value?.requested === true || ask.value?.requested === true))
-    return Promise.reject(new Error("finish the sign-in first"));
+  if (!claim(requested)) return Promise.reject(new Error("finish the sign-in first"));
+  const back = focusReturn();
   return new Promise((resolve, reject) => {
     let mine: Ask | undefined;
-    let back = () => {};
     const close = () => {
       signal.removeEventListener("abort", cancel);
       if (ask.value !== mine) return;
-      page.ask.value = undefined;
+      page.standing.value = undefined;
       back();
     };
     const cancel = () => {
@@ -519,10 +533,6 @@ export function prompted(
       },
       cancel,
     };
-    ask.value?.cancel();
-    // The core's question goes in front of a pick the person opened, which would otherwise hide it.
-    if (requested && choice.value?.requested !== true) choice.value?.cancel();
-    back = focusReturn();
-    page.ask.value = mine;
+    page.standing.value = { kind: "ask", ask: mine };
   });
 }
