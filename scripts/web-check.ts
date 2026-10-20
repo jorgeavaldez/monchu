@@ -2062,10 +2062,11 @@ async function journeys(
         "--fn",
         `!document.querySelector("form.ask") && !document.querySelector(".login")`,
       );
-      const notices = text(await page(`document.querySelector(".transcript").textContent`));
-      check(
-        notices.includes("logged in · opencode-go"),
-        `no sign-in notice: ${notices.slice(-200)}`,
+      // The notice follows the login's end over the socket, a moment after the prompt closes.
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript").textContent.includes("logged in · opencode-go")`,
       );
       const saved: unknown = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
       const entry = isData(saved) ? saved["opencode-go"] : undefined;
