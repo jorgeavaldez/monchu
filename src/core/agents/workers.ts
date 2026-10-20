@@ -451,11 +451,14 @@ const Delivery = defineTask<
             (item) => item.conversationId === runtime.conversationId,
           );
           if (record === undefined) throw new Error("Worker record is missing");
+          // Inputs that joined one run share its answer, so the first delivery that reports it claims it. A quiet one that
+          // stays quiet claims nothing: an ask answered in the same run still reports it.
           if (!record.reported.includes(settled.answer)) {
             if (entry === undefined) throw new Error("Worker answer is missing");
-            record.reported.push(settled.answer);
-            if (task.input.quiet !== true || needsUser(text))
+            if (task.input.quiet !== true || needsUser(text)) {
+              record.reported.push(settled.answer);
               result = { ...base, status: "completed", answerId: settled.answer, text };
+            }
           }
         }
         return { status: "running", checkpoint: { phase: "report", result } };

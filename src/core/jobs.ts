@@ -279,8 +279,12 @@ function served(state: Readonly<JobsState>, name: string, taskId: TaskId): Job |
   return job?.status === "active" && job.taskId === taskId ? job : undefined;
 }
 
-/** What wakes someone: why (`slot …`, `change`, an exit) and what to tell them after the job's prompt. */
-type Wake = { header: string; body: string };
+/**
+ * What wakes someone: why (`slot …`, `change`, an exit) and what to tell them after the job's prompt. A result (`steer`)
+ * joins a busy worker's run after its current tool round, since the work in flight may depend on it; a scheduled ask
+ * waits for the run to answer.
+ */
+type Wake = { header: string; body: string; steer: boolean };
 
 function message(job: Job, why: Wake, front: boolean): string {
   return jobNoticeText(
@@ -519,7 +523,7 @@ export function createJobs(
         );
       else {
         if (worker.closed) await reopenWorker(tx, parentId, name);
-        await messageWorker(tx, parentId, name, text, id, "followUp", true);
+        await messageWorker(tx, parentId, name, text, id, why.steer ? "steer" : "followUp", true);
       }
       heard.push(label);
     }
@@ -651,6 +655,7 @@ export function createJobs(
             await event("fired", manual ? "ran now" : `slot ${key}`, {
               header: manual ? "run now" : `slot ${key}`,
               body: "",
+              steer: false,
             });
           else if (outcome !== null && !outcome.ok) {
             const failure = hash(outcome.error);
@@ -659,6 +664,7 @@ export function createJobs(
               job.failure = failure;
               await event("failed", `command failed: ${outcome.error.split("\n", 1)[0] ?? ""}`, {
                 header: "command failed",
+                steer: true,
                 body: `The job's command \`${job.command ?? ""}\` failed:\n${outcome.error}`,
               });
             }
@@ -673,6 +679,7 @@ export function createJobs(
             if (changed)
               await event("changed", "output changed", {
                 header: "change",
+                steer: true,
                 body: `Command output now:\n${output}`,
               });
             else if (first) await event("fired", "baseline taken");
@@ -805,6 +812,7 @@ export function createJobs(
           const summary = endText(current, end);
           const why = {
             header: `bg ${summary}`,
+            steer: true,
             body: [
               `Command: ${current.command ?? ""}`,
               output ? `Output tail:\n${output.trimEnd()}` : "No output.",

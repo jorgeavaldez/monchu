@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   configure,
   UserEntry,
@@ -514,6 +514,81 @@ describe("process jobs", () => {
     const job = (await harness.snapshot(JobsDoc, context))?.jobs[0];
     expect(job).toMatchObject({ status: "done", ended: { reason: "exited", code: 3 } });
     expect(await readFile(job?.log ?? "", "utf8")).toBe("compiling\nbuilt\n");
+    await harness.close(context);
+  });
+
+  it("steers a result into its busy worker's run, and the ask that run answers still reaches the front", async () => {
+    const value = await withJobs();
+    const front = callTools({
+      "start builder": { tool: "start_worker", args: { name: "builder", task: "build and wait" } },
+    });
+    const call = (tool: string, args: JsonObject) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "build and wait")
+        return call("job", { action: "create", name: "ci", type: "bg", command: "echo green" });
+      // The job ends while this tool round still runs.
+      if (last?.role === "toolResult" && last.toolName === "job")
+        return call("bash", { command: "sleep 2" });
+      if (last?.role === "toolResult" && last.toolName === "bash")
+        return fauxAssistantMessage("built, CI not seen");
+      if (last?.role === "user" && text.startsWith("[Job "))
+        return fauxAssistantMessage("built, CI green");
+      return front(request);
+    });
+    const { harness, root } = await open(value);
+    await send(root, "start builder");
+    // Placed after the tool round, the result is answered in the same run as the ask.
+    await waitFor(async () => (await reports(root)).length === 1);
+    expect((await reports(root))[0]).toMatchObject({
+      name: "builder",
+      status: "completed",
+      text: "built, CI green",
+    });
+    const worker = await conversationOf(
+      harness,
+      (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.conversationId ?? root.id,
+    );
+    await worker.waitForIdle(context);
+    const answers = (await allEntries(worker)).flatMap((entry) => {
+      const message = entry.model?.[0];
+      return message?.role === "assistant" ? [textOf(message)].filter(Boolean) : [];
+    });
+    expect(answers).toEqual(["built, CI green"]);
+    await root.waitForIdle(context);
+    await harness.close(context);
+  });
+
+  it("reports the front's ask that joined a job-woken run, though the job's own delivery stays quiet", async () => {
+    const value = await withJobs();
+    const front = callTools({
+      go: { tool: "job", args: { action: "create", name: "go", type: "bg", command: "true" } },
+      "ask go": { tool: "message_worker", args: { name: "job-go", message: "status?" } },
+    });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text.startsWith("[Job ")) {
+        value.jobMessages.push(text);
+        return fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 3" })], {
+          stopReason: "toolUse",
+        });
+      }
+      if (last?.role === "user" && text === "status?") return fauxAssistantMessage("all fine");
+      if (last?.role === "toolResult" && last.toolName === "bash")
+        return fauxAssistantMessage("quietly done");
+      return front(request);
+    });
+    const { harness, root } = await open(value);
+    await send(root, "go");
+    // The job starts its worker; while that run sleeps, the front's message steers into it.
+    await waitFor(() => value.jobMessages.length === 1);
+    await send(root, "ask go");
+    await waitFor(async () => (await reports(root)).length === 1);
+    expect((await reports(root))[0]).toMatchObject({ name: "job-go", text: "all fine" });
+    await root.waitForIdle(context);
     await harness.close(context);
   });
 
