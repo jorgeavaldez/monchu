@@ -376,7 +376,7 @@ describe("background workers", () => {
     await harness.close(context);
   });
 
-  it("reports what an idle worker answers when its sub-worker's update or report wakes it", async () => {
+  it("lets an idle worker explicitly relay results when its helper wakes it", async () => {
     const value = await setup();
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -396,14 +396,21 @@ describe("background workers", () => {
         return call("post_update", { text: "halfway" });
       }
       if (last?.role === "toolResult" && last.toolName === "post_update") {
-        // The child finishes only once its parent has answered the update on its own.
-        await waitFor(async () => (await reports(root)).length === 2);
-        return fauxAssistantMessage([fauxText("child done")]);
+        // The child finishes once the parent chooses to relay its update.
+        if (request.messages.some((message) => textOf(message) === "slow child")) {
+          await waitFor(async () =>
+            (await allEntries(root)).some(
+              (entry) => workerNotice(entry)?.text === "child is halfway",
+            ),
+          );
+          return fauxAssistantMessage([fauxText("child done")]);
+        }
+        return fauxAssistantMessage([fauxText("local acknowledgement")]);
       }
       if (last?.role === "user" && text.startsWith("[Worker child update"))
-        return fauxAssistantMessage([fauxText("child is halfway")]);
+        return call("post_update", { text: "child is halfway" });
       if (last?.role === "user" && text.startsWith("[Background worker child"))
-        return fauxAssistantMessage([fauxText("child finished, all done")]);
+        return call("post_update", { text: "child finished, all done" });
       return fauxAssistantMessage([fauxText("ok")]);
     });
     const { harness, root } = await open(value);
@@ -412,36 +419,38 @@ describe("background workers", () => {
       context,
     );
     await waitFor(async () => (await reports(root)).length === 1);
-    // The worker answered its brief and sits idle; its sub-worker's notices wake it, and each answer goes up.
+    // The worker chooses what to relay; its local acknowledgements never follow the updates to the front.
     release();
-    await waitFor(async () => (await reports(root)).length === 3);
-    expect((await reports(root)).map((entry) => workerNotice(entry)?.text)).toEqual([
-      "child started",
-      "child is halfway",
-      "child finished, all done",
+    await waitFor(async () =>
+      (await allEntries(root)).some(
+        (entry) => workerNotice(entry)?.text === "child finished, all done",
+      ),
+    );
+    const state = await harness.snapshot(WorkersDoc, root.id, context);
+    const record = state?.workers[0];
+    assert(record !== undefined);
+    const worker = await conversationOf(harness, record.conversationId);
+    await settle(harness, worker);
+    expect((await allEntries(root)).flatMap((entry) => workerNotice(entry) ?? [])).toEqual([
+      { name: "w", status: "completed", text: "child started" },
+      { name: "w", status: "update", text: "child is halfway" },
+      { name: "w", status: "update", text: "child finished, all done" },
     ]);
     await settle(harness, root);
     expect(value.reports).toEqual([]);
     await harness.close(context);
   });
 
-  it("does not deliver empty or explicitly no-news answers, then reports real results once after restart", async () => {
+  it("does not deliver empty answers, then reports direct ask results once after restart", async () => {
     const value = await setup();
     route(value.faux, (request) => {
       const text = textOf(lastMessage(request.messages));
       if (text === "empty") return fauxAssistantMessage([fauxText(" \n ")]);
-      if (text === "no news") return fauxAssistantMessage([fauxText(" NO_UPDATE\n")]);
-      return fauxAssistantMessage([fauxText("NO_UPDATE is available; the build failed")]);
+      return fauxAssistantMessage([fauxText("the build failed")]);
     });
     let { harness, root } = await open(value);
     await root.commit(
       (tx) => startWorker(tx, root.id, "w", "empty", value.directory, "empty:0", fauxRole),
-      context,
-    );
-    await settle(harness, root);
-    expect(await reports(root)).toHaveLength(0);
-    await root.commit(
-      (tx) => messageWorker(tx, root.id, "w", "no news", "quiet:0", "steer"),
       context,
     );
     await settle(harness, root);
@@ -454,7 +463,7 @@ describe("background workers", () => {
     );
     await settle(harness, root);
     expect((await reports(root)).map((entry) => workerNotice(entry)?.text)).toEqual([
-      "NO_UPDATE is available; the build failed",
+      "the build failed",
     ]);
     await harness.close(context);
     ({ harness, root } = await open(value));
@@ -481,18 +490,22 @@ describe("background workers", () => {
         return call("post_update", { text: "nothing changed" });
       }
       if (last?.role === "toolResult" && last.toolName === "post_update") {
+        if (!request.messages.some((message) => textOf(message) === "helper"))
+          return fauxAssistantMessage([fauxText("local acknowledgement")]);
         await waitFor(async () =>
-          (await allEntries(worker)).some((entry) => textOf(entry.model?.[0]) === "NO_UPDATE"),
+          (await allEntries(worker)).some(
+            (entry) => textOf(entry.model?.[0]) === "nothing new; still running",
+          ),
         );
         await worker.waitForIdle(context);
         return fauxAssistantMessage([fauxText("proof passed")]);
       }
       if (last?.role === "user" && text.startsWith("[Worker child update")) {
-        expect(text).toContain("NO_UPDATE");
-        return fauxAssistantMessage([fauxText("NO_UPDATE")]);
+        expect(text).toContain("stays local by default");
+        return fauxAssistantMessage([fauxText("nothing new; still running")]);
       }
       if (last?.role === "user" && text.startsWith("[Background worker child"))
-        return fauxAssistantMessage([fauxText("verified: proof passed")]);
+        return call("post_update", { text: "verified: proof passed" });
       return fauxAssistantMessage([fauxText("ok")]);
     });
     const { harness, root } = await open(value);
@@ -501,25 +514,74 @@ describe("background workers", () => {
       context,
     );
     worker = await conversationOf(harness, workerId);
-    await waitFor(async () => (await reports(root)).length === 2);
+    await waitFor(async () =>
+      (await allEntries(root)).some(
+        (entry) => workerNotice(entry)?.text === "verified: proof passed",
+      ),
+    );
     await settle(harness, worker);
     await settle(harness, root);
-    expect((await reports(root)).map((entry) => workerNotice(entry)?.text)).toEqual([
-      "started",
-      "verified: proof passed",
+    expect((await allEntries(root)).flatMap((entry) => workerNotice(entry) ?? [])).toEqual([
+      { name: "w", status: "completed", text: "started" },
+      { name: "w", status: "update", text: "verified: proof passed" },
     ]);
     expect(value.reports).toEqual([]);
     await harness.close(context);
   });
 
+  it.each(["failure", "decision"])(
+    "reports an idle worker's %s after a helper-only wake",
+    async (kind) => {
+      const value = await setup();
+      const call = (tool: string, args: Record<string, string>) =>
+        fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+      route(value.faux, async (request) => {
+        const last = lastMessage(request.messages);
+        const text = textOf(last);
+        if (text === "spawn") return call("start_worker", { name: "child", task: "helper" });
+        if (last?.role === "toolResult" && last.toolName === "start_worker")
+          return fauxAssistantMessage([fauxText("started")]);
+        if (text === "helper") {
+          await waitFor(async () => (await reports(root)).length === 1);
+          return fauxAssistantMessage([fauxText("helper finished")]);
+        }
+        if (last?.role === "user" && text.startsWith("[Background worker child"))
+          return kind === "failure"
+            ? fauxAssistantMessage([], {
+                stopReason: "error",
+                errorMessage: "worker failed after wake",
+              })
+            : fauxAssistantMessage([fauxText("NEEDS USER choose the next step")]);
+        return fauxAssistantMessage([fauxText("ok")]);
+      });
+      const { harness, root } = await open(value);
+      const id = await root.commit(
+        (tx) => startWorker(tx, root.id, "w", "spawn", value.directory, "start:0", fauxRole),
+        context,
+      );
+      await waitFor(async () => (await reports(root)).length === 2);
+      await settle(harness, await conversationOf(harness, id));
+      await settle(harness, root);
+      const entry = (await reports(root)).at(-1);
+      assert(entry !== undefined);
+      const notice = workerNotice(entry);
+      expect(notice?.status).toBe(kind === "failure" ? "failed" : "completed");
+      expect(notice?.text).toContain(
+        kind === "failure" ? "worker failed after wake" : "NEEDS USER",
+      );
+      expect(value.reports).toEqual([]);
+      await harness.close(context);
+    },
+  );
+
   it("keeps worker notice bodies readable for both audiences", () => {
     const notice = { name: "helper", status: "completed", text: "result" } as const;
     expect(parseWorkerNotice(noticeText(notice))).toEqual(notice);
     expect(parseWorkerNotice(noticeText(notice, true))).toEqual(notice);
-    expect(noticeText(notice, true)).toContain("NO_UPDATE");
+    expect(noticeText(notice, true)).toContain("stays local by default");
   });
 
-  it("keeps a sub-worker's wake quiet only for a worker that jobs alone ever asked", async () => {
+  it("keeps helper-woken answers local for both asked and job-only workers", async () => {
     const value = await setup();
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -577,14 +639,12 @@ describe("background workers", () => {
     );
     await asked.waitForIdle(context);
     release();
-    await waitFor(async () => (await reports(root)).length === 2);
     for (const worker of (await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? [])
       await settle(harness, await conversationOf(harness, worker.conversationId));
     await settle(harness, root);
-    // The asked worker's result still reports after the quiet job wake; the job-only worker's stays quiet.
+    // Ordinary helper-woken replies stay local regardless of who originally started the worker.
     expect((await reports(root)).map((entry) => workerNotice(entry))).toEqual([
       { name: "asked", status: "completed", text: "child started" },
-      { name: "asked", status: "completed", text: "finished: slow a done" },
     ]);
     expect(value.reports).toEqual([]);
     await harness.close(context);
@@ -617,13 +677,12 @@ describe("background workers", () => {
       context,
     );
     const worker = await conversationOf(harness, workerId);
-    await waitFor(async () => (await reports(root)).length === 2);
+    await waitFor(async () => (await reports(root)).length === 1);
     await settle(harness, worker);
     await settle(harness, root);
-    // "two" replaced the queued "one" before the busy run read it, so "one" brings no report and no failure.
+    // "two" replaced unread "one"; the direct ask reports once, and the later helper-only wake stays local.
     expect((await reports(root)).map((entry) => workerNotice(entry))).toEqual([
       { name: "w", status: "completed", text: "saw two" },
-      { name: "w", status: "completed", text: "saw child done" },
     ]);
     expect(value.reports).toEqual([]);
     await harness.close(context);

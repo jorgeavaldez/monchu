@@ -40,8 +40,6 @@ type WorkerRecords = {
     brief?: string;
     /** Retired from the active roster; the conversation stays and `reopenWorker` resumes it. Absent means open. */
     closed?: true;
-    /** Only jobs ever started or messaged it, so what its sub-workers wake it for reports quietly too (`relayAnswer`). */
-    quiet?: true;
   }[];
   deliveries: {
     requestId: string;
@@ -484,11 +482,7 @@ const Delivery = defineTask<
           // stays quiet claims nothing: an ask answered in the same run still reports it.
           if (!record.reported.includes(settled.answer)) {
             if (entry === undefined) throw new Error("Worker answer is missing");
-            if (
-              text.trim() !== "" &&
-              text.trim() !== "NO_UPDATE" &&
-              (task.input.quiet !== true || needsUser(text))
-            ) {
+            if (text.trim() !== "" && (task.input.quiet !== true || needsUser(text))) {
               record.reported.push(settled.answer);
               result = { ...base, status: "completed", answerId: settled.answer, text };
             }
@@ -569,9 +563,9 @@ const Delivery = defineTask<
 });
 
 /**
- * Report what a worker answers to the notice its sub-worker just sent it (`requestId`), as it reports any answer: a
- * sub-worker's update or report wakes an idle worker, and no delivery from its parent waits on that run. A worker only
- * jobs ever asked reports it quietly, as it does their wakes. A front has no parent to tell.
+ * Watch the worker's answer to its helper's notice (`requestId`) for failures or explicit escalation. The notice wakes
+ * the worker, not its parent: ordinary answers stay local. The worker chooses to relay results with `post_update`.
+ * A direct ask answered in the same run still reports normally. A front has no parent to tell.
  */
 async function relayAnswer(
   tx: Tx,
@@ -593,7 +587,7 @@ async function relayAnswer(
     requestId: relayId,
     whenBusy: "steer",
     awaits: requestId,
-    ...(worker.quiet ? { quiet: true } : {}),
+    quiet: true,
   };
   const taskId = await tx.createTask(Delivery, input, {
     conversationId: workerId,
@@ -635,7 +629,7 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. If you have no new result, meaningful progress, failure or blocker to report, answer exactly NO_UPDATE to stay quiet. Use post_update for progress worth hearing before you finish, never for no-news status. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
+    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. On a helper-only wake your final answer stays local: choose post_update to relay a result, meaningful progress or a blocker to your parent. Use post_update for progress worth hearing before you finish, never for no-news status. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
   await preloadGroups(tx, worker.id, preload);
   state.workers.push({
@@ -643,7 +637,6 @@ export async function startWorker(
     conversationId: worker.id,
     reported: [],
     brief: message.slice(0, 300),
-    ...(quiet ? { quiet: true } : {}),
   });
   const input: DeliveryInput = {
     parentId,
@@ -677,7 +670,6 @@ export async function messageWorker(
   const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
     if (worker.closed) throw new Error(`${name} is closed; reopen it with reopen_worker first`);
-    if (!quiet) delete worker.quiet;
     await pruneRecords(tx, parentId);
     const input: DeliveryInput = {
       parentId,

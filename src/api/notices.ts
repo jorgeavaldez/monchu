@@ -17,7 +17,7 @@ const NOTICE_GUIDANCE =
   "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs. If the worker is blocked or needs something (an answer, access, another worker's help), unblock it now: answer it, relay to the worker that can help, or ask the user; then tell the worker how it gets unblocked.";
 
 const WORKER_NOTICE_GUIDANCE =
-  "Continue the work within the user's authorization. Your final answer goes to your parent automatically: report new results, meaningful progress, failures or blockers. If this notice adds nothing worth reporting and you have no other result to deliver, answer exactly NO_UPDATE. Do not send no-news post_update calls. Unblock your helper when you can; ask your parent for help when needed.";
+  "This helper notice wakes only you. Continue the work within the user's authorization and unblock your helper when you can. Your final answer to this notice stays local by default. When your parent needs a result, meaningful progress or a blocker, choose to relay it with post_update; it reaches your parent directly, without another turn to request it. A final answer starting with NEEDS USER also escalates a decision or action. Do not relay no-news status. An outstanding direct ask still gets its automatic final report.";
 
 export function noticeText(notice: WorkerNotice, worker = false): string {
   const label =
