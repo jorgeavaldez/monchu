@@ -296,11 +296,13 @@ export class Vault {
     return this.serial(async () => {
       const index = await this.loadIndex();
       const entry = index.secrets[name];
-      if (entry === undefined) throw new Error(`No secret named ${name}`);
+      if (entry === undefined) return;
       this.cached = undefined;
       for (const key of secretKeys({ name, kind: entry.kind })) await this.store.remove(key);
-      delete index.secrets[name];
-      await this.saveIndex(index);
+      const next = { secrets: { ...index.secrets } };
+      delete next.secrets[name];
+      await this.saveIndex(next);
+      this.index = next;
       this.audit("secret deleted", { name });
       await this.changed();
     });
@@ -320,12 +322,14 @@ export class Vault {
   }
 
   /** Stored values to redact, longest first; empty when there are none, without reading the store. */
-  async known(): Promise<Known> {
-    const values = await this.values();
-    return Object.entries(values)
-      .filter(([, value]) => value.length >= REDACT_MIN_LENGTH)
-      .map(([key, value]) => ({ key, value }))
-      .toSorted((a, b) => b.value.length - a.value.length);
+  known(): Promise<Known> {
+    return this.serial(async () => {
+      const values = await this.values();
+      return Object.entries(values)
+        .filter(([, value]) => value.length >= REDACT_MIN_LENGTH)
+        .map(([key, value]) => ({ key, value }))
+        .toSorted((a, b) => b.value.length - a.value.length);
+    });
   }
 
   /** The secret a key belongs to: its name, or a login's `_USERNAME`/`_PASSWORD`. */
@@ -338,28 +342,29 @@ export class Vault {
    * The values of the given keys that are stored, for one use: audited by secret name, and its last use recorded.
    * Unknown keys are left out.
    */
-  async resolve(keys: readonly string[], use: SecretUse): Promise<Record<string, string>> {
-    // Names come from the index first, so a command naming none (only `$HOME`, say) never reads the store.
-    const owners = new Map<string, string>();
-    for (const key of new Set(keys)) {
-      const owner = await this.owner(key);
-      if (owner !== undefined) owners.set(key, owner.name);
-    }
-    if (owners.size === 0) return {};
-    const values = await this.values();
-    const found: Record<string, string> = {};
-    const used = new Set<string>();
-    for (const [key, name] of owners) {
-      const value = values[key];
-      if (value === undefined)
-        throw new Error(
-          `${key} is listed but its value is missing from the store: ask the user to set ${name} again`,
-        );
-      found[key] = value;
-      used.add(name);
-    }
-    if (used.size > 0)
-      await this.serial(async () => {
+  resolve(keys: readonly string[], use: SecretUse): Promise<Record<string, string>> {
+    // A resolution finishes before the next mutation; no old read can refill the cache after a delete.
+    return this.serial(async () => {
+      // Names come from the index first, so a command naming none (only `$HOME`, say) never reads the store.
+      const owners = new Map<string, string>();
+      for (const key of new Set(keys)) {
+        const owner = await this.owner(key);
+        if (owner !== undefined) owners.set(key, owner.name);
+      }
+      if (owners.size === 0) return {};
+      const values = await this.values();
+      const found: Record<string, string> = {};
+      const used = new Set<string>();
+      for (const [key, name] of owners) {
+        const value = values[key];
+        if (value === undefined)
+          throw new Error(
+            `${key} is listed but its value is missing from the store: ask the user to set ${name} again`,
+          );
+        found[key] = value;
+        used.add(name);
+      }
+      if (used.size > 0) {
         const index = await this.loadIndex();
         const now = Date.now();
         for (const name of used) {
@@ -369,7 +374,8 @@ export class Vault {
         }
         await this.saveIndex(index);
         await this.changed();
-      });
-    return found;
+      }
+      return found;
+    });
   }
 }

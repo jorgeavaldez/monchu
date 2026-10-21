@@ -326,6 +326,13 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     const echoed = await ok("bash", { command: "echo $E2E_TOKEN" });
     expect(echoed).toContain("[secret E2E_TOKEN]");
     expect(JSON.stringify(monchu.messages())).not.toContain("e2e-secret-value-123");
+    expect(await ok("secret", { action: "delete", name: "E2E_TOKEN" })).toContain(
+      "Deleted E2E_TOKEN",
+    );
+    expect(await ok("secret", { action: "list" })).not.toContain("E2E_TOKEN");
+    expect(
+      await ok("bash", { command: 'test -z "$E2E_TOKEN" && echo deleted-values-absent' }),
+    ).toContain("deleted-values-absent");
   });
 
   it("keeps prompt drafts for every client: one saves, another restores it once", async () => {
@@ -575,6 +582,20 @@ describe.skipIf(!installed("fnox"))(
       await restart();
       expect(await ok("bash", { command: check })).toContain("matched");
       expect(await ok("secret", { action: "list" })).toContain("FNOX_E2E");
+      expect(await ok("secret", { action: "delete", name: "FNOX_E2E" })).toContain(
+        "Deleted FNOX_E2E",
+      );
+      expect(await readFile(join(monchu.home, "secrets", "fnox.toml"), "utf8")).not.toContain(
+        "FNOX_E2E",
+      );
+      expect(await readFile(join(monchu.home, "secrets", "index.json"), "utf8")).not.toContain(
+        "FNOX_E2E",
+      );
+      expect(
+        await ok("bash", { command: 'test -z "$FNOX_E2E" && echo deleted-values-absent' }),
+      ).toContain("deleted-values-absent");
+      await restart();
+      expect(await ok("secret", { action: "list" })).not.toContain("FNOX_E2E");
       expect(JSON.stringify(monchu.messages())).not.toContain(value);
     });
   },

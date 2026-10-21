@@ -1,5 +1,5 @@
 /**
- * Secrets as agents see them: names only. The `secret` tool asks the user for one and lists them; shells get the
+ * Secrets as agents see them: names only. The `secret` tool asks the user for one, imports, lists and deletes them; shells get the
  * secrets a command names as environment variables; tools take `{{secret:NAME}}` placeholders resolved when they run;
  * and every tool result, with shells' live output, has stored values replaced by `[secret NAME]`.
  */
@@ -77,7 +77,14 @@ export async function commandSecrets(
   use: { tool: string; conversation: string },
 ): Promise<{ env: Record<string, string>; redactor: StreamRedactor }> {
   const env = await vault.resolve(captured(SHELL_REFERENCE, command), use);
-  return { env, redactor: new StreamRedactor(await vault.known()) };
+  // A delete can run between resolve and known: the command still owns its injected values.
+  const known = [
+    ...(await vault.known()),
+    ...Object.entries(env)
+      .filter(([, value]) => value.length >= 4)
+      .map(([key, value]) => ({ key, value })),
+  ].toSorted((a, b) => b.value.length - a.value.length);
+  return { env, redactor: new StreamRedactor(known) };
 }
 
 /**
@@ -116,7 +123,8 @@ export function redacting<P extends TSchema>(
         },
       };
       try {
-        return await tool.execute(args, wrapped, context);
+        // A concurrent delete clears the vault, but this running call may still emit the old value.
+        return redactResult(await tool.execute(args, wrapped, context), known);
       } finally {
         const rest = stream.end();
         if (rest !== "") api.output(rest);
@@ -246,7 +254,7 @@ async function importedValue(path: string, key: string | undefined): Promise<str
 }
 
 const DESCRIPTION =
-  "Credentials by name, never by value. `import` stores a value that is already in a local file without you or the user seeing it: the whole file, or with `key` one KEY=value line of a .env-style file; use it before asking the user for anything you can find on disk. `request` asks the user for a secret (an API key or token: kind value; a site's username and password: kind login) in their signed-in Monchu client and returns at once: you get a notice when it is set or declined, so carry on with other work or end your turn meanwhile. `list` shows stored names, pending requests and last use. To use a secret, write `$NAME` in a bash command (`$env:NAME` in powershell): Monchu puts that secret in the command's environment only. A login NAME gives NAME_USERNAME and NAME_PASSWORD. In agent_browser arguments write `{{secret:NAME}}`; a login with a site fills only on that site. Values never reach you: output containing one shows [secret NAME]. Never ask the user to paste a secret into chat.";
+  "Credentials by name, never by value. `import` stores a value that is already in a local file without you or the user seeing it: the whole file, or with `key` one KEY=value line of a .env-style file; use it before asking the user for anything you can find on disk. `request` asks the user for a secret (an API key or token: kind value; a site's username and password: kind login) in their signed-in Monchu client and returns at once: you get a notice when it is set or declined, so carry on with other work or end your turn meanwhile. `list` shows stored names, pending requests and last use. `delete {name}` removes a stored secret from this device and clears its cached value; it does not revoke it at the issuer or stop commands already using it. To use a secret, write `$NAME` in a bash command (`$env:NAME` in powershell): Monchu puts that secret in the command's environment only. A login NAME gives NAME_USERNAME and NAME_PASSWORD. In agent_browser arguments write `{{secret:NAME}}`; a login with a site fills only on that site. Values never reach you: output containing one shows [secret NAME]. Never ask the user to paste a secret into chat.";
 
 /** The `secret` tool and the redaction of every tool result. */
 export function createSecrets(vault: Vault) {
@@ -262,10 +270,11 @@ export function createSecrets(vault: Vault) {
               Type.Literal("request"),
               Type.Literal("import"),
               Type.Literal("list"),
+              Type.Literal("delete"),
             ]),
             name: Type.Optional(
               Type.String({
-                description: "For request and import: env-var shaped, such as GITHUB_TOKEN",
+                description: "For request, import and delete: env-var shaped, such as GITHUB_TOKEN",
               }),
             ),
             reason: Type.Optional(
@@ -325,6 +334,12 @@ export function createSecrets(vault: Vault) {
             throw new Error(
               `${args.action} needs a name: A-Z, 0-9 and _, starting with a letter, at most 64`,
             );
+          if (args.action === "delete") {
+            await vault.delete(name);
+            return text(
+              `Deleted ${name} from this device. This does not revoke it at its issuer or stop commands already using it.`,
+            );
+          }
           if (args.action === "import") {
             if (args.path === undefined || args.path === "")
               throw new Error("import needs the path of the file holding the value");

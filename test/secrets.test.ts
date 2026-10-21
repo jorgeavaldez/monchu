@@ -8,7 +8,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { shortId } from "../src/api/ids.ts";
 import { answerRequests, SecretsDoc } from "../src/core/secrets/requests.ts";
-import { createSecrets, fillPlaceholders } from "../src/core/secrets/tool.ts";
+import {
+  commandSecrets,
+  createSecrets,
+  fillPlaceholders,
+  redacting,
+} from "../src/core/secrets/tool.ts";
 import { MemoryStore, StreamRedactor, Vault, redact } from "../src/core/secrets/vault.ts";
 import { ageIdentity, FnoxStore } from "../src/plugins/fnox/index.ts";
 import {
@@ -110,6 +115,70 @@ describe("vault", () => {
     expect((await again.list()).map(({ name }) => name)).toEqual(["API_TOKEN"]);
   });
 
+  it("deletes warm values and both login keys without reviving them on later use or restart", async () => {
+    const store = new MemoryStore();
+    const dir = join(await mkdtemp(join(tmpdir(), "monchu-vault-")), "secrets");
+    const vault = new Vault(dir, { store });
+    const changes: string[][] = [];
+    vault.onChange((secrets) => changes.push(secrets.map(({ name }) => name)));
+    await vault.set({ name: "TOKEN", kind: "value", value: "delete-token-value" });
+    await vault.set({ name: "KEEP", kind: "value", value: "keep-token-value" });
+    await vault.set({
+      name: "SHOP",
+      kind: "login",
+      username: "shop-user",
+      password: "shop-password",
+    });
+    const use = { tool: "bash", conversation: "test" };
+    await vault.resolve(["TOKEN", "SHOP_PASSWORD"], use);
+    expect(await vault.known()).toHaveLength(4);
+    await vault.delete("TOKEN");
+    await vault.delete("SHOP");
+    await vault.delete("TOKEN"); // Tool replay has the same outcome.
+    expect(await store.readAll()).toEqual({ KEEP: "keep-token-value" });
+    expect(await vault.resolve(["TOKEN", "SHOP_USERNAME", "SHOP_PASSWORD"], use)).toEqual({});
+    expect(await vault.known()).toEqual([{ key: "KEEP", value: "keep-token-value" }]);
+    expect(await vault.owner("SHOP_PASSWORD")).toBeUndefined();
+    expect(changes.at(-1)).toEqual(["KEEP"]);
+    const again = new Vault(dir, { store });
+    expect((await again.list()).map(({ name }) => name)).toEqual(["KEEP"]);
+    expect(await again.resolve(["TOKEN", "SHOP_PASSWORD"], use)).toEqual({});
+    expect(await readFile(join(dir, "index.json"), "utf8")).not.toMatch(/TOKEN|SHOP/);
+  });
+
+  it("finishes an in-flight read before delete, never caching or auditing a deleted value afterward", async () => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    class SlowStore extends MemoryStore {
+      override async readAll(): Promise<Record<string, string>> {
+        const values = await super.readAll();
+        started.resolve();
+        await release.promise;
+        return values;
+      }
+    }
+    const store = new SlowStore();
+    const audit: string[] = [];
+    const vault = new Vault(join(await mkdtemp(join(tmpdir(), "monchu-vault-")), "secrets"), {
+      store,
+      audit: (body) => audit.push(body),
+    });
+    await vault.set({ name: "TOKEN", kind: "value", value: "old-token-value" });
+    await vault.set({ name: "KEEP", kind: "value", value: "keep-token-value" });
+    const use = { tool: "bash", conversation: "test" };
+    const reading = vault.resolve(["TOKEN"], use);
+    await started.promise;
+    const deleting = vault.delete("TOKEN");
+    const later = vault.resolve(["TOKEN"], use);
+    release.resolve();
+    await reading; // A use accepted before deletion may already have received the value.
+    await deleting;
+    expect(await later).toEqual({});
+    expect(audit.slice(-2)).toEqual(["secret used", "secret deleted"]);
+    expect(await vault.known()).toEqual([{ key: "KEEP", value: "keep-token-value" }]);
+    expect(await vault.info("TOKEN")).toBeUndefined();
+  });
+
   it("redacts values, also when a stream splits one across chunks", () => {
     const known = [{ key: "TOKEN", value: "abcdef123456" }];
     expect(redact("x abcdef123456 y abcdef123456", known)).toBe(
@@ -120,6 +189,20 @@ describe("vault", () => {
     expect(out.join("") + stream.end()).toBe("start [secret TOKEN] end, and abc!");
     // Text that can't start a value never waits.
     expect(new StreamRedactor(known).push("plain text")).toBe("plain text");
+  });
+
+  it("keeps a job's injected values redacted when deletion races its redaction snapshot", async () => {
+    const vault = new Vault(join(await mkdtemp(join(tmpdir(), "monchu-vault-")), "secrets"), {
+      store: new MemoryStore(),
+    });
+    await vault.set({ name: "TOKEN", kind: "value", value: "job-token-value" });
+    const command = commandSecrets(vault, 'echo "$TOKEN"', { tool: "job", conversation: "test" });
+    const deleting = vault.delete("TOKEN");
+    const { env, redactor } = await command;
+    await deleting;
+    expect(env.TOKEN).toBe("job-token-value");
+    expect(redactor.push(env.TOKEN ?? "") + redactor.end()).toBe("[secret TOKEN]");
+    expect(await vault.known()).toEqual([]);
   });
 
   it("fills placeholders only on a login's own site", async () => {
@@ -245,6 +328,98 @@ describe("secrets in tools", () => {
     ).toEqual({ FILE_TOKEN: "file-token-value", API_KEY: "env-key-value" });
     expect(outputs.join("\n")).not.toMatch(/file-token-value|env-key-value/);
     expect(await storeBytes(value.directory)).not.toMatch(/file-token-value|env-key-value/);
+  });
+
+  it("deletes through the agent tool, including a login, with no later injection or resurrection", async () => {
+    const value = await setup();
+    value.registry.install(createSecrets(value.vault));
+    await value.vault.set({ name: "TOKEN", kind: "value", value: "delete-token-value" });
+    await value.vault.set({
+      name: "SHOP",
+      kind: "login",
+      username: "shop-user",
+      password: "shop-password",
+    });
+    const outputs = script(value, [
+      fauxToolCall("bash", { command: 'printf "%s|%s" "$TOKEN" "$SHOP_PASSWORD"' }),
+      fauxToolCall("secret", { action: "delete", name: "TOKEN" }),
+      fauxToolCall("secret", { action: "delete", name: "SHOP" }),
+      fauxToolCall("secret", { action: "delete", name: "TOKEN" }),
+      fauxToolCall("secret", { action: "delete", name: "bad-name" }),
+      fauxToolCall("bash", {
+        command: 'printf "token=%s|user=%s|password=%s" "$TOKEN" "$SHOP_USERNAME" "$SHOP_PASSWORD"',
+      }),
+      fauxToolCall("secret", { action: "list" }),
+    ]);
+    const { harness, root } = await open(value);
+    try {
+      for (let index = 0; index < 7; index++)
+        await (
+          await root.submit({ type: "input", content: `step ${index}` }, context)
+        ).wait(context);
+    } finally {
+      await harness.close(context);
+    }
+    expect(outputs[0]).toBe("[secret TOKEN]|[secret SHOP_PASSWORD]");
+    expect(outputs[1]).toContain("Deleted TOKEN");
+    expect(outputs[2]).toContain("Deleted SHOP");
+    expect(outputs[3]).toContain("Deleted TOKEN");
+    expect(outputs[4]).toContain("delete needs a name");
+    expect(outputs[5]).toBe("token=|user=|password=");
+    expect(JSON.parse(outputs[6] ?? "")).toEqual({ secrets: [], pending: [] });
+    expect(await value.vault.known()).toEqual([]);
+    expect(await storeBytes(value.directory)).not.toMatch(
+      /delete-token-value|shop-password|shop-user/,
+    );
+  });
+
+  it("still redacts a running call's result when its secret is deleted before the call finishes", async () => {
+    const value = await setup();
+    value.registry.install(createSecrets(value.vault));
+    await value.vault.set({ name: "TOKEN", kind: "value", value: "inflight-token-value" });
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    value.registry.install(
+      defineExtension({
+        name: "test.inflight",
+        tools: [
+          redacting(
+            defineTool({
+              name: "inflight",
+              description: "Return a secret already received by a running call",
+              parameters: Type.Object({}),
+              execute: async (_args, api) => {
+                const env = await value.vault.resolve(["TOKEN"], {
+                  tool: "inflight",
+                  conversation: "test",
+                });
+                started.resolve();
+                await release.promise;
+                const text = env.TOKEN ?? "missing";
+                api.output(text);
+                return { output: [{ type: "text", text }], details: { text } };
+              },
+            }),
+            value.vault,
+          ),
+        ],
+      }),
+    );
+    const outputs = script(value, [fauxToolCall("inflight", {})]);
+    const { harness, root } = await open(value);
+    try {
+      const run = await root.submit({ type: "input", content: "use" }, context);
+      await started.promise;
+      await value.vault.delete("TOKEN");
+      release.resolve();
+      await run.wait(context);
+      expect(outputs[0]).toBe("[secret TOKEN]");
+      expect(await value.vault.known()).toEqual([]);
+    } finally {
+      release.resolve();
+      await harness.close(context);
+    }
+    expect(await storeBytes(value.directory)).not.toContain("inflight-token-value");
   });
 
   it("asks for a secret without waiting, and tells whoever asked once it is set", async () => {
