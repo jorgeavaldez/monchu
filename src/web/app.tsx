@@ -13,7 +13,7 @@ import {
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
 import { ClientPanel, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
-import { GoalsPanel, JobsPanel } from "./lists.tsx";
+import { GoalsPanel, JobsPanel, PinsPanel } from "./lists.tsx";
 import { Close, Panel } from "./panel.tsx";
 import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
 import { run } from "./commands.ts";
@@ -479,6 +479,8 @@ export function App() {
         <GoalsPanel />
       ) : panel.value === "jobs" ? (
         <JobsPanel />
+      ) : panel.value === "pins" ? (
+        <PinsPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (

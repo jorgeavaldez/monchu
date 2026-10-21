@@ -177,6 +177,11 @@ class RemoteRoot implements RootClient {
       root.reply({ id, message, requestId, whenBusy, ...sent(attachments) }),
     );
   }
+  pinMessage(id: string, workerName?: string) {
+    return this.run((root) =>
+      root.pinMessage({ id, ...(workerName === undefined ? {} : { worker: workerName }) }),
+    );
+  }
   command(name: string, text: string, workerName?: string) {
     return this.run((root) =>
       root.command({ name, text, ...(workerName === undefined ? {} : { worker: workerName }) }),
@@ -482,6 +487,12 @@ export class RemoteClient implements Client {
   }
   takeDraft(id: number) {
     return this.run(() => this.session.ref.takeDraft({ id }));
+  }
+  async watchPins(listener: Parameters<Client["watchPins"]>[0]) {
+    return this.followState((ref) => ref.pins, listener);
+  }
+  unpinMessage(code: string) {
+    return this.run(() => this.session.ref.unpinMessage({ code }));
   }
   /** The owner's session, or a refusal for a service login, which has no secret methods. */
   private owner() {

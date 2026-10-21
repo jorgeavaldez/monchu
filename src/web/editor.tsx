@@ -35,6 +35,7 @@ import {
   workers,
 } from "./state.ts";
 import { openAsks } from "./transcript.tsx";
+import { feedRows } from "./feed.ts";
 
 const SIZES_ITSELF = CSS.supports("field-sizing", "content");
 
@@ -48,6 +49,12 @@ function suggestions(text: string, core: Client | undefined): { items: MenuItem[
     workers: workers.value.map((worker) => worker.name),
     roots: roots.value.filter((each) => !each.archived).map(({ id, label }) => ({ id, label })),
     asks: core === undefined ? [] : openAsks(),
+    messages: /^\/pin \S*$/.test(text)
+      ? feedRows()
+          .toReversed()
+          .slice(0, 40)
+          .map(({ code, who, text: body }) => ({ code, who, text: body.replace(/\s+/g, " ") }))
+      : [],
   });
   if (argument !== undefined) {
     const items = matching(argument.items, argument.query)

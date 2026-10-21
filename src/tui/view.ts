@@ -26,6 +26,7 @@ import {
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { Footer, shortPath, type FooterState } from "./components/footer.ts";
 import { GoalsPanel, type GoalRow } from "./components/goals-panel.ts";
+import { PinsPanel } from "./components/pins-panel.ts";
 import { RootsPanel, type RootActions } from "./components/roots-panel.ts";
 import { LinkRows } from "./components/link.ts";
 import { copyText, openUrl } from "./system.ts";
@@ -66,10 +67,11 @@ import {
   type Terminal,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import type { Goal, QueueChange, RootSummary } from "../api/client.ts";
+import type { Goal, PinnedMessage, QueueChange, RootSummary } from "../api/client.ts";
 import { formatBytes, messageParts } from "../api/attachments.ts";
 import { shortId } from "../api/ids.ts";
-import { addressable, sentAt, ShortIds, stamp } from "../ui/ids.ts";
+import { addressable, messageOf, sentAt } from "../api/messages.ts";
+import { ShortIds, stamp } from "../ui/ids.ts";
 import {
   parseWorkerNotice,
   systemNoticeSummary,
@@ -436,6 +438,8 @@ export class MonchuTui {
   // The shown entries' short ids, and the chat child that renders each, to repaint one whose unique prefix grows.
   private readonly ids = new ShortIds();
   private readonly labeled = new Map<string, Component>();
+  /** The shown conversation's messages, oldest first: what `/pin` completes. */
+  private messages: EntryRecord[] = [];
   private applied: ConversationView | undefined;
   private workersLine = "";
   private streaming: Container | undefined;
@@ -630,6 +634,9 @@ export class MonchuTui {
             name: command.slice(1),
             description: help,
             ...(usage ? { argumentHint: usage } : {}),
+            ...(command === "/pin"
+              ? { getArgumentCompletions: (prefix: string) => this.pinCompletions(prefix) }
+              : {}),
           })),
           ...skills.map((skill) => ({
             name: `skill:${skill.name}`,
@@ -837,6 +844,47 @@ export class MonchuTui {
   updateRoots(roots: readonly RootSummary[]): void {
     if (!(this.selector instanceof RootsPanel)) return;
     this.selector.update(roots);
+    this.ui.requestRender();
+  }
+
+  /** The shown conversation's messages whose id starts with `prefix`, newest first, with who sent them and their start. */
+  private pinCompletions(prefix: string): { value: string; label: string; description: string }[] {
+    const typed = prefix.trim().toLowerCase();
+    return this.messages
+      .toReversed()
+      .map((entry) => ({ code: shortId(entry.id), message: messageOf(entry) }))
+      .filter(({ code }) => code.startsWith(typed))
+      .slice(0, 30)
+      .map(({ code, message }) => ({
+        value: code,
+        label: code,
+        description: `${message?.from ?? ""}: ${message?.text.replace(/\s+/g, " ").slice(0, 80) ?? ""}`,
+      }));
+  }
+
+  /** Shows the pinned messages in the editor's place until Esc or Ctrl-C closes it; `unpin` acts at once. */
+  openPins(
+    pins: readonly PinnedMessage[],
+    roots: readonly RootSummary[],
+    query: string,
+    unpin: (pin: PinnedMessage) => void,
+  ): void {
+    this.showSelector(
+      new PinsPanel(
+        pins,
+        roots,
+        query,
+        unpin,
+        () => this.ui.terminal.rows,
+        () => this.restoreEditor(),
+      ),
+    );
+  }
+
+  /** The pins as another client or this one changed them, for an open pins panel. */
+  updatePins(pins: readonly PinnedMessage[]): void {
+    if (!(this.selector instanceof PinsPanel)) return;
+    this.selector.update(pins);
     this.ui.requestRender();
   }
 
@@ -1054,6 +1102,7 @@ export class MonchuTui {
       this.renderedIds = [];
       this.ids.clear();
       this.labeled.clear();
+      this.messages = [];
       this.streaming = undefined;
       this.ui.resetTextSelection();
     }
@@ -1135,6 +1184,7 @@ export class MonchuTui {
 
   private addEntry(entry: EntryRecord): void {
     const shown = addressable(entry);
+    if (shown) this.messages.push(entry);
     const lengthened = shown ? this.ids.add(entry.id) : [];
     const time = shown ? stamp(sentAt(entry) ?? 0) : "";
     const label = (child: Component) => {

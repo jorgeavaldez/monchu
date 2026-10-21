@@ -83,6 +83,7 @@ describe("slash argument completion", () => {
     workers: ["reader", "builder"],
     roots: [{ id: "kqzt", label: "groceries" }],
     asks: [{ code: "mnop", text: "sign off the plan?" }],
+    messages: [{ code: "qrst", who: "monchu", text: "your outreach schedule" }],
   };
 
   it("offers a command's first argument once its name and a space are typed", () => {
@@ -108,6 +109,9 @@ describe("slash argument completion", () => {
     expect(argumentRows("/roots ", from)?.items.find((item) => item.label === "rename")?.id).toBe(
       "/roots rename ",
     );
+    expect(argumentRows("/pin ", from)?.items).toEqual([
+      { id: "/pin qrst", label: "qrst", detail: "monchu: your outreach schedule" },
+    ]);
     expect(argumentRows("/reply mnop some text", from)).toBeUndefined();
     expect(argumentRows("/agents", from)).toBeUndefined();
     expect(argumentRows("/goals ", from)).toBeUndefined();

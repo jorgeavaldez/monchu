@@ -14,6 +14,7 @@ import type { Settings } from "../core/config.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 import type { DraftsState } from "../core/drafts.ts";
+import type { PinnedMessage, PinsState } from "../core/pins.ts";
 import {
   ATTACHMENTS_PER_MESSAGE,
   UPLOAD_CHUNK_BYTES,
@@ -153,6 +154,8 @@ const sessionState = {
   secrets: trusted<SecretsState>(),
   /** The prompt drafts set aside on this device. */
   drafts: trusted<DraftsState>(),
+  /** The messages pinned on this device. */
+  pins: trusted<PinsState>(),
 };
 
 /** A secret as a person enters it. Values are plain strings, so a refusal never quotes one; the core checks the rest. */
@@ -180,6 +183,7 @@ const inboxKind = Type.Union([
 const sessionMethods = {
   saveDraft: method(Type.Object({ text })),
   takeDraft: method(Type.Object({ id: count }), trusted<string>()),
+  unpinMessage: method(Type.Object({ code: text })),
   pushKey: method(undefined, trusted<string>()),
   pushSubscribe: method(
     Type.Object({
@@ -302,6 +306,10 @@ export const Root = remote("monchu.root", {
         goals: method(undefined, trusted<(Goal & { changed: boolean })[]>()),
         seeGoal: method(Type.Object({ id: text, updatedAt: Type.Number() })),
         statusLines: method(undefined, trusted<string[]>()),
+        pinMessage: method(
+          Type.Object({ id: text, worker }),
+          trusted<{ pin: PinnedMessage; existed: boolean }>(),
+        ),
         command: method(Type.Object({ name: text, text, worker }), trusted<string>()),
         modelChoice: method(Type.Object({ worker }), trusted<ModelChoice>()),
         pickModel: method(Type.Object({ pick, saveDefault: Type.Boolean(), worker })),

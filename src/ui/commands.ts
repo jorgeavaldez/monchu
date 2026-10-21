@@ -26,10 +26,12 @@ type Input =
         | "/mcp"
         | "/logs"
         | "/update"
-        | "/attach";
+        | "/attach"
+        | "/pins";
       text: string;
     }
   | { command: "/reply"; id: string; text: string }
+  | { command: "/pin"; id: string }
   | { command: "skill"; name: string; text: string }
   | { command: "plugin"; name: string; text: string };
 
@@ -53,6 +55,14 @@ export const commands: Record<
   "/reply": {
     usage: "<id> <text>",
     help: "reply to one of Monchu's messages by its id (tap the id); it reaches the front quoted",
+  },
+  "/pin": {
+    usage: "<id>",
+    help: "pin a message by its id, to find it again later in /pins",
+  },
+  "/pins": {
+    usage: "[search]",
+    help: "pinned messages from every root, kept through /new; open, search, unpin",
   },
   "/jobs": {
     usage: "",
@@ -192,7 +202,12 @@ export function parseInput(raw: string): Input | undefined {
     case "/stop":
     case "/logs":
     case "/attach":
+    case "/pins":
       return { command, text: rest };
+    case "/pin":
+      if (!/^#?[k-z]+$/i.test(rest))
+        throw new Error(`Usage: ${command} ${commands[command].usage}`);
+      return { command, id: rest.replace(/^#/, "") };
     case "/update": {
       const release = parseRelease(rest || "edge");
       if (release === undefined) throw new Error(`Usage: ${command} ${commands[command].usage}`);

@@ -33,6 +33,7 @@ import {
 import { attachedInput, storeAttachment, writeUpload, type ImageInput } from "./attachments.ts";
 import { GoalsDoc, GOALS_COMPACTION_FOCUS, type Goal } from "./agents/goals.ts";
 import { rootRecord, RootsDoc, type RootRecord } from "./agents/root-records.ts";
+import { pinMessage, type PinnedMessage } from "./pins.ts";
 import { noteInput, sendHandOff } from "./agents/roots.ts";
 import {
   DELETED_FROM_QUEUE,
@@ -371,6 +372,29 @@ export class Front implements RootClient {
       stored.answer = text.trim().slice(0, 200);
       if (stored.kind === "ask") stored.state = "answered";
     }, context);
+  }
+
+  /** `/pin`: a copy of a message of the conversation shown, by a unique prefix of its id, in the pinned messages. */
+  async pinMessage(
+    id: string,
+    workerName?: string,
+  ): Promise<{ pin: PinnedMessage; existed: boolean }> {
+    const front = await this.conversation();
+    const shown = await this.target(workerName);
+    return shown.commit(
+      async (tx) =>
+        pinMessage(
+          tx,
+          {
+            conversation: shown.id,
+            root: front.id,
+            rootLabel: rootRecord(await tx.doc(RootsDoc), front.id)?.label ?? "",
+            ...(workerName === undefined ? {} : { worker: workerName }),
+          },
+          id,
+        ),
+      context,
+    );
   }
 
   /** Plugins' status lines on this root, for a client opening it. */

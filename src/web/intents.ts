@@ -36,6 +36,7 @@ import {
   openRoot,
   panel,
   pick,
+  pins,
   prompted,
   promptDrafts,
   rootId,
@@ -135,6 +136,29 @@ export function clearFilter(): void {
 export function replyDraft(code: string): void {
   page.draft.value = `/reply ${code} ${draft.value.replace(/^\/reply \S+ ?/, "")}`;
   typeInEditor();
+}
+
+/**
+ * Pin a message of the conversation shown by its id, or unpin it when it is pinned: the star on it shows which. A pin
+ * keeps a copy of the message in this device's pins, from every client.
+ */
+export async function togglePin(code: string): Promise<void> {
+  const at = showing();
+  try {
+    if (pins.value.some((pin) => pin.code === code)) await client().unpinMessage(code);
+    else await at.root.pinMessage(code, at.shown.value);
+  } catch (error) {
+    at.notice(failure(error), "warning");
+  }
+}
+
+/** Unpin a message: from the pins panel, whatever is shown. */
+export async function unpin(code: string): Promise<void> {
+  try {
+    await client().unpinMessage(code);
+  } catch (error) {
+    notice(failure(error), "warning");
+  }
 }
 
 /** A prompt on one line: its whitespace and line breaks as single spaces, cut at a word with … past `width`. */
@@ -803,6 +827,14 @@ async function runInput(
       return;
     case "/goals":
       page.panel.value = "goals";
+      return;
+    case "/pin": {
+      const { pin, existed } = await at.root.pinMessage(input.id, name);
+      return at.notice(`${existed ? "already pinned" : "pinned"} · ${pin.code} · ${pin.headline}`);
+    }
+    case "/pins":
+      page.pinsQuery.value = { text: input.text };
+      page.panel.value = "pins";
       return;
     case "/queue": {
       const state = at.views.value.get(name ?? "")?.state.value;

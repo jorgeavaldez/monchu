@@ -1,6 +1,7 @@
 /**
  * What a slash command's argument can be, for the typeahead after `/command `: fixed words from the command's usage,
- * and names the page already has (workers, roots, open asks). Pure: the editor passes in what it knows.
+ * and names the page already has (workers, roots, open asks, the feed's messages). Pure: the editor passes in what it
+ * knows.
  */
 import { SEVERITIES } from "../ui/logs.ts";
 
@@ -11,6 +12,8 @@ export type ArgSources = {
   workers: readonly string[];
   roots: readonly { id: string; label: string }[];
   asks: readonly { code: string; text: string }[];
+  /** The feed's messages, newest first, with who wrote them. */
+  messages: readonly { code: string; who: string; text: string }[];
 };
 
 /** Each command's first argument: a row's id is the whole draft it completes to, its label the argument. */
@@ -45,6 +48,12 @@ function options(command: string, from: ArgSources): Row[] | undefined {
         id: `${command} ${ask.code} `,
         label: ask.code,
         detail: ask.text,
+      }));
+    case "/pin":
+      return from.messages.map((message) => ({
+        id: `${command} ${message.code}`,
+        label: message.code,
+        detail: `${message.who}: ${message.text}`,
       }));
     case "/logs":
       return words(SEVERITIES);

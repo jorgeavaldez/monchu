@@ -1,26 +1,4 @@
-import type { EntryRecord } from "@earendil-works/pi-durable";
 import { shortId } from "../api/ids.ts";
-import { systemNoticeSummary } from "../api/notices.ts";
-
-/**
- * The entries a client labels with their short id: the user's input, worker reports and updates, and replies with
- * text. Monchu's own notices, tool results and context markers stay unlabeled.
- */
-export function addressable(entry: EntryRecord): boolean {
-  const message = entry.model?.[0];
-  if (entry.kind === "pi.user" && message?.role === "user") {
-    const text =
-      typeof message.content === "string"
-        ? message.content
-        : message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
-    return systemNoticeSummary(text) === undefined;
-  }
-  return (
-    entry.kind === "pi.assistant" &&
-    message?.role === "assistant" &&
-    message.content.some((part) => part.type === "text" && part.text.trim() !== "")
-  );
-}
 
 /**
  * The short ids one conversation shows, kept sorted for their shortest unique prefixes, as jj highlights change ids:
@@ -84,13 +62,6 @@ export class ShortIds {
     }
     return low;
   }
-}
-
-/** When an addressable entry was sent: a reply when its request finished, input when it was accepted. */
-export function sentAt(entry: EntryRecord): number | undefined {
-  const message = entry.model?.[0];
-  if (message?.role === "assistant") return message.timestamp + (message.durationMs ?? 0);
-  return message?.role === "user" ? message.timestamp : undefined;
 }
 
 /** A time of day in local time, written the one way every client shows times: the locale's short form. */

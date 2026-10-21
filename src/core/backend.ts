@@ -71,6 +71,7 @@ import { newerEdge, planUpdate, VERSION, type UpdatePlan } from "./update.ts";
 import { skillMessage } from "./skills/index.ts";
 import { answerRequests, SecretsDoc, type SecretsState } from "./secrets/requests.ts";
 import { DraftsDoc, saveDraft, takeDraft, type DraftsState } from "./drafts.ts";
+import { PinsDoc, unpinMessage, type PinsState } from "./pins.ts";
 import type { SecretStore } from "../plugin.ts";
 import { redact, Vault, type SecretInput } from "./secrets/vault.ts";
 
@@ -868,6 +869,26 @@ export class Monchu implements Client {
 
   takeDraft(id: number): Promise<string> {
     return takeDraft(this.harness, id, context);
+  }
+
+  /** The pinned messages, now and after each change; returns a stop function. */
+  async watchPins(listener: (state: PinsState) => void): Promise<() => void> {
+    await this.harness.commit(async (tx) => {
+      await tx.doc(PinsDoc);
+    }, context);
+    const doc = await this.harness.documentState(PinsDoc, context);
+    if (doc === undefined) throw new Error("Pins document is missing");
+    const emit = (value: PinsState | null) => listener(value ?? { items: [] });
+    emit(doc.value);
+    const stop = doc.subscribe(emit);
+    return () => {
+      stop();
+      doc.dispose();
+    };
+  }
+
+  unpinMessage(code: string): Promise<void> {
+    return this.harness.commit((tx) => unpinMessage(tx, code), context);
   }
 
   async jobs(): Promise<Readonly<JobsState> & { listing: string }> {

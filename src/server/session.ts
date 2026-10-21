@@ -32,6 +32,7 @@ import { Core, type HeldLogin, type LoginOwner } from "./core.ts";
 import type { JobsState } from "../core/jobs.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 import type { DraftsState } from "../core/drafts.ts";
+import type { PinsState } from "../core/pins.ts";
 
 /** A value of the core's, typed and not checked. */
 const any = <T>(): TUnsafe<T> => Type.Unsafe<T>(Type.Unknown());
@@ -380,6 +381,12 @@ export default defineFacet<Principal>(
         async () => ({ drafts: [], next: 1 }),
         (set) => monchu().watchDrafts(set),
       );
+      const pins = fed<PinsState>(
+        self,
+        "pins",
+        async () => ({ items: [] }),
+        (set) => monchu().watchPins(set),
+      );
       // A leaked service token must never enter, read back or remove a secret: its variant has none of these either.
       const person = () => {
         if (principal.kind === "client" && !principal.person)
@@ -407,6 +414,7 @@ export default defineFacet<Principal>(
         logins,
         secrets,
         drafts,
+        pins,
         setSecret: async ({ input }) => {
           person();
           await monchu().setSecret(input);
@@ -421,6 +429,7 @@ export default defineFacet<Principal>(
         },
         saveDraft: ({ text }) => monchu().saveDraft(text),
         takeDraft: ({ id }) => monchu().takeDraft(id),
+        unpinMessage: ({ code }) => monchu().unpinMessage(code),
         skillInput: ({ name, text }) => monchu().skillInput(name, text),
         pushKey: () => monchu().pushKey(),
         pushSubscribe: ({ subscription }) => monchu().pushSubscribe(subscription),
@@ -535,6 +544,7 @@ export default defineFacet<Principal>(
         goals: async () => [...(await front().goals())],
         seeGoal: ({ id, updatedAt }) => front().seeGoal(id, updatedAt),
         statusLines: () => front().statusLines(),
+        pinMessage: ({ id, worker }) => front().pinMessage(id, worker),
         command: ({ name, text, worker }) =>
           front().command(
             name,

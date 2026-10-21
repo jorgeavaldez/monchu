@@ -6,7 +6,14 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { stdin, stdout } from "node:process";
-import type { Client, ModelPick, RootClient, RootSummary, Watched } from "../api/client.ts";
+import type {
+  Client,
+  ModelPick,
+  PinnedMessage,
+  RootClient,
+  RootSummary,
+  Watched,
+} from "../api/client.ts";
 import {
   ATTACHMENT_MAX_BYTES,
   formatBytes,
@@ -64,6 +71,7 @@ export async function runTerminal(
   applyTheme();
   let front = backend.root(rootId);
   let roots: readonly RootSummary[] = [];
+  let pins: readonly PinnedMessage[] = [];
   // Each switch of root starts a generation; work for an earlier root stops when it sees a newer one.
   let generation = 0;
   let exit = () => {};
@@ -77,6 +85,7 @@ export async function runTerminal(
   let stopRoot: (() => void) | undefined;
   let stopReports: (() => void) | undefined;
   let stopRoots: (() => void) | undefined;
+  let stopPins: (() => void) | undefined;
   let stopNotices: (() => void) | undefined;
   let stopJobs: (() => void) | undefined;
   let stopScheme: (() => void) | undefined;
@@ -812,6 +821,16 @@ export async function runTerminal(
         );
         view.notice(`replied · ${input.id}`);
         break;
+      case "/pin": {
+        const { pin, existed } = await front.pinMessage(input.id, selected);
+        view.notice(`${existed ? "already pinned" : "pinned"} · ${pin.code} · ${pin.headline}`);
+        break;
+      }
+      case "/pins":
+        view.openPins(pins, roots, input.text, (pin) => {
+          inputs = inputs.then(() => backend.unpinMessage(pin.code)).catch(fail);
+        });
+        break;
       case "/cd": {
         const name = selected;
         const directory = await front.changeDirectory(input.text, name);
@@ -845,6 +864,10 @@ export async function runTerminal(
       roots = next;
       view.updateRoots(next);
       show();
+    });
+    stopPins = await backend.watchPins((next) => {
+      pins = next.items;
+      view.updatePins(pins);
     });
     view.setSkills(backend.skills(), backend.commands());
     stopReload = backend.onReload(() => {
@@ -912,6 +935,7 @@ export async function runTerminal(
     stopScheme?.();
     stopReports?.();
     stopRoots?.();
+    stopPins?.();
     stopNotices?.();
     stopJobs?.();
     stopRoot?.();

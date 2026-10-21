@@ -21,13 +21,23 @@ import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { PushSubscription } from "../core/push.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 import type { Draft, DraftsState } from "../core/drafts.ts";
+import type { PinnedMessage, PinsState } from "../core/pins.ts";
 import type { SecretInput } from "../core/secrets/vault.ts";
 import type { LogAttributes, LogQuery, LogRecord } from "./logs.ts";
 import type { WhenBusy } from "./notices.ts";
 import type { Release } from "./release.ts";
 import type { McpServerReport } from "./reports.ts";
 
-export type { Draft, Goal, InboxItem, InboxKind, JobEvent, SecretInput, SecretsState };
+export type {
+  Draft,
+  Goal,
+  InboxItem,
+  InboxKind,
+  JobEvent,
+  PinnedMessage,
+  SecretInput,
+  SecretsState,
+};
 
 /** A provider `/login` offers, and the login it takes. */
 export type LoginEntry = { id: string; label: string; auth: "oauth" | "api_key" };
@@ -163,6 +173,12 @@ export interface RootClient {
     whenBusy: WhenBusy,
     attachments?: readonly Attachment[],
   ): Promise<void>;
+  /**
+   * `/pin`: keeps a copy of a message of the conversation shown (the root's front, or the named worker), by a unique
+   * prefix of its id, in the device's pinned messages. Pinning one already pinned changes nothing; either way the pinned
+   * copy comes back, and whether it was already.
+   */
+  pinMessage(id: string, workerName?: string): Promise<{ pin: PinnedMessage; existed: boolean }>;
   /** Runs a plugin's slash command for the root, or the named worker shown, and returns what it shows. */
   command(name: string, args: string, workerName?: string): Promise<string>;
 
@@ -233,6 +249,11 @@ export interface Client {
   saveDraft(text: string): Promise<void>;
   /** Takes a draft out and returns its text; throws when another client took it first. */
   takeDraft(id: number): Promise<string>;
+
+  /** The messages pinned on this device, from every root, oldest first, as they change; returns a stop function. */
+  watchPins(listener: (state: PinsState) => void): Promise<() => void>;
+  /** Unpins a message by its short id; one already gone changes nothing. */
+  unpinMessage(code: string): Promise<void>;
 
   /** This device's web push key, for a browser to subscribe with. */
   pushKey(): Promise<string>;

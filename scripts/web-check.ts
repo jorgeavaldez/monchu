@@ -1626,6 +1626,54 @@ async function journeys(
   );
 
   await journey(
+    "pins: the star pins a reply, a reload keeps it, /pins filters and opens it, unpin empties it",
+    async () => {
+      const command = async (text: string, done: string) => {
+        await browser("fill", "textarea", text);
+        await browser("press", "Enter");
+        // The first Enter may take the typeahead's suggestion.
+        if ((await page(`!!(${done})`)) !== true) await browser("press", "Enter");
+        await browser("wait", "--fn", `!!(${done})`);
+      };
+      const before = await page(`document.querySelectorAll(".assistant:not(.live)").length`);
+      await browser("fill", "textarea", "pin me: the outreach schedule");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelectorAll(".assistant:not(.live)").length > ${String(before)}`,
+      );
+      await browser("wait", "--fn", SETTLED);
+      const star = `[...document.querySelectorAll(".meta .stamp .pin")].at(-1)`;
+      check((await page(`${star}.textContent`)) === "☆", "a reply has no hollow star");
+      await page(`${star}.click()`);
+      await browser("wait", "--fn", `${star}.getAttribute("aria-pressed") === "true"`);
+      check((await page(`${star}.textContent`)) === "★", "a pinned reply's star isn't filled");
+      // The pin is the core's: a new connection shows the star filled. (`/new` is the core tests': here it would rename
+      // the root later journeys look for.)
+      await browser("reload");
+      await browser("wait", "--fn", `${star}?.getAttribute("aria-pressed") === "true"`);
+      const pins = `document.querySelector(".pinsPanel")`;
+      await command("/pins", `${pins}?.querySelector("li.row")`);
+      const rows = () => page(`${pins}.querySelectorAll("li.row").length`);
+      check((await rows()) === 1, `/pins doesn't list the pin: ${String(await rows())}`);
+      await browser("fill", ".pinsPanel .filter", "nothing like it");
+      await browser("wait", "--fn", `${pins}.textContent.includes("no pin matches")`);
+      // `/pins <words>` again, with the panel open, starts the box afresh.
+      await command("/pins outreach", `${pins}.querySelector(".filter").value === "outreach"`);
+      await browser("wait", "--fn", `${pins}.querySelectorAll("li.row").length === 1`);
+      await page(`${pins}.querySelector("li.row button.open").click()`);
+      await browser("wait", ".pinsPanel dd .md");
+      await capture("pins", home, origin);
+      await page(`${pins}.querySelector("dt [aria-label^=unpin]").click()`);
+      await browser("wait", "--fn", `${pins}.textContent.includes("nothing pinned yet")`);
+      await page(`${pins}.querySelector("header [aria-label=close]").click()`);
+      await browser("wait", "--fn", `!${pins}`);
+      return "pinned with the star, kept through a reload, filtered, opened in full, unpinned";
+    },
+  );
+
+  await journey(
     "secrets: an agent asks, the masked form answers, /secrets lists it by name only",
     async () => {
       const value = "smoke-secret-value-42";

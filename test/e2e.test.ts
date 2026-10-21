@@ -15,7 +15,8 @@ import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Draft, JobEvent, RootClient } from "../src/api/client.ts";
+import type { Draft, JobEvent, PinnedMessage, RootClient } from "../src/api/client.ts";
+import { shortId } from "../src/api/ids.ts";
 import type { RemoteClient } from "../src/api/remote.ts";
 import { Monchu } from "../src/core/backend.ts";
 import { attachSocket, socketPath } from "../src/server/socket.ts";
@@ -341,6 +342,55 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
       await expect(monchu.client.takeDraft(id)).rejects.toThrow("another client restored it");
       await waitFor(() => !drafts.some((draft) => draft.id === id));
     } finally {
+      await other.close();
+    }
+  });
+
+  it("shares pins live between two clients: one pins, the other unpins", async () => {
+    await ask("keep this complete pinned answer");
+    const view = await monchu.root.viewState();
+    const other = await attachSocket(socketPath(monchu.home), () => {});
+    if (other === undefined) {
+      view.dispose();
+      throw new Error("No second client");
+    }
+    const stops: (() => void)[] = [];
+    try {
+      const answer =
+        "Faux reply: keep this complete pinned answer. Streaming stays above the editor. DONE";
+      await waitFor(() =>
+        view.value.entries.some((item) =>
+          item.model?.some((message) => message.role === "assistant" && textOf(message) === answer),
+        ),
+      );
+      const entry = view.value.entries.findLast((item) =>
+        item.model?.some((message) => message.role === "assistant" && textOf(message) === answer),
+      );
+      if (entry === undefined) throw new Error("No answer to pin");
+      let first: readonly PinnedMessage[] = [];
+      let second: readonly PinnedMessage[] = [];
+      stops.push(await monchu.client.watchPins((state) => (first = state.items)));
+      stops.push(await other.client.watchPins((state) => (second = state.items)));
+      const code = shortId(entry.id);
+      const result = await monchu.root.pinMessage(code);
+      expect(result.existed).toBe(false);
+      expect(result.pin).toMatchObject({
+        code,
+        root: monchu.root.id,
+        from: "monchu",
+        text: answer,
+      });
+      await waitFor(
+        () => second.some((pin) => pin.code === code) && first.some((pin) => pin.code === code),
+      );
+      expect(second.find((pin) => pin.code === code)).toEqual(result.pin);
+      await other.client.unpinMessage(code);
+      await waitFor(
+        () => !first.some((pin) => pin.code === code) && !second.some((pin) => pin.code === code),
+      );
+    } finally {
+      for (const stop of stops) stop();
+      view.dispose();
       await other.close();
     }
   });

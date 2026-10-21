@@ -344,6 +344,17 @@ pre {
   font: inherit;
   text-decoration: underline dotted;
 }
+/* A message's pin after its id: a star, filled once it is pinned, with the id's tap target. */
+.stamp .pin {
+  padding: 0 var(--s1);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.stamp .pin.on {
+  color: var(--yellow);
+}
 .card.report {
   border-left: 3px solid var(--accent);
 }
@@ -892,6 +903,22 @@ p.offer {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* /pins: the filter over the list, and an open pin's whole message under its id. */
+.pinsPanel .filter {
+  margin: var(--s1);
+  width: calc(100% - 2 * var(--s1));
+  min-height: var(--tap);
+  padding: 0 var(--s1);
+}
+.pinsPanel .mark {
+  color: var(--yellow);
+}
+.pinsPanel .detail {
+  display: block;
+}
+.pinsPanel dt .icon {
+  margin-left: var(--s1);
 }
 .listPanel h2 {
   margin: 0;

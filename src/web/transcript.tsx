@@ -16,7 +16,8 @@ import {
   systemNoticeSummary,
   workerNotice,
 } from "../api/notices.ts";
-import { addressable, clock, sentAt, ShortIds, stamp } from "../ui/ids.ts";
+import { addressable, sentAt } from "../api/messages.ts";
+import { clock, ShortIds, stamp } from "../ui/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
 import { ranges } from "./fuzzy.ts";
@@ -32,6 +33,7 @@ import {
   following,
   inbox,
   notices,
+  pins,
   rootId,
   shown as shownName,
   view as viewOf,
@@ -225,9 +227,26 @@ function JobBox(props: { name: string; what: string; text: string; at: Component
   );
 }
 
+/** The star after a message's stamp: hollow until it is pinned, filled after; a tap pins or unpins it. */
+function PinToggle({ code }: { code: string }) {
+  const pinned = pins.value.some((pin) => pin.code === code);
+  return (
+    <button
+      type="button"
+      class={`pin${pinned ? " on" : ""}`}
+      aria-label={pinned ? `unpin ${code}` : `pin ${code}`}
+      aria-pressed={pinned}
+      title={pinned ? "unpin (/pins lists pins)" : "pin, to find it again in /pins"}
+      onClick={() => run("pin", code)}
+    >
+      {pinned ? "★" : "☆"}
+    </button>
+  );
+}
+
 /**
- * When an entry was sent and its short id, the unique prefix highlighted as jj does. A front's message takes a reply:
- * tapping its id starts one in the editor.
+ * When an entry was sent and its short id, the unique prefix highlighted as jj does, and its pin. A front's message
+ * takes a reply: tapping its id starts one in the editor.
  */
 function Stamp(props: { entry: EntryRecord; ids: ShortIds; reply: boolean }) {
   const { code, unique, rest } = props.ids.split(props.entry.id);
@@ -251,7 +270,8 @@ function Stamp(props: { entry: EntryRecord; ids: ShortIds; reply: boolean }) {
         </button>
       ) : (
         id
-      )}
+      )}{" "}
+      <PinToggle code={code} />
     </span>
   );
 }

@@ -6,7 +6,14 @@
 import { computed, effect, signal, type ReadonlySignal, type Signal } from "@preact/signals";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Attachment } from "../api/attachments.ts";
-import type { Client, Draft, JobEvent, RootClient, RootSummary } from "../api/client.ts";
+import type {
+  Client,
+  Draft,
+  JobEvent,
+  PinnedMessage,
+  RootClient,
+  RootSummary,
+} from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
 import { shortId } from "../api/ids.ts";
 import { releaseNotices } from "../api/release.ts";
@@ -76,7 +83,7 @@ export const page = {
   /** Every root, archived ones included, as the core reports them. */
   roots: signal<readonly RootSummary[]>([]),
   /** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
-  panel: signal<"roots" | "client" | "secrets" | "goals" | "jobs" | undefined>(undefined),
+  panel: signal<"roots" | "client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
   /** The roots panel's last outcome. */
   rootsMessage: signal<{ text: string; failed: boolean } | undefined>(undefined),
   notices: signal<readonly Notice[]>([]),
@@ -94,6 +101,10 @@ export const page = {
   commandLine: signal<{ draft: string; fromPrompt: boolean } | undefined>(undefined),
   /** The prompt drafts set aside on this device, oldest first, from every client. */
   promptDrafts: signal<readonly Draft[]>([]),
+  /** The messages pinned on this device, oldest first, from every client. */
+  pins: signal<readonly PinnedMessage[]>([]),
+  /** The words the pins panel starts filtering by, new with each `/pins`, even open, so each one starts afresh. */
+  pinsQuery: signal({ text: "" }),
   /** What stands in for the editor: one pick or one typed answer at a time, never both. */
   standing: signal<{ kind: "pick"; pick: Choice } | { kind: "ask"; ask: Ask } | undefined>(
     undefined,
@@ -128,6 +139,8 @@ export const {
   menuOpen,
   pageHint,
   promptDrafts,
+  pins,
+  pinsQuery,
   loginStatus,
   jobEvent,
   following,
@@ -382,6 +395,9 @@ export async function start(connected: Client): Promise<void> {
     notice(line);
   await connected.watchRoots((list) => {
     page.roots.value = list;
+  });
+  await connected.watchPins((state) => {
+    page.pins.value = state.items;
   });
   await connected.watchDrafts((state) => {
     page.promptDrafts.value = state.drafts;

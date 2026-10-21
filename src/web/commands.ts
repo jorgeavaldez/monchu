@@ -36,7 +36,9 @@ import {
   switchRoot,
   toggleExpandAll,
   toggleMode,
+  togglePin,
   toggleRoots,
+  unpin,
 } from "./intents.ts";
 import type { MenuItem } from "./menu.tsx";
 import { openSecrets } from "./secrets.tsx";
@@ -241,6 +243,8 @@ const ACTIONS = {
   "feed.kind": { run: filterKind, available: front } satisfies Action<[Filter["kind"]]>,
   show: { run: show } satisfies Action<[string | undefined]>,
   reply: { run: replyDraft } satisfies Action<[string]>,
+  pin: { run: togglePin } satisfies Action<[string]>,
+  unpin: { run: unpin } satisfies Action<[string]>,
   "roots.toggle": { run: () => toggleRoots() } satisfies Action,
   "root.switch": { run: switchRoot } satisfies Action<[string]>,
   "root.new": { run: newRoot } satisfies Action,

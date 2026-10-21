@@ -20,6 +20,7 @@ import {
   front,
 } from "./support.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
+import { shortId } from "../src/api/ids.ts";
 
 /** The footer's name of the shown root, as `withTerminal` opens it. */
 let shownRoot = "";
@@ -691,6 +692,52 @@ describe.each([
       const again = await visible(screen, "1 waiting");
       expect(again.findLast((line) => line.includes("Smoke goal"))).not.toContain("•");
       screen.sendInput("q");
+    });
+  }, 30_000);
+
+  it("pins a reply with /pin and its typeahead, then /pins filters, opens it in full and unpins it", async () => {
+    await withTerminal(columns, theme, async (screen, backend) => {
+      send(screen, "hello pins");
+      await visible(screen, "DONE");
+      const view = await (await front(backend)).viewState();
+      const reply = view.value.entries.findLast(
+        (entry) =>
+          entry.kind === "pi.assistant" &&
+          entry.model?.some(
+            (message) => message.role === "assistant" && textOf(message).includes("hello pins"),
+          ),
+      );
+      view.dispose();
+      if (reply === undefined) throw new Error("No reply to pin");
+      const code = shortId(reply.id);
+      // The argument typeahead offers the shown transcript's messages by id.
+      screen.sendInput(`/pin ${code.slice(0, 1)}`);
+      await visible(screen, `→ ${code}`);
+      screen.sendInput("\x15");
+      send(screen, `/pin ${code}`);
+      await visible(screen, `pinned · ${code}`);
+      send(screen, `/pin ${code}`);
+      await visible(screen, `already pinned · ${code}`);
+      send(screen, "/pins");
+      const panel = await visible(screen, "Pins · 1");
+      expect(panel.join("\n")).toContain("★ Faux reply");
+      // Typing filters over the whole text; Backspace widens it again.
+      screen.sendInput("zzz");
+      await visible(screen, "No pin matches.");
+      for (let index = 0; index < 3; index++) screen.sendInput("\x7f");
+      screen.sendInput("DONE");
+      await visible(screen, "Pins · 1");
+      screen.sendInput("\r");
+      const open = await visible(screen, "Esc back");
+      expect(open.join("\n")).toContain(`${code} · monchu`);
+      expect(open.join("\n")).toContain("Streaming stays");
+      // Delete unpins, from the message or the list.
+      screen.sendInput("\x1b[3~");
+      await visible(screen, "Nothing pinned yet");
+      screen.sendInput("\x1b");
+      await waitFor(
+        async () => !(await screen.flushAndGetViewport()).join("\n").includes("Pins ·"),
+      );
     });
   }, 30_000);
 
