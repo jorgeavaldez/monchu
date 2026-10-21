@@ -16,12 +16,15 @@ const UPDATE_LABEL = /^\[Worker (.+) update; not a new user instruction\]$/;
 const NOTICE_GUIDANCE =
   "Tell the user in one or two lines, update the related goal, then continue: start the next step, message the worker, or ask the user only when the decision is theirs. If the worker is blocked or needs something (an answer, access, another worker's help), unblock it now: answer it, relay to the worker that can help, or ask the user; then tell the worker how it gets unblocked.";
 
-export function noticeText(notice: WorkerNotice): string {
+const WORKER_NOTICE_GUIDANCE =
+  "Continue the work within the user's authorization. Your final answer goes to your parent automatically: report new results, meaningful progress, failures or blockers. If this notice adds nothing worth reporting and you have no other result to deliver, answer exactly NO_UPDATE. Do not send no-news post_update calls. Unblock your helper when you can; ask your parent for help when needed.";
+
+export function noticeText(notice: WorkerNotice, worker = false): string {
   const label =
     notice.status === "update"
       ? `[Worker ${notice.name} update; not a new user instruction]`
       : `[Background worker ${notice.name}: ${notice.status}; not a new user instruction]`;
-  return `${label}\n${NOTICE_GUIDANCE}\n${notice.text}`;
+  return `${label}\n${worker ? WORKER_NOTICE_GUIDANCE : NOTICE_GUIDANCE}\n${notice.text}`;
 }
 
 /** The worker notice an entry carries, for clients that label it; `undefined` for any other entry. */
@@ -34,7 +37,7 @@ export function workerNotice(entry: EntryRecord): WorkerNotice | undefined {
 /** The worker notice an input's text carries, placed or still queued; `undefined` for any other text. */
 export function parseWorkerNotice(content: string): WorkerNotice | undefined {
   const [label = "", guidance, ...text] = content.split("\n");
-  if (guidance !== NOTICE_GUIDANCE) return undefined;
+  if (guidance !== NOTICE_GUIDANCE && guidance !== WORKER_NOTICE_GUIDANCE) return undefined;
   const update = UPDATE_LABEL.exec(label)?.[1];
   if (update !== undefined) return { name: update, status: "update", text: text.join("\n") };
   const [, name, status] = REPORT_LABEL.exec(label) ?? [];

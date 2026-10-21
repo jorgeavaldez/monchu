@@ -484,7 +484,11 @@ const Delivery = defineTask<
           // stays quiet claims nothing: an ask answered in the same run still reports it.
           if (!record.reported.includes(settled.answer)) {
             if (entry === undefined) throw new Error("Worker answer is missing");
-            if (task.input.quiet !== true || needsUser(text)) {
+            if (
+              text.trim() !== "" &&
+              text.trim() !== "NO_UPDATE" &&
+              (task.input.quiet !== true || needsUser(text))
+            ) {
               record.reported.push(settled.answer);
               result = { ...base, status: "completed", answerId: settled.answer, text };
             }
@@ -510,7 +514,7 @@ const Delivery = defineTask<
         // The report starts the parent's turn when idle, or joins it as `reportWhenBusy` says. Stopping the parent withdraws
         // queued input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
         for (let attempt = 0; ; attempt++) {
-          const content = noticeText(result);
+          const content = noticeText(result, whenBusy === "steer");
           const requestId = reportRequestId(task.id, attempt);
           const submission = await parent.submit(
             { type: "input", content, whenBusy, requestId },
@@ -631,7 +635,7 @@ export async function startWorker(
     model: { provider: role.provider, modelId: role.modelId },
     thinkingLevel: role.thinkingLevel,
     cwd,
-    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. Use post_update for progress worth hearing before you finish. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
+    instructions: `You are Monchu's background worker ${name}, a standing worker that owns a domain for the user. Your brief names the domain and the first ask; later asks in that domain will reach you too, so keep your context across them. Own each outcome end to end: decide the approach, and let the scope follow the outcome the user wants rather than the brief's wording. The front relies on your judgment: when the brief is ambiguous or seems to prescribe, read the user's own words with user_messages, and say so when the ask should go elsewhere or be split. Your final answer to each ask is reported to Monchu automatically: say what you did, what you checked and how, what failed or is left, and anything worth remembering about the user or the work; Monchu decides what to save. If you have no new result, meaningful progress, failure or blocker to report, answer exactly NO_UPDATE to stay quiet. Use post_update for progress worth hearing before you finish, never for no-news status. If a decision belongs to the user, stop and say so in your answer. Follow the device rules for the machine you run on.`,
   });
   await preloadGroups(tx, worker.id, preload);
   state.workers.push({
@@ -1057,7 +1061,10 @@ export function createWorkerTools(
             if (!state.queued.includes(requestId)) state.queued.push(requestId);
             return reportWhenBusy(tx, parentId);
           }, context);
-          const content = noticeText({ name: record.name, status: "update", text: args.text });
+          const content = noticeText(
+            { name: record.name, status: "update", text: args.text },
+            whenBusy === "steer",
+          );
           await parent.submit({ type: "input", content, whenBusy, requestId }, context);
           // Keep only the newest queued update; one already placed is part of the parent's transcript and stays.
           await api.commit(async (tx) => {
