@@ -45,9 +45,8 @@ export type InboxItem = {
   answer?: string;
   /** Pushed to devices once, when it was first labeled one of their kinds. */
   pushed?: boolean;
-  /** A plugin's ask: its key, to close it by, the page where the user acts, and the worker it is for. */
+  /** A plugin's ask: its key, to close it by, and the worker it is for. */
   key?: string;
-  url?: string;
   from?: string;
 };
 
@@ -60,7 +59,6 @@ export type PendingAsk = {
   request: string;
   at: number;
   headline: string;
-  url?: string;
   from?: string;
   goal: string | null;
   state: "open" | "answered" | "closed";
@@ -72,7 +70,6 @@ export type AskInput = {
   readonly key: string;
   readonly requestId: string;
   readonly headline: string;
-  readonly url?: string;
   readonly from?: string;
   readonly goal?: string | null;
 };
@@ -213,7 +210,6 @@ export async function noteReplies(tx: Tx, front: ConversationId): Promise<InboxI
       labeledAt: ask.at,
       state: ask.state,
       key: ask.key,
-      ...(ask.url === undefined ? {} : { url: ask.url }),
       ...(ask.from === undefined ? {} : { from: ask.from }),
       ...(ask.pushed === true ? { pushed: true } : {}),
     });
@@ -253,7 +249,6 @@ export async function openAsk(tx: Tx, front: ConversationId, ask: AskInput): Pro
     headline: ask.headline.replace(/\s+/g, " ").trim().slice(0, 200),
     goal,
     state: "open",
-    ...(ask.url === undefined ? {} : { url: ask.url }),
     ...(ask.from === undefined ? {} : { from: ask.from }),
   });
   doc.pending.splice(0, Math.max(0, doc.pending.length - 50));

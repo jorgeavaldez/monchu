@@ -144,7 +144,6 @@ describe("inbox", () => {
           key: "handoff:k3",
           requestId: "asked:k3",
           headline: "browser needs you in the browser: solve the CAPTCHA",
-          url: "https://farm.example.test/h/k3",
           from: "browser",
         });
         // A replay opens nothing new.
@@ -171,7 +170,6 @@ describe("inbox", () => {
           by: "plugin",
           state: "open",
           from: "browser",
-          url: "https://farm.example.test/h/k3",
           headline: "browser needs you in the browser: solve the CAPTCHA",
         },
       ]);

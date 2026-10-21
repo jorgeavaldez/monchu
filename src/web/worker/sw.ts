@@ -61,12 +61,13 @@ self.addEventListener("push", (event) => {
   );
 });
 
-/** A tap opens the message: in an open Monchu window when there is one. */
+/** A tap opens the message: in an open Monchu window when there is one, and only ever a Monchu page, never a link. */
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data: unknown = event.notification.data;
   const path: unknown = typeof data === "object" && data !== null ? Reflect.get(data, "url") : "/";
-  const url = new URL(typeof path === "string" ? path : "/", self.location.origin).href;
+  const target = new URL(typeof path === "string" ? path : "/", self.location.origin);
+  const url = target.origin === self.location.origin ? target.href : self.location.origin + "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window" }).then(async (windows) => {
       const open = windows[0];

@@ -582,14 +582,14 @@ export class Monchu implements Client {
           kind: item.kind,
           goal: item.goal,
           headline: item.headline,
-          url: item.url ?? `/?root=${shortId(id)}#m-${shortId(item.entry)}`,
+          url: `/?root=${shortId(id)}#m-${shortId(item.entry)}`,
           tag: item.key ?? shortId(item.entry),
         })),
         ...early.map((ask) => ({
           kind: "ask" as const,
           goal: ask.goal,
           headline: ask.headline,
-          url: ask.url ?? `/?root=${shortId(id)}`,
+          url: `/?root=${shortId(id)}`,
           tag: ask.key,
         })),
       ];
