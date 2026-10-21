@@ -984,16 +984,17 @@ p.offer {
   margin-left: auto;
   border-left: 1px solid var(--line);
 }
+/* An open ask: a bar bolder than a user message's down its side, with room under its reply button; no box. */
 .askCard {
   display: flex;
   flex-direction: column;
   gap: var(--s1);
-  border: 1px solid var(--yellow);
-  padding: var(--s1);
+  border-left: 6px solid var(--yellow);
+  padding: 0 0 var(--s1) var(--s1);
 }
 .askCard:is(.answered, .closed) {
-  border-style: dashed;
-  border-color: var(--muted);
+  border: 1px dashed var(--muted);
+  padding: var(--s1);
 }
 .label {
   color: var(--muted);

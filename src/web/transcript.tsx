@@ -369,7 +369,7 @@ function entryNode(
         body={notice.text}
       />
     );
-    // A plugin's ask on a worker's notice, such as a browser handoff, is boxed like the front's own.
+    // A plugin's ask on a worker's notice, such as a browser handoff, is marked like the front's own.
     return item?.kind === "ask" ? <div class={`askCard ${item.state ?? ""}`}>{card}</div> : card;
   }
   const message = entry.model?.[0];
@@ -435,7 +435,7 @@ function entryNode(
         }
       />
     );
-    // An ask is boxed until it is answered or closed, so it stands out in the stream.
+    // An open ask carries a bold bar so it stands out in the stream; answered or closed, a faint box.
     return item?.kind === "ask" ? <div class={`askCard ${item.state ?? ""}`}>{reply}</div> : reply;
   }
   if (entry.kind === "pi.compaction") return <div class="system">context compacted</div>;
