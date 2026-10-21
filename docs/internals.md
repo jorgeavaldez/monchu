@@ -149,6 +149,7 @@ It then stops running tool processes, closes provider connections pi-ai keeps ca
 Unfinished work resumes when the backend opens, whether or not a terminal is attached; the terminal starts from a snapshot.
 A worker's result reaches the parent as a labelled follow-up input, so the front gets a turn: it tells you in a line or two and continues with the next step.
 While the front is busy, the report queues until its current answer, then starts one turn; it never lands between a tool call and its result. A busy worker parent (a worker running sub-workers) is often waiting on that report, so it steers that run instead, placed after its current tool round.
+An idle worker parent wakes on it, and what it answers goes up to its own parent like any answer, so work that continues after the worker's last report still arrives.
 Workers can call `post_update` for progress worth hearing before they finish; it reaches the parent the same way, and a newer update withdraws one still queued (at most one queued update per worker).
 Stopping the front withdraws queued input: your messages return to the editor, a withdrawn report is posted again, a withdrawn update is dropped.
 Non-fatal runtime failures appear as `system · warning` and are logged under `logs/`.

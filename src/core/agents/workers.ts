@@ -40,8 +40,16 @@ type WorkerRecords = {
     brief?: string;
     /** Retired from the active roster; the conversation stays and `reopenWorker` resumes it. Absent means open. */
     closed?: true;
+    /** Only jobs ever started or messaged it, so what its sub-workers wake it for reports quietly too (`relayAnswer`). */
+    quiet?: true;
   }[];
-  deliveries: { requestId: string; name: string; taskId: TaskId }[];
+  deliveries: {
+    requestId: string;
+    name: string;
+    taskId: TaskId;
+    /** The worker input it waits on when not `worker-message:<taskId>`; see `DeliveryInput.awaits`. */
+    awaits?: string;
+  }[];
 };
 
 const RECENT_HISTORY = 200;
@@ -271,7 +279,7 @@ async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId
     const worker = named(state.workers, delivery.name);
     const submission = await tx.submissionByRequest(
       worker.conversationId,
-      `worker-message:${delivery.taskId}`,
+      awaitedRequest(delivery.taskId, delivery.awaits),
     );
     if (submission?.type === "input" && submission.status === "done")
       answers.add(submission.answer);
@@ -398,7 +406,17 @@ type DeliveryInput = {
   whenBusy: WhenBusy;
   /** The parent hears the worker's answer only when it starts with `NEEDS USER` (`needsUser`); failures always. */
   quiet?: true;
+  /**
+   * The request ID of an input the worker's own sub-worker already sent it (`relayAnswer`): the delivery waits on that
+   * input instead of sending `message`, and stays silent if it is withdrawn before the worker reads it.
+   */
+  awaits?: string;
 };
+
+/** The request ID of the worker input a delivery waits on. */
+function awaitedRequest(taskId: TaskId, awaits: string | undefined): string {
+  return awaits ?? `worker-message:${taskId}`;
+}
 
 /** Whether a quiet delivery's answer asks the parent to bring something to the user. */
 function needsUser(text: string): boolean {
@@ -417,12 +435,13 @@ const Delivery = defineTask<
     deliver: async (task, runtime, context) => {
       const worker = await runtime.conversation(runtime.conversationId, context);
       if (worker === undefined) throw new Error("Worker conversation is missing");
+      // An awaited input is already admitted, so submitting its request ID again returns it.
       const submission = await worker.submit(
         {
           type: "input",
           content: task.input.message,
           whenBusy: task.input.whenBusy,
-          requestId: `worker-message:${task.id}`,
+          requestId: awaitedRequest(task.id, task.input.awaits),
         },
         context,
       );
@@ -435,7 +454,9 @@ const Delivery = defineTask<
           requestId: task.input.requestId,
           submissionId: submission.id,
         };
-        if (settled.status === "unanswered") {
+        // A sub-worker's notice withdrawn unread (a newer update, a stopped sub-worker) asked the worker nothing.
+        const withdrawn = task.input.awaits !== undefined && settled.entry === undefined;
+        if (settled.status === "unanswered" && !withdrawn) {
           // Messages queued into one run all go unanswered when it fails: report that failure once, with its error.
           const state = await tx.doc(WorkersDoc, task.input.parentId);
           const record = state.workers.find(
@@ -448,7 +469,7 @@ const Delivery = defineTask<
             record.reported.push(error.id);
             result = { ...base, status: "failed", text: `${settled.reason}: ${error.message}` };
           }
-        } else if (settled.type === "input") {
+        } else if (settled.type === "input" && settled.status === "done") {
           const entry = await tx.entry(AssistantEntry, settled.answer);
           const text = (entry?.model ?? [])
             .flatMap((message) => (message.role === "assistant" ? message.content : []))
@@ -482,19 +503,17 @@ const Delivery = defineTask<
     report: async (task, runtime, context) => {
       const { parentId } = task.input;
       const { result, whenBusy } = task.state.checkpoint;
+      let placed: { requestId: string; content: string } | undefined;
       if (result !== null) {
         const parent = await runtime.conversation(parentId, context);
         if (parent === undefined) throw new Error("Worker parent conversation is missing");
         // The report starts the parent's turn when idle, or joins it as `reportWhenBusy` says. Stopping the parent withdraws
         // queued input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
         for (let attempt = 0; ; attempt++) {
+          const content = noticeText(result);
+          const requestId = reportRequestId(task.id, attempt);
           const submission = await parent.submit(
-            {
-              type: "input",
-              content: noticeText(result),
-              whenBusy,
-              requestId: reportRequestId(task.id, attempt),
-            },
+            { type: "input", content, whenBusy, requestId },
             context,
           );
           // Finish once the parent's transcript holds the report, not after its answer: the worker is idle meanwhile.
@@ -506,7 +525,11 @@ const Delivery = defineTask<
             // An aborted run ends without placing input queued during its abort; withdraw it and post again.
             if (idle && record.status === "queued") await submission.abort(context);
           }
-          if (record.entry !== undefined || record.reason === DELETED_FROM_QUEUE) break;
+          if (record.entry !== undefined) {
+            placed = { requestId, content };
+            break;
+          }
+          if (record.reason === DELETED_FROM_QUEUE) break;
           // Only a withdrawn input settles without an entry.
           if (record.reason !== "aborted")
             throw new Error(`Worker report was not placed: ${record.reason}`);
@@ -516,6 +539,7 @@ const Delivery = defineTask<
       }
       await runtime.commit(async (tx) => {
         await pruneRecords(tx, parentId, task.id);
+        if (placed !== undefined) await relayAnswer(tx, parentId, placed.requestId, placed.content);
         return { status: "terminal", outcome: { status: "completed", result: null } };
       }, context);
     },
@@ -539,6 +563,42 @@ const Delivery = defineTask<
       return { status: "terminal", outcome: { status: "aborted" } };
     }, context),
 });
+
+/**
+ * Report what a worker answers to the notice its sub-worker just sent it (`requestId`), as it reports any answer: a
+ * sub-worker's update or report wakes an idle worker, and no delivery from its parent waits on that run. A worker only
+ * jobs ever asked reports it quietly, as it does their wakes. A front has no parent to tell.
+ */
+async function relayAnswer(
+  tx: Tx,
+  workerId: ConversationId,
+  requestId: string,
+  message: string,
+): Promise<void> {
+  const parentId = await parentOf(tx, workerId);
+  if (parentId === undefined) return;
+  const state = await tx.doc(WorkersDoc, parentId);
+  const worker = state.workers.find((item) => item.conversationId === workerId);
+  const relayId = `relay:${requestId}`;
+  if (worker === undefined || state.deliveries.some((item) => item.requestId === relayId)) return;
+  await pruneRecords(tx, parentId);
+  const input: DeliveryInput = {
+    parentId,
+    name: worker.name,
+    message,
+    requestId: relayId,
+    whenBusy: "steer",
+    awaits: requestId,
+    ...(worker.quiet ? { quiet: true } : {}),
+  };
+  const taskId = await tx.createTask(Delivery, input, {
+    conversationId: workerId,
+    ownership: { kind: "conversation" },
+    background: true,
+  });
+  // Not counted in `started`: the parent did not route anything.
+  state.deliveries.push({ requestId: relayId, name: worker.name, taskId, awaits: requestId });
+}
 
 export async function startWorker(
   tx: Tx,
@@ -579,6 +639,7 @@ export async function startWorker(
     conversationId: worker.id,
     reported: [],
     brief: message.slice(0, 300),
+    ...(quiet ? { quiet: true } : {}),
   });
   const input: DeliveryInput = {
     parentId,
@@ -612,6 +673,7 @@ export async function messageWorker(
   const worker = named(state.workers, name);
   if (!state.deliveries.some((item) => item.requestId === requestId)) {
     if (worker.closed) throw new Error(`${name} is closed; reopen it with reopen_worker first`);
+    if (!quiet) delete worker.quiet;
     await pruneRecords(tx, parentId);
     const input: DeliveryInput = {
       parentId,
@@ -995,20 +1057,15 @@ export function createWorkerTools(
             if (!state.queued.includes(requestId)) state.queued.push(requestId);
             return reportWhenBusy(tx, parentId);
           }, context);
-          await parent.submit(
-            {
-              type: "input",
-              content: noticeText({ name: record.name, status: "update", text: args.text }),
-              whenBusy,
-              requestId,
-            },
-            context,
-          );
+          const content = noticeText({ name: record.name, status: "update", text: args.text });
+          await parent.submit({ type: "input", content, whenBusy, requestId }, context);
           // Keep only the newest queued update; one already placed is part of the parent's transcript and stays.
           await api.commit(async (tx) => {
             const state = await tx.doc(WorkerUpdatesDoc, api.conversationId);
             state.queued = await withdrawQueued(tx, parentId, state.queued, true);
           }, context);
+          // Its own commit: a commit reads no table after its first table write.
+          await api.commit((tx) => relayAnswer(tx, parentId, requestId, content), context);
           return { output: [{ type: "text", text: "Update posted." }] };
         },
       }),

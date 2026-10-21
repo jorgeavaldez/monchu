@@ -376,6 +376,165 @@ describe("background workers", () => {
     await harness.close(context);
   });
 
+  it("reports what an idle worker answers when its sub-worker's update or report wakes it", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const call = (tool: string, args: Record<string, string>) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, async (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "spawn")
+        return call("start_worker", { name: "child", task: "slow child" });
+      if (last?.role === "toolResult" && last.toolName === "start_worker")
+        return fauxAssistantMessage([fauxText("child started")]);
+      if (last?.role === "user" && text === "slow child") {
+        await held;
+        return call("post_update", { text: "halfway" });
+      }
+      if (last?.role === "toolResult" && last.toolName === "post_update") {
+        // The child finishes only once its parent has answered the update on its own.
+        await waitFor(async () => (await reports(root)).length === 2);
+        return fauxAssistantMessage([fauxText("child done")]);
+      }
+      if (last?.role === "user" && text.startsWith("[Worker child update"))
+        return fauxAssistantMessage([fauxText("child is halfway")]);
+      if (last?.role === "user" && text.startsWith("[Background worker child"))
+        return fauxAssistantMessage([fauxText("child finished, all done")]);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const { harness, root } = await open(value);
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "spawn", value.directory, "start:0", fauxRole),
+      context,
+    );
+    await waitFor(async () => (await reports(root)).length === 1);
+    // The worker answered its brief and sits idle; its sub-worker's notices wake it, and each answer goes up.
+    release();
+    await waitFor(async () => (await reports(root)).length === 3);
+    expect((await reports(root)).map((entry) => workerNotice(entry)?.text)).toEqual([
+      "child started",
+      "child is halfway",
+      "child finished, all done",
+    ]);
+    await settle(harness, root);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
+  it("keeps a sub-worker's wake quiet only for a worker that jobs alone ever asked", async () => {
+    const value = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const call = (tool: string, args: Record<string, string>) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, async (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text.startsWith("spawn "))
+        return call("start_worker", { name: "child", task: `slow ${text.slice(6)}` });
+      if (last?.role === "toolResult" && last.toolName === "start_worker")
+        return fauxAssistantMessage([fauxText("child started")]);
+      if (last?.role === "user" && text.startsWith("slow ")) {
+        await held;
+        return fauxAssistantMessage([fauxText(`${text} done`)]);
+      }
+      if (last?.role === "user" && text === "job ping")
+        return fauxAssistantMessage([fauxText("pong")]);
+      if (last?.role === "user" && text.startsWith("[Background worker child"))
+        return fauxAssistantMessage([fauxText(`finished: ${text.split("\n").at(-1)}`)]);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const { harness, root } = await open(value);
+    // The front asked "asked"; a job alone started "job-only".
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "asked", "spawn a", value.directory, "start:0", fauxRole),
+      context,
+    );
+    await root.commit(
+      (tx) =>
+        startWorker(
+          tx,
+          root.id,
+          "job-only",
+          "spawn b",
+          value.directory,
+          "start:1",
+          fauxRole,
+          [],
+          true,
+        ),
+      context,
+    );
+    await waitFor(async () => (await reports(root)).length === 1);
+    // A job wakes the asked worker after the front's ask; that wake stays quiet.
+    const ping = await root.commit(
+      (tx) => messageWorker(tx, root.id, "asked", "job ping", "job:0", "followUp", true),
+      context,
+    );
+    const asked = await conversationOf(harness, ping);
+    await waitFor(async () =>
+      (await allEntries(asked)).some((entry) => textOf(entry.model?.[0]) === "pong"),
+    );
+    await asked.waitForIdle(context);
+    release();
+    await waitFor(async () => (await reports(root)).length === 2);
+    for (const worker of (await harness.snapshot(WorkersDoc, root.id, context))?.workers ?? [])
+      await settle(harness, await conversationOf(harness, worker.conversationId));
+    await settle(harness, root);
+    // The asked worker's result still reports after the quiet job wake; the job-only worker's stays quiet.
+    expect((await reports(root)).map((entry) => workerNotice(entry))).toEqual([
+      { name: "asked", status: "completed", text: "child started" },
+      { name: "asked", status: "completed", text: "finished: slow a done" },
+    ]);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
+  it("stays silent about a sub-worker's update its busy worker never read", async () => {
+    const value = await setup();
+    const call = (tool: string, args: Record<string, string>) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "spawn")
+        return call("start_worker", { name: "child", task: "two updates" });
+      if (last?.role === "toolResult" && last.toolName === "start_worker")
+        return call("bash", { command: "sleep 2" });
+      if (last?.role === "user" && text === "two updates")
+        return call("post_update", { text: "one" });
+      if (last?.role === "toolResult" && last.toolName === "post_update")
+        return textOf(request.messages.at(-3)) === "two updates"
+          ? call("post_update", { text: "two" })
+          : fauxAssistantMessage([fauxText("child done")]);
+      if (last?.role === "user" && workerText(text))
+        return fauxAssistantMessage([fauxText(`saw ${text.split("\n").at(-1)}`)]);
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    const { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "spawn", value.directory, "start:0", fauxRole),
+      context,
+    );
+    const worker = await conversationOf(harness, workerId);
+    await waitFor(async () => (await reports(root)).length === 2);
+    await settle(harness, worker);
+    await settle(harness, root);
+    // "two" replaced the queued "one" before the busy run read it, so "one" brings no report and no failure.
+    expect((await reports(root)).map((entry) => workerNotice(entry))).toEqual([
+      { name: "w", status: "completed", text: "saw two" },
+      { name: "w", status: "completed", text: "saw child done" },
+    ]);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
   it("reports once when the store closes while the report is queued", async () => {
     const value = await setup();
     let holding = true;
