@@ -585,6 +585,16 @@ export function toggleRoots(open = panel.value !== "roots"): void {
   });
 }
 
+/** Open the pins panel with an empty filter, or close it: the star in the top bar. */
+export function togglePins(open = panel.value !== "pins"): void {
+  batch(() => {
+    if (open) {
+      page.pinsQuery.value = { text: "" };
+      page.panel.value = "pins";
+    } else if (panel.value === "pins") page.panel.value = undefined;
+  });
+}
+
 /**
  * Changes a still-queued message of a conversation of `at` (the shown one by default); one that already left comes
  * back as a draft. What the person wrote stays theirs wherever the page went meanwhile.

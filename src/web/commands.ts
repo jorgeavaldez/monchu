@@ -37,6 +37,7 @@ import {
   toggleExpandAll,
   toggleMode,
   togglePin,
+  togglePins,
   toggleRoots,
   unpin,
 } from "./intents.ts";
@@ -245,6 +246,7 @@ const ACTIONS = {
   reply: { run: replyDraft } satisfies Action<[string]>,
   pin: { run: togglePin } satisfies Action<[string]>,
   unpin: { run: unpin } satisfies Action<[string]>,
+  "pins.toggle": { run: () => togglePins() } satisfies Action,
   "roots.toggle": { run: () => toggleRoots() } satisfies Action,
   "root.switch": { run: switchRoot } satisfies Action<[string]>,
   "root.new": { run: newRoot } satisfies Action,

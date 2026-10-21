@@ -1626,7 +1626,7 @@ async function journeys(
   );
 
   await journey(
-    "pins: the star pins a reply, a reload keeps it, /pins filters and opens it, unpin empties it",
+    "pins: the star pins a reply, a reload keeps it, the top bar and /pins open them, filter, open, unpin",
     async () => {
       const command = async (text: string, done: string) => {
         await browser("fill", "textarea", text);
@@ -1654,8 +1654,16 @@ async function journeys(
       await browser("reload");
       await browser("wait", "--fn", `${star}?.getAttribute("aria-pressed") === "true"`);
       const pins = `document.querySelector(".pinsPanel")`;
-      await command("/pins", `${pins}?.querySelector("li.row")`);
+      // The top bar's star opens them without knowing `/pins`, and closes them again.
+      const tab = `document.querySelector(".agents .pins")`;
+      check((await page(`${tab}?.textContent`)) === "★ 1", "the top bar doesn't show the pin");
+      await page(`${tab}.click()`);
+      await browser("wait", "--fn", `${pins}?.querySelector("li.row")`);
       const rows = () => page(`${pins}.querySelectorAll("li.row").length`);
+      check((await rows()) === 1, `the star doesn't list the pin: ${String(await rows())}`);
+      await page(`${tab}.click()`);
+      await browser("wait", "--fn", `!${pins}`);
+      await command("/pins", `${pins}?.querySelector("li.row")`);
       check((await rows()) === 1, `/pins doesn't list the pin: ${String(await rows())}`);
       await browser("fill", ".pinsPanel .filter", "nothing like it");
       await browser("wait", "--fn", `${pins}.textContent.includes("no pin matches")`);
@@ -1669,6 +1677,7 @@ async function journeys(
       await browser("wait", "--fn", `${pins}.textContent.includes("nothing pinned yet")`);
       await page(`${pins}.querySelector("header [aria-label=close]").click()`);
       await browser("wait", "--fn", `!${pins}`);
+      check((await page(`!${tab}`)) === true, "the top bar still shows a star with nothing pinned");
       return "pinned with the star, kept through a reload, filtered, opened in full, unpinned";
     },
   );

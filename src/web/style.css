@@ -134,6 +134,7 @@ pre {
   background: var(--fg);
   color: var(--bg);
 }
+.agents .pins,
 .agents .roots {
   flex: none;
   min-width: var(--tap);

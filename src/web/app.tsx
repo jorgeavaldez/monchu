@@ -29,6 +29,7 @@ import {
   roots,
   rootsMessage,
   panel,
+  pins,
   inbox,
   shown,
   view,
@@ -80,6 +81,27 @@ function RootTab() {
         </span>
       )}
       <span aria-hidden="true">▾</span>
+    </button>
+  );
+}
+
+/**
+ * The pins button, left of the root menu once anything is pinned: ★ and how many, opening the pins panel as `/pins`
+ * does, or closing it.
+ */
+function PinsTab() {
+  const open = panel.value === "pins";
+  const count = pins.value.length;
+  if (count === 0 && !open) return null;
+  return (
+    <button
+      class={`pins${open ? " on" : ""}`}
+      aria-label={`pins: ${String(count)}`}
+      aria-expanded={open}
+      title="pinned messages (/pins)"
+      onClick={() => run("pins.toggle")}
+    >
+      <span aria-hidden="true">★</span> {count}
     </button>
   );
 }
@@ -193,6 +215,7 @@ function Agents() {
             </button>
           ))}
       </div>
+      <PinsTab />
       <RootTab />
     </nav>
   );
