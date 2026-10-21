@@ -288,7 +288,8 @@ export function createClaudeCodeProvider(
   /**
    * Record a clean point: the session file cut at its last complete line, and the history it holds. At a parked tool
    * boundary the cut goes before the records of response `before`, once they hold the request's tool results `holds`;
-   * results Claude Code hasn't written yet keep the earlier point.
+   * results Claude Code hasn't written yet keep the earlier point. A silent end cuts after its response's last record,
+   * excluding Claude Code's forced visible-output nudge and any reply to it.
    */
   const saveCheckpoint = async (
     key: string,
@@ -297,7 +298,7 @@ export function createClaudeCodeProvider(
     keys: string[],
     cwd: string,
     claudeDir: string,
-    cut?: { before: string | undefined; holds: string[] },
+    cut?: { before: string | undefined; holds: string[] } | { after: string },
   ) => {
     // Only the tail is read: a session holding tool results and images runs to megabytes.
     const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir));
@@ -306,15 +307,22 @@ export function createClaudeCodeProvider(
       const { size } = await file.stat();
       const tail = Buffer.alloc(Math.min(size, 1 << 20));
       await file.read(tail, 0, tail.length, size - tail.length);
-      const at = cut?.before === undefined ? -1 : tail.indexOf(`"id":"${cut.before}"`);
-      const held = at < 0 ? tail : tail.subarray(0, at);
-      const end = held.lastIndexOf(0x0a);
-      if (
-        cut !== undefined &&
-        (end < 0 || cut.holds.some((id) => !held.includes(`"tool_use_id":"${id}"`)))
-      )
-        return;
-      bytes = end < 0 ? 0 : size - tail.length + end + 1;
+      if (cut !== undefined && "after" in cut) {
+        const at = tail.lastIndexOf(`"id":"${cut.after}"`);
+        const end = at < 0 ? -1 : tail.indexOf(0x0a, at);
+        if (end < 0) return;
+        bytes = size - tail.length + end + 1;
+      } else {
+        const at = cut?.before === undefined ? -1 : tail.indexOf(`"id":"${cut.before}"`);
+        const held = at < 0 ? tail : tail.subarray(0, at);
+        const end = held.lastIndexOf(0x0a);
+        if (
+          cut !== undefined &&
+          (end < 0 || cut.holds.some((id) => !held.includes(`"tool_use_id":"${id}"`)))
+        )
+          return;
+        bytes = end < 0 ? 0 : size - tail.length + end + 1;
+      }
     } finally {
       await file.close();
     }
@@ -912,6 +920,7 @@ export function createClaudeCodeProvider(
         let retrying = false;
         let started = false;
         let sawResult = false;
+        let silent = false;
         for await (const item of live.events) {
           options.signal?.throwIfAborted();
           if ("error" in item) throw item.error;
@@ -947,8 +956,42 @@ export function createClaudeCodeProvider(
             throw new Error("Claude Code started an unexpected subagent");
           const event: SDKPartialAssistantMessage["event"] = message.event;
           if (event.type === "message_start") {
-            if (started && !retrying)
+            if (started && !retrying) {
+              if (
+                complete &&
+                (output.rawStopReason === "end_turn" || output.rawStopReason === "stop_sequence") &&
+                !output.content.some(
+                  (block) =>
+                    block.type === "toolCall" || (block.type === "text" && block.text.trim()),
+                )
+              ) {
+                // Claude Code nudges a thinking-only/blank end into a second response. Silence is a valid reply:
+                // stop that query, then keep only the first response in its checkpoint for the next turn.
+                live.stop();
+                await live.finished;
+                if (preserveSharedSession || isolated)
+                  deleteSession(message.session_id, cwd, claudeDir);
+                else {
+                  const state = sessions.get(key);
+                  if (state !== undefined) {
+                    if (output.responseId !== undefined)
+                      await saveCheckpoint(
+                        key,
+                        state,
+                        message.session_id,
+                        [...keys, ...claudeHistoryKeys([output])],
+                        cwd,
+                        claudeDir,
+                        { after: output.responseId },
+                      );
+                    state.rebuild = "silent";
+                  }
+                }
+                silent = true;
+                break;
+              }
               throw new Error("Claude Code restarted the response internally");
+            }
             if (retrying) nextMessageUsage();
             output.responseId = event.message.id;
             output.responseModel = event.message.model;
@@ -1121,7 +1164,7 @@ export function createClaudeCodeProvider(
             }
           }
         }
-        if (!complete || (!live.parked && !sawResult))
+        if (!complete || (!live.parked && !sawResult && !silent))
           throw new Error("Claude Code exited before completing its response");
         const updated = sessions.get(key);
         if (updated !== undefined && !preserveSharedSession) {

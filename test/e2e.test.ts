@@ -789,7 +789,7 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
 
     it("survives a dropped stream and a bare tool name: Durable retries the first, Claude Code answers the second in the same reply", async () => {
       const home = await smokeHome();
-      const seen: { tools: string[]; last: string }[] = [];
+      const seen: { tools: string[]; last: string; history: string }[] = [];
       let dropped = false;
       const api = createServer((request, response) => {
         let body = "";
@@ -814,7 +814,16 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
           // Side requests (titles, quota) declare no Monchu tools.
           if (!names.includes("mcp__monchu__codemode"))
             return streamed(response, [{ type: "text", text: "side" }], "end_turn");
-          seen.push({ tools: names, last });
+          seen.push({ tools: names, last, history: JSON.stringify(messages) });
+          if (last.includes("after silence"))
+            return streamed(response, [{ type: "text", text: "after silence done" }], "end_turn");
+          if (last.includes("Your previous response had no visible output"))
+            return streamed(
+              response,
+              [{ type: "text", text: "forced visible answer" }],
+              "end_turn",
+            );
+          if (last.includes("silent wake")) return streamed(response, [], "end_turn");
           // The connection drops once after the headers: Claude Code must not re-send it without streaming.
           if (!dropped) {
             dropped = true;
@@ -913,6 +922,40 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
         expect(runs).toHaveLength(1);
         expect(textOf(runs[0])).toContain("42");
         expect(JSON.stringify(all())).not.toContain("undeclared tool");
+
+        // The real CLI forces a second request after a blank end. The bridge must return the original silence,
+        // not the nudge's answer, and resume its own persisted records on the next turn.
+        const beforeSilent = all().length;
+        await root.submit("silent wake", "e2e:claude-silent", "followUp");
+        await waitFor(
+          () =>
+            all()
+              .slice(beforeSilent)
+              .some((message) => message.role === "assistant" && message.stopReason === "stop"),
+          60_000,
+        );
+        const silent = all()
+          .slice(beforeSilent)
+          .find((message) => message.role === "assistant");
+        expect(silent).toMatchObject({ stopReason: "stop", content: [] });
+        expect(
+          seen.some((each) => each.last.includes("Your previous response had no visible output")),
+        ).toBe(true);
+        expect(JSON.stringify(all())).not.toContain("forced visible answer");
+        await root.submit("after silence", "e2e:claude-after-silent", "followUp");
+        await waitFor(
+          () =>
+            all().some(
+              (message) => message.role === "assistant" && textOf(message) === "after silence done",
+            ),
+          60_000,
+        );
+        const afterSilent = seen.find((each) => each.last.includes("after silence"));
+        expect(afterSilent?.history).not.toContain("Your previous response had no visible output");
+        expect(afterSilent?.history).not.toContain("forced visible answer");
+        expect(
+          all().filter((message) => message.role === "assistant" && message.stopReason === "error"),
+        ).toHaveLength(1);
         view.dispose();
       } finally {
         await backend.close();

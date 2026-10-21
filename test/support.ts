@@ -513,6 +513,8 @@ export function scriptedClaude(
               model: message.message.model,
               stopReason: message.message.stop_reason ?? "end_turn",
             });
+            const written = session.messages.at(-1);
+            if (written?.type === "assistant") written.message.id = message.message.id;
             session.save();
           }
           yield { ...message, session_id: session.sessionId };
@@ -831,7 +833,7 @@ export function bareToolCalls(messages: SDKMessage[]): SDKMessage[] {
 /** SDK frames, not faux Pi events: exercise streaming, signed thinking and tool argument assembly. */
 export function claudeResponse(
   content: AssistantMessage["content"],
-  stopReason: "end_turn" | "tool_use" | "max_tokens" = "end_turn",
+  stopReason: "end_turn" | "stop_sequence" | "tool_use" | "max_tokens" = "end_turn",
   response: { id: string; input: number; cacheRead: number; cacheWrite: number } = {
     id: "msg_script",
     input: 10,

@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import assert from "node:assert";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
@@ -173,6 +173,145 @@ describe("Claude Code subscription provider", () => {
       },
     });
   });
+
+  it.each([
+    ["end_turn", "thinking"],
+    ["stop_sequence", "thinking"],
+    ["end_turn", "empty"],
+    ["end_turn", "whitespace"],
+  ] as const)(
+    "accepts a silent %s (%s), discards the nudge and restores the exact session prefix",
+    async (stop, kind) => {
+      const value = await setup();
+      let prefix = "";
+      const content =
+        kind === "thinking"
+          ? [
+              {
+                type: "thinking" as const,
+                thinking: "nothing to report",
+                thinkingSignature: "signed",
+              },
+            ]
+          : kind === "whitespace"
+            ? [{ type: "text" as const, text: " \n\t" }]
+            : [];
+      const script = scriptedClaude(value.directory, config, async function* () {
+        if (script.requests.length > 1) {
+          yield* claudeResponse([{ type: "text", text: "after silence" }]);
+          return;
+        }
+        yield* claudeResponse(content, stop);
+        const path = script.requests[0]?.path;
+        assert(path);
+        prefix = await readFile(path, "utf8");
+        // The CLI writes its meta user nudge before making another model request, without a terminal SDK result.
+        await appendFile(
+          path,
+          JSON.stringify({
+            type: "user",
+            isMeta: true,
+            turnCompanion: true,
+            message: {
+              role: "user",
+              content:
+                "Your previous response had no visible output. Please continue and produce a user-visible response.",
+            },
+          }) + "\n",
+        );
+        yield* claudeResponse([{ type: "text", text: "forced visible answer" }], "end_turn", {
+          id: "msg_nudge",
+          input: 100,
+          cacheRead: 200,
+          cacheWrite: 300,
+        }).filter((message) => message.type === "stream_event");
+      });
+      const models = await openClaudeModels(value.directory, script.provider, token);
+      const model = models.getModel("claude-code", role.modelId);
+      assert(model);
+      const options = { sessionId: "silent-conversation", reasoning: "high" as const };
+      const messages: Message[] = [{ role: "user", content: "no news?", timestamp: 1 }];
+      const stream = models.streamSimple(model, { messages }, options);
+      const events: string[] = [];
+      for await (const event of stream) events.push(event.type);
+      const reply = await stream.result();
+      expect(reply).toMatchObject({
+        stopReason: "stop",
+        rawStopReason: stop,
+        content,
+        responseId: "msg_script",
+        usage: { input: 10, output: 7, cacheRead: 20, cacheWrite: 30 },
+      });
+      expect(reply.errorMessage).toBeUndefined();
+      expect(events.at(-1)).toBe("done");
+      expect(events.filter((event) => event === "start")).toHaveLength(1);
+      expect(script.closed()).toBe(1);
+      expect(script.interrupted()).toBe(1);
+      const checkpoint = await readFile(
+        join(value.directory, "claude", "checkpoints", "silent-conversation.json"),
+        "utf8",
+      );
+      expect(JSON.parse(checkpoint)).toMatchObject({ bytes: Buffer.byteLength(prefix) });
+      // Also cover a process restart: only the persisted checkpoint survives a new provider.
+      const resumed =
+        stop === "stop_sequence"
+          ? scriptedClaude(value.directory, config, async function* () {
+              yield* claudeResponse([{ type: "text", text: "after silence" }]);
+            })
+          : script;
+      const nextModels =
+        resumed === script ? models : await openModels(value.directory, resumed.provider);
+      const nextModel = nextModels.getModel("claude-code", role.modelId);
+      assert(nextModel);
+      messages.push(reply, { role: "user", content: "next turn", timestamp: 2 });
+      const next = await nextModels.completeSimple(nextModel, { messages }, options);
+      expect(next.stopReason).toBe("stop");
+      expect(textOf(next)).toBe("after silence");
+      expect(
+        next.diagnostics?.find((diagnostic) => diagnostic.type === "prompt_cache")?.details,
+      ).toMatchObject({
+        path: "restore",
+        reason: resumed === script ? "silent" : "restart",
+      });
+      const nextRequest = resumed.requests.at(-1);
+      expect(nextRequest?.path).toBe(script.requests[0]?.path);
+      expect(nextRequest?.input.options?.resume).toBe(
+        basename(script.requests[0]?.path ?? "", ".jsonl"),
+      );
+      expect(JSON.stringify(nextRequest?.history)).not.toContain(
+        "previous response had no visible output",
+      );
+      expect(JSON.stringify(nextRequest?.history)).not.toContain("forced visible answer");
+      expect((await readFile(nextRequest?.path ?? "", "utf8")).startsWith(prefix)).toBe(true);
+    },
+  );
+
+  it.each(["visible", "length", "unfinished"] as const)(
+    "still rejects an internal restart after a %s response",
+    async (kind) => {
+      const value = await setup();
+      const script = scriptedClaude(value.directory, config, async function* () {
+        const response = claudeResponse(
+          kind === "visible"
+            ? [{ type: "text", text: "answer" }]
+            : [{ type: "thinking", thinking: "still thinking" }],
+          kind === "length" ? "max_tokens" : "end_turn",
+        );
+        yield* kind === "unfinished" ? response.slice(0, -2) : response;
+        yield* claudeResponse([{ type: "text", text: "unexpected second response" }]);
+      });
+      const models = await openClaudeModels(value.directory, script.provider, token);
+      const model = models.getModel("claude-code", role.modelId);
+      assert(model);
+      const reply = await models.completeSimple(
+        model,
+        { messages: [{ role: "user", content: "test", timestamp: 1 }] },
+        { sessionId: "restart-guard" },
+      );
+      expect(reply.stopReason).toBe("error");
+      expect(reply.errorMessage).toContain("restarted the response internally");
+    },
+  );
 
   it("lets the model answer again after Claude Code rejects a tool name it doesn't declare, up to twice", async () => {
     const value = await setup();
