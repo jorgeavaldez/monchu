@@ -1576,6 +1576,12 @@ async function journeys(
       await browser("press", "Enter");
       await browser("wait", ".pick [aria-label=Roots]");
       await browser("fill", "textarea", "show archived roots");
+      // A fill dispatches input before Preact paints its filtered rows. Enter takes the row on screen.
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector('.pick [aria-selected="true"]')?.textContent === "show archived roots"`,
+      );
       await browser("press", "Enter");
       await browser("wait", "--fn", `document.querySelector("textarea")?.value === ""`);
       await browser("wait", ".pick [aria-label=Roots]");
