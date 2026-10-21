@@ -301,7 +301,22 @@ export function createClaudeCodeProvider(
     cut?: { before: string | undefined; holds: string[] } | { after: string },
   ) => {
     // Only the tail is read: a session holding tool results and images runs to megabytes.
-    const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir));
+    const file = await open(getSessionPath(sessionId, normalizeProjectPath(cwd), claudeDir)).catch(
+      (error: unknown) => {
+        // A brand-new blank reply can be nudged before Claude Code creates its session file. There is no prefix
+        // to checkpoint yet; keep any earlier checkpoint, just as when its response record isn't in the tail.
+        if (
+          cut !== undefined &&
+          "after" in cut &&
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        )
+          return undefined;
+        throw error;
+      },
+    );
+    if (file === undefined) return;
     let bytes: number;
     try {
       const { size } = await file.stat();

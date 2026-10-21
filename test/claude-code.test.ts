@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import assert from "node:assert";
 import { spawn } from "node:child_process";
-import { appendFile, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Monchu } from "../src/core/backend.ts";
@@ -179,6 +179,7 @@ describe("Claude Code subscription provider", () => {
     ["stop_sequence", "thinking"],
     ["end_turn", "empty"],
     ["end_turn", "whitespace"],
+    ["end_turn", "unwritten"],
   ] as const)(
     "accepts a silent %s (%s), discards the nudge and restores the exact session prefix",
     async (stop, kind) => {
@@ -219,6 +220,7 @@ describe("Claude Code subscription provider", () => {
             },
           }) + "\n",
         );
+        if (kind === "unwritten") await rm(path);
         yield* claudeResponse([{ type: "text", text: "forced visible answer" }], "end_turn", {
           id: "msg_nudge",
           input: 100,
@@ -247,11 +249,12 @@ describe("Claude Code subscription provider", () => {
       expect(events.filter((event) => event === "start")).toHaveLength(1);
       expect(script.closed()).toBe(1);
       expect(script.interrupted()).toBe(1);
-      const checkpoint = await readFile(
+      const checkpoint = readFile(
         join(value.directory, "claude", "checkpoints", "silent-conversation.json"),
         "utf8",
       );
-      expect(JSON.parse(checkpoint)).toMatchObject({ bytes: Buffer.byteLength(prefix) });
+      if (kind === "unwritten") await expect(checkpoint).rejects.toMatchObject({ code: "ENOENT" });
+      else expect(JSON.parse(await checkpoint)).toMatchObject({ bytes: Buffer.byteLength(prefix) });
       // Also cover a process restart: only the persisted checkpoint survives a new provider.
       const resumed =
         stop === "stop_sequence"
@@ -270,7 +273,7 @@ describe("Claude Code subscription provider", () => {
       expect(
         next.diagnostics?.find((diagnostic) => diagnostic.type === "prompt_cache")?.details,
       ).toMatchObject({
-        path: "restore",
+        path: kind === "unwritten" ? "rebuild" : "restore",
         reason: resumed === script ? "silent" : "restart",
       });
       const nextRequest = resumed.requests.at(-1);
@@ -282,7 +285,8 @@ describe("Claude Code subscription provider", () => {
         "previous response had no visible output",
       );
       expect(JSON.stringify(nextRequest?.history)).not.toContain("forced visible answer");
-      expect((await readFile(nextRequest?.path ?? "", "utf8")).startsWith(prefix)).toBe(true);
+      if (kind !== "unwritten")
+        expect((await readFile(nextRequest?.path ?? "", "utf8")).startsWith(prefix)).toBe(true);
     },
   );
 

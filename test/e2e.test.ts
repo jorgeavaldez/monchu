@@ -19,6 +19,7 @@ import type { Draft, JobEvent, PinnedMessage, RootClient } from "../src/api/clie
 import { shortId } from "../src/api/ids.ts";
 import type { RemoteClient } from "../src/api/remote.ts";
 import { Monchu } from "../src/core/backend.ts";
+import { openModels } from "../src/core/models/index.ts";
 import { attachSocket, socketPath } from "../src/server/socket.ts";
 import {
   cleanup,
@@ -812,7 +813,12 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
           const messages = field(parsed, "messages");
           const last = JSON.stringify(Array.isArray(messages) ? messages.at(-1) : null);
           // Side requests (titles, quota) declare no Monchu tools.
-          if (!names.includes("mcp__monchu__codemode"))
+          if (
+            !names.includes("mcp__monchu__codemode") &&
+            !last.includes("silent wake") &&
+            !last.includes("after silence") &&
+            !last.includes("Your previous response had no visible output")
+          )
             return streamed(response, [{ type: "text", text: "side" }], "end_turn");
           seen.push({ tools: names, last, history: JSON.stringify(messages) });
           if (last.includes("after silence"))
@@ -957,6 +963,34 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
           all().filter((message) => message.role === "assistant" && message.stopReason === "error"),
         ).toHaveLength(1);
         view.dispose();
+
+        // With no tools and no earlier turns, the CLI may nudge a blank reply before creating a session file at all.
+        // There are no cached session bytes to restore, but silence must still succeed and the next turn must work.
+        const models = await openModels(home, undefined, {
+          executable: wrapper,
+          plan: "pro",
+          longContextExtraUsage: false,
+        });
+        const model = models.getModel("claude-code", role.modelId);
+        expect(model).toBeDefined();
+        if (model === undefined) throw new Error("Claude model missing");
+        const messages: Message[] = [{ role: "user", content: "silent wake", timestamp: 1 }];
+        const options = { sessionId: "fresh-silent-no-tools" };
+        const freshStart = seen.length;
+        const fresh = await models.completeSimple(model, { messages }, options);
+        expect(fresh).toMatchObject({ stopReason: "stop", content: [] });
+        expect(
+          seen
+            .slice(freshStart)
+            .some((each) => each.last.includes("Your previous response had no visible output")),
+        ).toBe(true);
+        messages.push(fresh, { role: "user", content: "after silence", timestamp: 2 });
+        const continued = await models.completeSimple(model, { messages }, options);
+        expect(continued.stopReason).toBe("stop");
+        expect(textOf(continued)).toBe("after silence done");
+        expect(
+          seen.filter((each) => each.last.includes("after silence")).at(-1)?.history,
+        ).not.toContain("Your previous response had no visible output");
       } finally {
         await backend.close();
         api.close();
