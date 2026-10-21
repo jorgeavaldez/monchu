@@ -1577,6 +1577,7 @@ async function journeys(
       await browser("wait", ".pick [aria-label=Roots]");
       await browser("fill", "textarea", "show archived roots");
       await browser("press", "Enter");
+      await browser("wait", "--fn", `document.querySelector("textarea")?.value === ""`);
       await browser("wait", ".pick [aria-label=Roots]");
       await browser("fill", "textarea", first);
       await browser(
