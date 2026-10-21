@@ -1419,7 +1419,7 @@ async function journeys(
           (await page(focused)) === false,
         "Esc after : didn't give back the draft and the page",
       );
-      // The leader while typing: the panel opens and nothing lands in the draft.
+      // The leader while typing: the picker filters in the same box, keeping the draft.
       await browser("fill", "textarea", "half typed");
       // The leader's hint shows while it waits; Esc ends both and stays in the prompt.
       await browser("press", "Control+/");
@@ -1432,16 +1432,17 @@ async function journeys(
       );
       await browser("press", "Control+/");
       await browser("press", "r");
-      await browser("wait", ".rootsPanel");
+      await browser("wait", ".pick [aria-label=Roots]");
       check(
-        (await page(`document.querySelector("textarea").value`)) === "half typed",
-        "the leader's keys landed in the draft",
+        (await page(`document.querySelector("textarea").value`)) === "",
+        "the roots picker didn't start with an empty filter",
       );
       await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
       check(
-        (await page(focused)) === true,
-        "closing a panel opened from the prompt left the prompt",
+        (await page(focused)) === true &&
+          (await page(`document.querySelector("textarea").value`)) === "half typed",
+        "closing the roots picker lost the prompt's draft or focus",
       );
       // Ctrl pressed again for the second slash, as people do.
       await browser("press", "Control+/");
@@ -1471,76 +1472,123 @@ async function journeys(
     },
   );
 
-  await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
-    const shownRoot = async () =>
-      new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
-    const first = await shownRoot();
-    check(first !== "", "the address doesn't name the shown root");
-    await browser("fill", "textarea", "/roots");
-    await browser("press", "Enter");
-    await browser("wait", ".rootsPanel li");
-    await capture("roots-one", home, origin);
-    await page(`document.querySelector(".rootsPanel header button").click()`);
-    await browser(
-      "wait",
-      "--fn",
-      `!new URLSearchParams(location.search).get("root")?.startsWith(${JSON.stringify(first)})`,
-    );
-    const second = await shownRoot();
-    await browser(
-      "wait",
-      "--fn",
-      `!document.querySelector(".rootsPanel") && document.querySelector("textarea")`,
-    );
-    // A long message streams for a few seconds, long enough to leave the root while it works.
-    await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
-    await browser("press", "Enter");
-    await browser("wait", ".agents .roots .dot.working.here");
-    await page("history.back()");
-    await browser(
-      "wait",
-      "--fn",
-      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(first)}`,
-    );
-    await browser("wait", ".agents .roots .dot.done");
-    await capture("roots-dots", home, origin);
-    await page(`document.querySelector(".agents .roots").click()`);
-    await browser("wait", ".rootsPanel li");
-    check(
-      (await page(`document.querySelectorAll(".rootsPanel li").length`)) === 2,
-      "the panel doesn't list both roots",
-    );
-    await capture("roots", home, origin);
-    await page(`document.querySelector(".rootsPanel li:not(.here) .open").click()`);
-    await browser(
-      "wait",
-      "--fn",
-      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(second)}`,
-    );
-    await browser("wait", "--fn", `!document.querySelector(".agents .roots .dot.done")`);
-    await browser("reload");
-    await browser(
-      "wait",
-      "--fn",
-      `document.querySelector(".transcript")?.textContent.includes("second root")`,
-    );
-    check((await shownRoot()) === second, "the reload didn't come back to the same root");
-    await browser("fill", "textarea", "/roots");
-    await browser("press", "Enter");
-    await browser("wait", ".rootsPanel li");
-    await page(
-      `document.querySelector(".rootsPanel li:not(.here) .actions button:last-child").click()`,
-    );
-    await browser(
-      "wait",
-      "--fn",
-      `document.querySelector(".rootsPanel [role=status]")?.textContent.startsWith("archived") && document.querySelectorAll(".rootsPanel li").length === 1`,
-    );
-    await capture("roots-archived", home, origin);
-    await browser("press", "Escape");
-    await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
-    return "started a root, saw it working then done, switched, reloaded into it, archived the other";
-  });
+  await journey(
+    "roots: keyboard filtering, draft and focus, switch, reload and actions",
+    async () => {
+      const shownRoot = async () =>
+        new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
+      const focused = `document.activeElement === document.querySelector("textarea")`;
+      const value = () => page(`document.querySelector("textarea").value`);
+      const first = await shownRoot();
+      check(first !== "", "the address doesn't name the shown root");
+      await browser("fill", "textarea", "/roots");
+      await browser("press", "Enter");
+      await browser("wait", ".pick [aria-label=Roots]");
+      await capture("roots-one", home, origin);
+      await browser("fill", "textarea", "independent front");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `new URLSearchParams(location.search).get("root") !== ${JSON.stringify(first)}`,
+      );
+      const second = await shownRoot();
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".pick") && document.querySelector("textarea")`,
+      );
+      await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
+      await browser("press", "Enter");
+      await browser("wait", ".agents .roots .dot.working.here");
+      await page("history.back()");
+      await browser(
+        "wait",
+        "--fn",
+        `new URLSearchParams(location.search).get("root") === ${JSON.stringify(first)}`,
+      );
+      await browser("wait", ".agents .roots .dot.done");
+      await capture("roots-dots", home, origin);
+      // The goal picker's invariants: the same textarea, empty filter, Esc restores text and the originating focus.
+      await browser("fill", "textarea", "half typed\nkeep this");
+      await page(`document.querySelector("textarea").blur()`);
+      await browser("click", ".agents .roots");
+      await browser("wait", ".pick [aria-label=Roots]");
+      check((await value()) === "", "the roots filter contains the draft");
+      await browser("fill", "textarea", "no root could match this");
+      await browser("wait", ".pick .empty");
+      await browser("press", "Enter");
+      check((await shownRoot()) === first, "Enter with no matches changed roots");
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".pick")`);
+      check(
+        (await value()) === "half typed\nkeep this" && (await page(focused)) === false,
+        "Esc lost the draft or page focus",
+      );
+      await page(`document.querySelector("textarea").focus()`);
+      await browser("press", "Control+/");
+      await browser("press", "r");
+      await browser("wait", ".pick [aria-label=Roots]");
+      const selection = `document.querySelector(".pick [aria-selected=true]")?.textContent`;
+      const before = await page(selection);
+      await browser("press", "ArrowDown");
+      check((await page(selection)) !== before, "down did not move the roots selection");
+      await browser("press", "ArrowUp");
+      check((await page(selection)) === before, "up did not restore the roots selection");
+      await browser("fill", "textarea", "second root");
+      await capture("roots", home, origin);
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `new URLSearchParams(location.search).get("root") === ${JSON.stringify(second)}`,
+      );
+      await browser("wait", "--fn", `!document.querySelector(".agents .roots .dot.done")`);
+      check(
+        (await value()) === "half typed\nkeep this" && (await page(focused)) === true,
+        "selecting a root lost the draft or prompt focus",
+      );
+      await browser("reload");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("second root")`,
+      );
+      check((await shownRoot()) === second, "reload changed the root");
+      await browser("fill", "textarea", "/roots");
+      await browser("press", "Enter");
+      await browser("wait", ".pick [aria-label=Roots]");
+      await browser("fill", "textarea", first);
+      await browser("press", "Shift+Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick header")?.textContent.includes("Root ${first}")`,
+      );
+      await browser("fill", "textarea", "archive");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("archived · ${first}")`,
+      );
+      await browser("fill", "textarea", "/roots");
+      await browser("press", "Enter");
+      await browser("wait", ".pick [aria-label=Roots]");
+      await browser("fill", "textarea", "show archived roots");
+      await browser("press", "Enter");
+      await browser("wait", ".pick [aria-label=Roots]");
+      await browser("fill", "textarea", first);
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".pick [role=option]")?.textContent.includes("archived")`,
+      );
+      await capture("roots-archived", home, origin);
+      await browser("press", "Escape");
+      return "arrows and typeahead switched roots; cancel and selection preserved draft and focus; new, actions, archive and archived roots work";
+    },
+  );
 
   await journey(
     "drafts: save what is typed, restore it after a reload by typing to filter, Esc keeps the editor",
@@ -2063,18 +2111,14 @@ async function journeys(
         `!!document.querySelector(".login a") && !!document.querySelector("form.ask input")`,
       );
       await capture("mcp-login", home, origin);
-      // The core's paste box holds the editor's place: a question the person opens (renaming a root) gives way to it.
+      // A root picker must give way to the core's sign-in paste box, just like every other pick.
       await browser("click", "button.roots");
-      await browser("wait", ".rootsPanel");
-      await browser("click", `.rootsPanel button[aria-label^="rename"]`);
       check(
         text(await page(`document.querySelector("form.ask label").textContent`)).startsWith(
           "Or paste",
-        ),
-        "renaming a root replaced the sign-in's paste box",
+        ) && (await page(`!document.querySelector(".pick")`)) === true,
+        "the roots picker replaced the sign-in's paste box",
       );
-      await browser("click", "button.roots");
-      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
       // Signing in in a new tab, as a phone does: the redirect lands on this server's own callback page, which hands
       // it to the waiting tab. The sign-in reloads the core's facets, so the next journey's dropped connection resumes
       // its login across a reload.

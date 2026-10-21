@@ -14,10 +14,16 @@ import { formatReports } from "../api/reports.ts";
 import { helpText, loginProviders, parseInput } from "../ui/commands.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
-import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
+import {
+  listedRoots,
+  parseRootsCommand,
+  rootCounts,
+  rootLabel,
+  type RootsCommand,
+} from "../ui/roots.ts";
 import { age, contextUsage, lastActive, presentation, type QueuedItem } from "../ui/state.ts";
 import { clearPending, openPicker } from "./attachments.tsx";
-import type { MenuItem, Tone } from "./menu.tsx";
+import { matching, type MenuItem, type Tone } from "./menu.tsx";
 import type { Showing } from "./showing.ts";
 import {
   ask,
@@ -76,9 +82,8 @@ export async function send(text: string, attachments: readonly Attachment[]): Pr
   page.draft.value = [text, draft.value].filter(Boolean).join("\n");
 }
 
-/** Show another root from the panel or a command, saying which one it is. */
+/** Show another root from a picker or a command, saying which one it is. */
 export async function switchRoot(id: string): Promise<void> {
-  if (panel.value === "roots") page.panel.value = undefined;
   if (id === rootId.value) return;
   await openRoot(id, true);
   const summary = roots.value.find((each) => each.id === id);
@@ -505,16 +510,13 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   );
 }
 
-/** A roots panel action; its outcome shows in the panel, which hides the transcript. */
+/** A root action reports its outcome in the stream, including the core's refusal reason. */
 async function rootAction(run: () => Promise<string | undefined>): Promise<void> {
   try {
     const text = await run();
-    if (text !== undefined) page.rootsMessage.value = { text, failed: false };
+    if (text !== undefined) notice(text);
   } catch (error) {
-    page.rootsMessage.value = {
-      text: error instanceof Error ? error.message : String(error),
-      failed: true,
-    };
+    reportFailure(error);
   }
 }
 
@@ -552,7 +554,7 @@ export function archiveRoot(id: string, archived: boolean): Promise<void> {
   });
 }
 
-/** `/roots`: the panel, or one of its actions by id prefix; the shown root when none is given. */
+/** `/roots`: the picker, or one of its actions by id prefix; the shown root when none is given. */
 async function runRoots(command: RootsCommand): Promise<void> {
   const at = showing();
   const id = at.id;
@@ -576,13 +578,62 @@ async function runRoots(command: RootsCommand): Promise<void> {
   }
 }
 
-/** Open or close the roots panel. */
-export function toggleRoots(open = panel.value !== "roots"): void {
-  batch(() => {
-    if (open) page.panel.value = "roots";
-    else if (panel.value === "roots") page.panel.value = undefined;
-    page.rootsMessage.value = undefined;
-  });
+/** Roots use the goal picker's editor, filter, navigation and draft/focus lifecycle. */
+export async function toggleRoots(open = choice.value?.title !== "Roots"): Promise<void> {
+  if (!open) {
+    if (choice.value?.title === "Roots") choice.value.cancel();
+    return;
+  }
+  let archived = false;
+  for (;;) {
+    const picked = await pick("Roots", [], "actions", undefined, {
+      rows: (query) =>
+        matching(
+          [
+            ...listedRoots(roots.value, archived).map((root) => ({
+              id: root.id,
+              label: rootLabel(root),
+              detail: [
+                root.id,
+                root.status,
+                rootCounts(root),
+                root.archived ? "archived" : "",
+                root.id === rootId.value ? "shown" : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            })),
+            { id: ":new", label: "new root", detail: "start an independent front" },
+            ...(roots.value.some((root) => root.archived)
+              ? [{ id: ":archived", label: `${archived ? "hide" : "show"} archived roots` }]
+              : []),
+          ],
+          query,
+        ),
+    });
+    if (picked === undefined) return;
+    if (picked.id === ":archived") {
+      archived = !archived;
+      continue;
+    }
+    if (picked.id === ":new") return await newRoot();
+    if (!picked.alternate) return await switchRoot(picked.id);
+    const root = roots.value.find((root) => root.id === picked.id);
+    if (root === undefined) return;
+    const action = await pick(`Root ${root.id}`, [
+      { id: "open", label: "open", detail: rootLabel(root) },
+      { id: "rename", label: "rename", detail: rootLabel(root) },
+      {
+        id: "archive",
+        label: root.archived ? "unarchive" : "archive",
+        detail: "keeps history, workers and goals",
+      },
+    ]);
+    if (action?.id === "open") return await switchRoot(root.id);
+    if (action?.id === "rename") return await renameRoot(root.id);
+    if (action?.id === "archive") return await archiveRoot(root.id, !root.archived);
+    return;
+  }
 }
 
 /** Open the pins panel with an empty filter, or close it: the star in the top bar. */
