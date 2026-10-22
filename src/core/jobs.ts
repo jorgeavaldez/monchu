@@ -21,6 +21,7 @@ import {
   chooseRole,
   messageWorker,
   parentOf,
+  prepareDeliveries,
   reopenWorker,
   rootOf,
   startWorker,
@@ -297,27 +298,56 @@ function message(job: Job, why: Wake, front: boolean): string {
   );
 }
 
-/** A notify target as `list` shows it and the event names it, seen from the job's root. */
-function targetLabel(job: Job, target: JobTarget): string {
+/**
+ * A notify target as `list` shows it and the event names it, seen from the job's root: a worker in another root as
+ * `<root id>/<worker>`, any other by its name. `roots` are the ids of every root.
+ */
+function targetLabel(job: Job, target: JobTarget, roots: ReadonlySet<ConversationId>): string {
   if (target.kind === "front")
     return target.rootId === job.rootId ? "front" : `root:${shortId(target.rootId)}`;
-  return target.parentId === job.rootId || target.parentId === job.worker.parentId
-    ? target.name
-    : `${shortId(target.parentId)}/${target.name}`;
+  return target.parentId !== job.rootId && roots.has(target.parentId)
+    ? `${shortId(target.parentId)}/${target.name}`
+    : target.name;
 }
+
+/** Every root's id, for `targetLabel`. */
+export const rootIds = (roots: readonly { id: ConversationId }[]): ReadonlySet<ConversationId> =>
+  new Set(roots.map((root) => root.id));
 
 const sameWorker = (a: JobWorker, b: JobWorker) => a.parentId === b.parentId && a.name === b.name;
 
+/** Who creates a job: its root, the caller's own conversation and, for a worker, its record (parent and name). */
+type Caller = { rootId: ConversationId; id: ConversationId; self: JobWorker | undefined };
+
 /**
- * The targets `notify` names, from the job's root: `front`, `root:<id>` for another root's front, a worker's name, or
- * `<root id>/<worker>` for a worker in another root. Workers must exist, except the job's own, which it starts.
+ * A worker by plain name, as the caller sees it, nearest first: the caller itself, its own sub-workers, then the
+ * workers under its parent, its grandparent and so on up to the root, so a worker at any depth finds its parent, its
+ * siblings and the root's workers with no ids.
+ */
+async function findWorker(tx: Tx, caller: Caller, name: string): Promise<JobWorker | undefined> {
+  if (caller.self?.name === name) return caller.self;
+  for (
+    let parentId: ConversationId | undefined = caller.id;
+    parentId !== undefined;
+    parentId = parentId === caller.rootId ? undefined : await parentOf(tx, parentId)
+  )
+    if ((await tx.doc(WorkersDoc, parentId)).workers.some((item) => item.name === name))
+      return { parentId, name };
+  return undefined;
+}
+
+/**
+ * The targets `notify` names: `front` for the job's root, `root:<id>` for another root's front, a worker's name (found
+ * as `findWorker` finds it), or `<root id>/<worker>` for a worker in another root. Workers must exist, except the
+ * job's own, which it starts.
  */
 async function resolveTargets(
   tx: Tx,
-  rootId: ConversationId,
+  caller: Caller,
   worker: JobWorker,
   names: readonly string[],
 ): Promise<JobTarget[]> {
+  const { rootId } = caller;
   const roots = (await tx.doc(RootsDoc)).roots;
   const root = (prefix: string) => {
     const found = findRoot(roots, prefix);
@@ -330,15 +360,23 @@ async function resolveTargets(
     const slash = text.indexOf("/");
     if (text === "front") target = { kind: "front", rootId };
     else if (text.startsWith("root:")) target = { kind: "front", rootId: root(text.slice(5)) };
-    else if (slash === -1 && text === worker.name) target = { kind: "worker", ...worker };
+    else if (slash === -1 && text === worker.name)
+      target = { kind: "worker", parentId: worker.parentId, name: worker.name };
     else {
-      const parentId = slash === -1 ? rootId : root(text.slice(0, slash));
-      const name = slash === -1 ? text : text.slice(slash + 1);
-      if (!(await tx.doc(WorkersDoc, parentId)).workers.some((item) => item.name === name))
+      const other = slash === -1 ? undefined : root(text.slice(0, slash));
+      const found =
+        other === undefined
+          ? await findWorker(tx, caller, text)
+          : await findWorker(
+              tx,
+              { rootId: other, id: other, self: undefined },
+              text.slice(slash + 1),
+            );
+      if (found === undefined)
         throw new Error(
           `notify: no worker ${text}; name front, root:<id>, a worker's name, or <root id>/<worker>`,
         );
-      target = { kind: "worker", parentId, name };
+      target = { kind: "worker", ...found };
     }
     const same = (other: JobTarget) =>
       other.kind === "front"
@@ -485,8 +523,14 @@ export function createJobs(
    */
   async function wake(tx: Tx, job: Job, why: Wake, requestId: string): Promise<string | undefined> {
     const heard: string[] = [];
-    for (const target of job.notify ?? [{ kind: "worker", ...job.worker }]) {
-      const label = targetLabel(job, target);
+    const roots = rootIds((await tx.doc(RootsDoc)).roots);
+    const targets: readonly JobTarget[] = job.notify ?? [{ kind: "worker", ...job.worker }];
+    await prepareDeliveries(
+      tx,
+      targets.flatMap((target) => (target.kind === "worker" ? [target.parentId] : [])),
+    );
+    for (const target of targets) {
+      const label = targetLabel(job, target, roots);
       if (target.kind === "front") {
         await tx.createTask(
           NotifyFront,
@@ -847,14 +891,14 @@ export function createJobs(
   });
 
   /** The calling conversation's root and, for a worker, its parent and name. */
-  async function caller(tx: Tx, id: ConversationId) {
+  async function caller(tx: Tx, id: ConversationId): Promise<Caller> {
     const parentId = await parentOf(tx, id);
-    if (parentId === undefined) return { rootId: id, self: undefined };
+    if (parentId === undefined) return { rootId: id, id, self: undefined };
     const worker = (await tx.doc(WorkersDoc, parentId)).workers.find(
       (item) => item.conversationId === id,
     );
     if (worker === undefined) throw new Error("Only the front and workers can create jobs");
-    return { rootId: await rootOf(tx, parentId), self: { parentId, name: worker.name } };
+    return { rootId: await rootOf(tx, parentId), id, self: { parentId, name: worker.name } };
   }
 
   function startRunner(tx: Tx, job: Pick<Job, "name" | "rootId" | "type">): Promise<TaskId> {
@@ -936,9 +980,10 @@ export function createJobs(
         executionMode: "sequential",
         execute: async (args, api, context) => {
           const reply = (text: string) => ({ output: [{ type: "text" as const, text }] });
+          const roots = rootIds((await api.snapshot(RootsDoc, context))?.roots ?? []);
           if (args.action === "list") {
             const state = await api.snapshot(JobsDoc, context);
-            return reply(formatJobs(state?.jobs ?? []));
+            return reply(formatJobs(state?.jobs ?? [], roots));
           }
           const name = args.name;
           if (name === undefined) throw new Error(`${args.action} needs name`);
@@ -952,7 +997,7 @@ export function createJobs(
               .trimEnd()
               .split("\n")
               .slice(-(args.lines ?? 50));
-            return reply(`${formatJob(job)}\n${lines.join("\n") || "(no output yet)"}`);
+            return reply(`${formatJob(job, roots)}\n${lines.join("\n") || "(no output yet)"}`);
           }
           if (args.action === "create") {
             const { type, schedule, command } = args;
@@ -993,17 +1038,13 @@ export function createJobs(
               }
               if (state.jobs.some((item) => item.name === name))
                 throw new Error(`A job named ${name} exists; pick another name or delete it`);
-              const { rootId, self } = await caller(tx, api.conversationId);
-              const worker = await target(
-                tx,
-                rootId,
-                self,
-                args.worker ?? self?.name ?? `job-${name}`,
-              );
+              const from = await caller(tx, api.conversationId);
+              const { rootId, self } = from;
+              const worker = await target(tx, from, args.worker ?? self?.name ?? `job-${name}`);
               const notify =
                 args.notify === undefined
                   ? undefined
-                  : await resolveTargets(tx, rootId, worker, args.notify);
+                  : await resolveTargets(tx, from, worker, args.notify);
               if (role !== undefined && worker.exists)
                 throw new Error(
                   `${worker.name} already runs on its own model, which it keeps for life (prompt cache); leave out profile, model and thinking, or name a new worker`,
@@ -1040,11 +1081,11 @@ export function createJobs(
               return { job, pruned, replayed: false };
             }, context);
             for (const log of pruned) await removeLog(log);
-            if (replayed) return reply(`Created: ${formatJob(job)}`);
+            if (replayed) return reply(`Created: ${formatJob(job, roots)}`);
             return reply(
               job.type === "bg"
-                ? `Started ${formatJob(job)}\nKeep working: ${job.worker.name} gets one message when it ends. action output shows its log so far; kill stops it.`
-                : `Created: ${formatJob(job)}`,
+                ? `Started ${formatJob(job, roots)}\nKeep working: ${job.worker.name} gets one message when it ends. action output shows its log so far; kill stops it.`
+                : `Created: ${formatJob(job, roots)}`,
             );
           }
           let removed: string | undefined;
@@ -1099,18 +1140,18 @@ export function createJobs(
 }
 
 /**
- * The worker a new job wakes, by name: the caller itself, one of the root's workers, or else a new one the job starts
- * under the root.
+ * The worker a new job wakes, by name: one the caller sees (`findWorker`), or else a new one the job starts under the
+ * root.
  */
 async function target(
   tx: Tx,
-  rootId: ConversationId,
-  self: JobWorker | undefined,
+  caller: Caller,
   name: string,
 ): Promise<JobWorker & { exists: boolean }> {
-  if (self !== undefined && self.name === name) return { ...self, exists: true };
-  const exists = (await tx.doc(WorkersDoc, rootId)).workers.some((item) => item.name === name);
-  return { parentId: rootId, name, exists };
+  const found = await findWorker(tx, caller, name);
+  return found === undefined
+    ? { parentId: caller.rootId, name, exists: false }
+    : { ...found, exists: true };
 }
 
 function describeJob(job: Job): string {
@@ -1126,12 +1167,12 @@ function describeJob(job: Job): string {
 
 const time = (at: number | undefined) => (at === undefined ? "never" : slotKey(at));
 
-/** One job on one line, as `list` and `/jobs` show it. */
-function formatJob(job: Job): string {
+/** One job on one line, as `list` and `/jobs` show it; `roots` as `targetLabel` takes them. */
+function formatJob(job: Job, roots: ReadonlySet<ConversationId>): string {
   const heard =
     job.notify === undefined
       ? `worker ${job.worker.name}`
-      : `notify ${job.notify.map((target) => targetLabel(job, target)).join(", ")}`;
+      : `notify ${job.notify.map((target) => targetLabel(job, target, roots)).join(", ")}`;
   const who = `${heard} · by ${job.createdBy}`;
   if (job.type === "bg") {
     const state =
@@ -1143,6 +1184,8 @@ function formatJob(job: Job): string {
   return `${job.name} (${job.status}) ${describeJob(job).slice(0, 120)} · ${who} · runs ${job.runs}, last ${time(job.lastRunAt)}, next ${job.status === "active" ? time(job.nextAt) : "-"}`;
 }
 
-export function formatJobs(jobs: readonly Job[]): string {
-  return jobs.length === 0 ? "No jobs." : jobs.map((job) => `- ${formatJob(job)}`).join("\n");
+export function formatJobs(jobs: readonly Job[], roots: ReadonlySet<ConversationId>): string {
+  return jobs.length === 0
+    ? "No jobs."
+    : jobs.map((job) => `- ${formatJob(job, roots)}`).join("\n");
 }

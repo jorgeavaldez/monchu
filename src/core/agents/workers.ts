@@ -265,8 +265,27 @@ async function latestError(
   return undefined;
 }
 
+/**
+ * The parents whose records a transaction already pruned. Pruning reads tasks, which a transaction can't after its first
+ * write, so one that delivers to several workers prunes them all first (`prepareDeliveries`).
+ */
+const prunedIn = new WeakMap<Tx, Set<ConversationId>>();
+
+/** Prune every parent's records before a transaction's first write, so it can then deliver to workers under each. */
+export async function prepareDeliveries(
+  tx: Tx,
+  parentIds: Iterable<ConversationId>,
+): Promise<void> {
+  for (const parentId of parentIds) await pruneRecords(tx, parentId);
+}
+
 /** Keep every active delivery and its settled answer, plus a recent completed retry window. */
 async function pruneRecords(tx: Tx, parentId: ConversationId, finishing?: TaskId): Promise<void> {
+  if (finishing === undefined) {
+    const pruned = prunedIn.get(tx) ?? new Set();
+    if (pruned.has(parentId)) return;
+    prunedIn.set(tx, pruned.add(parentId));
+  }
   const state = await tx.doc(WorkersDoc, parentId);
   const active = new Set<TaskId>();
   const answers = new Set<EntryId>();

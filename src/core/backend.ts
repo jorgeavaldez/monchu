@@ -55,7 +55,7 @@ import { parentOf, WorkersDoc } from "./agents/workers.ts";
 import { harnessSettings } from "./context.ts";
 import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
-import { formatJobs, JobsDoc, type JobEvent, type JobsState } from "./jobs.ts";
+import { formatJobs, JobsDoc, rootIds, type JobEvent, type JobsState } from "./jobs.ts";
 import { InboxItemsDoc, noteReplies, replyText, type InboxKind } from "./inbox.ts";
 import { Pusher, type PushSubscription } from "./push.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
@@ -897,7 +897,8 @@ export class Monchu implements Client {
       events: [],
       nextEvent: 1,
     };
-    return { ...state, listing: formatJobs(state.jobs) };
+    const roots = rootIds((await this.harness.snapshot(RootsDoc, context))?.roots ?? []);
+    return { ...state, listing: formatJobs(state.jobs, roots) };
   }
 
   /**

@@ -437,6 +437,49 @@ describe("job notify", () => {
     await root.waitForIdle(context);
     await harness.close(context);
   });
+  it("lets a worker at any depth notify itself and its parent by plain name, not the front", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    FRONT_CALLS["start top"] = { tool: "start_worker", args: { name: "top", task: "start mid" } };
+    FRONT_CALLS["start mid"] = { tool: "start_worker", args: { name: "mid", task: "start leaf" } };
+    FRONT_CALLS["start leaf"] = { tool: "start_worker", args: { name: "leaf", task: "leaf ci" } };
+    FRONT_CALLS["leaf ci"] = {
+      tool: "job",
+      args: {
+        action: "create",
+        name: "deep",
+        type: "bg",
+        command: "echo green",
+        notify: ["leaf", "mid"],
+      },
+    };
+    await send(root, "start top");
+    const ended = await waitForEvent(harness, 2);
+    const workerUnder = async (parent: Conversation, name: string) => {
+      const record = (await harness.snapshot(WorkersDoc, parent.id, context))?.workers.find(
+        (item) => item.name === name,
+      );
+      assert(record !== undefined);
+      return conversationOf(harness, record.conversationId);
+    };
+    const mid = await workerUnder(await workerUnder(root, "top"), "mid");
+    const leaf = await workerUnder(mid, "leaf");
+    expect((await harness.snapshot(JobsDoc, context))?.jobs[0]).toMatchObject({
+      createdBy: "leaf",
+      worker: { parentId: mid.id, name: "leaf" },
+      notify: [
+        { kind: "worker", parentId: mid.id, name: "leaf" },
+        { kind: "worker", parentId: (await workerUnder(root, "top")).id, name: "mid" },
+      ],
+    });
+    expect(ended[1]).toMatchObject({ kind: "exited", worker: "leaf, mid" });
+    await waitFor(async () => (await jobInputs(leaf)).length === 1);
+    await waitFor(async () => (await jobInputs(mid)).length === 1);
+    expect((await jobInputs(mid))[0]?.notice.text).toContain("green");
+    await root.waitForIdle(context);
+    expect(await jobInputs(root)).toEqual([]);
+    await harness.close(context);
+  });
 });
 
 describe("job secrets", () => {
