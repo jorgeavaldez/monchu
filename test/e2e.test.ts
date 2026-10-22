@@ -413,7 +413,7 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     expect(await ok("job", { action: "output", name: "e2e-bg" })).toContain("job-done");
   });
 
-  it("starts workers that report to the front, and messages, closes a batch, reopens and stops them", async () => {
+  it("starts workers that report to the front, and messages, closes a batch or one from a client, reopens and stops them", async () => {
     const reports = count("Faux front: result received.");
     await ask("work reader inspect", "Faux front: result received.");
     await ask("work writer draft", "Faux front: result received.");
@@ -433,6 +433,10 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     expect(open).not.toContain("reader");
     expect(open).not.toContain("writer");
     expect(await ok("worker_status", { include_closed: true })).toContain("writer");
+    await ok("reopen_worker", { name: "reader" });
+    // A client closes one as the tool does: the web's ⏏ and /close.
+    await monchu.root.closeWorker("reader");
+    expect((await monchu.root.workers()).map((worker) => worker.name)).not.toContain("reader");
     await ok("reopen_worker", { name: "reader" });
     await ok("stop_worker", { name: "reader" });
   });

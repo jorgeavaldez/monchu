@@ -2275,7 +2275,27 @@ async function journeys(
         "--fn",
         `${crew}.querySelector(".here").textContent.includes("root") && !!(${card})`,
       );
-      return "reader counted in the top bar, its report folded into a card with its id, its row in the workers menu idle with its context, its own view and back";
+      // ⏏ closes the selected idle worker: its row and the bar's count go; the root's own row has no ⏏.
+      await page(`${crew}.click()`);
+      await browser("wait", "--fn", `!!(${row("reader")})`);
+      check(
+        (await page(
+          `[...document.querySelectorAll(".workersMenu .bar button")].every((cell) => { const box = cell.getBoundingClientRect(); return Math.abs(box.width - box.height) < 1; })`,
+        )) === true,
+        "a workers menu cell isn't square",
+      );
+      const close = `document.querySelector(".workersMenu [aria-label=close]")`;
+      check((await page(`${close}.disabled`)) === true, "⏏ would close the root");
+      await page(`(${row("reader")}).click()`);
+      await page(`${close}.click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `!(${row("reader")}) && !${crew}.querySelector(".counts")?.textContent`,
+      );
+      await page(`document.querySelector("button[aria-label=back]").click()`);
+      await browser("wait", "--fn", `!document.querySelector(".workersMenu")`);
+      return "reader counted in the top bar, its report folded into a card with its id, its row in the workers menu idle with its context, its own view and back, then closed by ⏏";
     },
   );
 

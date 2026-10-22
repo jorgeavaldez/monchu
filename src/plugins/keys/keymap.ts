@@ -44,7 +44,7 @@ const KEYS: Readonly<Record<string, string>> = {
 /** After Space outside the prompt, or the leader anywhere: each key, its action and its glyph in the hint. */
 const GROUP: Readonly<Record<string, [string, string]>> = {
   r: ["roots", "▾"],
-  a: ["agents", "○"],
+  w: ["agents", "○"],
   p: ["pins", "★"],
   g: ["feed.goal", "◎"],
   d: ["drafts", "✎"],

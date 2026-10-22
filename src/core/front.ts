@@ -36,6 +36,7 @@ import { rootRecord, RootsDoc, type RootRecord } from "./agents/root-records.ts"
 import { pinMessage, type PinnedMessage } from "./pins.ts";
 import { noteInput, sendHandOff } from "./agents/roots.ts";
 import {
+  closeNamed,
   DELETED_FROM_QUEUE,
   hasPendingDelivery,
   listWorkersWithActivity,
@@ -606,6 +607,11 @@ export class Front implements RootClient {
 
   async stopWorker(name: string): Promise<void> {
     await stopWorker(this.host.harness, (await this.conversation()).id, name, context);
+  }
+
+  /** Retire an idle worker, as `close_workers` does; refused while it or a sub-worker works. */
+  async closeWorker(name: string): Promise<void> {
+    await closeNamed(this.host.harness, (await this.conversation()).id, name, context);
   }
 
   /**

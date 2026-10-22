@@ -795,17 +795,18 @@ async function busySubWorkers(
   return busy;
 }
 
-/** Close the calling conversation's worker `name` and release its providers; the line to report for it. */
-async function closeNamed(
-  api: Pick<ToolExecutionApi, "conversationId" | "commit" | "snapshot" | "getTask">,
+/** Close `parentId`'s worker `name` and release its providers; the line to report for it. */
+export async function closeNamed(
+  api: Pick<Harness, "commit" | "snapshot" | "getTask">,
+  parentId: ConversationId,
   name: string,
   context: Context,
 ): Promise<string> {
-  const workerId = await workerConversationId(api, api.conversationId, name, context);
+  const workerId = await workerConversationId(api, parentId, name, context);
   // Sub-workers start only from the worker's own runs, which the closing commit rules out.
   const busy = await busySubWorkers(api, workerId, context);
   if (busy.length > 0) throw new Error(`${name} has busy sub-workers: ${busy.join(", ")}`);
-  const closed = await api.commit((tx) => closeWorker(tx, api.conversationId, name), context);
+  const closed = await api.commit((tx) => closeWorker(tx, parentId, name), context);
   await releaseProviders(api, workerId, context);
   return closed ? `Closed ${name}.` : `${name} was already closed.`;
 }
@@ -1006,7 +1007,7 @@ export function createWorkerTools(
           let refused = false;
           for (const name of args.names) {
             try {
-              lines.push(await closeNamed(api, name, context));
+              lines.push(await closeNamed(api, api.conversationId, name, context));
             } catch (error) {
               refused = true;
               lines.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);

@@ -803,6 +803,11 @@ async function runInput(
         return at.notice(`stopped · ${worker}`);
       }
       return await interrupt();
+    case "/close":
+      await at.root.closeWorker(input.text);
+      if (at.shown.value === input.text) at.shown.value = undefined;
+      await at.refreshWorkers();
+      return at.notice(`closed · ${input.text}`);
     case "/new":
       await at.root.reset(input.text || undefined);
       return at.notice("new context · root");

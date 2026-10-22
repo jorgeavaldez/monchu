@@ -28,6 +28,7 @@ function options(command: string, from: ArgSources): Row[] | undefined {
     case "/agents":
       return [...words(["root"], "the front"), ...words(from.workers, "worker")];
     case "/stop":
+    case "/close":
       return words(from.workers, "worker");
     case "/roots":
       return [

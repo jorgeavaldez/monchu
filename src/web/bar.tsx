@@ -36,7 +36,7 @@ function Crew() {
       class={`crew${open ? " on" : ""}`}
       aria-expanded={open}
       aria-label={`${name}, ${working ? "working" : "idle"}${crew.length ? `; workers ${crew.join(", ")}` : ""}`}
-      title="workers (spc a)"
+      title="workers (spc w)"
       onClick={() => run("workers.toggle")}
     >
       <span aria-hidden="true" class="counts">

@@ -146,6 +146,8 @@ export interface RootClient {
   /** Stops the front only, returning the user's own queued messages, oldest first. */
   abort(): Promise<string[]>;
   stopWorker(name: string): Promise<void>;
+  /** Retires an idle worker from the roster; its history stays. Refused while it or a sub-worker works. */
+  closeWorker(name: string): Promise<void>;
   /** `/new`: a fresh model context for this root's front; its crew, goals and picks stay. */
   reset(handoff: string | undefined): Promise<void>;
   compact(instructions: string | undefined): Promise<void>;

@@ -121,6 +121,9 @@ class RemoteRoot implements RootClient {
   stopWorker(name: string) {
     return this.run((root) => root.stopWorker({ worker: name }));
   }
+  closeWorker(name: string) {
+    return this.run((root) => root.closeWorker({ worker: name }));
+  }
   reset(handoff: string | undefined) {
     return this.run((root) => root.reset(handoff === undefined ? {} : { handoff }));
   }

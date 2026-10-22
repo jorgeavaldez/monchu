@@ -298,6 +298,7 @@ export const Root = remote("monchu.root", {
         ),
         abort: method(undefined, trusted<string[]>()),
         stopWorker: method(Type.Object({ worker: text })),
+        closeWorker: method(Type.Object({ worker: text })),
         reset: method(Type.Object({ handoff: Type.Optional(text) })),
         compact: method(Type.Object({ instructions: Type.Optional(text) })),
         changeDirectory: method(Type.Object({ path: text, worker }), trusted<string>()),

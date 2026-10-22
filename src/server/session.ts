@@ -536,6 +536,7 @@ export default defineFacet<Principal>(
         editQueued: ({ worker, id, change }) => front().editQueued(worker, id, change),
         abort: () => front().abort(),
         stopWorker: ({ worker }) => front().stopWorker(worker),
+        closeWorker: ({ worker }) => front().closeWorker(worker),
         reset: ({ handoff }) => front().reset(handoff),
         compact: ({ instructions }) => front().compact(instructions),
         changeDirectory: ({ path, worker }) => front().changeDirectory(path, worker),

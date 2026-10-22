@@ -42,7 +42,7 @@ const BINDINGS: [string, string][] = [
   ["o", "expand"],
   ["s", "mode"],
   ["spc d", "drafts"],
-  ["spc a", "agents"],
+  ["spc w", "agents"],
   ["spc g", "feed.goal"],
   ["spc m", "model"],
   ["spc j", "jobs"],

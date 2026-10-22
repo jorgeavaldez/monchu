@@ -803,6 +803,11 @@ export async function runTerminal(
         await refreshWorkers();
         break;
       }
+      case "/close":
+        await front.closeWorker(input.text);
+        view.notice(`closed worker · ${input.text}`);
+        await refreshWorkers();
+        break;
       case "/new":
         await front.reset(input.text);
         view.notice(input.text ? "new context · handoff carried" : "new context");

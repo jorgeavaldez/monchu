@@ -1,7 +1,7 @@
 /**
  * The workers menu, a sheet over the editor: the root, then this root's workers, working ones first, one line each
- * (status, name, context used, idle time). Its bar stops the selection and shows only the working ones or all; a tap
- * or › shows the conversation.
+ * (status, name, context used, idle time). Its bar stops or closes the selection and shows only the working ones or
+ * all; a tap or › shows the conversation.
  */
 import { age, contextUsage, lastActive, presentation } from "../ui/state.ts";
 import { run } from "./commands.ts";
@@ -79,6 +79,15 @@ function stop(each: Crew | undefined): void {
   else run("send", `/stop ${each.name}`);
 }
 
+/** In text presentation, so no system draws it as an emoji. */
+const CLOSE = "⏏\uFE0E";
+
+/** Close an idle worker: it leaves the roster and its history stays. The root's front never closes. */
+function close(each: Crew | undefined): void {
+  if (each?.name === undefined || each.busy) return;
+  run("send", `/close ${each.name}`);
+}
+
 function filterTo(filter: Sheet["filter"]): void {
   updateSheet({ filter, selected: 0 });
 }
@@ -88,6 +97,7 @@ export const WORKERS: SheetSpec = {
   take: (index) => take(sheet.value === undefined ? undefined : crewRows(sheet.value)[index]),
   chords: () => [
     { key: "s", glyph: "■", label: "stop", run: () => stop(selected()) },
+    { key: "x", glyph: CLOSE, label: "close", run: () => close(selected()) },
     {
       key: "f",
       glyph: "●",
@@ -174,14 +184,29 @@ export function WorkersSheet({ open }: { open: Sheet }) {
             ■
           </Key>
           <Key
+            class="icon"
+            label="close"
+            title={each?.busy === true ? "a working worker can't be closed" : "close (spc x)"}
+            disabled={each?.name === undefined || each.busy}
+            onPress={() => close(each)}
+          >
+            {CLOSE}
+          </Key>
+          <Key
             class="filter"
             label={working ? "filter: working" : "filter: all"}
             title={`${working ? "working only" : "all"} · tap for ${working ? "all" : "working only"} (spc f)`}
             pressed={working}
             onPress={() => filterTo(working ? "all" : "working")}
           >
-            <span class="dot working">●</span>
-            {busy}
+            {working ? (
+              <>
+                <span class="dot working">●</span>
+                {busy}
+              </>
+            ) : (
+              "∗"
+            )}
           </Key>
         </>
       }

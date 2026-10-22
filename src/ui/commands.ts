@@ -20,6 +20,7 @@ type Input =
         | "/compact"
         | "/cd"
         | "/stop"
+        | "/close"
         | "/agents"
         | "/roots"
         | "/model"
@@ -78,6 +79,10 @@ export const commands: Record<
   "/stop": {
     usage: "[name]",
     help: "stop the shown conversation, or the named worker; others keep going",
+  },
+  "/close": {
+    usage: "<name>",
+    help: "retire an idle worker from the roster; its history stays",
   },
   "/attach": {
     usage: "[path|clear]",
@@ -203,6 +208,9 @@ export function parseInput(raw: string): Input | undefined {
     case "/logs":
     case "/attach":
     case "/pins":
+      return { command, text: rest };
+    case "/close":
+      if (!rest) throw new Error(`Usage: ${command} ${commands[command].usage}`);
       return { command, text: rest };
     case "/pin":
       if (!/^#?[k-z]+$/i.test(rest))
