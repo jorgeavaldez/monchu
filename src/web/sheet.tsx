@@ -22,18 +22,37 @@ export type Chord = {
   more?: readonly Chord[];
 };
 
-/** What a kind of sheet tells the shared keys: how many rows show, how to take one, and its chords. */
+/** What a kind of sheet tells the shared keys: its rows' keys in order, how to take one, and its chords. */
 export type SheetSpec = {
-  count(): number;
+  keys(): readonly string[];
   take(index: number): void;
   chords(): readonly Chord[];
 };
 
+/**
+ * The selected row's index among `keys`: its own row wherever the rows moved, else (it left) the one now in its place
+ * or the last; -1 for none.
+ */
+export function selectedRow(open: Sheet, keys: readonly string[]): number {
+  const own = open.key === undefined ? -1 : keys.indexOf(open.key);
+  return own >= 0 ? own : Math.min(open.selected, keys.length - 1);
+}
+
+function select(keys: readonly string[], index: number): void {
+  updateSheet({ selected: index, key: keys[index], chord: undefined });
+}
+
 function move(open: Sheet, spec: SheetSpec, by: number): void {
-  const count = spec.count();
-  if (count === 0) return;
-  const from = open.selected < 0 ? (by > 0 ? -1 : count) : open.selected;
-  updateSheet({ selected: Math.min(count - 1, Math.max(0, from + by)) });
+  const keys = spec.keys();
+  if (keys.length === 0) return;
+  const at = selectedRow(open, keys);
+  const from = at < 0 ? (by > 0 ? -1 : keys.length) : at;
+  select(keys, Math.min(keys.length - 1, Math.max(0, from + by)));
+}
+
+function take(open: Sheet, spec: SheetSpec): void {
+  const at = selectedRow(open, spec.keys());
+  if (at >= 0) spec.take(at);
 }
 
 /** The chords that follow the keys typed so far after the leader. */
@@ -76,7 +95,7 @@ export function filterKey(event: KeyboardEvent, spec: SheetSpec): boolean {
     case "Enter":
     case "Tab":
       if (event.shiftKey) return false;
-      if (open.selected >= 0) spec.take(open.selected);
+      take(open, spec);
       return true;
     case "Escape":
       if (!escapeLeaves.value) closeSheet();
@@ -113,21 +132,23 @@ function listKey(event: KeyboardEvent, spec: SheetSpec): boolean {
       move(open, spec, -1);
       return true;
     case "g":
-      updateSheet({ selected: spec.count() > 0 ? 0 : -1 });
+      select(spec.keys(), 0);
       return true;
-    case "G":
-      updateSheet({ selected: spec.count() - 1 });
+    case "G": {
+      const keys = spec.keys();
+      select(keys, keys.length - 1);
       return true;
+    }
     case "Enter":
     case "l":
-      if (open.selected >= 0) spec.take(open.selected);
+      take(open, spec);
       return true;
     case "i":
     case "/":
       updateSheet({ normal: false });
       return true;
     case "Escape":
-      if (open.selected >= 0) updateSheet({ selected: -1 });
+      if (selectedRow(open, spec.keys()) >= 0) updateSheet({ selected: -1, key: undefined });
       else closeSheet();
       return true;
   }
@@ -162,14 +183,16 @@ export function SheetView(props: {
   useEffect(() => {
     if (open.normal) list.current?.focus();
   }, [open.normal]);
+  const keys = spec.keys();
+  const at = selectedRow(open, keys);
+  // The row selected by place (on opening, after a filter) becomes the one selected: it stays so as rows move.
+  const key = at < 0 ? undefined : keys[at];
+  useEffect(() => {
+    if (open.key === undefined && key !== undefined) updateSheet({ key });
+  }, [open.key, key]);
   useEffect(() => {
     list.current?.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
-  }, [open.selected, open.query]);
-  // A row that leaves (archived, filtered out) moves the selection to the last one left.
-  const count = spec.count();
-  useEffect(() => {
-    if (open.selected >= count) updateSheet({ selected: count - 1 });
-  }, [open.selected, count]);
+  }, [at, open.query]);
   const chords = open.chord === undefined ? undefined : chordsAt(spec, open.chord);
   return (
     <div class={`menu sheet ${props.class}${open.normal ? " normal" : ""}`}>
@@ -194,8 +217,8 @@ export function SheetView(props: {
           class="icon go"
           label="go to the selected"
           title="go (Enter)"
-          disabled={open.selected < 0 || open.selected >= count}
-          onPress={() => spec.take(open.selected)}
+          disabled={at < 0}
+          onPress={() => spec.take(at)}
         >
           ›
         </Key>
@@ -213,8 +236,12 @@ export function SheetView(props: {
   );
 }
 
-/** A row's click: the first selects it, one on the selected row takes it. */
-export function tapRow(spec: SheetSpec, index: number): void {
-  if (sheet.value?.selected === index) spec.take(index);
-  else updateSheet({ selected: index, chord: undefined });
+/** A click on the row `key`: the first selects it, one on the selected row takes it. */
+export function tapRow(spec: SheetSpec, key: string): void {
+  const open = sheet.value;
+  const keys = spec.keys();
+  const index = keys.indexOf(key);
+  if (open === undefined || index < 0) return;
+  if (selectedRow(open, keys) === index) spec.take(index);
+  else select(keys, index);
 }

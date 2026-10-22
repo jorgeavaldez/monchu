@@ -9,7 +9,7 @@ import { age } from "../ui/state.ts";
 import { run } from "./commands.ts";
 import { Key } from "./keys.tsx";
 import { Marked, matching } from "./menu.tsx";
-import { SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
+import { selectedRow, SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
 import {
   closeSheet,
   rootId,
@@ -52,9 +52,18 @@ function rootRows(open: Sheet): RootSummary[] {
   ).flatMap((item) => byId.get(item.id) ?? []);
 }
 
+/** The selected row of `rows`. */
+const chosen = (open: Sheet, rows: readonly RootSummary[]): RootSummary | undefined =>
+  rows[
+    selectedRow(
+      open,
+      rows.map((root) => root.id),
+    )
+  ];
+
 const selected = (): RootSummary | undefined => {
   const open = sheet.value;
-  return open === undefined ? undefined : rootRows(open)[open.selected];
+  return open === undefined ? undefined : chosen(open, rootRows(open));
 };
 
 function take(root: RootSummary | undefined): void {
@@ -79,11 +88,11 @@ function newRoot(): void {
 }
 
 function filterTo(filter: RootsFilter): void {
-  updateSheet({ filter, selected: 0 });
+  updateSheet({ filter, selected: 0, key: undefined });
 }
 
 export const ROOTS: SheetSpec = {
-  count: () => (sheet.value === undefined ? 0 : rootRows(sheet.value).length),
+  keys: () => (sheet.value === undefined ? [] : rootRows(sheet.value).map((root) => root.id)),
   take: (index) => take(sheet.value === undefined ? undefined : rootRows(sheet.value)[index]),
   chords: () => [
     { key: "a", glyph: "↧", label: "archive", run: () => archive(selected()) },
@@ -124,7 +133,6 @@ function Workers({ open, busy }: RootSummary["workers"]) {
 function Row(props: {
   root: RootSummary;
   ids: ReturnType<typeof rootIds>;
-  index: number;
   selected: boolean;
   query: string;
 }) {
@@ -141,10 +149,10 @@ function Row(props: {
       title={`${root.id} · ${STATUS_WORD[root.status]}${here ? " · shown" : ""}`}
       // A tap must not take focus from the editor, or the keyboard closes.
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => tapRow(ROOTS, props.index)}
+      onClick={() => tapRow(ROOTS, root.id)}
     >
       <span class="enter">
-        <span class={`dot ${root.status}`} aria-label={STATUS_WORD[root.status]}>
+        <span class={`dot ${root.status}`} role="img" aria-label={STATUS_WORD[root.status]}>
           {STATUS_GLYPH[root.status]}
         </span>
         <span class="id">
@@ -175,7 +183,7 @@ export function RootsSheet({ open }: { open: Sheet }) {
   const rows = rootRows(open);
   const filter = open.filter;
   const ids = rootIds(roots.value);
-  const root = rows[open.selected];
+  const root = chosen(open, rows);
   const next = FILTERS[(FILTERS.indexOf(filter) + 1) % FILTERS.length] ?? "all";
   const shown =
     filter === "all"
@@ -229,15 +237,8 @@ export function RootsSheet({ open }: { open: Sheet }) {
       {rows.length === 0 ? (
         <li class="help empty">{open.query ? "nothing matches" : "none"}</li>
       ) : null}
-      {rows.map((each, index) => (
-        <Row
-          key={each.id}
-          root={each}
-          ids={ids}
-          index={index}
-          selected={index === open.selected}
-          query={open.query}
-        />
+      {rows.map((each) => (
+        <Row key={each.id} root={each} ids={ids} selected={each === root} query={open.query} />
       ))}
     </SheetView>
   );

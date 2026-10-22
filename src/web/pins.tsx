@@ -4,6 +4,7 @@
  * whole text over the bar. Pins follow the device's pinned messages as every client changes them.
  */
 import { signal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
 import type { PinnedMessage } from "../api/client.ts";
 import { findPins, pinRoot } from "../ui/pins.ts";
 import { age } from "../ui/state.ts";
@@ -11,7 +12,7 @@ import { run } from "./commands.ts";
 import { Key } from "./keys.tsx";
 import { Markdown } from "./markdown.tsx";
 import { Marked } from "./menu.tsx";
-import { SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
+import { selectedRow, SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
 import { closeSheet, pins, roots, sheet, type Sheet } from "./state.ts";
 
 /** Whether the selection's whole text shows. */
@@ -19,9 +20,18 @@ const whole = signal(false);
 
 const pinRows = (open: Sheet): PinnedMessage[] => findPins(pins.value, open.query, roots.value);
 
+/** The selected row of `rows`. */
+const chosen = (open: Sheet, rows: readonly PinnedMessage[]): PinnedMessage | undefined =>
+  rows[
+    selectedRow(
+      open,
+      rows.map((pin) => pin.code),
+    )
+  ];
+
 const selected = (): PinnedMessage | undefined => {
   const open = sheet.value;
-  return open === undefined ? undefined : pinRows(open)[open.selected];
+  return open === undefined ? undefined : chosen(open, pinRows(open));
 };
 
 function take(pin: PinnedMessage | undefined): void {
@@ -35,7 +45,7 @@ function unpin(pin: PinnedMessage | undefined): void {
 }
 
 export const PINS: SheetSpec = {
-  count: () => (sheet.value === undefined ? 0 : pinRows(sheet.value).length),
+  keys: () => (sheet.value === undefined ? [] : pinRows(sheet.value).map((pin) => pin.code)),
   take: (index) => take(sheet.value === undefined ? undefined : pinRows(sheet.value)[index]),
   chords: () => [
     { key: "x", glyph: "☆", label: "unpin", run: () => unpin(selected()) },
@@ -45,7 +55,14 @@ export const PINS: SheetSpec = {
 
 export function PinsSheet({ open }: { open: Sheet }) {
   const rows = pinRows(open);
-  const pin = rows[open.selected];
+  const pin = chosen(open, rows);
+  // Each opening starts on the headlines.
+  useEffect(
+    () => () => {
+      whole.value = false;
+    },
+    [],
+  );
   return (
     <SheetView
       open={open}
@@ -88,15 +105,15 @@ export function PinsSheet({ open }: { open: Sheet }) {
           {pins.value.length === 0 ? "nothing pinned yet: tap ☆ on a message" : "nothing matches"}
         </li>
       ) : null}
-      {rows.map((each, index) => (
+      {rows.map((each) => (
         <li
           key={each.code}
           role="option"
-          aria-selected={index === open.selected}
-          class={index === open.selected ? "selected" : ""}
+          aria-selected={each === pin}
+          class={each === pin ? "selected" : ""}
           // A tap must not take focus from the editor, or the keyboard closes.
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => tapRow(PINS, index)}
+          onClick={() => tapRow(PINS, each.code)}
         >
           <span class="enter">
             <span class="dot" aria-hidden="true">

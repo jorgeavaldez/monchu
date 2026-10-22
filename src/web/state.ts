@@ -65,7 +65,7 @@ export type RootsFilter = "all" | RootStatus | "archived";
 
 /**
  * A menu that opens from the bottom over the editor, whose box filters it while the draft waits: its filter, the row
- * Enter takes (-1 for none), whether it is in normal mode (keys move and act rather than type), and the keys typed
+ * Enter takes, whether it is in normal mode (keys move and act rather than type), and the keys typed
  * after the leader (undefined when none is pending). `back` puts focus where it was.
  */
 export type Sheet = {
@@ -73,7 +73,10 @@ export type Sheet = {
   /** What the list shows: every row, one status of them, or (roots) the archived ones. */
   filter: RootsFilter;
   query: string;
+  /** Where the selection is (-1 for none), and its row's key: it follows its row as rows move, and a row that leaves
+   * hands it to the one in its place. */
   selected: number;
+  key: string | undefined;
   normal: boolean;
   chord: readonly string[] | undefined;
   back: () => void;
@@ -241,6 +244,7 @@ export function openSheet(kind: Sheet["kind"], query = ""): void {
     filter: "all",
     query,
     selected: 0,
+    key: undefined,
     normal: false,
     chord: undefined,
     back: focusReturn(),
@@ -262,7 +266,7 @@ export function updateSheet(change: Partial<Omit<Sheet, "kind" | "back">>): void
 
 /** The sheet's filter text: the first row is selected again, and typing is insert mode. */
 export function filterSheet(query: string): void {
-  updateSheet({ query, selected: 0, normal: false, chord: undefined });
+  updateSheet({ query, selected: 0, key: undefined, normal: false, chord: undefined });
 }
 
 export function setMenuOpen(open: boolean): void {

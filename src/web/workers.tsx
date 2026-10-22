@@ -7,7 +7,7 @@ import { age, contextUsage, lastActive, presentation } from "../ui/state.ts";
 import { run } from "./commands.ts";
 import { Key } from "./keys.tsx";
 import { Marked, matching } from "./menu.tsx";
-import { SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
+import { selectedRow, SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
 import {
   client,
   closeSheet,
@@ -61,9 +61,16 @@ function crewRows(open: Sheet): Crew[] {
   ).flatMap((item) => byId.get(item.id) ?? []);
 }
 
+/** A row's key: the worker's name, empty for the root. */
+const keyOf = (each: Crew) => each.name ?? "";
+
+/** The selected row of `rows`. */
+const chosen = (open: Sheet, rows: readonly Crew[]): Crew | undefined =>
+  rows[selectedRow(open, rows.map(keyOf))];
+
 const selected = (): Crew | undefined => {
   const open = sheet.value;
-  return open === undefined ? undefined : crewRows(open)[open.selected];
+  return open === undefined ? undefined : chosen(open, crewRows(open));
 };
 
 function take(each: Crew | undefined): void {
@@ -75,8 +82,7 @@ function take(each: Crew | undefined): void {
 /** Stop a working one: the root's run, or a worker's. */
 function stop(each: Crew | undefined): void {
   if (each?.busy !== true) return;
-  if (each.name === undefined) run("stop");
-  else run("send", `/stop ${each.name}`);
+  run("worker.stop", each.name);
 }
 
 /** In text presentation, so no system draws it as an emoji. */
@@ -85,15 +91,15 @@ const CLOSE = "⏏\uFE0E";
 /** Close an idle worker: it leaves the roster and its history stays. The root's front never closes. */
 function close(each: Crew | undefined): void {
   if (each?.name === undefined || each.busy) return;
-  run("send", `/close ${each.name}`);
+  run("worker.close", each.name);
 }
 
 function filterTo(filter: Sheet["filter"]): void {
-  updateSheet({ filter, selected: 0 });
+  updateSheet({ filter, selected: 0, key: undefined });
 }
 
 export const WORKERS: SheetSpec = {
-  count: () => (sheet.value === undefined ? 0 : crewRows(sheet.value).length),
+  keys: () => (sheet.value === undefined ? [] : crewRows(sheet.value).map(keyOf)),
   take: (index) => take(sheet.value === undefined ? undefined : crewRows(sheet.value)[index]),
   chords: () => [
     { key: "s", glyph: "■", label: "stop", run: () => stop(selected()) },
@@ -129,7 +135,7 @@ function Context({ tokens, model }: { tokens: number | undefined; model: string 
   );
 }
 
-function Row(props: { each: Crew; index: number; selected: boolean; query: string }) {
+function Row(props: { each: Crew; selected: boolean; query: string }) {
   const { each } = props;
   const here = each.name === shown.value;
   return (
@@ -140,11 +146,12 @@ function Row(props: { each: Crew; index: number; selected: boolean; query: strin
       aria-current={here}
       // A tap must not take focus from the editor, or the keyboard closes.
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => tapRow(WORKERS, props.index)}
+      onClick={() => tapRow(WORKERS, keyOf(each))}
     >
       <span class="enter">
         <span
           class={`dot ${each.busy ? "working" : "idle"}`}
+          role="img"
           aria-label={each.busy ? "working" : "idle"}
         >
           {each.busy ? "●" : "○"}
@@ -163,7 +170,7 @@ function Row(props: { each: Crew; index: number; selected: boolean; query: strin
 
 export function WorkersSheet({ open }: { open: Sheet }) {
   const rows = crewRows(open);
-  const each = rows[open.selected];
+  const each = chosen(open, rows);
   const working = open.filter === "working";
   const busy = crew().filter((one) => one.busy).length;
   return (
@@ -214,14 +221,8 @@ export function WorkersSheet({ open }: { open: Sheet }) {
       {rows.length === 0 ? (
         <li class="help empty">{open.query ? "nothing matches" : "none working"}</li>
       ) : null}
-      {rows.map((one, index) => (
-        <Row
-          key={one.name ?? ""}
-          each={one}
-          index={index}
-          selected={index === open.selected}
-          query={open.query}
-        />
+      {rows.map((one) => (
+        <Row key={keyOf(one)} each={one} selected={one === each} query={open.query} />
       ))}
     </SheetView>
   );

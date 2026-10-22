@@ -707,6 +707,36 @@ export async function interrupt(): Promise<void> {
   if (at.shown.value !== undefined) return;
   const state = at.views.value.get("")?.state.value;
   if (state === undefined || !presentation(state).busy) return;
+  await stopFront(at);
+}
+
+/** The workers menu's ■: the root's run, wherever the page is, or a worker's. */
+export async function stopOne(name: string | undefined): Promise<void> {
+  const at = showing();
+  if (name === undefined) return await stopFront(at);
+  try {
+    await at.root.stopWorker(name);
+  } catch (error) {
+    return at.notice(failure(error), "warning");
+  }
+  at.notice(`stopped · ${name}`);
+}
+
+/** ⏏ or `/close`: retire an idle worker; the page goes back to the root if it showed it. */
+export async function closeWorker(name: string): Promise<void> {
+  const at = showing();
+  try {
+    await at.root.closeWorker(name);
+  } catch (error) {
+    return at.notice(failure(error), "warning");
+  }
+  if (at.shown.value === name) at.shown.value = undefined;
+  at.notice(`closed · ${name}`);
+  await at.refreshWorkers();
+}
+
+/** Stop the root's front, putting the user's queued messages back in the editor. */
+async function stopFront(at: Showing): Promise<void> {
   let restored: string[];
   try {
     restored = await at.root.abort();
@@ -806,10 +836,7 @@ async function runInput(
       }
       return await interrupt();
     case "/close":
-      await at.root.closeWorker(input.text);
-      if (at.shown.value === input.text) at.shown.value = undefined;
-      await at.refreshWorkers();
-      return at.notice(`closed · ${input.text}`);
+      return await closeWorker(input.text);
     case "/new":
       await at.root.reset(input.text || undefined);
       return at.notice("new context · root");

@@ -1883,6 +1883,19 @@ async function journeys(
       await browser("wait", "--fn", `${pins}?.querySelector("li[role=option]")`);
       const rows = () => page(`${pins}.querySelectorAll("li[role=option]").length`);
       check((await rows()) === 1, `the star doesn't list the pin: ${String(await rows())}`);
+      // The selection follows its row: a pin made meanwhile lists above the one selected on opening, which stays so.
+      const chosen = `${pins}.querySelector("li.selected")?.textContent`;
+      const first = await page(chosen);
+      const other = `[...document.querySelectorAll(".meta .stamp .pin")].at(-2)`;
+      await page(`${other}.click()`);
+      await browser("wait", "--fn", `${pins}.querySelectorAll("li[role=option]").length === 2`);
+      check(
+        (await page(`${pins}.querySelector("li[role=option]").textContent`)) !== first,
+        "a new pin doesn't list first",
+      );
+      check((await page(chosen)) === first, "the selection didn't follow its pin");
+      await page(`${other}.click()`);
+      await browser("wait", "--fn", `${pins}.querySelectorAll("li[role=option]").length === 1`);
       check(
         (await page(`${tab}.getAttribute("aria-pressed")`)) === "true",
         "the star isn't pressed while the pins are open",
