@@ -175,13 +175,13 @@ export function Editor() {
           onTake={(item) => take(item)}
           header={
             <header>
-              <span class="title">
+              <h1 class="title">
                 {picking.title}
                 <span class="hint">
                   {picking.alternate === undefined ? "" : ` · Shift+Enter ${picking.alternate}`} ·
                   Esc cancels
                 </span>
-              </span>
+              </h1>
               <button
                 type="button"
                 class="icon"
