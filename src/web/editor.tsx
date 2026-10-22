@@ -8,7 +8,7 @@
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { Client } from "../api/client.ts";
-import { addFiles, AttachButton, AttachmentTray, readyAttachments } from "./attachments.tsx";
+import { addFiles, AttachButton, AttachmentTray, PasteButton } from "./attachments.tsx";
 import { run, runWebCommand, slashCommands } from "./commands.ts";
 import { argumentRows } from "./completions.ts";
 import { Keys, PickKeys } from "./keys.tsx";
@@ -25,7 +25,6 @@ import {
   escapeLeaves,
   focusOnMount,
   forgetRetry,
-  keepCommandLine,
   mode,
   notice,
   roots,
@@ -120,14 +119,38 @@ export function Editor() {
       setDraft(rest);
       return;
     }
-    const attachments = readyAttachments();
-    if (attachments === undefined) {
-      keepCommandLine(line);
-      return notice("still uploading · send when the files are up");
-    }
     setDraft(rest);
-    run("send", text, attachments);
+    run("send", text);
   };
+  // Pasted text goes in at the caret, as a paste would put it.
+  const insert = (text: string) => {
+    const element = area.current;
+    const value = picking === undefined ? draft.value : query.value;
+    const start = element?.selectionStart ?? value.length;
+    const end = element?.selectionEnd ?? value.length;
+    const next = value.slice(0, start) + text + value.slice(end);
+    if (picking !== undefined) query.value = next;
+    else {
+      forgetRetry();
+      setDraft(next);
+    }
+    requestAnimationFrame(() =>
+      element?.setSelectionRange(start + text.length, start + text.length),
+    );
+  };
+  // Pasted images and files attach wherever the page has focus (the editor, or the page in a key plugin's normal mode);
+  // text pastes as usual. The secret form is the one place a paste stays its own.
+  useEffect(() => {
+    const paste = (event: ClipboardEvent) => {
+      if (event.target instanceof Element && event.target.closest(".secretForm") !== null) return;
+      const files = [...(event.clipboardData?.files ?? [])];
+      if (files.length === 0) return;
+      event.preventDefault();
+      attach(files);
+    };
+    document.addEventListener("paste", paste);
+    return () => document.removeEventListener("paste", paste);
+  }, []);
   const accept = (item: MenuItem) => {
     // A row's id is the whole text it completes to.
     setDraft(`${item.id}${item.usage ? " " : ""}`);
@@ -212,13 +235,6 @@ export function Editor() {
       <AttachmentTray />
       <textarea
         ref={area}
-        onPaste={(event) => {
-          // Pasted images and files attach; text pastes as usual.
-          const files = [...(event.clipboardData?.files ?? [])];
-          if (files.length === 0) return;
-          event.preventDefault();
-          attach(files);
-        }}
         class={mode.value === "steer" && picking === undefined ? "steer" : ""}
         rows={1}
         value={picking === undefined ? draft.value : query.value}
@@ -317,6 +333,11 @@ export function Editor() {
       ) : (
         <Keys send={send}>
           <AttachButton onFiles={attach} />
+          <PasteButton
+            onFiles={attach}
+            onText={insert}
+            onError={(message) => notice(message, "warning")}
+          />
         </Keys>
       )}
     </section>

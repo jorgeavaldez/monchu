@@ -8,7 +8,7 @@ import { batch } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Attachment } from "../api/attachments.ts";
 import type { ModelPick, QueueChange } from "../api/client.ts";
-import { parseWorkerNotice } from "../api/notices.ts";
+import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { randomId } from "../api/ids.ts";
 import { formatReports } from "../api/reports.ts";
 import { helpText, loginProviders, parseInput } from "../ui/commands.ts";
@@ -16,8 +16,17 @@ import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
 import { age, contextUsage, lastActive, presentation, type QueuedItem } from "../ui/state.ts";
-import { clearPending, openPicker } from "./attachments.tsx";
+import {
+  clearPending,
+  hasPending,
+  openPicker,
+  restorePending,
+  sentPending,
+  takePending,
+  uploaded,
+} from "./attachments.tsx";
 import type { MenuItem, Tone } from "./menu.tsx";
+import { sendInOrder } from "./sending.tsx";
 import type { Showing } from "./showing.ts";
 import {
   ask,
@@ -66,14 +75,50 @@ export function startCommandLine(): void {
   typeInEditor();
 }
 
-/** Send what the editor holds; what didn't go comes back to it, never lost. */
-export async function send(text: string, attachments: readonly Attachment[]): Promise<void> {
-  const outcome = await submit(text, attachments);
-  if (outcome === "sent") clearPending();
+/**
+ * Send what the editor holds. A message takes the waiting files, uploaded or not, and goes as a row over the editor once
+ * they are up and the messages before it went; what didn't go comes back to the editor, files too, never lost.
+ */
+export async function send(text: string): Promise<void> {
+  let outcome: Awaited<ReturnType<typeof submit>>;
+  if (!carriesFiles(text)) outcome = await submit(text);
+  else {
+    // Where it goes is where it was sent from, whatever is shown by the time its files are up.
+    let target: Aim | undefined;
+    try {
+      target = aim();
+    } catch {
+      // Not connected: the submission says so, and the text and files come back.
+    }
+    const files = takePending();
+    outcome = await sendInOrder(text, files, async () => {
+      let attachments: Attachment[];
+      try {
+        attachments = await uploaded(files);
+      } catch (error) {
+        notice(`${failure(error)} · back in the editor`, "warning");
+        return "failed";
+      }
+      return await submit(text, attachments, target);
+    });
+    if (outcome === "sent") sentPending(files);
+    else restorePending(files);
+  }
   if (outcome !== "failed") return;
   // Ahead of anything typed since (then it's a new message).
   if (draft.value !== "") forgetRetry();
   page.draft.value = [text, draft.value].filter(Boolean).join("\n");
+}
+
+/** Whether `text` sends a message, which takes the waiting files: words, a skill or a reply, or nothing but files. */
+function carriesFiles(text: string): boolean {
+  if (!text.trim()) return hasPending();
+  try {
+    const command = parseInput(text)?.command;
+    return command === "message" || command === "skill" || command === "/reply";
+  } catch {
+    return false;
+  }
 }
 
 /** Show another root from the panel or a command, saying which one it is. */
@@ -678,6 +723,7 @@ export async function interrupt(): Promise<void> {
 export async function submit(
   raw: string,
   attachments: readonly Attachment[] = [],
+  target?: Aim,
 ): Promise<"sent" | "done" | "failed"> {
   // A message that failed may have reached the core all the same (its answer lost with the link): sent again as it was,
   // it keeps its request id, so the core takes it once.
@@ -690,7 +736,7 @@ export async function submit(
         ? parseInput(raw)
         : { command: "message" as const, text: "" };
     if (input === undefined) return "done";
-    const sent = (await runInput(input, attachments, requestId)) === true;
+    const sent = (await runInput(input, attachments, requestId, target ?? aim())) === true;
     sessionStorage.removeItem("retry");
     return sent ? "sent" : "done";
   } catch (error) {
@@ -755,16 +801,22 @@ function agentRows(at: Showing): MenuItem[] {
   ];
 }
 
+/** Where a submission goes: the root and conversation on screen, and the busy mode, as it was made. */
+type Aim = { at: Showing; name: string | undefined; when: WhenBusy };
+
+function aim(): Aim {
+  const at = showing();
+  return { at, name: at.shown.value, when: mode.value };
+}
+
 /** Runs one parsed submission; true when a message went. */
 async function runInput(
   input: NonNullable<ReturnType<typeof parseInput>>,
   attachments: readonly Attachment[],
   requestId: string,
-): Promise<boolean | void> {
   // Admitted under the root on screen: it goes there, and says so there, whatever is shown by then.
-  const at = showing();
-  const name = at.shown.value;
-  const when = mode.value;
+  { at, name, when }: Aim,
+): Promise<boolean | void> {
   switch (input.command) {
     case "message":
     case "skill": {

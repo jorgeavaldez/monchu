@@ -1,6 +1,7 @@
 /**
- * Files for the next message: the attach button, paste and drop add them, each uploads at once, and the tray shows them
- * (images as previews) until the message goes. A sent message shows its images and files under its text.
+ * Files for the next message: the attach button, the paste key, a paste anywhere on the page and a drop add them, each
+ * uploads at once, and the tray shows them (images as previews) until a message takes them, uploaded or not; the message's
+ * row over the editor counts them while it goes. A sent message shows its images and files under its text.
  */
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { signal, useSignal } from "@preact/signals";
@@ -24,77 +25,148 @@ type Pending = {
   preview: string | undefined;
   stored: Attachment | undefined;
   error: string | undefined;
+  /** Settles with `stored`, or fails with the error named. */
+  ready: Promise<Attachment>;
 };
 
-/** The files waiting for the next message, in the order added. */
-const pending = signal<readonly Pending[]>([]);
+/** Every file the page holds, by key: in the tray, or going with a message being sent. */
+const files = signal<ReadonlyMap<number, Pending>>(new Map());
+/** The tray: the files waiting for the next message, in the order added. */
+const tray = signal<readonly number[]>([]);
 let nextKey = 1;
 let picker: HTMLInputElement | null = null;
 
 function update(key: number, change: Partial<Pending>): void {
-  pending.value = pending.value.map((item) => (item.key === key ? { ...item, ...change } : item));
+  const item = files.value.get(key);
+  if (item !== undefined) files.value = new Map(files.value).set(key, { ...item, ...change });
+}
+
+function forget(keys: readonly number[]): void {
+  const next = new Map(files.value);
+  for (const key of keys) next.delete(key);
+  files.value = next;
 }
 
 function remove(key: number): void {
-  pending.value = pending.value.filter((each) => each.key !== key);
+  tray.value = tray.value.filter((each) => each !== key);
+  forget([key]);
 }
 
 /** Drops every waiting file; returns how many there were. */
 export function clearPending(): number {
-  const count = pending.value.length;
-  pending.value = [];
+  const count = tray.value.length;
+  forget(tray.value);
+  tray.value = [];
   return count;
 }
 
-/** The stored attachments for a message; undefined while one still uploads. Failed ones are left out. */
-export function readyAttachments(): Attachment[] | undefined {
-  const items = pending.value.filter((item) => item.error === undefined);
-  if (items.some((item) => item.stored === undefined)) return undefined;
-  return items.flatMap((item) => (item.stored === undefined ? [] : [item.stored]));
+/** Whether a file waits for the next message. */
+export const hasPending = (): boolean => tray.value.length > 0;
+
+/** Takes the waiting files for a message being sent, uploaded or not; failed ones stay in the tray to be seen. */
+export function takePending(): number[] {
+  const taken = tray.value.filter((key) => files.value.get(key)?.error === undefined);
+  tray.value = tray.value.filter((key) => !taken.includes(key));
+  return taken;
 }
+
+/** Taken files' attachments once every one is up; fails with the first that didn't make it. */
+export function uploaded(keys: readonly number[]): Promise<Attachment[]> {
+  return Promise.all(
+    keys.map((key) => files.value.get(key)?.ready ?? Promise.reject(new Error("file removed"))),
+  );
+}
+
+/** How many of the taken files are up. */
+export const upCount = (keys: readonly number[]): number =>
+  keys.filter((key) => files.value.get(key)?.stored !== undefined).length;
+
+/** A message that didn't go: its files go back to the tray, ahead of any added since. */
+export function restorePending(keys: readonly number[]): void {
+  tray.value = [...keys.filter((key) => files.value.has(key)), ...tray.value];
+}
+
+/** A message went: its files are done with. */
+export const sentPending = (keys: readonly number[]): void => forget(keys);
 
 /** Uploads each file through `attach` and shows it in the tray meanwhile. */
 export function addFiles(
-  files: Iterable<File>,
+  added: Iterable<File>,
   attach: (name: string, data: Uint8Array) => Promise<Attachment>,
 ): void {
-  for (const file of files) {
+  for (const file of added) {
     const key = nextKey++;
     // A pasted image comes as "image.png" or with no name at all.
     const name = attachmentName(file.name || imageFileName(file.type));
     const image = file.type.startsWith("image/");
     const full =
-      pending.value.filter((item) => item.error === undefined).length >= ATTACHMENTS_PER_MESSAGE;
+      tray.value.filter((each) => files.value.get(each)?.error === undefined).length >=
+      ATTACHMENTS_PER_MESSAGE;
     const error = full
       ? `a message takes at most ${ATTACHMENTS_PER_MESSAGE} attachments`
       : file.size > ATTACHMENT_MAX_BYTES
         ? `larger than the ${formatBytes(ATTACHMENT_MAX_BYTES)} limit`
         : undefined;
-    pending.value = [
-      ...pending.value,
-      {
-        key,
-        name,
-        size: file.size,
-        preview: undefined,
-        stored: undefined,
-        error,
-      },
-    ];
-    if (error !== undefined) continue;
-    void file
-      .arrayBuffer()
-      .then((buffer) => {
-        const data = new Uint8Array(buffer);
-        if (image) update(key, { preview: `data:${file.type};base64,${toBase64(data)}` });
-        return attach(name, data);
-      })
-      .then(
-        (stored) => update(key, { stored }),
-        (failure: unknown) =>
-          update(key, { error: failure instanceof Error ? failure.message : String(failure) }),
-      );
+    const ready =
+      error !== undefined
+        ? Promise.reject(new Error(`${name} · ${error}`))
+        : file
+            .arrayBuffer()
+            .then((buffer) => {
+              const data = new Uint8Array(buffer);
+              if (image) update(key, { preview: `data:${file.type};base64,${toBase64(data)}` });
+              return attach(name, data);
+            })
+            .then(
+              (stored) => {
+                update(key, { stored });
+                return stored;
+              },
+              (failure: unknown) => {
+                const message = failure instanceof Error ? failure.message : String(failure);
+                update(key, { error: message });
+                throw new Error(`${name} · ${message}`);
+              },
+            );
+    // Its failure shows in the tray; a message waiting on it hears it from `uploaded`.
+    ready.catch(() => {});
+    files.value = new Map(files.value).set(key, {
+      key,
+      name,
+      size: file.size,
+      preview: undefined,
+      stored: undefined,
+      error,
+      ready,
+    });
+    tray.value = [...tray.value, key];
   }
+}
+
+/** Whether the page may read the clipboard: a secure page in a browser that has `read`. */
+const canReadClipboard = (): boolean =>
+  "clipboard" in navigator && typeof navigator.clipboard.read === "function";
+
+/**
+ * Ctrl+V for a touch screen, whose keyboard can't put an image in a text box: the clipboard's images attach, else its
+ * text goes to `text`. Fails when the browser refuses or the clipboard holds neither.
+ */
+async function pasteClipboard(
+  onFiles: (files: File[]) => void,
+  onText: (text: string) => void,
+): Promise<void> {
+  const images: File[] = [];
+  let text = "";
+  for (const item of await navigator.clipboard.read()) {
+    const type = item.types.find((each) => each.startsWith("image/"));
+    if (type !== undefined)
+      images.push(new File([await item.getType(type)], imageFileName(type), { type }));
+    else if (!text && item.types.includes("text/plain"))
+      text = await (await item.getType("text/plain")).text();
+  }
+  if (images.length > 0) onFiles(images);
+  else if (text) onText(text);
+  else throw new Error("nothing to paste");
 }
 
 /** Opens the file picker, as `/attach` does. */
@@ -135,12 +207,39 @@ export function AttachButton(props: { onFiles: (files: File[]) => void }) {
   );
 }
 
+/** The paste key, where the page may read the clipboard: Ctrl+V for a touch keyboard, which can't paste an image here. */
+export function PasteButton(props: {
+  onFiles: (files: File[]) => void;
+  onText: (text: string) => void;
+  onError: (message: string) => void;
+}) {
+  if (!canReadClipboard()) return null;
+  return (
+    <button
+      type="button"
+      class="icon"
+      title="paste an image or text from the clipboard (Ctrl+V)"
+      aria-label="paste"
+      // A tap must not take focus from the editor, or the keyboard closes.
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() =>
+        void pasteClipboard(props.onFiles, props.onText).catch((error: unknown) =>
+          props.onError(error instanceof Error ? error.message : String(error)),
+        )
+      }
+    >
+      ❐
+    </button>
+  );
+}
+
 /** The waiting files: an image as a preview, any other file by name; each with its size or failure, and a remove. */
 export function AttachmentTray() {
-  if (pending.value.length === 0) return null;
+  const items = tray.value.flatMap((key) => files.value.get(key) ?? []);
+  if (items.length === 0) return null;
   return (
     <ul class="attach-tray">
-      {pending.value.map((item) => (
+      {items.map((item) => (
         <li key={item.key} class={item.error === undefined ? "" : "failed"}>
           {item.preview === undefined ? null : <img src={item.preview} alt="" />}
           <span class="attach-name">{item.name}</span>

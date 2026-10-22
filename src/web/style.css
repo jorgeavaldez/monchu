@@ -413,6 +413,20 @@ pre {
 .queue span.text {
   align-self: center;
 }
+/* A message on its way: muted until the core has it, its files and ↑ in cells like a queued row's buttons. */
+.queue li.sending {
+  border-left-style: dashed;
+  border-left-color: var(--muted);
+  color: var(--muted);
+}
+.queue .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap);
+  padding: 0 var(--s1);
+  border-left: 1px solid var(--line);
+}
 .editor {
   position: relative;
   border-top: 1px solid var(--line);

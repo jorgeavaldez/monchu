@@ -87,6 +87,8 @@ async function page(expression: string): Promise<unknown> {
 async function devTools(): Promise<{
   socket: WebSocket;
   send: (method: string, params: Data) => Promise<Data>;
+  /** A browser-wide method, such as granting a permission. */
+  sendBrowser: (method: string, params: Data) => Promise<Data>;
 }> {
   const socket = new WebSocket(text((await browser("get", "cdp-url")).cdpUrl));
   let next = 0;
@@ -122,7 +124,59 @@ async function devTools(): Promise<{
   const session = text(
     (await call("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId,
   );
-  return { socket, send: (method, params) => call(method, params, session) };
+  return {
+    socket,
+    send: (method, params) => call(method, params, session),
+    sendBrowser: (method, params) => call(method, params),
+  };
+}
+
+/**
+ * Puts an image (a PNG of `width` by `height`) or text on the browser's clipboard as a person's copy would: written from
+ * the page with a user gesture. The page may read the clipboard while the returned socket stays open; close it after.
+ */
+async function copyToClipboard(
+  what: { width: number; height: number } | string,
+): Promise<WebSocket> {
+  const { socket, send, sendBrowser } = await devTools();
+  try {
+    // The page's own browser context, which needn't be the default one.
+    const contexts = new Set(
+      list((await sendBrowser("Target.getTargets", {})).targetInfos).flatMap((item) =>
+        isData(item) && typeof item.browserContextId === "string" ? [item.browserContextId] : [],
+      ),
+    );
+    for (const browserContextId of contexts)
+      await sendBrowser("Browser.grantPermissions", {
+        browserContextId,
+        origin: text(await page("location.origin")),
+        permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      });
+    const item =
+      typeof what === "string"
+        ? `{ "text/plain": new Blob([${JSON.stringify(what)}], { type: "text/plain" }) }`
+        : `{ "image/png": await new Promise((done) => {
+            const canvas = document.createElement("canvas");
+            canvas.width = ${what.width};
+            canvas.height = ${what.height};
+            const context = canvas.getContext("2d");
+            context.fillStyle = "#c33";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            canvas.toBlob(done, "image/png");
+          }) }`;
+    const written = await send("Runtime.evaluate", {
+      expression: `(async () => { await navigator.clipboard.write([new ClipboardItem(${item})]); return "ok"; })()`,
+      userGesture: true,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const value = isData(written.result) ? written.result.value : undefined;
+    if (value !== "ok") throw new Error(`clipboard write: ${JSON.stringify(written)}`);
+    return socket;
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
 }
 
 /**
@@ -630,6 +684,20 @@ async function gradientPng(width: number, height: number): Promise<Uint8Array> {
   }
 }
 
+/** A PNG of `width` by `height` of random pixels, which barely compresses: an upload that takes a while. */
+async function noisePng(width: number, height: number): Promise<Uint8Array> {
+  const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+  const pixels = randomBytes(width * height * 4).map((value, index) =>
+    index % 4 === 3 ? 255 : value,
+  );
+  const image = new PhotonImage(pixels, width, height);
+  try {
+    return image.get_bytes();
+  } finally {
+    image.free();
+  }
+}
+
 /**
  * What typing may cost with the CPU slowed down as on a mid-range phone, on a transcript of a few hundred items: each
  * key from its event to the task after the next frame, at the median (p95 is tracked, too noisy to gate), and the
@@ -1063,6 +1131,106 @@ async function journeys(
       );
       await capture("attach", home, origin);
       return "picked, uploaded, previewed, sent, and shown under the message";
+    },
+  );
+
+  await journey(
+    "attach: sent while it uploads, it waits as a row over the editor; one that fails comes back with its file",
+    async () => {
+      const file = join(home, "attach-noise.png");
+      await writeFile(file, await noisePng(1200, 1200));
+      // Every sending row the page draws, as it first drew it.
+      await page(`(() => {
+        window.sendingRows = [];
+        new MutationObserver(() => {
+          for (const row of document.querySelectorAll(".queue li.sending"))
+            if (!window.sendingRows.includes(row.textContent)) window.sendingRows.push(row.textContent);
+        }).observe(document.body, { subtree: true, childList: true, characterData: true });
+      })()`);
+      await browser("upload", "input[type=file]", file);
+      await browser("fill", "textarea", "what is this noise?");
+      await browser("press", "Enter");
+      check(
+        (await page(`document.querySelector(".editor textarea").value`)) === "",
+        "the editor kept the text of a message on its way",
+      );
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("what is this noise?"))`,
+      );
+      const rows = list(await page("window.sendingRows")).map(text);
+      check(
+        rows.some((row) => row.startsWith("what is this noise?+") && row.endsWith("↑")),
+        `no sending row with its text, file count and ↑: ${JSON.stringify(rows)}`,
+      );
+      check(
+        (await page(`document.querySelector(".queue li.sending, .attach-tray") === null`)) === true,
+        "a sending row or the tray outlived the sent message",
+      );
+      check(
+        (await page(
+          `[...document.querySelectorAll(".user")].some((item) => item.textContent.includes("what is this noise?") && item.querySelector(".attached img") !== null)`,
+        )) === true,
+        "the image didn't go with the message",
+      );
+      // A message the core refuses comes back to the editor with its file.
+      await browser("upload", "input[type=file]", file);
+      await browser("fill", "textarea", "/reply qqqq about this");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".editor textarea").value === "/reply qqqq about this" && document.querySelectorAll(".attach-tray li").length === 1`,
+      );
+      check(
+        (await page(`document.querySelector(".queue li.sending") === null`)) === true,
+        "the refused message's row stayed",
+      );
+      await capture("attach-refused", home, origin);
+      await browser("fill", "textarea", "/attach clear");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `document.querySelector(".attach-tray") === null`);
+      const partial = rows.some((row) => /\+0\/1/.test(row));
+      return `cleared at once, drawn as ${JSON.stringify(rows)}${partial ? " (sent before the file was up)" : ""}, sent with the image; a refused one came back with its file`;
+    },
+  );
+
+  await journey(
+    "paste: an image pasted anywhere on the page attaches, the ❐ key pastes images and text",
+    async () => {
+      (await copyToClipboard({ width: 64, height: 48 })).close();
+      // Ctrl+V with the focus off the editor, as in a key plugin's normal mode.
+      await page(`document.querySelector(".editor textarea").blur()`);
+      await browser("press", "Control+v");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelectorAll(".attach-tray li").length === 1 && document.querySelector(".attach-tray img")?.naturalWidth === 64`,
+      );
+      let clipboard = await copyToClipboard({ width: 32, height: 32 });
+      await browser("click", "[aria-label=paste]");
+      await browser(
+        "wait",
+        "--fn",
+        `[...document.querySelectorAll(".attach-tray img")].map((img) => img.naturalWidth).join() === "64,32"`,
+      );
+      await capture("paste", home, origin);
+      await browser("fill", "textarea", "ab");
+      await page(`document.querySelector(".editor textarea").setSelectionRange(1, 1)`);
+      clipboard.close();
+      clipboard = await copyToClipboard("pasted");
+      await browser("click", "[aria-label=paste]");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".editor textarea").value === "apastedb"`,
+      );
+      clipboard.close();
+      await browser("fill", "textarea", "/attach clear");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `document.querySelector(".attach-tray") === null`);
+      return "Ctrl+V off the editor and the ❐ key attached images; ❐ put text at the caret";
     },
   );
 

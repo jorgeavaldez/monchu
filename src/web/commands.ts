@@ -3,7 +3,6 @@
  * actions, which every control runs through one executor (`run`). The palette lists them all, `/keys` lists the keys,
  * and `/search` finds a message in the feed on screen. A key plugin binds keys to these actions; nothing here needs one.
  */
-import type { Attachment } from "../api/attachments.ts";
 import type { Client, QueueChange } from "../api/client.ts";
 import { clientCommands } from "../ui/commands.ts";
 import { clock } from "../ui/ids.ts";
@@ -239,7 +238,7 @@ const ACTIONS = {
   ),
   keys: listed("keys", "/keys", () => openKeys()),
   // The page's controls.
-  send: { run: send } satisfies Action<[string, readonly Attachment[]]>,
+  send: { run: send } satisfies Action<[string]>,
   "feed.clear": { run: clearFilter, available: front } satisfies Action,
   "feed.kind": { run: filterKind, available: front } satisfies Action<[Filter["kind"]]>,
   show: { run: show } satisfies Action<[string | undefined]>,

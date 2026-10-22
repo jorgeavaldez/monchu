@@ -16,6 +16,7 @@ import { Editor } from "./editor.tsx";
 import { GoalsPanel, JobsPanel, PinsPanel } from "./lists.tsx";
 import { Close, Panel } from "./panel.tsx";
 import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
+import { SendingRows, sendingAny } from "./sending.tsx";
 import { run } from "./commands.ts";
 import {
   ask,
@@ -474,15 +475,17 @@ function QueueRow({ item }: { item: QueuedItem }) {
   );
 }
 
+/** The queued messages, then the ones still on their way to the core. */
 function Queue() {
   const state = view(shown.value)?.value;
   const queue = state === undefined ? [] : presentation(state).queue;
-  if (queue.length === 0) return null;
+  if (queue.length === 0 && !sendingAny()) return null;
   return (
     <ul class="queue" aria-label="queued">
       {queue.map((item) => (
         <QueueRow key={item.id} item={item} />
       ))}
+      <SendingRows />
     </ul>
   );
 }

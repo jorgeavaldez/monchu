@@ -230,11 +230,6 @@ export function takeCommandLine(): (typeof page.commandLine)["value"] {
   return line;
 }
 
-/** Put back a slash command `takeCommandLine` ended, as when a send it led to waits. */
-export function keepCommandLine(line: (typeof page.commandLine)["value"]): void {
-  page.commandLine.value = line;
-}
-
 let core: Client | undefined;
 let nextNotice = 1;
 
