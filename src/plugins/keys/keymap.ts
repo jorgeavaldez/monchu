@@ -41,28 +41,28 @@ const KEYS: Readonly<Record<string, string>> = {
   X: "stop",
 };
 
-/** After Space outside the prompt, or the leader anywhere: each key, its action and its glyph in the hint. */
-const GROUP: Readonly<Record<string, [string, string]>> = {
-  r: ["roots", "▾"],
-  w: ["agents", "○"],
-  p: ["pins", "★"],
-  g: ["feed.goal", "◎"],
-  d: ["drafts", "✎"],
-  m: ["model", " "],
-  j: ["jobs", " "],
-  q: ["queue", " "],
+/** After Space outside the prompt, or the leader anywhere: each key, its action, and its glyph and name in the hint. */
+const GROUP: Readonly<Record<string, [string, string, string]>> = {
+  r: ["roots", "▾", "roots"],
+  w: ["agents", "○", "workers"],
+  p: ["pins", "★", "pins"],
+  g: ["feed.goal", "◎", "goal"],
+  d: ["drafts", "✎", "drafts"],
+  m: ["model", " ", "model"],
+  j: ["jobs", " ", "jobs"],
+  q: ["queue", " ", "queue"],
 };
 
 /** After the group's `f`: the stream's filters, as the filter bar draws them. */
-const FILTERS: Readonly<Record<string, [string, string]>> = {
-  a: ["feed.all", "∗"],
-  "?": ["feed.ask", "?"],
-  d: ["feed.milestone", "✓"],
-  u: ["feed.update", "…"],
+const FILTERS: Readonly<Record<string, [string, string, string]>> = {
+  a: ["feed.all", "∗", "all"],
+  "?": ["feed.ask", "?", "asks"],
+  d: ["feed.milestone", "✓", "done"],
+  u: ["feed.update", "…", "updates"],
 };
 
-const lines = (table: Readonly<Record<string, [string, string]>>) =>
-  Object.entries(table).map(([key, [id, glyph]]) => `${key.padEnd(3)} ${glyph} ${id}`);
+const lines = (table: Readonly<Record<string, [string, string, string]>>) =>
+  Object.entries(table).map(([key, [, glyph, name]]) => `${key.padEnd(3)} ${glyph} ${name}`);
 
 /** The which-key list shown while a Space or leader sequence waits, one key a line. */
 export const GROUP_HINT = [...lines(GROUP), "f   ∗ filter…", "spc / palette"].join("\n");
