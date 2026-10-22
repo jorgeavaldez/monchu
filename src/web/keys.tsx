@@ -17,6 +17,9 @@ import {
   view,
 } from "./state.ts";
 
+/** A busy mode as the key bar and the queue draw it. */
+export const MODE = { steer: "↯", followUp: "⇢" };
+
 /** A key: a square cell that keeps the editor's focus, and shows when it is pressed or can't act now. */
 export function Key(props: {
   label: string;
@@ -72,12 +75,12 @@ export function Keys({ send, children }: { send: () => void; children?: Componen
         </Key>
       ) : null}
       <Key
-        class={`mode${steer ? " steer" : ""}`}
+        class={`icon mode${steer ? " steer" : ""}`}
         label={steer ? "steer" : "follow-up"}
         title={`${steer ? "steer: joins a busy run" : "follow-up: waits for a busy run"} · tap to switch`}
         onPress={() => run("mode")}
       >
-        {steer ? "↯ steer" : "⇢ follow-up"}
+        {MODE[mode.value]}
       </Key>
       <Key
         class="icon"

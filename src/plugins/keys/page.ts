@@ -4,7 +4,16 @@
  * or a docked phone with a mouse has a fine main pointer, so it gets the keys.
  */
 import type { PageApi, PageKey } from "../../plugin.ts";
-import { GROUP_HINT, IDLE, keyRows, REPEATS, step, type KeyState, type Token } from "./keymap.ts";
+import {
+  FILTER_HINT,
+  GROUP_HINT,
+  IDLE,
+  keyRows,
+  REPEATS,
+  step,
+  type KeyState,
+  type Token,
+} from "./keymap.ts";
 
 const TOUCH = "(pointer: coarse)";
 /** How long a sequence waits for its next key, and when its hint shows. */
@@ -55,7 +64,9 @@ export default function keys(page: PageApi): () => void {
     state = next.state;
     if (state.pending !== "") {
       timers.push(setTimeout(reset, WAIT_MS));
-      if (state.pending !== "g") timers.push(setTimeout(() => page.hint(GROUP_HINT), HINT_MS));
+      const hint =
+        state.pending === "f" ? FILTER_HINT : state.pending === "g" ? undefined : GROUP_HINT;
+      if (hint !== undefined) timers.push(setTimeout(() => page.hint(hint), HINT_MS));
     }
     if (next.run !== undefined && !page.run(next.run)) page.notice(`${next.run} · not now`);
     return next.take;

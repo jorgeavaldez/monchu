@@ -47,6 +47,12 @@ const BINDINGS: [string, string][] = [
   ["spc m", "model"],
   ["spc j", "jobs"],
   ["spc q", "queue"],
+  ["spc p", "pins"],
+  ["spc f a", "feed.all"],
+  ["spc f ?", "feed.ask"],
+  ["spc f d", "feed.milestone"],
+  ["spc f u", "feed.update"],
+  ["C-/ f ?", "feed.ask"],
   ["X", "stop"],
   ["C-/ C-/", "palette"],
   ["C-/ r", "roots"],
@@ -73,6 +79,10 @@ describe("keys plugin", () => {
       expect(replay(key, prompt)).toMatchObject({ runs: [], taken: [false] });
     expect(replay("C-/ m", prompt)).toMatchObject({ runs: ["model"], taken: [true, true] });
     expect(replay("C-/ C-/", prompt)).toMatchObject({ runs: ["palette"] });
+    expect(replay("C-/ f d", prompt)).toMatchObject({
+      runs: ["feed.milestone"],
+      taken: [true, true, true],
+    });
     // A stray key after the leader ends it without typing.
     expect(replay("C-/ z", prompt)).toMatchObject({ runs: [], taken: [true, true], state: IDLE });
   });

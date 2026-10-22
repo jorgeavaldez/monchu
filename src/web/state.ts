@@ -69,8 +69,8 @@ export type RootsFilter = "all" | RootStatus | "archived";
  * after the leader (undefined when none is pending). `back` puts focus where it was.
  */
 export type Sheet = {
-  kind: "roots";
-  /** What the list shows: every open root, one status of them, or the archived ones. */
+  kind: "roots" | "workers" | "pins";
+  /** What the list shows: every row, one status of them, or (roots) the archived ones. */
   filter: RootsFilter;
   query: string;
   selected: number;
@@ -102,7 +102,7 @@ export const page = {
   /** Every root, archived ones included, as the core reports them. */
   roots: signal<readonly RootSummary[]>([]),
   /** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
-  panel: signal<"client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
+  panel: signal<"client" | "secrets" | "goals" | "jobs" | undefined>(undefined),
   /** The menu open over the editor, if one is. */
   sheet: signal<Sheet | undefined>(undefined),
   notices: signal<readonly Notice[]>([]),
@@ -123,7 +123,6 @@ export const page = {
   /** The messages pinned on this device, oldest first, from every client. */
   pins: signal<readonly PinnedMessage[]>([]),
   /** The words the pins panel starts filtering by, new with each `/pins`, even open, so each one starts afresh. */
-  pinsQuery: signal({ text: "" }),
   /** What stands in for the editor: one pick or one typed answer at a time, never both. */
   standing: signal<{ kind: "pick"; pick: Choice } | { kind: "ask"; ask: Ask } | undefined>(
     undefined,
@@ -159,7 +158,6 @@ export const {
   pageHint,
   promptDrafts,
   pins,
-  pinsQuery,
   loginStatus,
   jobEvent,
   following,
@@ -230,15 +228,18 @@ export function setLinkError(error: string | undefined): void {
 }
 
 /** For the editor: whether its typeahead is open. */
-/** Open a sheet in place of whatever menu is open, every open root shown; a sign-in waiting in the editor's place keeps it. */
-export function openSheet(kind: Sheet["kind"]): void {
-  if (page.sheet.value?.kind === kind) return;
+/**
+ * Open a sheet in place of whatever menu is open, every row shown and `query` in its filter; one already open takes a
+ * query given. A sign-in waiting in the editor's place keeps it.
+ */
+export function openSheet(kind: Sheet["kind"], query = ""): void {
+  if (page.sheet.value?.kind === kind) return query === "" ? undefined : filterSheet(query);
   if (!claim(false)) return notice("finish the sign-in first", "warning");
   page.sheet.value?.back();
   page.sheet.value = {
     kind,
     filter: "all",
-    query: "",
+    query,
     selected: 0,
     normal: false,
     chord: undefined,

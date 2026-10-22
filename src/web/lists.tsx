@@ -1,20 +1,16 @@
 /**
- * `/goals`, `/jobs` and `/pins` as panels in place of the transcript: one row each, a tap opens the rest. Goals and
- * jobs read the core when they open and again when it changes: goals on the front's next entry, jobs on their next
- * event. Pins follow the device's pinned messages as every client changes them.
+ * `/goals` and `/jobs` as panels in place of the transcript: one row each, a tap opens the rest. They read the core
+ * when they open and again when it changes: goals on the front's next entry, jobs on their next event.
  */
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { Client, Goal } from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
-import { clock, stamp } from "../ui/ids.ts";
-import { findPins, pinRoot } from "../ui/pins.ts";
+import { clock } from "../ui/ids.ts";
 import { age, span } from "../ui/state.ts";
-import { run } from "./commands.ts";
-import { Markdown } from "./markdown.tsx";
 import { Panel } from "./panel.tsx";
-import { client, jobEvent, pins, pinsQuery, root, rootId, roots, view } from "./state.ts";
+import { client, jobEvent, root, rootId, view } from "./state.ts";
 
 type Job = Awaited<ReturnType<Client["jobs"]>>["jobs"][number];
 
@@ -265,70 +261,6 @@ export function JobsPanel() {
             ))}
           </ol>
         </>
-      )}
-    </Panel>
-  );
-}
-
-/**
- * `/pins`: the device's pinned messages, newest pinned first, each its headline and who, where and when; a tap opens
- * the whole message. The box on top filters by every word typed, over the whole text; `/pins <words>` fills it.
- */
-export function PinsPanel() {
-  const query = useSignal(pinsQuery.value.text);
-  // Each `/pins` starts the box with its words, even with the panel open.
-  useEffect(() => {
-    query.value = pinsQuery.value.text;
-  }, [pinsQuery.value]);
-  const shown = findPins(pins.value, query.value, roots.value);
-  return (
-    <Panel
-      name="pins"
-      class="listPanel"
-      counts={` · ${shown.length === pins.value.length ? pins.value.length : `${shown.length} of ${pins.value.length}`}`}
-    >
-      <input
-        type="search"
-        class="filter"
-        aria-label="filter pins"
-        placeholder="filter"
-        value={query.value}
-        onInput={(event) => {
-          query.value = event.currentTarget.value;
-        }}
-      />
-      {pins.value.length === 0 ? (
-        <p class="help">nothing pinned yet: tap ☆ on a message, or /pin &lt;id&gt;</p>
-      ) : shown.length === 0 ? (
-        <p class="help">no pin matches</p>
-      ) : (
-        <ul>
-          {shown.map((pin) => (
-            <Row
-              key={pin.code}
-              mark="★"
-              state="pinned"
-              name={pin.headline || pin.code}
-              line={`${pin.from} · ${pinRoot(pin, roots.value)} · ${age(pin.sentAt)} ago`}
-            >
-              <dt>
-                {pin.code} · {stamp(pin.sentAt)}
-                <button
-                  type="button"
-                  class="icon"
-                  aria-label={`unpin ${pin.code}`}
-                  title="unpin"
-                  onClick={() => run("unpin", pin.code)}
-                >
-                  ✕
-                </button>
-              </dt>
-              <dd class="assistant">
-                <Markdown text={pin.text} />
-              </dd>
-            </Row>
-          ))}
-        </ul>
       )}
     </Panel>
   );

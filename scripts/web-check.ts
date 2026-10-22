@@ -1674,7 +1674,7 @@ async function journeys(
       // A long message streams for a few seconds, long enough to leave the root while it works.
       await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
       await browser("press", "Enter");
-      await browser("wait", ".agents .roots .dot.working.here");
+      await browser("wait", ".agents .roots .dot.working");
       await page("history.back()");
       await browser(
         "wait",
@@ -1875,32 +1875,49 @@ async function journeys(
       // the root later journeys look for.)
       await browser("reload");
       await browser("wait", "--fn", `${star}?.getAttribute("aria-pressed") === "true"`);
-      const pins = `document.querySelector(".pinsPanel")`;
-      // The top bar's star opens them without knowing `/pins`, and closes them again.
-      const tab = `document.querySelector(".agents .pins")`;
-      check((await page(`${tab}?.textContent`)) === "★ 1", "the top bar doesn't show the pin");
+      const pins = `document.querySelector(".pinsMenu")`;
+      // The filter bar's star opens them without knowing `/pins`, and closes them again.
+      const tab = `document.querySelector(".filters .pins")`;
+      check((await page(`${tab}?.textContent`)) === "★", "the filter bar has no star for the pins");
       await page(`${tab}.click()`);
-      await browser("wait", "--fn", `${pins}?.querySelector("li.row")`);
-      const rows = () => page(`${pins}.querySelectorAll("li.row").length`);
+      await browser("wait", "--fn", `${pins}?.querySelector("li[role=option]")`);
+      const rows = () => page(`${pins}.querySelectorAll("li[role=option]").length`);
       check((await rows()) === 1, `the star doesn't list the pin: ${String(await rows())}`);
+      check(
+        (await page(`${tab}.getAttribute("aria-pressed")`)) === "true",
+        "the star isn't pressed while the pins are open",
+      );
       await page(`${tab}.click()`);
       await browser("wait", "--fn", `!${pins}`);
-      await command("/pins", `${pins}?.querySelector("li.row")`);
+      await command("/pins", `${pins}?.querySelector("li[role=option]")`);
       check((await rows()) === 1, `/pins doesn't list the pin: ${String(await rows())}`);
-      await browser("fill", ".pinsPanel .filter", "nothing like it");
-      await browser("wait", "--fn", `${pins}.textContent.includes("no pin matches")`);
-      // `/pins <words>` again, with the panel open, starts the box afresh.
-      await command("/pins outreach", `${pins}.querySelector(".filter").value === "outreach"`);
-      await browser("wait", "--fn", `${pins}.querySelectorAll("li.row").length === 1`);
-      await page(`${pins}.querySelector("li.row button.open").click()`);
-      await browser("wait", ".pinsPanel dd .md");
-      await capture("pins", home, origin);
-      await page(`${pins}.querySelector("dt [aria-label^=unpin]").click()`);
-      await browser("wait", "--fn", `${pins}.textContent.includes("nothing pinned yet")`);
-      await page(`${pins}.querySelector("header [aria-label=close]").click()`);
+      await browser("fill", "textarea", "nothing like it");
+      await browser("wait", "--fn", `${pins}.textContent.includes("nothing matches")`);
+      await page(`document.querySelector(".editor [aria-label=back]").click()`);
       await browser("wait", "--fn", `!${pins}`);
-      check((await page(`!${tab}`)) === true, "the top bar still shows a star with nothing pinned");
-      return "pinned with the star, kept through a reload, filtered, opened in full, unpinned";
+      // `/pins <words>` opens it with the filter filled.
+      await command("/pins outreach", `${pins}?.querySelectorAll("li[role=option]").length === 1`);
+      check(
+        (await page(`document.querySelector(".editor textarea").value`)) === "outreach",
+        "/pins <words> doesn't fill the filter",
+      );
+      await page(`${pins}.querySelector("[aria-label='whole text']").click()`);
+      await browser("wait", ".pinsMenu .whole .md");
+      await capture("pins", home, origin);
+      // › goes to the message in its conversation, marked as a search finds it.
+      await page(`${pins}.querySelector(".go").click()`);
+      await browser("wait", "--fn", `!${pins} && !!document.querySelector(".stamp.found")`);
+      await page(`${tab}.click()`);
+      await browser("wait", "--fn", `${pins}?.querySelector("li[role=option]")`);
+      await page(`${pins}.querySelector("[aria-label=unpin]").click()`);
+      await browser("wait", "--fn", `${pins}.textContent.includes("nothing pinned yet")`);
+      await page(`document.querySelector(".editor [aria-label=back]").click()`);
+      await browser("wait", "--fn", `!${pins}`);
+      check(
+        (await page(`${tab}?.getAttribute("aria-pressed")`)) === "false",
+        "the star stays pressed once the pins close",
+      );
+      return "pinned with the star, kept through a reload, filtered, opened in full, gone to, unpinned";
     },
   );
 
@@ -2197,7 +2214,7 @@ async function journeys(
   });
 
   await journey(
-    "worker: a delegated worker gets a tab, its report a card, its view a tap",
+    "worker: a delegated worker is counted in the top bar, its report a card, its view from the workers menu",
     async () => {
       await browser("fill", "textarea", "work reader check the docs");
       await browser("press", "Enter");
@@ -2211,40 +2228,54 @@ async function journeys(
         (await page(`!!${card}.querySelector("header .stamp .prefix")`)) === true,
         "the report card has no short id",
       );
-      const tab = `[...document.querySelectorAll(".agents .tabs button")].find((item) => item.textContent.includes("reader"))`;
-      check((await page(`!!(${tab})`)) === true, "no tab for the worker");
+      // The top bar counts it; a tap on the bar opens the workers menu, whose row shows it.
+      const crew = `document.querySelector(".agents .crew")`;
+      check(
+        (await page(`${crew}?.querySelector(".counts")?.textContent`)) === "○1",
+        "the top bar doesn't count the idle worker",
+      );
       await capture("worker-report", home, origin);
+      const row = (name: string) =>
+        `[...document.querySelectorAll(".workersMenu [role=option]")].find((item) => item.querySelector(".name")?.textContent === ${JSON.stringify(name)})`;
+      await page(`${crew}.click()`);
+      await browser("wait", "--fn", `!!(${row("reader")})`);
+      check(
+        (await page(`${crew}.getAttribute("aria-expanded")`)) === "true",
+        "the top bar doesn't show the workers menu open",
+      );
+      // Its state, idle time and context.
+      const cells = text(await page(`(${row("reader")}).textContent`));
+      check(
+        /^○reader\d+%\d+[smhd]$/.test(cells),
+        `the worker's row lacks state, context or idle time: ${cells}`,
+      );
+      await capture("agents", home, origin);
       const opened = performance.now();
-      await page(`(${tab}).click()`);
+      // The first tap selects, a second takes it.
+      await page(`(${row("reader")}).click()`);
+      await page(`(${row("reader")}).click()`);
       await browser(
         "wait",
         "--fn",
-        `(${tab}).classList.contains("on") && document.querySelector(".transcript")?.textContent.includes("check the docs")`,
+        `${crew}.querySelector(".here").textContent.includes("reader") && document.querySelector(".transcript")?.textContent.includes("check the docs")`,
       );
       report.metrics["worker.viewMs"] = ms(opened);
       await capture("worker-view", home, origin);
-      await page(`document.querySelector(".agents .tabs button").click()`);
+      // /agents opens the same menu on the root; › takes it.
+      await browser("fill", "textarea", "/agents");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!(${row("root")})`);
+      check(
+        (await page(`(${row("root")}).getAttribute("aria-selected")`)) === "true",
+        "the workers menu doesn't open on the root",
+      );
+      await page(`document.querySelector(".workersMenu .go").click()`);
       await browser(
         "wait",
         "--fn",
-        `document.querySelector(".agents .tabs button").classList.contains("on") && !!(${card})`,
+        `${crew}.querySelector(".here").textContent.includes("root") && !!(${card})`,
       );
-      // /agents lists it with its state, idle time and context.
-      await browser("fill", "textarea", "/agents");
-      await browser("press", "Enter");
-      const row = `[...document.querySelectorAll(".pick [role=option]")].find((item) => item.querySelector("b")?.textContent === "reader")`;
-      await browser("wait", "--fn", `!!(${row})`);
-      const tags = text(
-        await page(`[...(${row}).querySelectorAll(".tag")].map((tag) => tag.textContent).join("")`),
-      );
-      check(
-        /idle \d+[smhd]/.test(tags) && /\d+%/.test(tags),
-        `/agents row lacks idle time or context: ${tags}`,
-      );
-      await capture("agents", home, origin);
-      await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".pick")`);
-      return "a tab for reader, its report folded into a card with its id, its own view and back; /agents shows it idle with its context";
+      return "reader counted in the top bar, its report folded into a card with its id, its row in the workers menu idle with its context, its own view and back";
     },
   );
 
@@ -2398,7 +2429,8 @@ async function journeys(
       await send(`label ${id} ask smoke`);
       await browser("wait", "--fn", `!!document.querySelector(".askCard .reply")`);
       check(
-        (await page(`document.querySelector(".filters .yellow")?.textContent`)) === "asks 1",
+        (await page(`document.querySelector(".filters .yellow")?.getAttribute("aria-label")`)) ===
+          "asks: 1 open",
         "the filter bar doesn't count the open ask",
       );
       await capture("inbox-ask", home, origin);

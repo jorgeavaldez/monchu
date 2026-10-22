@@ -13,8 +13,8 @@ export type KeyContext = {
   overlay: "none" | "menu" | "pick" | "ask" | "login" | "panel";
 };
 
-/** A sequence under way: after Space, after the leader, or after the first `g`. */
-export type KeyState = { pending: "" | "spc" | "leader" | "g" };
+/** A sequence under way: after Space, after the leader, after the first `g`, or after a group's `f`. */
+export type KeyState = { pending: "" | "spc" | "leader" | "g" | "f" };
 
 export const IDLE: KeyState = { pending: "" };
 
@@ -41,21 +41,34 @@ const KEYS: Readonly<Record<string, string>> = {
   X: "stop",
 };
 
-/** After Space outside the prompt, or the leader anywhere. */
-const GROUP: Readonly<Record<string, string>> = {
-  r: "roots",
-  d: "drafts",
-  a: "agents",
-  g: "feed.goal",
-  m: "model",
-  j: "jobs",
-  q: "queue",
+/** After Space outside the prompt, or the leader anywhere: each key, its action and its glyph in the hint. */
+const GROUP: Readonly<Record<string, [string, string]>> = {
+  r: ["roots", "▾"],
+  a: ["agents", "○"],
+  p: ["pins", "★"],
+  g: ["feed.goal", "◎"],
+  d: ["drafts", "✎"],
+  m: ["model", " "],
+  j: ["jobs", " "],
+  q: ["queue", " "],
 };
 
-/** The hint shown while a Space or leader sequence waits. */
-export const GROUP_HINT = `${Object.entries(GROUP)
-  .map(([key, id]) => `${key} ${id}`)
-  .join(" · ")} · spc palette`;
+/** After the group's `f`: the stream's filters, as the filter bar draws them. */
+const FILTERS: Readonly<Record<string, [string, string]>> = {
+  a: ["feed.all", "∗"],
+  "?": ["feed.ask", "?"],
+  d: ["feed.milestone", "✓"],
+  u: ["feed.update", "…"],
+};
+
+const lines = (table: Readonly<Record<string, [string, string]>>) =>
+  Object.entries(table).map(([key, [id, glyph]]) => `${key.padEnd(3)} ${glyph} ${id}`);
+
+/** The which-key list shown while a Space or leader sequence waits, one key a line. */
+export const GROUP_HINT = [...lines(GROUP), "f   ∗ filter…", "spc / palette"].join("\n");
+
+/** The list shown while the filter keys wait. */
+export const FILTER_HINT = lines(FILTERS).join("\n");
 
 /** Keys that may repeat while held: scrolling. */
 export const REPEATS: ReadonlySet<string> = new Set(["j", "k", "d", "u"]);
@@ -72,14 +85,22 @@ const done = (run?: string): Step => ({
 export function step(state: KeyState, token: Token, context: KeyContext): Step {
   // Whatever is open owns its keys; another field types; a sequence never survives either.
   if (context.overlay !== "none" || context.owner === "other") return { state: IDLE, take: false };
-  // A Space or `g` sequence began on the page; once focus is in the prompt, the key types instead.
-  if (state.pending !== "leader" && state.pending !== "" && context.owner === "prompt")
+  // A Space or `g` sequence began on the page; once focus is in the prompt, the key types instead. The filter keys
+  // follow the leader in the prompt too.
+  if (
+    state.pending !== "leader" &&
+    state.pending !== "f" &&
+    state.pending !== "" &&
+    context.owner === "prompt"
+  )
     return { state: IDLE, take: false };
   if (state.pending === "spc" || state.pending === "leader") {
     if (token === "spc" || token === "C-/") return done("palette");
+    if (token === "f") return { state: { pending: "f" }, take: true };
     // Anything else ends the sequence; it is taken, so a stray key after the leader never types.
-    return done(GROUP[token]);
+    return done(GROUP[token]?.[0]);
   }
+  if (state.pending === "f") return done(FILTERS[token]?.[0]);
   if (state.pending === "g") return done(token === "g" ? "scroll.top" : undefined);
   if (token === "C-/") return { state: { pending: "leader" }, take: true };
   if (context.owner === "prompt") return { state: IDLE, take: false };
@@ -99,8 +120,12 @@ export function keyRows(): { keys: string; label: string }[] {
     ...Object.entries(KEYS).map(([keys, label]) => ({ keys, label })),
     { keys: "g g", label: "scroll.top" },
     { keys: "spc spc · Ctrl+/ Ctrl+/", label: "palette" },
-    ...Object.entries(GROUP).map(([key, label]) => ({
+    ...Object.entries(GROUP).map(([key, [label]]) => ({
       keys: `spc ${key} · Ctrl+/ ${key}`,
+      label,
+    })),
+    ...Object.entries(FILTERS).map(([key, [label]]) => ({
+      keys: `spc f ${key} · Ctrl+/ f ${key}`,
       label,
     })),
     { keys: "Esc (in the prompt)", label: "leave the prompt" },

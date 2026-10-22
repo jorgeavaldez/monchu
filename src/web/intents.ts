@@ -7,7 +7,7 @@
 import { batch } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Attachment } from "../api/attachments.ts";
-import type { ModelPick, QueueChange } from "../api/client.ts";
+import type { ModelPick, PinnedMessage, QueueChange } from "../api/client.ts";
 import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { randomId } from "../api/ids.ts";
 import { formatReports } from "../api/reports.ts";
@@ -15,7 +15,7 @@ import { helpText, loginProviders, parseInput } from "../ui/commands.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
 import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
-import { age, contextUsage, lastActive, presentation, type QueuedItem } from "../ui/state.ts";
+import { age, presentation, type QueuedItem } from "../ui/state.ts";
 import {
   clearPending,
   hasPending,
@@ -25,7 +25,7 @@ import {
   takePending,
   uploaded,
 } from "./attachments.tsx";
-import type { MenuItem, Tone } from "./menu.tsx";
+import { jumpTo } from "./feed.ts";
 import { sendInOrder } from "./sending.tsx";
 import type { Showing } from "./showing.ts";
 import {
@@ -43,7 +43,6 @@ import {
   mode,
   notice,
   openRoot,
-  panel,
   pick,
   pins,
   prompted,
@@ -54,6 +53,7 @@ import {
   openSheet,
   closeSheet,
   typeInEditor,
+  workers,
 } from "./state.ts";
 // oxlint-disable-next-line no-restricted-imports -- intents are what writes the page's state.
 import { page, showing } from "./state.ts";
@@ -616,14 +616,29 @@ export function toggleRoots(open = sheet.value?.kind !== "roots"): void {
   else closeSheet();
 }
 
-/** Open the pins panel with an empty filter, or close it: the star in the top bar. */
-export function togglePins(open = panel.value !== "pins"): void {
-  batch(() => {
-    if (open) {
-      page.pinsQuery.value = { text: "" };
-      page.panel.value = "pins";
-    } else if (panel.value === "pins") page.panel.value = undefined;
-  });
+/** Open the pins menu (newest pinned first) or close it: the star in the filter bar. */
+export function togglePins(open = sheet.value?.kind !== "pins"): void {
+  if (open) openSheet("pins");
+  else closeSheet();
+}
+
+/** Open the workers menu (the root, then working workers first) or close it: the top bar. */
+export function toggleWorkers(open = sheet.value?.kind !== "workers"): void {
+  if (!open) return closeSheet();
+  openSheet("workers");
+  void showing()
+    .refreshWorkers()
+    .catch(() => {});
+}
+
+/**
+ * Go to a pinned message: its root, the conversation it came from when it is one of that root's workers (else the
+ * front), and the message itself, marked as a search finds it.
+ */
+export async function goToPin(pin: PinnedMessage): Promise<void> {
+  if (pin.root !== rootId.value) await switchRoot(pin.root);
+  await show(workers.value.some((worker) => worker.name === pin.from) ? pin.from : undefined);
+  requestAnimationFrame(() => (jumpTo.value = { code: pin.code }));
 }
 
 /**
@@ -734,59 +749,6 @@ export async function submit(
   }
 }
 
-/** Context used as a percent, colored as the status bar's meter: yellow past 70, red past 90; `?%` while unknown. */
-function contextTag(tokens: number | undefined, model: string | undefined) {
-  const slash = model?.indexOf("/") ?? -1;
-  const window =
-    model === undefined || slash < 0
-      ? undefined
-      : client().model({ provider: model.slice(0, slash), modelId: model.slice(slash + 1) })
-          ?.contextWindow;
-  if (window === undefined) return [];
-  // Unknown until a reply measures it, as after a compaction or /new.
-  if (tokens === undefined) return [{ text: "?%", tone: "muted" as const }];
-  const fill = tokens / window;
-  const tone: Tone | undefined = fill > 0.9 ? "red" : fill > 0.7 ? "yellow" : undefined;
-  return [{ text: `${Math.round(fill * 100)}%`, ...(tone === undefined ? {} : { tone }) }];
-}
-
-/** `/agents`: the root and each worker, working ones first, with its state, idle time, context and model. */
-function agentRows(at: Showing): MenuItem[] {
-  const status = (busy: boolean, at: number | undefined) =>
-    busy
-      ? { text: "● working", tone: "accent" as const }
-      : { text: `○ idle${at === undefined ? "" : ` ${age(at)}`}`, tone: "muted" as const };
-  const here = (name: string | undefined) =>
-    at.shown.value === name ? [{ text: "shown", tone: "green" as const }] : [];
-  const front = at.views.value.get("")?.state.value;
-  const live = front === undefined ? undefined : presentation(front);
-  const rootModel = live?.provider === undefined ? undefined : `${live.provider}/${live.model}`;
-  return [
-    {
-      id: "",
-      label: "root",
-      tags: [
-        status(live?.busy === true, front === undefined ? undefined : lastActive(front)),
-        ...contextTag(front === undefined ? undefined : contextUsage(front).context, rootModel),
-        ...here(undefined),
-      ],
-      detail: [rootModel, live?.thinkingLevel].filter(Boolean).join(" "),
-    },
-    ...at.workers.value
-      .toSorted((x, y) => Number(y.busy) - Number(x.busy))
-      .map((worker) => ({
-        id: worker.name,
-        label: worker.name,
-        tags: [
-          status(worker.busy, worker.activeAt),
-          ...contextTag(worker.contextTokens, worker.model),
-          ...here(worker.name),
-        ],
-        detail: [worker.model, worker.thinking].filter(Boolean).join(" "),
-      })),
-  ];
-}
-
 /** Where a submission goes: the root and conversation on screen, and the busy mode, as it was made. */
 type Aim = { at: Showing; name: string | undefined; when: WhenBusy };
 
@@ -833,13 +795,7 @@ async function runInput(
       return at.notice("close the tab to quit; Monchu keeps running");
     case "/agents":
       if (input.text) return await show(input.text === "root" ? undefined : input.text);
-      {
-        await at.refreshWorkers();
-        if (!at.open) return;
-        const picked = await pick("Agents", agentRows(at));
-        if (picked !== undefined && at.open) await show(picked.id || undefined);
-      }
-      return;
+      return toggleWorkers(true);
     case "/stop":
       if (input.text || name !== undefined) {
         const worker = input.text || name || "";
@@ -881,9 +837,7 @@ async function runInput(
       return at.notice(`${existed ? "already pinned" : "pinned"} · ${pin.code} · ${pin.headline}`);
     }
     case "/pins":
-      page.pinsQuery.value = { text: input.text };
-      page.panel.value = "pins";
-      return;
+      return openSheet("pins", input.text);
     case "/queue": {
       const state = at.views.value.get(name ?? "")?.state.value;
       const queue = state === undefined ? [] : presentation(state).queue;

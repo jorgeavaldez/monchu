@@ -6,7 +6,7 @@
 import type { ComponentChildren } from "preact";
 
 /** A status color from the stylesheet's tokens. */
-export type Tone = "accent" | "green" | "yellow" | "red" | "muted";
+type Tone = "accent" | "green" | "yellow" | "red" | "muted";
 
 /** One row: its label, colored tags after it, then muted detail. */
 export type MenuItem = {

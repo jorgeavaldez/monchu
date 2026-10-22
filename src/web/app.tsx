@@ -1,11 +1,12 @@
 /** The page: who's working, the shown conversation, its queue, and the editor or whatever answer it waits for. */
 import { signal, useSignal } from "@preact/signals";
 import { systemNoticeSummary } from "../api/notices.ts";
-import { activeRoots, rootLabel } from "../ui/roots.ts";
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
+import { TopBar } from "./bar.tsx";
 import { ClientPanel, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
-import { GoalsPanel, JobsPanel, PinsPanel } from "./lists.tsx";
+import { MODE } from "./keys.tsx";
+import { GoalsPanel, JobsPanel } from "./lists.tsx";
 import { Close } from "./panel.tsx";
 import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
 import { SendingRows, sendingAny } from "./sending.tsx";
@@ -18,118 +19,14 @@ import {
   linkError,
   editing,
   loginStatus,
-  rootId,
-  roots,
-  sheet,
   panel,
   pins,
   inbox,
   shown,
   view,
-  workers,
 } from "./state.ts";
 import { FilterBar } from "./inbox.tsx";
 import { Transcript } from "./transcript.tsx";
-
-const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idle" };
-
-/**
- * The root menu, right of the agent tabs: one dot per active root (working, or done and not seen yet) with the shown
- * one underlined, or a hollow one while all are idle, and ▾. The shown root's name is its label and title; its detail is
- * the roots menu, which a tap opens.
- */
-function RootTab() {
-  const active = activeRoots(roots.value);
-  const open = sheet.value?.kind === "roots";
-  const here = roots.value.find((root) => root.id === rootId.value);
-  if (here === undefined) return null;
-  const name = rootLabel(here);
-  const summary = active
-    .map(
-      (root) => `${root.id === rootId.value ? "this root" : root.id} ${STATUS_TEXT[root.status]}`,
-    )
-    .join(", ");
-  return (
-    <button
-      class={`roots${open ? " on" : ""}`}
-      aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
-      aria-expanded={open}
-      title={summary ? `${name} · ${summary}` : name}
-      onClick={() => run("roots.toggle")}
-    >
-      {active.length === 0 ? (
-        <span aria-hidden="true" class="dot">
-          ○
-        </span>
-      ) : (
-        <span class="dots">
-          {active.map((root) => (
-            <span
-              key={root.id}
-              aria-hidden="true"
-              class={`dot ${root.status}${root.id === rootId.value ? " here" : ""}`}
-            >
-              ●
-            </span>
-          ))}
-        </span>
-      )}
-      <span aria-hidden="true">▾</span>
-    </button>
-  );
-}
-
-/**
- * The pins button, left of the root menu once anything is pinned: ★ and how many, opening the pins panel as `/pins`
- * does, or closing it.
- */
-function PinsTab() {
-  const open = panel.value === "pins";
-  const count = pins.value.length;
-  if (count === 0 && !open) return null;
-  return (
-    <button
-      class={`pins${open ? " on" : ""}`}
-      aria-label={`pins: ${String(count)}`}
-      aria-expanded={open}
-      title="pinned messages (/pins)"
-      onClick={() => run("pins.toggle")}
-    >
-      <span aria-hidden="true">★</span> {count}
-    </button>
-  );
-}
-
-function Agents() {
-  const root = view(undefined)?.value;
-  const rootBusy = root === undefined ? false : presentation(root).busy;
-  return (
-    <nav class="agents">
-      <div class="tabs">
-        <button
-          class={shown.value === undefined ? "on" : ""}
-          onClick={() => run("show", undefined)}
-        >
-          {rootBusy ? "●" : "○"} root
-        </button>
-        {/* Working workers first, idle ones after, each in the order the crew lists them. */}
-        {workers.value
-          .toSorted((x, y) => Number(y.busy) - Number(x.busy))
-          .map((worker) => (
-            <button
-              key={worker.name}
-              class={shown.value === worker.name ? "on" : ""}
-              onClick={() => run("show", worker.name)}
-            >
-              {worker.busy ? "●" : "○"} {worker.name}
-            </button>
-          ))}
-      </div>
-      <PinsTab />
-      <RootTab />
-    </nav>
-  );
-}
 
 function Ask() {
   const current = ask.value;
@@ -331,9 +228,6 @@ function Footer() {
   );
 }
 
-/** A busy mode as the key bar and the queue show it. */
-const MODE_ICON = { steer: "↯", followUp: "⇢" };
-
 /**
  * One queued message. The terminal's Alt+Q panel, in place: a tap opens it in the editor, and its buttons switch its
  * mode or delete it. Writes and notices that aren't the user's words stay as they are.
@@ -369,7 +263,7 @@ function QueueRow({ item }: { item: QueuedItem }) {
           })
         }
       >
-        {MODE_ICON[item.mode]}
+        {MODE[item.mode]}
       </button>
       <button
         class="icon"
@@ -401,9 +295,14 @@ function Queue() {
 
 export function App() {
   const state = view(shown.value)?.value;
+  // The front's lenses, while its stream is shown: with anything in it or pinned.
+  const lenses =
+    shown.value === undefined &&
+    panel.value === undefined &&
+    (inbox.value.length > 0 || pins.value.length > 0);
   return (
     <>
-      <Agents />
+      <TopBar lenses={lenses ? <FilterBar /> : null} />
       {panel.value === "client" ? (
         <ClientPanel />
       ) : panel.value === "secrets" ? (
@@ -412,13 +311,10 @@ export function App() {
         <GoalsPanel />
       ) : panel.value === "jobs" ? (
         <JobsPanel />
-      ) : panel.value === "pins" ? (
-        <PinsPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (
         <>
-          {shown.value === undefined && inbox.value.length > 0 ? <FilterBar /> : null}
           <Transcript key={state.conversation.id} view={state} front={shown.value === undefined} />
         </>
       )}

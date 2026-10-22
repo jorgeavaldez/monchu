@@ -113,46 +113,66 @@ pre {
   overflow-wrap: anywhere;
   font: inherit;
 }
+/* The top bar: the crew and the shown conversation as one button filling the bar, the roots at the right edge. */
 .agents {
   display: flex;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--line);
 }
-.agents .tabs {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
+/* The lenses take a second row on a phone, and sit between the bar's two ends where there is room. */
+.agents .filters {
+  order: 1;
+  flex-basis: 100%;
+  border-bottom: none;
+  border-top: 1px solid var(--line);
+}
+@media (min-width: 720px) {
+  .agents .filters {
+    order: 0;
+    flex-basis: auto;
+    border-top: none;
+    border-left: 1px solid var(--line);
+  }
 }
 .agents button {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
   min-height: var(--row);
   padding: 0 var(--s1);
   border: none;
-  border-right: 1px solid var(--line);
   white-space: nowrap;
+}
+.agents .crew {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.agents .here {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agents .roots {
+  flex: none;
+  border-left: 1px solid var(--line);
 }
 .agents .on {
   background: var(--fg);
   color: var(--bg);
 }
-.agents .pins,
-.agents .roots {
-  flex: none;
-  min-width: var(--tap);
-  justify-content: center;
-  font-size: 1.15em;
+/* Counts: a state's glyph and its number, tight; states a step apart. */
+.counts {
   display: flex;
-  align-items: center;
   gap: var(--s1);
-  border-right: none;
-  border-left: 1px solid var(--line);
 }
-.agents .roots .dots {
-  letter-spacing: 0.3ch;
+.count {
+  display: flex;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
 }
-.agents .roots .here {
-  text-decoration: underline;
+.on .dot {
+  color: inherit;
 }
-
 .dot.working {
   color: var(--accent);
 }
@@ -460,6 +480,9 @@ pre {
 .keys button[aria-pressed="true"] {
   background: var(--fg);
   color: var(--bg);
+}
+.keys .mode {
+  padding: 0;
 }
 .keys .mode.steer {
   background: var(--yellow);
@@ -916,22 +939,6 @@ p.offer {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* /pins: the filter over the list, and an open pin's whole message under its id. */
-.pinsPanel .filter {
-  margin: var(--s1);
-  width: calc(100% - 2 * var(--s1));
-  min-height: var(--tap);
-  padding: 0 var(--s1);
-}
-.pinsPanel .mark {
-  color: var(--yellow);
-}
-.pinsPanel .detail {
-  display: block;
-}
-.pinsPanel dt .icon {
-  margin-left: var(--s1);
-}
 .listPanel h2 {
   margin: 0;
   padding: var(--s1) var(--s1) var(--s0);
@@ -982,19 +989,31 @@ p.offer {
   border-bottom: 1px solid var(--line);
 }
 .filters button {
+  gap: 0;
   min-height: var(--row);
   padding: 0 var(--s1);
   border: none;
   border-right: 1px solid var(--line);
   white-space: nowrap;
 }
+.filters .n {
+  margin-left: 2px;
+  font-size: calc(1em / 1.15);
+  font-weight: bold;
+}
 .filters [aria-pressed="true"] {
   background: var(--fg);
   color: var(--bg);
 }
-.filters .goal {
+.filters .pins {
   margin-left: auto;
   border-left: 1px solid var(--line);
+}
+.filters .goal {
+  gap: var(--s0);
+}
+.filters .goal .glyph {
+  font-size: 1.15em;
 }
 /* An open ask: a bar bolder than a user message's down its side, with room under its reply button; no box. */
 .askCard {
@@ -1133,6 +1152,35 @@ p.offer {
 }
 .dot.idle {
   color: var(--muted);
+}
+/* A worker: status, name, context used, idle time. */
+.workersMenu .enter {
+  grid-template-columns: 1.5ch minmax(0, 1fr) 4ch 3ch;
+}
+.workersMenu .count.yellow {
+  color: var(--yellow);
+}
+.workersMenu .count.red {
+  color: var(--red);
+}
+/* A pin: ★, headline, then who, where and when; its whole text under the rows on request. */
+.pinsMenu .enter {
+  grid-template-columns: 1.5ch minmax(0, 1fr) fit-content(40%);
+  gap: var(--s1);
+}
+.pinsMenu .dot {
+  color: var(--yellow);
+}
+.pinsMenu .age {
+  color: var(--muted);
+}
+.pinsMenu .selected .enter * {
+  color: var(--bg);
+}
+.pinsMenu .whole {
+  display: block;
+  padding: var(--s1);
+  white-space: normal;
 }
 /* The editor's box in one line, so a sheet's ✕ and primary cell sit beside it without remounting it. */
 .editor .line {

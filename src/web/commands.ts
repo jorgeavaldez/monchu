@@ -3,7 +3,7 @@
  * actions, which every control runs through one executor (`run`). The palette lists them all, `/keys` lists the keys,
  * and `/search` finds a message in the feed on screen. A key plugin binds keys to these actions; nothing here needs one.
  */
-import type { Client, QueueChange } from "../api/client.ts";
+import type { Client, PinnedMessage, QueueChange } from "../api/client.ts";
 import { clientCommands } from "../ui/commands.ts";
 import { clock } from "../ui/ids.ts";
 import { listedRoots } from "../ui/roots.ts";
@@ -21,6 +21,7 @@ import {
   editQueued,
   endEdit,
   filterKind,
+  goToPin,
   interrupt,
   loggingIn,
   newRoot,
@@ -38,6 +39,7 @@ import {
   togglePin,
   togglePins,
   toggleRoots,
+  toggleWorkers,
   unpin,
 } from "./intents.ts";
 import type { MenuItem } from "./menu.tsx";
@@ -213,10 +215,11 @@ const ACTIONS = {
   "scroll.halfUp": scroll("half a page up", "half", -1),
   "scroll.top": scroll("to the oldest", "top", -1),
   "scroll.end": scroll("to the newest, following", "end", 1),
-  agents: listed("agents", "/agents", () => submit("/agents")),
+  agents: listed("workers", "the root and its workers: switch, stop", () => toggleWorkers()),
   model: listed("model", "/model", () => submit("/model")),
   queue: listed("queue", "/queue", () => submit("/queue")),
   jobs: listed("jobs", "/jobs", () => setPanel("jobs")),
+  pins: listed("pins", "/pins", () => togglePins()),
   search: listed("search this feed", "/search", () => openSearch("")),
   "feed.all": feed(undefined, "all"),
   "feed.ask": feed("ask", "asks"),
@@ -245,7 +248,9 @@ const ACTIONS = {
   reply: { run: replyDraft } satisfies Action<[string]>,
   pin: { run: togglePin } satisfies Action<[string]>,
   unpin: { run: unpin } satisfies Action<[string]>,
+  "pin.go": { run: goToPin } satisfies Action<[PinnedMessage]>,
   "pins.toggle": { run: () => togglePins() } satisfies Action,
+  "workers.toggle": { run: () => toggleWorkers() } satisfies Action,
   "roots.toggle": { run: () => toggleRoots() } satisfies Action,
   "root.switch": { run: switchRoot } satisfies Action<[string]>,
   "root.new": { run: newRoot } satisfies Action,

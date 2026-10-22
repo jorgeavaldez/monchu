@@ -37,7 +37,9 @@ import {
   workers,
 } from "./state.ts";
 import { openAsks } from "./transcript.tsx";
+import { PinsSheet, PINS } from "./pins.tsx";
 import { RootsNew, RootsSheet, ROOTS } from "./roots.tsx";
+import { WorkersSheet, WORKERS } from "./workers.tsx";
 import { filterKey, SheetBack } from "./sheet.tsx";
 import { feedRows } from "./feed.ts";
 
@@ -73,6 +75,13 @@ function suggestions(text: string, core: Client | undefined): { items: MenuItem[
   return { items, query: text.slice(1) };
 }
 
+/** Each kind of sheet: its view, its keys, and the primary cell right of the filter, if it has one. */
+const SHEETS = {
+  roots: { View: RootsSheet, spec: ROOTS, Primary: RootsNew },
+  workers: { View: WorkersSheet, spec: WORKERS, Primary: undefined },
+  pins: { View: PinsSheet, spec: PINS, Primary: undefined },
+};
+
 export function Editor() {
   const selected = useSignal(0);
   const closed = useSignal(false);
@@ -80,6 +89,7 @@ export function Editor() {
   const picking = choice.value;
   // A menu over the editor gives way to a pick or question it opened, such as a rename.
   const sheetOpen = picking === undefined ? sheet.value : undefined;
+  const kind = sheetOpen === undefined ? undefined : SHEETS[sheetOpen.kind];
   // A pick's filter and whether its alternate (Shift+Enter) is on; both start afresh with each pick.
   const query = useSignal("");
   const second = useSignal(false);
@@ -197,8 +207,8 @@ export function Editor() {
         attach(files);
       }}
     >
-      {sheetOpen !== undefined ? (
-        <RootsSheet open={sheetOpen} />
+      {sheetOpen !== undefined && kind !== undefined ? (
+        <kind.View open={sheetOpen} />
       ) : picking !== undefined ? (
         <Menu
           label={picking.title}
@@ -312,7 +322,7 @@ export function Editor() {
             // Keys while an input method composes are its own (Esc there cancels the composition, not the run).
             if (event.isComposing || event.keyCode === 229) return;
             if (sheetOpen !== undefined) {
-              if (filterKey(event, ROOTS)) event.preventDefault();
+              if (kind !== undefined && filterKey(event, kind.spec)) event.preventDefault();
               return;
             }
             if (items.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
@@ -368,7 +378,7 @@ export function Editor() {
             }
           }}
         />
-        {sheetOpen !== undefined ? <RootsNew /> : null}
+        {kind?.Primary === undefined ? null : <kind.Primary />}
       </div>
       {sheetOpen !== undefined ? null : picking !== undefined ? (
         <PickKeys

@@ -22,6 +22,13 @@ export function activeRoots(
   );
 }
 
+/** How many open roots are in each state, for counts in place of a dot per root. */
+export function rootTally(roots: readonly RootSummary[]): Record<RootStatus, number> {
+  const tally = { working: 0, done: 0, idle: 0 };
+  for (const root of roots) if (!root.archived) tally[root.status]++;
+  return tally;
+}
+
 /** The roots a list shows, newest input first; archived ones only when asked for. */
 export function listedRoots(
   roots: readonly RootSummary[],

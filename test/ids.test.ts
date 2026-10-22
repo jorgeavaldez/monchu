@@ -10,6 +10,7 @@ import {
   rootCounts,
   rootIds,
   rootLabel,
+  rootTally,
 } from "../src/ui/roots.ts";
 
 describe("short ids", () => {
@@ -111,6 +112,8 @@ describe("roots in clients", () => {
     ]);
     expect(listedRoots(roots, false).map((each) => each.id)).toEqual(["llll", "mmmm", "kkkk"]);
     expect(listedRoots(roots, true)).toHaveLength(4);
+    // The top bar's counts: open roots only, archived ones never counted.
+    expect(rootTally(roots)).toEqual({ working: 1, done: 1, idle: 1 });
     expect(rootLabel(root("kkkk"))).toBe("new root");
     expect(
       rootCounts(
