@@ -1145,6 +1145,8 @@ p.offer {
 }
 .editor .line > button {
   min-width: var(--tap);
+  /* Square, as tall as the one-line box. */
+  aspect-ratio: 1;
   border: none;
 }
 .editor .line > button:first-child {
