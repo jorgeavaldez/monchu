@@ -83,7 +83,9 @@ export const page = {
   /** Every root, archived ones included, as the core reports them. */
   roots: signal<readonly RootSummary[]>([]),
   /** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
-  panel: signal<"client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
+  panel: signal<"roots" | "client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
+  /** The roots panel's last outcome. */
+  rootsMessage: signal<{ text: string; failed: boolean } | undefined>(undefined),
   notices: signal<readonly Notice[]>([]),
   mode: signal<WhenBusy>("followUp"),
   expandAll: signal(false),
@@ -128,6 +130,7 @@ export const {
   linkError,
   roots,
   panel,
+  rootsMessage,
   notices,
   mode,
   expandAll,

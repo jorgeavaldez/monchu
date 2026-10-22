@@ -1,12 +1,20 @@
 /** The page: who's working, the shown conversation, its queue, and the editor or whatever answer it waits for. */
 import { signal, useSignal } from "@preact/signals";
+import type { RootSummary } from "../api/client.ts";
 import { systemNoticeSummary } from "../api/notices.ts";
-import { activeRoots, rootLabel } from "../ui/roots.ts";
+import {
+  ARCHIVE_HELP,
+  activeRoots,
+  listedRoots,
+  rootCounts,
+  rootIds,
+  rootLabel,
+} from "../ui/roots.ts";
 import { contextUsage, presentation, type QueuedItem } from "../ui/state.ts";
 import { ClientPanel, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
 import { GoalsPanel, JobsPanel, PinsPanel } from "./lists.tsx";
-import { Close } from "./panel.tsx";
+import { Close, Panel } from "./panel.tsx";
 import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
 import { run } from "./commands.ts";
 import {
@@ -19,6 +27,7 @@ import {
   loginStatus,
   rootId,
   roots,
+  rootsMessage,
   panel,
   pins,
   inbox,
@@ -34,11 +43,10 @@ const STATUS_TEXT = { working: "working", done: "done, not seen yet", idle: "idl
 /**
  * The root menu, right of the agent tabs: one dot per active root (working, or done and not seen yet) with the shown
  * one underlined, or a hollow one while all are idle, and ▾. The shown root's name is its label and title; its detail is
- * the roots picker, which a tap opens.
+ * the roots panel, which a tap opens.
  */
 function RootTab() {
   const active = activeRoots(roots.value);
-  const open = choice.value?.title === "Roots";
   const here = roots.value.find((root) => root.id === rootId.value);
   if (here === undefined) return null;
   const name = rootLabel(here);
@@ -49,9 +57,9 @@ function RootTab() {
     .join(", ");
   return (
     <button
-      class={`roots${open ? " on" : ""}`}
+      class={`roots${panel.value === "roots" ? " on" : ""}`}
       aria-label={`roots: ${name}${summary ? `; ${summary}` : ""}`}
-      aria-expanded={open}
+      aria-expanded={panel.value === "roots"}
       title={summary ? `${name} · ${summary}` : name}
       onClick={() => run("roots.toggle")}
     >
@@ -95,6 +103,90 @@ function PinsTab() {
     >
       <span aria-hidden="true">★</span> {count}
     </button>
+  );
+}
+
+function RootRow({ root, ids }: { root: RootSummary; ids: ReturnType<typeof rootIds> }) {
+  const { unique, rest } = ids(root.id);
+  const here = root.id === rootId.value;
+  return (
+    <li class={here ? "here" : ""}>
+      <button class="open" onClick={() => run("root.switch", root.id)} aria-current={here}>
+        <span class="lines">
+          <span class="name">
+            <span aria-hidden="true" class={`dot ${root.status}`}>
+              {root.status === "idle" ? "○" : "●"}
+            </span>{" "}
+            <span class="id">
+              <b>{unique}</b>
+              {rest}
+            </span>{" "}
+            {rootLabel(root)}
+          </span>
+          <span class="help">
+            {[
+              STATUS_TEXT[root.status],
+              rootCounts(root),
+              root.archived ? "archived" : "",
+              here ? "shown" : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </span>
+        <span aria-hidden="true">›</span>
+      </button>
+      <span class="actions">
+        <button onClick={() => run("root.rename", root.id)} aria-label={`rename ${root.id}`}>
+          rename
+        </button>
+        <button
+          onClick={() => run("root.archive", root.id, !root.archived)}
+          aria-label={`${root.archived ? "unarchive" : "archive"} ${root.id}`}
+        >
+          {root.archived ? "unarchive" : "archive"}
+        </button>
+      </span>
+    </li>
+  );
+}
+
+/** `/roots`: every open root (archived ones on request) to switch to, start, rename or archive, in place of the transcript. */
+function RootsPanel() {
+  const archived = useSignal(false);
+  const all = roots.value;
+  const ids = rootIds(all);
+  const listed = listedRoots(all, archived.value);
+  const hidden = all.filter((root) => root.archived).length;
+  return (
+    <Panel
+      name="roots"
+      status={rootsMessage.value}
+      actions={
+        <button class="icon" aria-label="new root" title="new root" onClick={() => run("root.new")}>
+          +
+        </button>
+      }
+    >
+      <ul>
+        {listed.map((root) => (
+          <RootRow key={root.id} root={root} ids={ids} />
+        ))}
+      </ul>
+      {hidden === 0 && !archived.value ? null : (
+        <label class="help">
+          <input
+            type="checkbox"
+            checked={archived.value}
+            onChange={(event) => {
+              archived.value = event.currentTarget.checked;
+            }}
+          />{" "}
+          show archived ({hidden})
+        </label>
+      )}
+      <p class="help">{ARCHIVE_HELP}</p>
+    </Panel>
   );
 }
 
@@ -400,7 +492,9 @@ export function App() {
   return (
     <>
       <Agents />
-      {panel.value === "client" ? (
+      {panel.value === "roots" ? (
+        <RootsPanel />
+      ) : panel.value === "client" ? (
         <ClientPanel />
       ) : panel.value === "secrets" ? (
         <SecretsPanel />
