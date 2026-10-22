@@ -1178,9 +1178,10 @@ p.offer {
   color: var(--bg);
 }
 .pinsMenu .whole {
-  display: block;
+  min-height: 0;
+  overflow-y: auto;
   padding: var(--s1);
-  white-space: normal;
+  border-top: 1px solid var(--card);
 }
 /* The editor's box in one line, so a sheet's ✕ and primary cell sit beside it without remounting it. */
 .editor .line {

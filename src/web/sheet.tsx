@@ -153,6 +153,8 @@ export function SheetView(props: {
   label: string;
   class: string;
   actions: ComponentChildren;
+  /** Under the rows, over the bar: what the selection shows in full, if anything. */
+  detail?: ComponentChildren;
   children: ComponentChildren;
 }) {
   const { open, spec } = props;
@@ -185,6 +187,7 @@ export function SheetView(props: {
       >
         {props.children}
       </ul>
+      {props.detail}
       <div class="bar" role="toolbar" aria-label="actions">
         {props.actions}
         <Key

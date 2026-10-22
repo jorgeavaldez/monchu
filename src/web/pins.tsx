@@ -52,6 +52,13 @@ export function PinsSheet({ open }: { open: Sheet }) {
       spec={PINS}
       label="pins"
       class="pinsMenu"
+      detail={
+        whole.value && pin !== undefined ? (
+          <div class="whole assistant">
+            <Markdown text={pin.text} />
+          </div>
+        ) : null
+      }
       actions={
         <>
           <Key
@@ -104,11 +111,6 @@ export function PinsSheet({ open }: { open: Sheet }) {
           </span>
         </li>
       ))}
-      {whole.value && pin !== undefined ? (
-        <li class="whole assistant">
-          <Markdown text={pin.text} />
-        </li>
-      ) : null}
     </SheetView>
   );
 }
