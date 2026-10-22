@@ -637,7 +637,9 @@ export function toggleWorkers(open = sheet.value?.kind !== "workers"): void {
  */
 export async function goToPin(pin: PinnedMessage): Promise<void> {
   if (pin.root !== rootId.value) await switchRoot(pin.root);
-  await show(workers.value.some((worker) => worker.name === pin.from) ? pin.from : undefined);
+  // Pins from before they kept their conversation go by their sender.
+  const from = workers.value.some((worker) => worker.name === pin.from) ? pin.from : undefined;
+  await show(pin.worker ?? from);
   requestAnimationFrame(() => (jumpTo.value = { code: pin.code }));
 }
 

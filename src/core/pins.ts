@@ -21,6 +21,8 @@ export type PinnedMessage = {
   rootLabel: string;
   /** Who sent it, as `messageOf` names them. */
   from: string;
+  /** The worker whose conversation holds it; none for the root's front. */
+  worker?: string;
   headline: string;
   text: string;
   sentAt: number;
@@ -105,6 +107,7 @@ export async function pinMessage(
     root: shortId(where.root),
     rootLabel: where.rootLabel,
     from: message.from,
+    ...(where.worker === undefined ? {} : { worker: where.worker }),
     headline: markOf(line)?.headline ?? line,
     text: message.text,
     sentAt: sentAt(entry) ?? Date.now(),

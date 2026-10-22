@@ -8,6 +8,7 @@ import { parseShortId, shortId } from "../src/api/ids.ts";
 import { addressable, messageOf } from "../src/api/messages.ts";
 import { jobNoticeText, noticeText, replyText, rootNoticeText } from "../src/api/notices.ts";
 import { Monchu } from "../src/core/backend.ts";
+import { pinMessage, unpinMessage } from "../src/core/pins.ts";
 import {
   cleanup,
   context,
@@ -89,6 +90,37 @@ describe("pinned messages", () => {
       } finally {
         stop();
       }
+    } finally {
+      await backend.close();
+    }
+  });
+
+  it("keeps the worker whose conversation a pin came from, and none for the front's", async () => {
+    const value = await setup();
+    const backend = await Monchu.open(value.directory, value.faux.provider);
+    try {
+      const root = backend.root(await backend.currentRoot());
+      const conversation = await root.conversation();
+      // Each pin in its own commit: a pin reads the conversation, which a write earlier in the commit forbids.
+      const entry = await conversation.commit(
+        (tx) =>
+          tx.appendEntry(conversation.id, {
+            kind: "pi.user",
+            model: [{ role: "user", content: "Look into it", timestamp: 1700000000000 }],
+          }),
+        context,
+      );
+      const where = { conversation: conversation.id, root: conversation.id, rootLabel: "" };
+      const code = shortId(entry.id);
+      const front = await conversation.commit((tx) => pinMessage(tx, where, code), context);
+      await conversation.commit((tx) => unpinMessage(tx, code), context);
+      const worker = await conversation.commit(
+        (tx) => pinMessage(tx, { ...where, worker: "reader" }, code),
+        context,
+      );
+      const pinned = { front, worker };
+      expect(pinned.front.pin).not.toHaveProperty("worker");
+      expect(pinned.worker.pin).toMatchObject({ from: "to reader", worker: "reader" });
     } finally {
       await backend.close();
     }
