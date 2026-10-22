@@ -56,8 +56,16 @@ const firstPlaces: Marks = (text, query) => {
   });
 };
 
-/** `text` with what `query` matched in it underlined. */
-function Marked({ text, query, marks }: { text: string; query: string; marks: Marks }) {
+/** `text` with what `query` matched in it underlined; by default each word's first place. */
+export function Marked({
+  text,
+  query,
+  marks = firstPlaces,
+}: {
+  text: string;
+  query: string;
+  marks?: Marks;
+}) {
   const hit = Array.from({ length: text.length }, () => false);
   for (const { at, end } of marks(text, query)) hit.fill(true, at, end + 1);
   const parts: { text: string; hit: boolean }[] = [];

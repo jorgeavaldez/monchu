@@ -1600,16 +1600,20 @@ async function journeys(
       );
       await browser("press", "Control+/");
       await browser("press", "r");
-      await browser("wait", ".rootsPanel");
+      await browser("wait", ".rootsMenu");
       check(
-        (await page(`document.querySelector("textarea").value`)) === "half typed",
-        "the leader's keys landed in the draft",
+        (await page(`document.querySelector("textarea").value`)) === "",
+        "the leader's keys landed in the roots filter",
       );
+      // Esc to normal mode, Esc clears the selection, Esc closes; the draft and the prompt come back.
       await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
+      await browser("press", "Escape");
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".rootsMenu")`);
       check(
-        (await page(focused)) === true,
-        "closing a panel opened from the prompt left the prompt",
+        (await page(`document.querySelector("textarea").value`)) === "half typed" &&
+          (await page(focused)) === true,
+        "closing the roots menu opened from the prompt lost the draft or the prompt",
       );
       // Ctrl pressed again for the second slash, as people do.
       await browser("press", "Control+/");
@@ -1635,80 +1639,123 @@ async function journeys(
       await browser("wait", "--fn", `${gap} <= 48`);
       await browser("press", "X");
       await browser("wait", "--fn", `!document.querySelector(".live")`);
-      return "Esc left the prompt, ? listed the keys and Esc went back to the page, : Esc gave back the draft, Ctrl+/ r opened roots mid-draft and Esc came back to it, k held the feed, G followed, X stopped";
+      return "Esc left the prompt, ? listed the keys and Esc went back to the page, : Esc gave back the draft, Ctrl+/ r opened roots mid-draft and Esc Esc Esc came back to it, k held the feed, G followed, X stopped";
     },
   );
 
-  await journey("roots: start one, the dots follow it, switch, reload, archive", async () => {
-    const shownRoot = async () =>
-      new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
-    const first = await shownRoot();
-    check(first !== "", "the address doesn't name the shown root");
-    await browser("fill", "textarea", "/roots");
-    await browser("press", "Enter");
-    await browser("wait", ".rootsPanel li");
-    await capture("roots-one", home, origin);
-    await page(`document.querySelector(".rootsPanel header button").click()`);
-    await browser(
-      "wait",
-      "--fn",
-      `!new URLSearchParams(location.search).get("root")?.startsWith(${JSON.stringify(first)})`,
-    );
-    const second = await shownRoot();
-    await browser(
-      "wait",
-      "--fn",
-      `!document.querySelector(".rootsPanel") && document.querySelector("textarea")`,
-    );
-    // A long message streams for a few seconds, long enough to leave the root while it works.
-    await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
-    await browser("press", "Enter");
-    await browser("wait", ".agents .roots .dot.working.here");
-    await page("history.back()");
-    await browser(
-      "wait",
-      "--fn",
-      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(first)}`,
-    );
-    await browser("wait", ".agents .roots .dot.done");
-    await capture("roots-dots", home, origin);
-    await page(`document.querySelector(".agents .roots").click()`);
-    await browser("wait", ".rootsPanel li");
-    check(
-      (await page(`document.querySelectorAll(".rootsPanel li").length`)) === 2,
-      "the panel doesn't list both roots",
-    );
-    await capture("roots", home, origin);
-    await page(`document.querySelector(".rootsPanel li:not(.here) .open").click()`);
-    await browser(
-      "wait",
-      "--fn",
-      `new URLSearchParams(location.search).get("root") === ${JSON.stringify(second)}`,
-    );
-    await browser("wait", "--fn", `!document.querySelector(".agents .roots .dot.done")`);
-    await browser("reload");
-    await browser(
-      "wait",
-      "--fn",
-      `document.querySelector(".transcript")?.textContent.includes("second root")`,
-    );
-    check((await shownRoot()) === second, "the reload didn't come back to the same root");
-    await browser("fill", "textarea", "/roots");
-    await browser("press", "Enter");
-    await browser("wait", ".rootsPanel li");
-    await page(
-      `document.querySelector(".rootsPanel li:not(.here) .actions button:last-child").click()`,
-    );
-    await browser(
-      "wait",
-      "--fn",
-      `document.querySelector(".rootsPanel [role=status]")?.textContent.startsWith("archived") && document.querySelectorAll(".rootsPanel li").length === 1`,
-    );
-    await capture("roots-archived", home, origin);
-    await browser("press", "Escape");
-    await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
-    return "started a root, saw it working then done, switched, reloaded into it, archived the other";
-  });
+  await journey(
+    "roots: the menu from the bottom; start one, the dots follow it, tap to select then go, keys archive and filter",
+    async () => {
+      const shownRoot = async () =>
+        new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
+      const rows = `document.querySelectorAll(".rootsMenu li[role=option]")`;
+      const first = await shownRoot();
+      check(first !== "", "the address doesn't name the shown root");
+      await browser("fill", "textarea", "/roots");
+      await browser("press", "Enter");
+      await browser("wait", ".rootsMenu li[role=option]");
+      await capture("roots-one", home, origin);
+      check(
+        (await page(`document.querySelector(".rootsMenu li").matches(".here.selected")`)) === true,
+        "the shown root isn't first and selected",
+      );
+      await page(`document.querySelector(".editor .line [aria-label='new root']").click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `!new URLSearchParams(location.search).get("root")?.startsWith(${JSON.stringify(first)})`,
+      );
+      const second = await shownRoot();
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".rootsMenu") && document.querySelector("textarea")`,
+      );
+      // A long message streams for a few seconds, long enough to leave the root while it works.
+      await browser("fill", "textarea", `second root ${"x".repeat(240)}`);
+      await browser("press", "Enter");
+      await browser("wait", ".agents .roots .dot.working.here");
+      await page("history.back()");
+      await browser(
+        "wait",
+        "--fn",
+        `new URLSearchParams(location.search).get("root") === ${JSON.stringify(first)}`,
+      );
+      await browser("wait", ".agents .roots .dot.done");
+      await capture("roots-dots", home, origin);
+      // A draft waits while the menu filters in the editor's box.
+      await browser("fill", "textarea", "kept");
+      await page(`document.querySelector(".agents .roots").click()`);
+      await browser("wait", ".rootsMenu li[role=option]");
+      check((await page(`${rows}.length`)) === 2, "the menu doesn't list both roots");
+      check(
+        (await page(`document.querySelector("textarea").value`)) === "",
+        "the menu's filter didn't start empty",
+      );
+      await capture("roots", home, origin);
+      // One line a row, never stacked.
+      check(
+        (await page(
+          `[...${rows}].every((row) => row.getBoundingClientRect().height <= parseFloat(getComputedStyle(document.querySelector(".rootsMenu .enter")).lineHeight) + 10)`,
+        )) === true,
+        "a root's row takes more than one line",
+      );
+      // The first tap selects, the second goes.
+      const other = `document.querySelector(".rootsMenu li:not(.here) .enter")`;
+      await page(`${other}.click()`);
+      check(
+        (await page(`document.querySelector(".rootsMenu li:not(.here)").matches(".selected")`)) ===
+          true && (await shownRoot()) === first,
+        "a tap on a row didn't just select it",
+      );
+      await page(`${other}.click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `new URLSearchParams(location.search).get("root") === ${JSON.stringify(second)}`,
+      );
+      await browser("wait", "--fn", `!document.querySelector(".agents .roots .dot.done")`);
+      await browser("reload");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("second root")`,
+      );
+      check((await shownRoot()) === second, "the reload didn't come back to the same root");
+      // Keys: Esc to normal mode, j to the other root, Space then a archives it.
+      await browser("fill", "textarea", "/roots");
+      await browser("press", "Enter");
+      await browser("wait", ".rootsMenu li[role=option]");
+      await browser("press", "Escape");
+      await browser("wait", ".rootsMenu.normal");
+      await browser("press", "j");
+      await browser("press", " ");
+      await browser("wait", ".rootsMenu .whichkey");
+      await capture("roots-keys", home, origin);
+      await browser("press", "a");
+      await browser("wait", "--fn", `${rows}.length === 1 && !document.querySelector(".whichkey")`);
+      await capture("roots-archived", home, origin);
+      // Space f . shows the archived ones, the archive cell now unarchives.
+      await browser("press", " ");
+      await browser("press", "f");
+      await browser("press", ".");
+      await browser(
+        "wait",
+        "--fn",
+        `${rows}.length === 1 && document.querySelector(".rootsMenu li[role=option]").title.startsWith(${JSON.stringify(first)})`,
+      );
+      check(
+        (await page(`!!document.querySelector(".rootsMenu .bar [aria-label=unarchive]")`)) === true,
+        "the archived root can't be unarchived from the bar",
+      );
+      // Esc clears the selection, Esc again closes and the draft comes back.
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".rootsMenu .selected")`);
+      await browser("press", "Escape");
+      await browser("wait", "--fn", `!document.querySelector(".rootsMenu")`);
+      return "started a root from +, saw it working then done, a tap selected and a second switched, reloaded into it, archived the other by keys and found it under archived";
+    },
+  );
 
   await journey(
     "drafts: save what is typed, restore it after a reload by typing to filter, Esc keeps the editor",
@@ -2231,18 +2278,16 @@ async function journeys(
         `!!document.querySelector(".login a") && !!document.querySelector("form.ask input")`,
       );
       await capture("mcp-login", home, origin);
-      // The core's paste box holds the editor's place: a question the person opens (renaming a root) gives way to it.
+      // The core's paste box holds the editor's place: a menu the person opens (the roots) gives way to it.
       await browser("click", "button.roots");
-      await browser("wait", ".rootsPanel");
-      await browser("click", `.rootsPanel button[aria-label^="rename"]`);
+      await browser("wait", "300");
       check(
-        text(await page(`document.querySelector("form.ask label").textContent`)).startsWith(
-          "Or paste",
-        ),
-        "renaming a root replaced the sign-in's paste box",
+        (await page(`!document.querySelector(".rootsMenu")`)) === true &&
+          text(await page(`document.querySelector("form.ask label").textContent`)).startsWith(
+            "Or paste",
+          ),
+        "the roots menu replaced the sign-in's paste box",
       );
-      await browser("click", "button.roots");
-      await browser("wait", "--fn", `!document.querySelector(".rootsPanel")`);
       // Signing in in a new tab, as a phone does: the redirect lands on this server's own callback page, which hands
       // it to the waiting tab. The sign-in reloads the core's facets, so the next journey's dropped connection resumes
       // its login across a reload.

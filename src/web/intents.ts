@@ -50,6 +50,9 @@ import {
   promptDrafts,
   rootId,
   roots,
+  sheet,
+  openSheet,
+  closeSheet,
   typeInEditor,
 } from "./state.ts";
 // oxlint-disable-next-line no-restricted-imports -- intents are what writes the page's state.
@@ -121,9 +124,9 @@ function carriesFiles(text: string): boolean {
   }
 }
 
-/** Show another root from the panel or a command, saying which one it is. */
+/** Show another root from the roots menu or a command, saying which one it is. */
 export async function switchRoot(id: string): Promise<void> {
-  if (panel.value === "roots") page.panel.value = undefined;
+  if (sheet.value?.kind === "roots") closeSheet();
   if (id === rootId.value) return;
   await openRoot(id, true);
   const summary = roots.value.find((each) => each.id === id);
@@ -550,25 +553,18 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
   );
 }
 
-/** A roots panel action; its outcome shows in the panel, which hides the transcript. */
-async function rootAction(run: () => Promise<string | undefined>): Promise<void> {
+/** A root action from the roots menu: the list shows what it did, a refusal (a working root) shows as a warning. */
+async function rootAction(run: () => Promise<unknown>): Promise<void> {
   try {
-    const text = await run();
-    if (text !== undefined) page.rootsMessage.value = { text, failed: false };
+    await run();
   } catch (error) {
-    page.rootsMessage.value = {
-      text: error instanceof Error ? error.message : String(error),
-      failed: true,
-    };
+    notice(error instanceof Error ? error.message : String(error), "warning");
   }
 }
 
 /** `/roots new`: start a root and show it; it names itself from its first message. */
 export function newRoot(): Promise<void> {
-  return rootAction(async () => {
-    await switchRoot(await client().createRoot(randomId()));
-    return undefined;
-  });
+  return rootAction(async () => switchRoot(await client().createRoot(randomId())));
 }
 
 /** Name a root, asking for the label in place of the editor; an empty one names it from its next message again. */
@@ -581,23 +577,16 @@ export function renameRoot(id: string): Promise<void> {
       roots.value.find((each) => each.named && each.id === id)?.label,
       false,
     ).catch(() => undefined);
-    if (label === undefined) return undefined;
-    await client().renameRoot(id, label.trim());
-    return label.trim() === ""
-      ? `root ${id} · named by its next message`
-      : `root ${id} · ${label.trim()}`;
+    if (label !== undefined) await client().renameRoot(id, label.trim());
   });
 }
 
 /** Archive or unarchive a root; the core refuses while it works, and that reason shows as it is. */
 export function archiveRoot(id: string, archived: boolean): Promise<void> {
-  return rootAction(async () => {
-    await client().archiveRoot(id, archived);
-    return archived ? `archived · ${id} · show archived to find it again` : `unarchived · ${id}`;
-  });
+  return rootAction(() => client().archiveRoot(id, archived));
 }
 
-/** `/roots`: the panel, or one of its actions by id prefix; the shown root when none is given. */
+/** `/roots`: the menu, or one of its actions by id prefix; the shown root when none is given. */
 async function runRoots(command: RootsCommand): Promise<void> {
   const at = showing();
   const id = at.id;
@@ -621,13 +610,10 @@ async function runRoots(command: RootsCommand): Promise<void> {
   }
 }
 
-/** Open or close the roots panel. */
-export function toggleRoots(open = panel.value !== "roots"): void {
-  batch(() => {
-    if (open) page.panel.value = "roots";
-    else if (panel.value === "roots") page.panel.value = undefined;
-    page.rootsMessage.value = undefined;
-  });
+/** Open the roots menu (every open root, the shown one selected) or close it. */
+export function toggleRoots(open = sheet.value?.kind !== "roots"): void {
+  if (open) openSheet("roots");
+  else closeSheet();
 }
 
 /** Open the pins panel with an empty filter, or close it: the star in the top bar. */

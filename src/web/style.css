@@ -740,9 +740,6 @@ pre {
 .panel li {
   border-left: 3px solid transparent;
 }
-.panel li.here {
-  border-left-color: var(--accent);
-}
 .panel .lines {
   flex: 1;
   min-width: 0;
@@ -753,9 +750,6 @@ pre {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.panel .id b {
-  color: var(--yellow);
 }
 .panel .actions {
   display: flex;
@@ -1028,4 +1022,134 @@ p.offer {
 }
 .brief .body > * {
   white-space: pre-wrap;
+}
+
+/* A sheet over the editor (the roots menu): one --row line per row, the action bar over the filter, ✕ and the
+   primary cell beside it. Every cell is a --tap square. */
+.sheet {
+  max-height: 60vh;
+}
+.sheet ul {
+  outline: none;
+}
+/* Named for assistive tech only: the rows say what the sheet is. */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  margin: 0;
+}
+.sheet li {
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--card);
+}
+.sheet li.here {
+  border-left-color: var(--accent);
+}
+.sheet .enter {
+  height: var(--row);
+  white-space: nowrap;
+}
+.sheet .enter > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Normal mode: the selection keeps its inversion and gains the focus ring, the filter greys. */
+.sheet.normal .selected .enter {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.editor textarea.sheetFilter.normal {
+  color: var(--muted);
+}
+/* The action bar: actions on the selection and the filter on the left, › on the right; its bottom line tops the
+   filter's row, which the sheet covers. */
+.sheet .bar {
+  display: flex;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.sheet .bar button {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  border: none;
+  border-right: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s0);
+  font-variant-numeric: tabular-nums;
+}
+.sheet .bar button[aria-pressed="true"],
+.sheet .bar button[aria-pressed="true"] .dot {
+  background: var(--fg);
+  color: var(--bg);
+}
+.sheet .bar .go {
+  margin-left: auto;
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+/* The keys a chord waits for, over the list's right edge. */
+.sheet .whichkey {
+  position: absolute;
+  right: 0;
+  bottom: calc(var(--tap) + 2px);
+  padding: var(--s0) var(--s1);
+  border: 1px solid var(--line);
+  border-right: none;
+  background: var(--bg);
+  white-space: pre;
+}
+.sheet .whichkey b {
+  color: var(--yellow);
+}
+/* A root: status, id, name, workers, jobs, age; the counts line up in columns. */
+.rootsMenu .enter {
+  grid-template-columns: 1.5ch auto minmax(0, 1fr) 6ch 3ch 3ch;
+  gap: var(--s1);
+}
+.rootsMenu .id {
+  overflow: visible;
+  color: var(--muted);
+}
+.rootsMenu .id b {
+  color: var(--yellow);
+}
+.rootsMenu .count,
+.rootsMenu .age {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.rootsMenu .count.busy {
+  color: var(--accent);
+}
+.rootsMenu .selected .enter,
+.rootsMenu .selected .enter * {
+  color: var(--bg);
+}
+.dot.idle {
+  color: var(--muted);
+}
+/* The editor's box in one line, so a sheet's ✕ and primary cell sit beside it without remounting it. */
+.editor .line {
+  display: flex;
+  align-items: stretch;
+}
+.editor .line textarea {
+  flex: 1;
+  min-width: 0;
+}
+.editor .line > button {
+  min-width: var(--tap);
+  border: none;
+}
+.editor .line > button:first-child {
+  border-right: 1px solid var(--line);
+}
+.editor .line > button:last-child {
+  border-left: 1px solid var(--line);
 }

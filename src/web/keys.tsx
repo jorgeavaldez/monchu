@@ -17,11 +17,13 @@ import {
   view,
 } from "./state.ts";
 
-function Key(props: {
+/** A key: a square cell that keeps the editor's focus, and shows when it is pressed or can't act now. */
+export function Key(props: {
   label: string;
   title: string;
   class?: string;
   pressed?: boolean;
+  disabled?: boolean;
   onPress: () => void;
   children: ComponentChildren;
 }) {
@@ -31,6 +33,7 @@ function Key(props: {
       class={props.class}
       aria-label={props.label}
       title={props.title}
+      disabled={props.disabled}
       {...(props.pressed === undefined ? {} : { "aria-pressed": props.pressed })}
       // A tap must not take focus from the editor, or the keyboard closes.
       onMouseDown={(event) => event.preventDefault()}

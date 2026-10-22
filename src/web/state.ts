@@ -12,6 +12,7 @@ import type {
   JobEvent,
   PinnedMessage,
   RootClient,
+  RootStatus,
   RootSummary,
 } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
@@ -60,6 +61,24 @@ export type Choice = {
   requested?: boolean;
 };
 
+export type RootsFilter = "all" | RootStatus | "archived";
+
+/**
+ * A menu that opens from the bottom over the editor, whose box filters it while the draft waits: its filter, the row
+ * Enter takes (-1 for none), whether it is in normal mode (keys move and act rather than type), and the keys typed
+ * after the leader (undefined when none is pending). `back` puts focus where it was.
+ */
+export type Sheet = {
+  kind: "roots";
+  /** What the list shows: every open root, one status of them, or the archived ones. */
+  filter: RootsFilter;
+  query: string;
+  selected: number;
+  normal: boolean;
+  chord: readonly string[] | undefined;
+  back: () => void;
+};
+
 /** A typed answer the user gives in place of the editor: a login code, key or pasted URL. */
 export type Ask = {
   title: string;
@@ -83,9 +102,9 @@ export const page = {
   /** Every root, archived ones included, as the core reports them. */
   roots: signal<readonly RootSummary[]>([]),
   /** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
-  panel: signal<"roots" | "client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
-  /** The roots panel's last outcome. */
-  rootsMessage: signal<{ text: string; failed: boolean } | undefined>(undefined),
+  panel: signal<"client" | "secrets" | "goals" | "jobs" | "pins" | undefined>(undefined),
+  /** The menu open over the editor, if one is. */
+  sheet: signal<Sheet | undefined>(undefined),
   notices: signal<readonly Notice[]>([]),
   mode: signal<WhenBusy>("followUp"),
   expandAll: signal(false),
@@ -130,7 +149,7 @@ export const {
   linkError,
   roots,
   panel,
-  rootsMessage,
+  sheet,
   notices,
   mode,
   expandAll,
@@ -211,6 +230,40 @@ export function setLinkError(error: string | undefined): void {
 }
 
 /** For the editor: whether its typeahead is open. */
+/** Open a sheet in place of whatever menu is open, every open root shown; a sign-in waiting in the editor's place keeps it. */
+export function openSheet(kind: Sheet["kind"]): void {
+  if (page.sheet.value?.kind === kind) return;
+  if (!claim(false)) return notice("finish the sign-in first", "warning");
+  page.sheet.value?.back();
+  page.sheet.value = {
+    kind,
+    filter: "all",
+    query: "",
+    selected: 0,
+    normal: false,
+    chord: undefined,
+    back: focusReturn(),
+  };
+}
+
+/** Close the sheet, focus back where it was when it opened. */
+export function closeSheet(): void {
+  const open = page.sheet.value;
+  if (open === undefined) return;
+  page.sheet.value = undefined;
+  open.back();
+}
+
+export function updateSheet(change: Partial<Omit<Sheet, "kind" | "back">>): void {
+  const open = page.sheet.value;
+  if (open !== undefined) page.sheet.value = { ...open, ...change };
+}
+
+/** The sheet's filter text: the first row is selected again, and typing is insert mode. */
+export function filterSheet(query: string): void {
+  updateSheet({ query, selected: 0, normal: false, chord: undefined });
+}
+
 export function setMenuOpen(open: boolean): void {
   page.menuOpen.value = open;
 }
