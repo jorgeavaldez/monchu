@@ -9,7 +9,7 @@
  * Without one, Esc closes it.
  */
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { Key } from "./keys.tsx";
 import { closeSheet, escapeLeaves, sheet, updateSheet, type Sheet } from "./state.ts";
 
@@ -185,9 +185,10 @@ export function SheetView(props: {
   }, [open.normal]);
   const keys = spec.keys();
   const at = selectedRow(open, keys);
-  // The row selected by place (on opening, after a filter) becomes the one selected: it stays so as rows move.
+  // The row selected by place (on opening, after a filter) becomes the one selected: it stays so as rows move. Before
+  // the paint, so no change to the rows can come between.
   const key = at < 0 ? undefined : keys[at];
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (open.key === undefined && key !== undefined) updateSheet({ key });
   }, [open.key, key]);
   useEffect(() => {
