@@ -823,6 +823,13 @@ async function typing(): Promise<string> {
   }
 }
 
+/**
+ * The glyph cells showing outside the transcript (every .icon: the filter row, a menu's bar, the editor's line) that
+ * aren't square (send, the primary, is two wide) or whose glyph sits off their middle, by name and box; empty when
+ * every one is right.
+ */
+const OFF_CENTRE = `[...document.querySelectorAll(".icon")].filter((cell) => cell.offsetParent && !cell.closest(".transcript")).flatMap((cell) => { const box = cell.getBoundingClientRect(); const range = document.createRange(); range.selectNodeContents(cell); const glyph = range.getBoundingClientRect(); const dx = glyph.left + glyph.width / 2 - (box.left + box.width / 2); const dy = glyph.top + glyph.height / 2 - (box.top + box.height / 2); return Math.abs(dx) > 1 || Math.abs(dy) > 1 || (!cell.matches(".send") && Math.abs(box.width - box.height) >= 1) ? [cell.getAttribute("aria-label") + " " + Math.round(box.width) + "x" + Math.round(box.height) + " off " + dx.toFixed(1) + "," + dy.toFixed(1)] : []; })`;
+
 const SETTLED = `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("DONE"))`;
 
 /** The page's server, stopped and started again on the same home and port, as a crash or a restart does. */
@@ -1700,6 +1707,9 @@ async function journeys(
         )) === true,
         "a roots menu cell isn't square",
       );
+      // And every glyph cell on the page square, its glyph in the middle: the filter row's, the menu's, the editor's.
+      const off = text(await page(`JSON.stringify(${OFF_CENTRE})`));
+      check(off === "[]", `glyph cells off square or centre: ${off}`);
       // One line a row, never stacked.
       check(
         (await page(
@@ -1879,6 +1889,9 @@ async function journeys(
       // The filter bar's star opens them without knowing `/pins`, and closes them again.
       const tab = `document.querySelector(".filters .pins")`;
       check((await page(`${tab}?.textContent`)) === "★", "the filter bar has no star for the pins");
+      // The filter row's glyphs sit in the middle of square cells, with or without a count, as every other's do.
+      const off = text(await page(`JSON.stringify(${OFF_CENTRE})`));
+      check(off === "[]", `glyph cells off square or centre: ${off}`);
       await page(`${tab}.click()`);
       await browser("wait", "--fn", `${pins}?.querySelector("li[role=option]")`);
       const rows = () => page(`${pins}.querySelectorAll("li[role=option]").length`);
@@ -2298,6 +2311,8 @@ async function journeys(
         )) === true,
         "a workers menu cell isn't square",
       );
+      const off = text(await page(`JSON.stringify(${OFF_CENTRE})`));
+      check(off === "[]", `workers menu glyph cells off square or centre: ${off}`);
       const close = `document.querySelector(".workersMenu [aria-label=close]")`;
       check((await page(`${close}.disabled`)) === true, "⏏ would close the root");
       await page(`(${row("reader")}).click()`);

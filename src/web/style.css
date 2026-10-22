@@ -103,6 +103,8 @@ button:disabled {
   min-height: var(--tap);
   padding: 0;
   text-align: center;
+  /* Centred too where the button lays out as a flex box. */
+  justify-content: center;
   /* Symbol glyphs draw small beside the monospace text; one size for all of them. */
   font-size: 1.15em;
   line-height: 1;
@@ -990,11 +992,14 @@ p.offer {
 }
 .filters button {
   gap: 0;
-  min-height: var(--row);
+  min-height: var(--tap);
   padding: 0 var(--s1);
   border: none;
   border-right: 1px solid var(--line);
   white-space: nowrap;
+}
+.filters .icon {
+  padding: 0;
 }
 .filters .n {
   margin-left: 2px;
