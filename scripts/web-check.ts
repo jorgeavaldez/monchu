@@ -1884,13 +1884,14 @@ async function journeys(
       const rows = () => page(`${pins}.querySelectorAll("li[role=option]").length`);
       check((await rows()) === 1, `the star doesn't list the pin: ${String(await rows())}`);
       // The selection follows its row: a pin made meanwhile lists above the one selected on opening, which stays so.
-      const chosen = `${pins}.querySelector("li.selected")?.textContent`;
+      // By headline: the row's age ticks each second it re-renders.
+      const chosen = `${pins}.querySelector("li.selected .name")?.textContent`;
       const first = await page(chosen);
       const other = `[...document.querySelectorAll(".meta .stamp .pin")].at(-2)`;
       await page(`${other}.click()`);
       await browser("wait", "--fn", `${pins}.querySelectorAll("li[role=option]").length === 2`);
       check(
-        (await page(`${pins}.querySelector("li[role=option]").textContent`)) !== first,
+        (await page(`${pins}.querySelector("li[role=option] .name").textContent`)) !== first,
         "a new pin doesn't list first",
       );
       check((await page(chosen)) === first, "the selection didn't follow its pin");
