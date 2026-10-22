@@ -1693,6 +1693,13 @@ async function journeys(
         "the menu's filter didn't start empty",
       );
       await capture("roots", home, origin);
+      // Every cell a square: the bar's and the two beside the filter.
+      check(
+        (await page(
+          `[...document.querySelectorAll(".rootsMenu .bar button, .editor .line > button")].every((cell) => { const box = cell.getBoundingClientRect(); return Math.abs(box.width - box.height) < 1; })`,
+        )) === true,
+        "a roots menu cell isn't square",
+      );
       // One line a row, never stacked.
       check(
         (await page(
