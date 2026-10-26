@@ -4,6 +4,7 @@
  * quickly at first. A reconnect re-holds every reference over the new link.
  */
 import { createHost, type Link } from "@earendil-works/chord";
+import { retry, Wake } from "./awake.ts";
 import type { Principal } from "./contract.ts";
 import { RemoteClient } from "./remote.ts";
 
@@ -12,13 +13,15 @@ export const OUTDATED_CORE = "Monchu's core speaks another protocol than this cl
 
 /**
  * Connect a client through `dial`, or `undefined` when nothing answers the first time. After a drop it redials for 30
- * seconds, or two minutes for an update, then says so through the client's notices. `onReconnect` hears each
- * time the core answers again (a redial, or a restarted core), with how long it was out of reach; `onError` hears a core that can't be used, such as another protocol's.
+ * seconds of trying, or two minutes for an update (time the system slept through doesn't count), then says so through
+ * the client's notices; `wake` makes its next try now. `onReconnect` hears each time the core answers again (a
+ * redial, or a restarted core), with how long it was out of reach; `onError` hears a core that can't be used, such as
+ * another protocol's.
  */
 export async function connectRemote(
   dial: () => Promise<Link | undefined>,
   options: { onError: (error: Error) => void; onReconnect?: (ms: number) => void },
-): Promise<{ client: RemoteClient; close: () => Promise<void> } | undefined> {
+): Promise<{ client: RemoteClient; close: () => Promise<void>; wake: () => void } | undefined> {
   let link = await dial();
   if (link === undefined) return undefined;
   const host = createHost<Principal>({
@@ -30,6 +33,7 @@ export async function connectRemote(
   let closing = false;
   let reconnecting = false;
   let client: RemoteClient | undefined;
+  const wake = new Wake();
   /** Connect over `next`; the promise rejects once it closes, with `OUTDATED_CORE` for another protocol. */
   const use = (next: Link) => {
     link = next;
@@ -61,28 +65,24 @@ export async function connectRemote(
     }
   };
   const reconnect = async (current: RemoteClient) => {
-    const started = Date.now();
-    const waitMs = current.patience();
-    for (
-      let delay = 50;
-      Date.now() < started + waitMs && !closing;
-      delay = Math.min(delay * 2, 1000)
-    ) {
-      await new Promise((wait) => setTimeout(wait, delay));
-      const next = await dial();
-      if (next === undefined) continue;
-      try {
-        // The client tells its own reconnect once the session answers again.
-        await Promise.race([use(next), current.live()]);
-      } catch (error) {
-        const failure = error instanceof Error ? error : new Error(String(error));
-        if (failure.message !== OUTDATED_CORE) continue;
-        options.onError(failure);
-        next.close();
-      }
-      return;
-    }
-    if (!closing) current.gone();
+    const answered = await retry(
+      async () => {
+        const next = await dial();
+        if (next === undefined) return false;
+        try {
+          // The client tells its own reconnect once the session answers again.
+          await Promise.race([use(next), current.live()]);
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          if (failure.message !== OUTDATED_CORE) return false;
+          options.onError(failure);
+          next.close();
+        }
+        return true;
+      },
+      { patience: () => current.patience(), stop: () => closing, wake },
+    );
+    if (!answered && !closing) current.gone();
   };
   const closed = use(link);
   // A core updated to newer contracts refuses this client's references until its code is new too.
@@ -99,6 +99,7 @@ export async function connectRemote(
   if (options.onReconnect !== undefined) client.onReconnect(options.onReconnect);
   return {
     client,
+    wake: () => wake.wake(),
     close: async () => {
       closing = true;
       client?.close();

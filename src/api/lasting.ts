@@ -13,6 +13,7 @@ import {
   type Readable,
   type Ref,
 } from "@earendil-works/chord";
+import { retry } from "./awake.ts";
 import type { Watched } from "./client.ts";
 import type { Principal } from "./contract.ts";
 
@@ -113,30 +114,34 @@ export class Lasting<C extends AnyContract> {
   private async regain(): Promise<void> {
     if (this.regaining) return;
     this.regaining = true;
-    const until = Date.now() + this.patience();
+    let outdated = false;
     try {
-      for (let delay = 50; !this.closed && Date.now() < until; delay = Math.min(delay * 2, 1000)) {
-        await new Promise((wait) => setTimeout(wait, delay));
-        if (this.closed) return;
-        let outdated = false;
-        const ref = await this.host
-          .get(this.type, this.input, { ...this.options, signal: AbortSignal.timeout(10_000) })
-          .catch((error: unknown) => {
-            outdated = isChordError(error, "upgrade_required");
-            return undefined;
-          });
-        if (outdated) return this.onOutdated();
-        if (ref === undefined) continue;
-        if (this.closed) return ref.release();
-        this.stopStatus();
-        this.current.release();
-        this.current = ref;
-        this.stopStatus = this.follow(ref);
-        for (const listener of this.refs) listener(ref);
-        this.tell(ref.status === "live" ? "live" : "lost");
-        return;
-      }
-      if (!this.closed) this.tell("gone");
+      const regained = await retry(
+        async () => {
+          const ref = await this.host
+            .get(this.type, this.input, { ...this.options, signal: AbortSignal.timeout(10_000) })
+            .catch((error: unknown) => {
+              outdated = isChordError(error, "upgrade_required");
+              return undefined;
+            });
+          if (outdated) return true;
+          if (ref === undefined) return false;
+          if (this.closed) {
+            ref.release();
+            return true;
+          }
+          this.stopStatus();
+          this.current.release();
+          this.current = ref;
+          this.stopStatus = this.follow(ref);
+          for (const listener of this.refs) listener(ref);
+          this.tell(ref.status === "live" ? "live" : "lost");
+          return true;
+        },
+        { patience: () => this.patience(), stop: () => this.closed },
+      );
+      if (outdated) this.onOutdated();
+      else if (!regained && !this.closed) this.tell("gone");
     } finally {
       this.regaining = false;
     }

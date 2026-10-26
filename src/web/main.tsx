@@ -2,6 +2,7 @@
 import { startPages } from "./pages.ts";
 import { render } from "preact";
 import { webSocketLink, type Link, type WebSocketLike } from "@earendil-works/chord";
+import { Wake } from "../api/awake.ts";
 import { connectRemote, OUTDATED_CORE } from "../api/connect.ts";
 import type { RemoteClient } from "../api/remote.ts";
 import { App } from "./app.tsx";
@@ -24,7 +25,12 @@ import { telemetry } from "./telemetry.ts";
  * request goes first while the core restarts; behind a tunnel a down origin answers 502 or 530.
  */
 async function up(): Promise<boolean> {
-  const response = await fetch("/", { method: "HEAD", cache: "no-store" }).catch(() => undefined);
+  const response = await fetch("/", {
+    method: "HEAD",
+    cache: "no-store",
+    // A network that went away under a sleeping phone can leave a request hanging long after it is back.
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => undefined);
   return response !== undefined && response.status < 500;
 }
 
@@ -48,7 +54,9 @@ function socketLike(socket: WebSocket): WebSocketLike {
   };
 }
 
-const sleep = (ms: number) => new Promise((wait) => setTimeout(wait, ms));
+/** Every wait to connect again, cut short when the page is shown again or the network comes back. */
+const wake = new Wake();
+const sleep = (ms: number) => wake.wait(ms);
 
 /** The wait before the next try: doubling from 2 s to 30 s, kept through reloads and cleared once the page is up. */
 function backoff(): number {
@@ -57,22 +65,63 @@ function backoff(): number {
   return wait;
 }
 
+/** The page's link to the core, and when it last heard anything on it: the core pings every 15 s. */
+let line: { link: Link; heard: number } | undefined;
+
 async function dial(): Promise<Link | undefined> {
   if (!(await up())) return undefined;
   return new Promise((resolve) => {
-    const socket = new WebSocket(
+    const opened = new WebSocket(
       `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api`,
     );
     // Wrapped at once, so the core's first frames are never missed.
-    const link = webSocketLink(socketLike(socket));
-    socket.addEventListener("open", () => resolve(link));
+    const link = webSocketLink(socketLike(opened));
+    const current = { link, heard: Date.now() };
+    opened.addEventListener("message", () => {
+      current.heard = Date.now();
+    });
+    const late = setTimeout(() => {
+      opened.close();
+      resolve(undefined);
+    }, 10_000);
+    opened.addEventListener("open", () => {
+      clearTimeout(late);
+      line = current;
+      resolve(link);
+    });
     // Refused or signed out: the page reloads into the login once the core is reachable again.
-    socket.addEventListener("error", () => resolve(undefined));
+    opened.addEventListener("error", () => {
+      clearTimeout(late);
+      resolve(undefined);
+    });
   });
 }
 
-/** The connected client, and the core's version this page was loaded with. */
-let page: { client: RemoteClient; version: string } | undefined;
+/**
+ * Back from a locked screen, the background or no network: try again now rather than at the next wait's end, and drop a
+ * socket the core went quiet on. A phone's network can go away under a frozen page without the socket ever hearing,
+ * and it would otherwise wait out its 45 s ping timeout looking connected.
+ */
+function resumed(): void {
+  if (document.visibilityState !== "visible") return;
+  wake.wake();
+  page?.wake();
+  const shown = line;
+  // Frames a frozen page missed arrive just after it thaws: a link that is up has spoken by then.
+  setTimeout(() => {
+    // Closed here, not through the socket: a dead socket's closing handshake can take a minute to give up.
+    if (
+      shown === line &&
+      shown !== undefined &&
+      !shown.link.closed &&
+      Date.now() - shown.heard > 20_000
+    )
+      shown.link.close("quiet");
+  }, 2000);
+}
+
+/** The connected client, the core's version this page was loaded with, and a wake for its redial. */
+let page: { client: RemoteClient; version: string; wake: () => void } | undefined;
 
 const options = {
   // A core that came back on another protocol or newer contracts, or from an update, serves a newer page: load it.
@@ -145,8 +194,12 @@ async function boot(): Promise<void> {
     event.preventDefault();
     run("login.cancel");
   });
-  const { client } = await connect();
-  page = { client, version: client.release.version };
+  addEventListener("visibilitychange", resumed);
+  addEventListener("pageshow", resumed);
+  addEventListener("online", resumed);
+  document.addEventListener("resume", resumed);
+  const { client, wake: redial } = await connect();
+  page = { client, version: client.release.version, wake: redial };
   const watch = telemetry(client);
   // An update replaced the page's own files: load the new ones, once the new core says so.
   client.onRelease((release) => {

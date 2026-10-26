@@ -664,6 +664,13 @@ export function openAsks(): { code: string; text: string }[] {
 /** Whether the reader is at the newest line, give or take a line, so new content keeps them there. */
 const AT_END = 48;
 
+/**
+ * Where the reader was, read back once per page load: a page the phone dropped in the background, or one loaded anew
+ * after an update, opens where they left it rather than at the end. The conversation, the message at the view's top and
+ * how far below the top it sat, in this tab; none while following the end.
+ */
+let placeRead = false;
+
 /** One conversation's transcript; keyed by the conversation, so another one starts at its end. */
 export function Transcript({ view, front }: { view: ConversationView; front: boolean }) {
   // The front's stream is the root's inbox: each reply's label, and the person's filter.
@@ -768,6 +775,48 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
       toEnd();
     });
     return stop;
+  }, []);
+  // After the first scroll to the end above.
+  useEffect(() => {
+    const element = main.current;
+    if (element === null) return;
+    if (!placeRead) {
+      placeRead = true;
+      const [conversation, id = "", offset] = (sessionStorage.getItem("place") ?? "").split(" ");
+      const stamp = document.getElementById(id);
+      if (
+        conversation === String(view.conversation.id) &&
+        stamp !== null &&
+        element.contains(stamp)
+      ) {
+        left.value = follow.current.count;
+        element.scrollTop +=
+          stamp.getBoundingClientRect().top - element.getBoundingClientRect().top - Number(offset);
+        follow.current.top = element.scrollTop;
+      }
+    }
+    // Hidden (a phone may drop it from there) or leaving.
+    const keep = (event: Event) => {
+      if (event.type !== "pagehide" && document.visibilityState === "visible") return;
+      sessionStorage.removeItem("place");
+      // Following the end, a new load starts there anyway.
+      if (left.peek() === undefined) return;
+      const top = element.getBoundingClientRect().top;
+      const stamp = [...element.querySelectorAll('[id^="m-"]')].find(
+        (each) => each.getBoundingClientRect().bottom > top,
+      );
+      if (stamp !== undefined)
+        sessionStorage.setItem(
+          "place",
+          `${view.conversation.id} ${stamp.id} ${stamp.getBoundingClientRect().top - top}`,
+        );
+    };
+    addEventListener("visibilitychange", keep);
+    addEventListener("pagehide", keep);
+    return () => {
+      removeEventListener("visibilitychange", keep);
+      removeEventListener("pagehide", keep);
+    };
   }, []);
   const reading = () => {
     if (left.value === undefined) left.value = follow.current.count;

@@ -31,6 +31,7 @@ import {
   type LoginState,
   type Principal,
 } from "./contract.ts";
+import { afterAwake } from "./awake.ts";
 import { Lasting, UPDATE_REGAIN_FOR_MS } from "./lasting.ts";
 import type { Release } from "./release.ts";
 
@@ -227,7 +228,7 @@ export class RemoteClient implements Client {
   private readonly roots = new Map<string, Promise<Lasting<typeof Root>>>();
   private lostAt: number | undefined;
   /** Says `gone` if the session is still out of reach once its patience is over, whatever kept it from answering. */
-  private watchdog: ReturnType<typeof setTimeout> | undefined;
+  private watchdog: () => void = () => {};
   private ended = false;
 
   private readonly outdated: () => void;
@@ -247,7 +248,7 @@ export class RemoteClient implements Client {
     session.onReach((reach) => {
       if (reach === "lost") return this.disconnected();
       if (reach === "gone") return this.gone();
-      clearTimeout(this.watchdog);
+      this.watchdog();
       this.ended = false;
       const lost = this.lostAt;
       this.lostAt = undefined;
@@ -341,8 +342,8 @@ export class RemoteClient implements Client {
   private disconnected(): void {
     if (this.lostAt !== undefined) return;
     this.lostAt = Date.now();
-    clearTimeout(this.watchdog);
-    this.watchdog = setTimeout(() => this.gone(), this.patience() + 5000);
+    this.watchdog();
+    this.watchdog = afterAwake(this.patience() + 5000, () => this.gone());
     const updating = this.release.updating;
     this.notice(
       updating === null
@@ -354,7 +355,7 @@ export class RemoteClient implements Client {
 
   /** The redials gave up: the core stays out of reach until it is started again. */
   gone(): void {
-    clearTimeout(this.watchdog);
+    this.watchdog();
     if (this.ended) return;
     this.ended = true;
     this.notice("Monchu is gone; start it again, then reload");
@@ -377,7 +378,7 @@ export class RemoteClient implements Client {
   }
 
   close(): void {
-    clearTimeout(this.watchdog);
+    this.watchdog();
     this.session.release();
     for (const lasting of this.roots.values())
       void lasting.then(
