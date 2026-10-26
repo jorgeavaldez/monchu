@@ -1005,7 +1005,9 @@ export function createClaudeCodeProvider(
                 silent = true;
                 break;
               }
-              throw new Error("Claude Code restarted the response internally");
+              throw new Error(
+                `Claude Code restarted the response internally (after stop reason ${output.rawStopReason ?? "none"})`,
+              );
             }
             if (retrying) nextMessageUsage();
             output.responseId = event.message.id;
@@ -1137,6 +1139,14 @@ export function createClaudeCodeProvider(
           } else if (event.type === "message_delta") {
             updateUsage(event.usage);
             if (event.delta.stop_reason !== null) output.rawStopReason = event.delta.stop_reason;
+            // A safety refusal cuts the response off, often mid tool call, and Claude Code then retries it on a fallback
+            // model in the same stream. Named as a refusal, not retried: the same context is refused again.
+            if (event.delta.stop_reason === "refusal") {
+              const details = event.delta.stop_details;
+              throw new Error(
+                `Claude Code's model refused to continue (stop reason refusal${details?.category ? `, category ${details.category}` : ""})${details?.explanation ? `: ${details.explanation}` : ""}`,
+              );
+            }
             output.stopReason =
               event.delta.stop_reason === "tool_use"
                 ? "toolUse"
@@ -1162,7 +1172,9 @@ export function createClaudeCodeProvider(
               output.content.some((block) => block.type === "toolCall") !==
               (output.stopReason === "toolUse")
             )
-              throw new Error("Claude Code returned inconsistent tool-use stop reason");
+              throw new Error(
+                `Claude Code returned inconsistent tool-use stop reason ${output.rawStopReason ?? "none"}`,
+              );
             complete = true;
             if (output.stopReason === "toolUse") {
               live.parked = true;

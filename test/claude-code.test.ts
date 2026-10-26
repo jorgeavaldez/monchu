@@ -1,10 +1,17 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { fauxAssistantMessage, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxToolCall,
+  isRetryableAssistantError,
+  Type,
+  type Message,
+} from "@earendil-works/pi-ai";
 import { CompactionEntry } from "@earendil-works/pi-durable";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import assert from "node:assert";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -314,6 +321,56 @@ describe("Claude Code subscription provider", () => {
       );
       expect(reply.stopReason).toBe("error");
       expect(reply.errorMessage).toContain("restarted the response internally");
+    },
+  );
+
+  it.each(["tool call", "thinking"] as const)(
+    "names a refusal cut off mid %s, not Claude Code's fallback retry, and doesn't retry it",
+    async (kind) => {
+      const value = await setup();
+      const script = scriptedClaude(value.directory, config, async function* () {
+        yield* claudeResponse(
+          kind === "tool call"
+            ? [
+                { type: "thinking", thinking: "planning" },
+                fauxToolCall("bash", { command: "ls" }, { id: "refused" }),
+              ]
+            : [{ type: "thinking", thinking: "planning" }],
+          "refusal",
+        );
+        // Claude Code retries the refused request on its fallback model, then reports the swap.
+        yield* claudeResponse([{ type: "text", text: "fallback answer" }]);
+        yield {
+          type: "system",
+          subtype: "model_refusal_fallback",
+          trigger: "refusal",
+          direction: "retry",
+          original_model: "claude-sonnet-4-6",
+          fallback_model: "claude-haiku-4-5",
+          request_id: null,
+          content: "switched model",
+          uuid: randomUUID(),
+          session_id: "script",
+        };
+      });
+      const models = await openClaudeModels(value.directory, script.provider, token);
+      const model = models.getModel("claude-code", role.modelId);
+      assert(model);
+      const reply = await models.completeSimple(
+        model,
+        {
+          messages: [{ role: "user", content: "test", timestamp: 1 }],
+          tools: [{ name: "bash", description: "bash", parameters: Type.Object({}) }],
+        },
+        { sessionId: "refusal" },
+      );
+      expect(reply.stopReason).toBe("error");
+      expect(reply.rawStopReason).toBe("refusal");
+      expect(reply.errorMessage).toContain(
+        "Claude Code's model refused to continue (stop reason refusal, category cyber): scripted refusal",
+      );
+      expect(textOf(reply)).not.toContain("fallback answer");
+      expect(isRetryableAssistantError(reply)).toBe(false);
     },
   );
 

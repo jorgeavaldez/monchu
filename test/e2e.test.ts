@@ -6,7 +6,7 @@
  * server, workers, jobs, secrets, roots, `/reload` and `/restart`, and the terminal. CI runs it on this checkout and on
  * the installed release tarball (`MONCHU_E2E_ENTRY`). A new surface, tool or plugin gets a step here.
  */
-import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+import { Type, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -733,7 +733,7 @@ function streamed(
     | { type: "text"; text: string }
     | { type: "tool_use"; id: string; name: string; input: object }
   )[],
-  stop: "end_turn" | "tool_use",
+  stop: "end_turn" | "tool_use" | "refusal",
 ): void {
   response.writeHead(200, { "content-type": "text/event-stream" });
   const send = (type: string, data: object) =>
@@ -767,7 +767,22 @@ function streamed(
     send("content_block_stop", { index });
   }
   send("message_delta", {
-    delta: { stop_reason: stop, stop_sequence: null },
+    delta: {
+      stop_reason: stop,
+      stop_sequence: null,
+      ...(stop === "refusal"
+        ? {
+            stop_details: {
+              type: "refusal",
+              category: "cyber",
+              explanation: "loopback refusal",
+              fallback_credit_token: null,
+              fallback_has_prefill_claim: null,
+              recommended_model: null,
+            },
+          }
+        : {}),
+    },
     usage: { output_tokens: 5 },
   });
   send("message_stop", {});
@@ -821,6 +836,7 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
             !names.includes("mcp__monchu__codemode") &&
             !last.includes("silent wake") &&
             !last.includes("after silence") &&
+            !last.includes("refuse wake") &&
             !last.includes("Your previous response had no visible output")
           )
             return streamed(response, [{ type: "text", text: "side" }], "end_turn");
@@ -834,6 +850,22 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
               "end_turn",
             );
           if (last.includes("silent wake")) return streamed(response, [], "end_turn");
+          // A safety refusal mid tool call; whatever Claude Code sends after it (its fallback-model retry) answers.
+          if (last.includes("refuse wake"))
+            return seen.filter((each) => each.last.includes("refuse wake")).length > 1
+              ? streamed(response, [{ type: "text", text: "fallback answer" }], "end_turn")
+              : streamed(
+                  response,
+                  [
+                    {
+                      type: "tool_use",
+                      id: "toolu_refused",
+                      name: "mcp__monchu__codemode",
+                      input: { code: "return 1;" },
+                    },
+                  ],
+                  "refusal",
+                );
           // The connection drops once after the headers: Claude Code must not re-send it without streaming.
           if (!dropped) {
             dropped = true;
@@ -995,6 +1027,21 @@ describe.skipIf(claudeCli === undefined || process.platform === "win32")(
         expect(
           seen.filter((each) => each.last.includes("after silence")).at(-1)?.history,
         ).not.toContain("Your previous response had no visible output");
+
+        // A refusal comes back named, with its stop reason, not as Claude Code's fallback answer or a restart.
+        const refused = await models.completeSimple(
+          model,
+          {
+            messages: [{ role: "user", content: "refuse wake", timestamp: 3 }],
+            tools: [{ name: "codemode", description: "codemode", parameters: Type.Object({}) }],
+          },
+          { sessionId: "refusal" },
+        );
+        expect(refused).toMatchObject({ stopReason: "error", rawStopReason: "refusal" });
+        expect(refused.errorMessage).toContain(
+          "Claude Code's model refused to continue (stop reason refusal, category cyber): loopback refusal",
+        );
+        expect(JSON.stringify(refused)).not.toContain("fallback answer");
       } finally {
         await backend.close();
         api.close();

@@ -833,7 +833,7 @@ export function bareToolCalls(messages: SDKMessage[]): SDKMessage[] {
 /** SDK frames, not faux Pi events: exercise streaming, signed thinking and tool argument assembly. */
 export function claudeResponse(
   content: AssistantMessage["content"],
-  stopReason: "end_turn" | "stop_sequence" | "tool_use" | "max_tokens" = "end_turn",
+  stopReason: "end_turn" | "stop_sequence" | "tool_use" | "max_tokens" | "refusal" = "end_turn",
   response: { id: string; input: number; cacheRead: number; cacheWrite: number } = {
     id: "msg_script",
     input: 10,
@@ -933,7 +933,22 @@ export function claudeResponse(
     {
       type: "message_delta",
       context_management: null,
-      delta: { stop_reason: stopReason, stop_sequence: null, stop_details: null, container: null },
+      delta: {
+        stop_reason: stopReason,
+        stop_sequence: null,
+        stop_details:
+          stopReason === "refusal"
+            ? {
+                type: "refusal",
+                category: "cyber",
+                explanation: "scripted refusal",
+                fallback_credit_token: null,
+                fallback_has_prefill_claim: null,
+                recommended_model: null,
+              }
+            : null,
+        container: null,
+      },
       usage: {
         input_tokens: null,
         output_tokens: 7,
