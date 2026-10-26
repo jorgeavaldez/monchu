@@ -2237,7 +2237,36 @@ async function journeys(
       "the compaction line isn't the transcript's last",
     );
     await capture("compact", home, origin);
-    return "the root's compaction showed as its last line";
+    // What the compaction dropped stays on the page, above the mark; a reload loads it back from the top.
+    const before = (text: string) =>
+      page(`(() => {
+        const mark = [...document.querySelectorAll(".transcript .context")].at(-1);
+        const said = [...document.querySelectorAll(".transcript .user")].find((item) => item.textContent.includes(${JSON.stringify(text)}));
+        return !!mark && !!said && !!(said.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING);
+      })()`);
+    check((await before("before compacting")) === true, "the page lost what was compacted");
+    await browser("reload");
+    await browser("wait", ".transcript .context");
+    await browser("focus", ".transcript");
+    await browser("press", "Home");
+    await browser("wait", "--fn", `!document.querySelector(".transcript .earlier")`);
+    check(
+      (await before("before compacting")) === true,
+      "scrolling up didn't load what was compacted",
+    );
+    await page(`[...document.querySelectorAll(".transcript .context .rule")].at(-1).click()`);
+    await browser("wait", ".transcript .context .summary");
+    await capture("compact-history", home, origin);
+    // A message after it leaves the mark where it was.
+    await browser("fill", "textarea", "after compacting");
+    await browser("press", "Enter");
+    await browser(
+      "wait",
+      "--fn",
+      `[...document.querySelectorAll(".assistant:not(.live)")].some((item) => item.textContent.includes("after compacting"))`,
+    );
+    check((await before("before compacting")) === true, "the mark went once a message followed");
+    return "the root's compaction showed as its last line; after a reload, scrolling up loaded what it dropped above its mark, which stayed through the next message and opens its summary";
   });
 
   await journey(
@@ -2536,6 +2565,62 @@ async function journeys(
       await browser("click", ".assistant a.ref");
       await capture("inbox-replied", home, origin);
       return `ask ${id} boxed, filtered, replied to by its id and linked`;
+    },
+  );
+
+  await journey(
+    "history: an ask from before a compaction, far up the history, shows under the asks filter",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const send = async (text: string) => {
+        const before = Number(await page(replies));
+        await browser("fill", "textarea", text);
+        await browser("press", "Enter");
+        await browser(
+          "wait",
+          "--fn",
+          `${replies} > ${before} && !document.querySelector(".live, .transcript .status")`,
+        );
+      };
+      await send("may the budget grow");
+      const id = text(
+        await page(`[...document.querySelectorAll(".meta .stamp[id]")].at(-1)?.id.slice(2)`),
+      );
+      await send(`label ${id} ask`);
+      await browser("wait", `.askCard #m-${id}`);
+      // Rounds of tool calls stand between the ask and the compaction, taller than what the top loads by itself.
+      const finished = `[...document.querySelectorAll(".assistant:not(.live)")].filter((item) => item.textContent.includes("Faux tool finished")).length`;
+      const before = Number(await page(finished));
+      for (let round = 1; round <= 4; round++) {
+        await browser("fill", "textarea", "tools 40");
+        await browser("press", "Enter");
+        await browser(
+          "wait",
+          "--fn",
+          `${finished} >= ${before + round} && !document.querySelector(".transcript .status")`,
+        );
+      }
+      await browser("fill", "textarea", "/compact");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("context compacted")`,
+      );
+      await browser("reload");
+      await browser("wait", ".transcript .context");
+      check(
+        (await page(`!document.getElementById("m-${id}")`)) === true,
+        "the ask was on the page before the reader went for it",
+      );
+      await browser("click", ".filters button:nth-child(2)");
+      await browser("wait", `.askCard #m-${id}`);
+      await capture("history-ask", home, origin);
+      await browser("click", ".filters button:first-child");
+      await browser("fill", "textarea", `/reply ${id} yes`);
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!document.querySelector(".askCard.answered")`);
+      return `after a reload past a compaction, the asks filter loaded ask ${id} back from history`;
     },
   );
 

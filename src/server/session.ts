@@ -545,6 +545,7 @@ export default defineFacet<Principal>(
         goals: async () => [...(await front().goals())],
         seeGoal: ({ id, updatedAt }) => front().seeGoal(id, updatedAt),
         statusLines: () => front().statusLines(),
+        history: ({ before, worker }) => front().history(before, worker),
         pinMessage: ({ id, worker }) => front().pinMessage(id, worker),
         command: ({ name, text, worker }) =>
           front().command(

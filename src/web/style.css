@@ -343,6 +343,34 @@ pre {
   color: var(--yellow);
   font-weight: bold;
 }
+/* Where a context starts: a muted rule across the stream with its mark on it; the model no longer sees what is above. */
+.context .rule {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+.context .rule::before,
+.context .rule::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--muted);
+}
+.context .summary {
+  border-left: 3px solid var(--muted);
+  padding-left: var(--s1);
+}
+/* Older history, loading as the reader nears the top. */
+.earlier {
+  align-self: center;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
 /* The message a search jumped to, marked for a moment. */
 /* What a search matched: its words wherever the feed shows them, and its match in the message it went to. */
 ::highlight(search) {

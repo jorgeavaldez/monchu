@@ -24,6 +24,7 @@ import {
   inbox,
   shown,
   view,
+  whole,
 } from "./state.ts";
 import { FilterBar } from "./inbox.tsx";
 import { Transcript } from "./transcript.tsx";
@@ -315,7 +316,11 @@ export function App() {
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (
         <>
-          <Transcript key={state.conversation.id} view={state} front={shown.value === undefined} />
+          <Transcript
+            key={state.conversation.id}
+            view={whole(shown.value)?.value ?? state}
+            front={shown.value === undefined}
+          />
         </>
       )}
       <Queue />

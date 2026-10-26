@@ -22,7 +22,7 @@ import type { Connection } from "../api/remote.ts";
 import { formatJobEvent } from "../ui/jobs.ts";
 import { loginHints } from "../ui/login.ts";
 import type { Marks, MenuItem } from "./menu.tsx";
-import { Showing, type Filter, type NoticeKind } from "./showing.ts";
+import { Showing, type Earlier, type Filter, type NoticeKind } from "./showing.ts";
 
 export type { Filter } from "./showing.ts";
 
@@ -344,6 +344,31 @@ function rootNotice(
 /** The shown root's view of a conversation, once attached. */
 export function view(name: string | undefined): Signal<ConversationView> | undefined {
   return here.value?.views.value.get(name ?? "")?.state;
+}
+
+/** The shown root's transcript of a conversation: its view, with what was said before it as far as the page loaded. */
+export function whole(name: string | undefined): ReadonlySignal<ConversationView> | undefined {
+  return here.value?.views.value.get(name ?? "")?.whole;
+}
+
+/** How far back the shown root's conversation is loaded before its view. */
+export function earlier(name: string | undefined): ReadonlySignal<Earlier> | undefined {
+  return here.value?.views.value.get(name ?? "")?.earlier;
+}
+
+/**
+ * Load what the shown root's conversation said before its view: a page, or back to entry `until`; false when it failed,
+ * which shows as a notice. A dropped link only delays it.
+ */
+export async function loadEarlier(name: string | undefined, until?: number): Promise<boolean> {
+  const at = here.value;
+  try {
+    await at?.loadEarlier(name, until);
+    return true;
+  } catch (error) {
+    at?.notice(`history: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    return false;
+  }
 }
 
 /** Stores a file the user attaches, for the next message. */

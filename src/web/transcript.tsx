@@ -18,6 +18,7 @@ import {
 } from "../api/notices.ts";
 import { addressable, sentAt } from "../api/messages.ts";
 import { clock, ShortIds, stamp } from "../ui/ids.ts";
+import { parseShortId } from "../api/ids.ts";
 import { presentation } from "../ui/state.ts";
 import { UserAttachments } from "./attachments.tsx";
 import { ranges } from "./fuzzy.ts";
@@ -36,7 +37,9 @@ import {
   pins,
   rootId,
   shown as shownName,
-  view as viewOf,
+  earlier as earlierOf,
+  loadEarlier,
+  whole,
   type Filter,
   type Notice,
 } from "./state.ts";
@@ -438,9 +441,54 @@ function entryNode(
     // An open ask carries a bold bar so it stands out in the stream; answered or closed, a faint box.
     return item?.kind === "ask" ? <div class={`askCard ${item.state ?? ""}`}>{reply}</div> : reply;
   }
-  if (entry.kind === "pi.compaction") return <div class="system">context compacted</div>;
-  if (entry.kind === "pi.reset") return <div class="system">new context</div>;
+  if (entry.kind === "pi.compaction" || entry.kind === "pi.reset")
+    return <ContextMark entry={entry} />;
   return null;
+}
+
+/**
+ * Where a context starts, as a rule across the stream: what sits above it the model no longer sees. A compaction's
+ * summary of it is a tap away.
+ */
+function ContextMark({ entry }: { entry: EntryRecord }) {
+  const open = useSignal(false);
+  const message = entry.model?.[0];
+  const text = message?.role === "user" ? textOf(message.content) : "";
+  const summary = /<summary>\n?([\s\S]*?)\n?<\/summary>/.exec(text)?.[1] ?? text;
+  const auto =
+    typeof entry.data === "object" && entry.data !== null && "reason" in entry.data
+      ? entry.data.reason !== "manual"
+      : false;
+  const label = (
+    <>
+      {entry.kind === "pi.reset" ? "⟲ new context" : `⟲ compacted${auto ? " · auto" : ""}`}
+      {message === undefined ? null : <> · {stamp(message.timestamp)}</>}
+    </>
+  );
+  if (summary.trim() === "")
+    return (
+      <div class="context">
+        <span class="rule">{label}</span>
+      </div>
+    );
+  return (
+    <div class="context">
+      <button
+        type="button"
+        class="rule"
+        aria-expanded={open.value}
+        onClick={() => (open.value = !open.value)}
+      >
+        {open.value ? "▾ " : "▸ "}
+        {label}
+      </button>
+      {open.value ? (
+        <div class="summary">
+          <Markdown text={summary} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const cache = new WeakMap<EntryRecord, { results: string; node: VNode | null }>();
@@ -471,7 +519,7 @@ const placed = new WeakMap<Notice, Map<ConversationView["conversation"]["id"], n
 
 /**
  * The entry a notice follows in `view`: the newest one shown when it was posted, or for a conversation not attached
- * then, the last one sent before it. A leading compaction marker sits in front whatever its id, so it never counts.
+ * then, the last one sent before it. A context marker sits where its context starts whatever its id, so it never counts.
  */
 function anchor(item: Notice, view: ConversationView): number {
   const key = view.conversation.id;
@@ -479,8 +527,8 @@ function anchor(item: Notice, view: ConversationView): number {
   if (known !== undefined) return known;
   let found = -1;
   let latest = 0;
-  for (const [index, entry] of view.entries.entries()) {
-    if (index === 0 && entry.head !== undefined) continue;
+  for (const entry of view.entries) {
+    if (entry.head !== undefined) continue;
     latest = Math.max(latest, sentAt(entry) ?? latest);
     if (latest > item.at) break;
     found = entry.id;
@@ -621,7 +669,7 @@ function searchText(entry: EntryRecord): { who: string; text: string; lower: str
 /** The messages of the feed on screen, oldest first: the shown conversation, under the front's filter. */
 function feedRows(): FeedRow[] {
   const name = shownName.value;
-  const state = viewOf(name)?.value;
+  const state = whole(name)?.value;
   if (state === undefined) return [];
   const front = name === undefined;
   const items = new Map(front ? inbox.value.map((item) => [item.entry, item]) : []);
@@ -642,7 +690,7 @@ offerRows(feedRows);
 
 /** The front's open asks, newest first, by short id with their first words: what `/reply` completes. */
 export function openAsks(): { code: string; text: string }[] {
-  const state = viewOf(undefined)?.value;
+  const state = whole(undefined)?.value;
   const ids = state === undefined ? undefined : shortIds.get(state.conversation.id);
   if (state === undefined || ids === undefined) return [];
   const open = new Set(
@@ -693,17 +741,22 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     .map((item) => ({ item, after: anchor(item, view) }))
     .toSorted((x, y) => x.after - y.after);
   const nodes: ComponentChildren[] = [];
+  // Where each item sits in the stream, by the entry it is or follows: what the reader hasn't seen yet is newer.
+  const order: number[] = [];
   if (shownFilter.goal !== undefined) nodes.push(<Briefer key="brief" id={shownFilter.goal} />);
   const flush = (before: number) => {
     while (pending[0] !== undefined && pending[0].after < before) {
-      const { item } = pending[0];
+      const { item, after } = pending[0];
       pending.shift();
-      if (!filtered) nodes.push(<NoticeLine key={`n${item.id}`} item={item} />);
+      if (filtered) continue;
+      nodes.push(<NoticeLine key={`n${item.id}`} item={item} />);
+      // Between the entry it follows and the next one, newer notices higher.
+      order.push(after + 1 - 1 / (item.id + 2));
     }
   };
   let kept = 0;
-  for (const [index, entry] of view.entries.entries()) {
-    if (index > 0 || entry.head === undefined) flush(entry.id);
+  for (const entry of view.entries) {
+    if (entry.head === undefined) flush(entry.id);
     const calls =
       entry.kind === "pi.assistant"
         ? (entry.model ?? [])
@@ -726,17 +779,37 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
       cache.set(entry, { results: key, node });
     }
     nodes.push(<Fragment key={entry.id}>{node}</Fragment>);
+    order.push(entry.id);
   }
   flush(Infinity);
   const live = presentation(view);
-  const count = nodes.length;
+  const name = shownName.peek();
+  const history = earlierOf(name)?.value;
   const main = useRef<HTMLElement>(null);
+  const earliest = useRef<HTMLButtonElement>(null);
   // Follow the newest line while the reader is at it. Reading back (a wheel, drag, touch or key scroll up) stops that
   // and never moves the view again until they scroll back down to the end or tap the pill; layout alone never stops it.
-  const follow = useRef({ count: 0, top: 0, height: 0, pressed: false, touching: false, touch: 0 });
-  follow.current.count = count;
-  /** How many items there were when the reader left the end; undefined while following. */
+  const follow = useRef({
+    newest: 0,
+    top: 0,
+    height: 0,
+    pressed: false,
+    touching: false,
+    touch: 0,
+  });
+  follow.current.newest = Math.max(0, ...order);
+  /** The newest item when the reader left the end; undefined while following. */
   const left = useSignal<number | undefined>(undefined);
+  /** The reader's distance from the end as older history comes in above them, to keep them there once it shows. */
+  const held = useRef<number | undefined>(undefined);
+  const shownHistory = useRef(history?.entries);
+  if (history?.entries !== shownHistory.current) {
+    shownHistory.current = history?.entries;
+    // Measured as the page renders, before the new entries are in the DOM.
+    const element = main.current;
+    if (element !== null && left.peek() !== undefined)
+      held.current = element.scrollHeight - element.scrollTop;
+  }
   const toEnd = () => {
     const element = main.current;
     if (element !== null) element.scrollTop = element.scrollHeight;
@@ -783,17 +856,19 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     if (!placeRead) {
       placeRead = true;
       const [conversation, id = "", offset] = (sessionStorage.getItem("place") ?? "").split(" ");
-      const stamp = document.getElementById(id);
-      if (
-        conversation === String(view.conversation.id) &&
-        stamp !== null &&
-        element.contains(stamp)
-      ) {
-        left.value = follow.current.count;
+      const restore = () => {
+        const stamp = document.getElementById(id);
+        if (stamp === null || !element.contains(stamp)) return false;
+        left.value = follow.current.newest;
         element.scrollTop +=
           stamp.getBoundingClientRect().top - element.getBoundingClientRect().top - Number(offset);
         follow.current.top = element.scrollTop;
-      }
+        return true;
+      };
+      // A place in history from before the view comes back once it is loaded back to.
+      const older = parseShortId(id.slice(2));
+      if (conversation === String(view.conversation.id) && !restore() && older !== undefined)
+        void loadEarlier(name, older).then(() => requestAnimationFrame(restore));
     }
     // Hidden (a phone may drop it from there) or leaving.
     const keep = (event: Event) => {
@@ -819,21 +894,64 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     };
   }, []);
   const reading = () => {
-    if (left.value === undefined) left.value = follow.current.count;
+    if (left.value === undefined) left.value = follow.current.newest;
   };
-  /** Scroll to a message by id, as a #id backlink or a push names it; a filter hiding it is cleared first. */
+  /**
+   * Scroll to a message by id, as a #id backlink or a push names it; a filter hiding it is cleared first, and history
+   * from before the view is loaded back to it.
+   */
   const jump = (code: string, retry = true) => {
     const target = document.getElementById(`m-${code}`);
     if (target === null) {
-      if (retry && filtered) {
-        run("feed.clear");
-        requestAnimationFrame(() => jump(code, false));
-      }
+      if (!retry) return;
+      if (filtered) run("feed.clear");
+      const id = parseShortId(code);
+      void (id === undefined ? Promise.resolve() : loadEarlier(name, id)).then(() =>
+        requestAnimationFrame(() => jump(code, false)),
+      );
       return;
     }
     reading();
     target.scrollIntoView({ block: "center" });
   };
+  // Older history loads as the reader nears the top, a page at a time, while the top stays in sight. A filter loads
+  // just what it counts instead (below).
+  useEffect(() => {
+    const element = main.current;
+    const sentinel = earliest.current;
+    if (element === null || sentinel === null) return;
+    const near = new IntersectionObserver(
+      (seen) => {
+        if (!seen.some((each) => each.isIntersecting)) return;
+        void loadEarlier(name).then((loaded) => {
+          // Still in sight once the page shows: observing again reports it again. A failure waits for a tap.
+          if (loaded)
+            requestAnimationFrame(() => {
+              near.unobserve(sentinel);
+              near.observe(sentinel);
+            });
+        });
+      },
+      { root: element, rootMargin: "600px 0px 0px 0px" },
+    );
+    near.observe(sentinel);
+    return () => near.disconnect();
+  }, [history?.more === true && !filtered]);
+  // The page arrived above the reader: put them back where they were, before it paints.
+  useLayoutEffect(() => {
+    const element = main.current;
+    const from = held.current;
+    if (element === null || from === undefined) return;
+    held.current = undefined;
+    if (left.peek() !== undefined) element.scrollTop = element.scrollHeight - from;
+  }, [history?.entries]);
+  // The front's filter shows every message it counts: history is loaded back to the oldest of them.
+  const wanted = filtered
+    ? Math.min(...inbox.value.filter((item) => inFeed(shownFilter, item)).map((item) => item.entry))
+    : Infinity;
+  useEffect(() => {
+    if (Number.isFinite(wanted)) void loadEarlier(name, wanted);
+  }, [wanted]);
   useEffect(() => {
     const scroll = (kind: ScrollKind, step: 1 | -1) => {
       const element = main.current;
@@ -875,7 +993,8 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
     const hash = location.hash;
     if (hash.startsWith("#m-")) requestAnimationFrame(() => jump(hash.slice(3)));
   }, []);
-  const unread = left.value === undefined ? 0 : count - left.value;
+  const since = left.value;
+  const unread = since === undefined ? 0 : order.filter((at) => at > since).length;
   const streaming = live.partial !== undefined || live.calls.length > 0;
   return (
     <main
@@ -938,6 +1057,18 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
           toEnd();
       }}
     >
+      {history?.more === true && !filtered ? (
+        <button
+          type="button"
+          class="earlier"
+          ref={earliest}
+          aria-label="earlier messages"
+          aria-busy={history.loading}
+          onClick={() => void loadEarlier(name)}
+        >
+          {history.loading ? "⋯" : "earlier"}
+        </button>
+      ) : null}
       {nodes}
       {live.partial && !filtered ? (
         <div class="assistant live">

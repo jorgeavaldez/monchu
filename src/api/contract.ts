@@ -23,6 +23,7 @@ import {
 } from "./attachments.ts";
 import type {
   ClientNotice,
+  HistoryPage,
   LoginEntry,
   LoginNeeds,
   ModelChoice,
@@ -307,6 +308,7 @@ export const Root = remote("monchu.root", {
         goals: method(undefined, trusted<(Goal & { changed: boolean })[]>()),
         seeGoal: method(Type.Object({ id: text, updatedAt: Type.Number() })),
         statusLines: method(undefined, trusted<string[]>()),
+        history: method(Type.Object({ before: count, worker }), trusted<HistoryPage>()),
         pinMessage: method(
           Type.Object({ id: text, worker }),
           trusted<{ pin: PinnedMessage; existed: boolean }>(),

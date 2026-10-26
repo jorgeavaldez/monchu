@@ -79,6 +79,8 @@ export function createDevProvider(): Provider {
           ),
           { stopReason: "toolUse" },
         );
+      // A compaction asks for a summary of the whole conversation: echoed, a long one would stream for minutes.
+      if (text.startsWith("<conversation>")) return fauxAssistantMessage("Faux summary. DONE");
       if (text === "markdown") return fauxAssistantMessage(MARKDOWN);
       // `prompt` says what this request gave the model: its tools and prompt sections; `section <name>` one's text.
       const sections = request.messages.flatMap((message) =>

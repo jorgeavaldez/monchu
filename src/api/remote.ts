@@ -181,6 +181,15 @@ class RemoteRoot implements RootClient {
       root.reply({ id, message, requestId, whenBusy, ...sent(attachments) }),
     );
   }
+  /** A read, so it waits through a drop instead of failing at once. */
+  async history(before: number, workerName?: string) {
+    return this.client.outlast(async () =>
+      (await this.client.rootRef(this.id)).history({
+        before,
+        ...(workerName === undefined ? {} : { worker: workerName }),
+      }),
+    );
+  }
   pinMessage(id: string, workerName?: string) {
     return this.run((root) =>
       root.pinMessage({ id, ...(workerName === undefined ? {} : { worker: workerName }) }),

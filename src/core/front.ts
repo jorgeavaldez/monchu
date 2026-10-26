@@ -13,13 +13,21 @@ import {
   ProviderDoc,
   type Conversation,
   type ConversationId,
+  type EntryId,
+  type EntryRecord,
   type Harness,
   type Tx,
 } from "@earendil-works/pi-durable";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_IMAGE_LIMITS } from "@earendil-works/pi-durable/tools";
 import type { Attachment } from "../api/attachments.ts";
-import type { ModelChoice, ModelPick, QueueChange, RootClient } from "../api/client.ts";
+import type {
+  HistoryPage,
+  ModelChoice,
+  ModelPick,
+  QueueChange,
+  RootClient,
+} from "../api/client.ts";
 import { shortId } from "../api/ids.ts";
 import type { InputEvent, PluginCommandContext } from "../plugin.ts";
 import {
@@ -56,6 +64,15 @@ import { attachPlugins, preloadGroups } from "./tools/tool-search.ts";
 import { resolveDirectory } from "./workdir.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+/** How much of a conversation's history one `history` call returns: whichever bound comes first, and always one entry. */
+const HISTORY_ENTRIES = 100;
+const HISTORY_BYTES = 1024 * 1024;
+
+/** A client's entry id: Durable's ids are positive integers, branded only in types. */
+function isEntryId(value: number): value is EntryId {
+  return Number.isSafeInteger(value) && value > 0;
+}
 
 /**
  * Which of a root's model fields were picked for this conversation only. Startup and reload apply `config.front`
@@ -214,6 +231,39 @@ export class Front implements RootClient {
       dispose();
     };
     return state;
+  }
+
+  async history(before: number, workerName?: string): Promise<HistoryPage> {
+    const conversation = await this.target(workerName);
+    const newest = before - 1;
+    if (!isEntryId(newest)) return { entries: [], more: false };
+    const entries: EntryRecord[] = [];
+    let bytes = 0;
+    let cursor: Parameters<Conversation["entries"]>[2];
+    for (;;) {
+      const page = await conversation.entries(
+        { maxEntryId: newest },
+        HISTORY_ENTRIES,
+        cursor,
+        context,
+      );
+      for (const [index, entry] of page.items.entries()) {
+        // The system prompt each context starts with shows nowhere, and is most of a long history's bytes.
+        if (entry.kind === "pi.system") continue;
+        const size = JSON.stringify(entry).length;
+        if (entries.length > 0 && bytes + size > HISTORY_BYTES)
+          return { entries: entries.toReversed(), more: true };
+        entries.push(entry);
+        bytes += size;
+        if (entries.length >= HISTORY_ENTRIES)
+          return {
+            entries: entries.toReversed(),
+            more: index < page.items.length - 1 || page.next !== undefined,
+          };
+      }
+      if (page.next === undefined) return { entries: entries.toReversed(), more: false };
+      cursor = page.next;
+    }
   }
 
   /** The same view as an exact-frame watch with its delta ops, for remote clients; marks the root seen while it runs. */

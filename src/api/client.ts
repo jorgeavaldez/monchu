@@ -10,7 +10,7 @@ import type {
   Model,
   ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
-import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
+import type { ConversationView, EntryRecord, ModelRef } from "@earendil-works/pi-durable";
 import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { listWorkersWithActivity } from "../core/agents/workers.ts";
@@ -62,6 +62,12 @@ export interface Watched<T> {
   subscribe(listener: (value: T) => void): () => void;
   dispose(): void;
 }
+
+/**
+ * A page of a conversation's history from before its view's active context, oldest first, without system prompts; `more`
+ * says older entries remain.
+ */
+export type HistoryPage = { entries: readonly EntryRecord[]; more: boolean };
 
 /** A model or thinking-level pick, for the root or a worker. */
 export type ModelPick = { model: ModelRef } | { thinkingLevel: ModelThinkingLevel };
@@ -121,6 +127,11 @@ export interface RootClient {
   readonly id: string;
   /** Read-only committed conversation state of the front or a worker. The caller disposes it. */
   viewState(workerName?: string): Promise<Watched<ConversationView>>;
+  /**
+   * What the front or a worker said before entry `before`, a page at a time, newest pages first: the history a compaction
+   * or `/new` took out of the view's active context, for a client to show above it.
+   */
+  history(before: number, workerName?: string): Promise<HistoryPage>;
   /** Stores a file the user attaches, for a later `submit` or `messageWorker` to carry. */
   attach(name: string, data: Uint8Array): Promise<Attachment>;
   /**
