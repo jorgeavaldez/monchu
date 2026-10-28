@@ -1957,18 +1957,28 @@ async function journeys(
   );
 
   await journey(
-    "secrets: an agent asks, the masked form answers, /secrets lists it by name only",
+    "secrets: agents ask, one is provided through the masked form and one declined, /secrets lists it by name only",
     async () => {
       const value = "smoke-secret-value-42";
       const inPage = () =>
         page(`document.documentElement.outerHTML.includes(${JSON.stringify(value)})`);
+      const row = (name: string) =>
+        `[...document.querySelectorAll(".secretRequest")].find((line) => line.textContent.includes("${name}"))`;
       await browser("fill", "textarea", "secret SMOKE_TOKEN");
+      await browser("press", "Enter");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".filters .yellow")?.getAttribute("aria-label") === "asks: 1 open"`,
+      );
+      // A second request, to decline.
+      await browser("fill", "textarea", "secret SMOKE_DECLINE");
       await browser("press", "Enter");
       // It is an ask: counted on the asks lens, and nothing over the editor in the whole stream.
       await browser(
         "wait",
         "--fn",
-        `document.querySelector(".filters .yellow")?.getAttribute("aria-label") === "asks: 1 open"`,
+        `document.querySelector(".filters .yellow")?.getAttribute("aria-label") === "asks: 2 open"`,
       );
       check(
         (await page(`!document.querySelector(".secretRequest")`)) === true,
@@ -1983,7 +1993,7 @@ async function journeys(
         "the request isn't one line naming the secret",
       );
       await capture("secret-request", home, origin);
-      await page(`document.querySelector(".secretRequest").click()`);
+      await page(`${row("SMOKE_TOKEN")}.click()`);
       await browser("wait", ".secretDetail");
       check(
         (await page(
@@ -2008,7 +2018,16 @@ async function journeys(
       await browser(
         "wait",
         "--fn",
-        `!document.querySelector(".secretForm") && !document.querySelector(".secretRequest")`,
+        `!document.querySelector(".secretForm") && !${row("SMOKE_TOKEN")}`,
+      );
+      // Declined from its opened line: gone from the asks and their count, and the agent that asked is told.
+      await page(`${row("SMOKE_DECLINE")}.click()`);
+      await browser("wait", ".secretDetail [aria-label=decline]");
+      await page(`document.querySelector(".secretDetail [aria-label=decline]").click()`);
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector(".secretDetail") && !document.querySelector(".secretRequest") && !document.querySelector(".filters .yellow")`,
       );
       await browser("click", ".filters button:first-child");
       check((await inPage()) === false, "the value stayed in the page after saving");
@@ -2017,7 +2036,18 @@ async function journeys(
       await browser(
         "wait",
         "--fn",
-        `document.querySelector(".transcript")?.textContent.includes("SMOKE_TOKEN is set")`,
+        `document.querySelector(".transcript")?.textContent.includes("SMOKE_TOKEN is set") && document.querySelector(".transcript")?.textContent.includes("declined the secret SMOKE_DECLINE")`,
+      );
+      // The core holds no request any more: a fresh page has none to show.
+      await browser("reload");
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".transcript")?.textContent.includes("declined the secret SMOKE_DECLINE")`,
+      );
+      check(
+        (await page(`!document.querySelector(".filters .yellow")`)) === true,
+        "a declined or provided request is still counted after a reload",
       );
       await browser("fill", "textarea", "/secrets");
       await browser("press", "Enter");
@@ -2034,7 +2064,7 @@ async function journeys(
       check((await inPage()) === false, "the value is in the page");
       await page(`document.querySelector(".secretsPanel header [aria-label=close]").click()`);
       await browser("wait", "--fn", `!document.querySelector(".secretsPanel")`);
-      return "a request line, its masked form, the notice to the asker, and /secrets by name; the value never stays in the page";
+      return "request lines under the asks, one provided and one declined, the notices to the asker, and /secrets by name; the value never stays in the page";
     },
   );
 
