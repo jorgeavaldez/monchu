@@ -851,18 +851,83 @@ pre {
   border-left: 1px solid var(--line);
   text-decoration: none;
 }
-/* An agent's request for a secret, and the masked form that answers it in the editor's place. */
-.secretRequest {
-  border-left: 3px solid var(--yellow);
+/* Agents' requests for secrets, under the asks and pinned over the editor: a line each, marked as an ask is. */
+.secretAsks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
 }
-.secretRequest span,
+/* Filtered to asks, the stream's "nothing here yet" stays quiet while requests wait under it. */
+.transcript:has(+ .secretAsks) > .status {
+  display: none;
+}
+.secretRequest {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 0 0 var(--s1);
+  border-width: 0 0 0 6px;
+  border-color: var(--yellow);
+  text-align: left;
+}
+.secretRequest[aria-expanded="true"] {
+  background: var(--card);
+}
+.secretRequest .line {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The key and the chevron are drawn here, not read out. */
+.secretRequest::before {
+  content: "⚷" / "";
+}
+.secretRequest::after {
+  content: "›" / "";
+  min-width: var(--tap);
+  text-align: center;
+}
+.secretRequest::before,
+.key {
+  color: var(--yellow);
+  font-weight: bold;
+}
+/* One opened, in the editor's place: its words, then ✕ and ⊘ at the left, ✓ at the right. */
+.secretDetail {
+  border-top: 1px solid var(--line);
+  border-left: 6px solid var(--yellow);
+}
+.secretDetail .body {
+  display: grid;
+  gap: var(--s0);
+  padding: var(--s1);
+  overflow-wrap: anywhere;
+}
+.secretDetail .bar {
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+.secretDetail .bar button {
+  border-width: 0 1px 0 0;
+}
+.secretDetail .bar .provide {
+  margin-left: auto;
+  border-width: 0 0 0 1px;
+  background: var(--fg);
+  color: var(--bg);
+}
 p.offer span {
   overflow-wrap: anywhere;
 }
 p.offer {
   margin: 0;
 }
-/* Laid out as a typed answer is: each line of words over its field, the save and cancel cells by the last one. */
+/* Laid out as a typed answer is: each line of words over its field, cancel left of the last one and save right. */
 .secretForm {
   display: flex;
   align-items: flex-end;
@@ -890,6 +955,9 @@ p.offer {
 }
 .secretForm > button {
   border-width: 1px 0 0 1px;
+}
+.secretForm > button:first-child {
+  border-width: 1px 1px 0 0;
 }
 .secretForm .saving {
   color: var(--accent);

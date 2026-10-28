@@ -3,6 +3,7 @@
  * goal's briefer on top, so the person catches up on one workstream without the rest.
  */
 import { run } from "./commands.ts";
+import { secretRequests } from "./secrets.tsx";
 import { filter, goalList, inbox, sheet, type Filter } from "./state.ts";
 
 /** Each kind as a glyph, the same as the leader's filter keys: asks ?, done ✓, updates …; all is ∗. */
@@ -13,12 +14,15 @@ const KINDS: [NonNullable<Filter["kind"]>, string, string][] = [
 ];
 
 /**
- * The bar under the top bar: lenses on the front's stream. The kinds as glyphs (asks with the open count), then at
+ * The bar under the top bar: lenses on the front's stream. The kinds as glyphs (asks with the open count, secret
+ * requests included), then at
  * the right ★ for the pins and ◎ for a goal, its id once one is picked.
  */
 export function FilterBar() {
   const current = filter.value;
-  const open = inbox.value.filter((item) => item.state === "open").length;
+  // A pending secret request is an ask too.
+  const open =
+    inbox.value.filter((item) => item.state === "open").length + secretRequests.value.length;
   return (
     <nav class="filters" aria-label="filter the stream">
       <button

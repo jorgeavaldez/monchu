@@ -8,7 +8,16 @@ import { Editor } from "./editor.tsx";
 import { MODE } from "./keys.tsx";
 import { GoalsPanel, JobsPanel } from "./lists.tsx";
 import { Close } from "./panel.tsx";
-import { entering, SecretForm, SecretRequests, SecretsPanel } from "./secrets.tsx";
+import {
+  entering,
+  SecretAsks,
+  SecretDetail,
+  SecretForm,
+  secretRequests,
+  SecretsPanel,
+  SecretStatus,
+  viewed,
+} from "./secrets.tsx";
 import { SendingRows, sendingAny } from "./sending.tsx";
 import { run } from "./commands.ts";
 import {
@@ -18,6 +27,7 @@ import {
   connection,
   linkError,
   editing,
+  filter,
   loginStatus,
   panel,
   pins,
@@ -300,7 +310,8 @@ export function App() {
   const lenses =
     shown.value === undefined &&
     panel.value === undefined &&
-    (inbox.value.length > 0 || pins.value.length > 0);
+    (inbox.value.length > 0 || pins.value.length > 0 || secretRequests.value.length > 0);
+  const request = viewed.value;
   return (
     <>
       <TopBar lenses={lenses ? <FilterBar /> : null} />
@@ -323,15 +334,20 @@ export function App() {
           />
         </>
       )}
+      {lenses && filter.value.kind === "ask" && filter.value.goal === undefined ? (
+        <SecretAsks />
+      ) : null}
       <Queue />
       <Login />
       <InstallOffer />
-      <SecretRequests />
+      <SecretStatus />
       {/* A pick opens over the editor, which stays to filter it. */}
       {choice.value === undefined && ask.value !== undefined ? (
         <Ask />
       ) : choice.value === undefined && entering.value !== undefined ? (
         <SecretForm />
+      ) : choice.value === undefined && request !== undefined ? (
+        <SecretDetail request={request} />
       ) : (
         <Editor />
       )}

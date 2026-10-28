@@ -1,15 +1,16 @@
 /**
- * Secrets in the page: agents' requests as lines over the editor, a masked form in the editor's place, and `/secrets`
- * to list, replace and delete them by name. A value goes to the core once, in `setSecret`, and is dropped from the page
- * as it goes; nothing ever sends one back.
+ * Secrets in the page: agents' requests as asks (a line each under the front's asks, opened in the editor's place),
+ * a masked form in the editor's place, and `/secrets` to list, replace and delete them by name. A value goes to the
+ * core once, in `setSecret`, and is dropped from the page as it goes; nothing ever sends one back.
  */
-import { signal, useSignal } from "@preact/signals";
+import { computed, signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { Client, SecretInput, SecretsState } from "../api/client.ts";
 import { Close, Panel } from "./panel.tsx";
 import { client, panel, setPanel } from "./state.ts";
 
 type Kind = SecretInput["kind"];
+type Request = SecretsState["requests"][number];
 
 /** What the form asks for: a named secret (a request's or one being replaced), or a new one when `name` is absent. */
 type Entry = { name?: string; kind: Kind; site?: string; reason?: string; by?: string };
@@ -32,7 +33,7 @@ export function openSecrets(open = true): void {
 }
 
 /** Opens the form for a pending request. */
-function enter(request: SecretsState["requests"][number]): void {
+function enter(request: Request): void {
   message.value = undefined;
   const { name, kind, reason, by, site } = request;
   entering.value = { name, kind, reason, by, ...(site === undefined ? {} : { site }) };
@@ -62,32 +63,108 @@ async function remove(name: string): Promise<void> {
 const when = (time: number) =>
   new Date(time).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 
-/** Each pending request, one line over the editor: who asks, for what, and why. */
-export function SecretRequests() {
-  if (entering.value !== undefined) return null;
-  const { requests } = state.value;
+/** The pending requests: asks of the person, counted with the front's and listed under its asks. */
+export const secretRequests = computed(() => state.value.requests);
+/** The request opened from its line, by id, shown in the editor's place until provided, declined or closed. */
+const viewing = signal<number | undefined>(undefined);
+export const viewed = computed(() =>
+  state.value.requests.find((request) => request.id === viewing.value),
+);
+
+/** The last outcome over the editor: saved, declined, or why not. */
+export function SecretStatus() {
   const status = message.value;
+  if (entering.value !== undefined || status === undefined) return null;
   return (
-    <>
-      {status === undefined ? null : (
-        <p role="status" class={`offer ${status.failed ? "warning" : "help"}`}>
-          <span>{status.text}</span>
-          <Close label="dismiss" onClose={() => (message.value = undefined)} />
-        </p>
-      )}
+    <p role="status" class={`offer ${status.failed ? "warning" : "help"}`}>
+      <span>{status.text}</span>
+      <Close label="dismiss" onClose={() => (message.value = undefined)} />
+    </p>
+  );
+}
+
+/** Under the asks, pinned to the bottom: each pending request on one line; tapping it opens it. */
+export function SecretAsks() {
+  const requests = secretRequests.value;
+  if (requests.length === 0) return null;
+  return (
+    <ul class="secretAsks">
       {requests.map((request) => (
-        <div key={request.id} class="offer secretRequest" role="status">
-          <span>
-            <b>{request.name}</b>
-            {request.kind === "login" ? " login" : ""} · {request.by} · {request.reason}
-          </span>
-          <button type="button" aria-label={`enter ${request.name}`} onClick={() => enter(request)}>
-            enter
+        <li key={request.id}>
+          <button
+            type="button"
+            class="secretRequest"
+            aria-expanded={viewing.value === request.id}
+            onClick={() => {
+              entering.value = undefined;
+              viewing.value = request.id;
+            }}
+          >
+            <span class="line">
+              <b>{request.name}</b>
+              {request.kind === "login" ? " login" : ""}
+              <span class="help">
+                {" "}
+                · {request.by} · {request.reason}
+              </span>
+            </span>
           </button>
-          <Close label={`decline ${request.name}`} onClose={() => void decline(request.name)} />
-        </div>
+        </li>
       ))}
-    </>
+    </ul>
+  );
+}
+
+/** Focuses a cell as it mounts: a stable ref, so later renders leave focus where the person put it. */
+const focus = (button: HTMLButtonElement | null) => button?.focus();
+
+/** An opened request, in the editor's place: what, who asked and when, and why; ✕ closes, ⊘ declines, ✓ provides. */
+export function SecretDetail({ request }: { request: Request }) {
+  const close = () => (viewing.value = undefined);
+  return (
+    <section
+      class="secretDetail"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") close();
+      }}
+    >
+      <div class="body">
+        <div>
+          <span class="key">⚷</span> <b>{request.name}</b> · {request.kind}
+          {request.site === undefined ? "" : ` · fills only on ${request.site}`}
+        </div>
+        <div class="help">
+          asked by {request.by} · {when(request.at)}
+        </div>
+        <div>{request.reason}</div>
+      </div>
+      <div class="bar">
+        <Close label="close" onClose={close} />
+        <button
+          type="button"
+          class="icon"
+          aria-label="decline"
+          onClick={() => {
+            close();
+            void decline(request.name);
+          }}
+        >
+          ⊘
+        </button>
+        <button
+          type="button"
+          class="icon provide"
+          aria-label="provide"
+          ref={focus}
+          onClick={() => {
+            close();
+            enter(request);
+          }}
+        >
+          ✓
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -177,6 +254,7 @@ export function SecretForm() {
         if (saving.value === undefined) void save();
       }}
     >
+      <Close label="cancel" onClose={leave} />
       <span class="fields">
         <span class="help">
           {entry.name === undefined
@@ -228,12 +306,11 @@ export function SecretForm() {
       >
         {saving.value === undefined ? "✓" : "…"}
       </button>
-      <Close label="cancel" onClose={leave} />
     </form>
   );
 }
 
-/** `/secrets`: stored secrets by name, in place of the transcript; pending requests stay over the editor. */
+/** `/secrets`: stored secrets by name, in place of the transcript; pending requests are asks. */
 export function SecretsPanel() {
   const { secrets } = state.value;
   return (

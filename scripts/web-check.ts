@@ -1964,15 +1964,35 @@ async function journeys(
         page(`document.documentElement.outerHTML.includes(${JSON.stringify(value)})`);
       await browser("fill", "textarea", "secret SMOKE_TOKEN");
       await browser("press", "Enter");
-      await browser("wait", ".secretRequest");
+      // It is an ask: counted on the asks lens, and nothing over the editor in the whole stream.
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector(".filters .yellow")?.getAttribute("aria-label") === "asks: 1 open"`,
+      );
+      check(
+        (await page(`!document.querySelector(".secretRequest")`)) === true,
+        "a secret request sits over the editor outside the asks",
+      );
+      await browser("click", ".filters button:nth-child(2)");
+      await browser("wait", ".secretAsks .secretRequest");
       check(
         (await page(
-          `document.querySelector(".secretRequest").textContent.includes("SMOKE_TOKEN")`,
+          `(() => { const line = document.querySelector(".secretRequest .line"); return line.textContent.includes("SMOKE_TOKEN") && line.scrollHeight <= line.clientHeight + 1 && line.getClientRects().length === 1; })()`,
         )) === true,
-        "the request line doesn't name the secret",
+        "the request isn't one line naming the secret",
       );
       await capture("secret-request", home, origin);
-      await page(`document.querySelector(".secretRequest button").click()`);
+      await page(`document.querySelector(".secretRequest").click()`);
+      await browser("wait", ".secretDetail");
+      check(
+        (await page(
+          `(() => { const sheet = document.querySelector(".secretDetail"); return sheet.textContent.includes("SMOKE_TOKEN") && sheet.textContent.includes("the smoke check needs a token") && [...sheet.querySelectorAll("button")].every((button) => /^[^a-z]+$/i.test(button.textContent.trim())); })()`,
+        )) === true,
+        "the opened request lacks its name or why, or a button has words",
+      );
+      await capture("secret-detail", home, origin);
+      await page(`document.querySelector(".secretDetail .provide").click()`);
       await browser("wait", ".secretForm input[type=password]");
       check(
         (await page(`document.activeElement?.type === "password"`)) === true,
@@ -1990,6 +2010,7 @@ async function journeys(
         "--fn",
         `!document.querySelector(".secretForm") && !document.querySelector(".secretRequest")`,
       );
+      await browser("click", ".filters button:first-child");
       check((await inPage()) === false, "the value stayed in the page after saving");
       check((await page("window.sawSaving")) === true, "the form never said it was saving");
       // The agent that asked hears it is set, by name.
