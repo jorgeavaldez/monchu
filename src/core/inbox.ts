@@ -100,17 +100,26 @@ export function replyText(entry: EntryRecord): string {
     .trim();
 }
 
+/**
+ * A line without markdown markers: code spans keep their text as written; elsewhere `*` goes, and `_` only where it
+ * marks emphasis, so `start_worker` keeps its underscore.
+ */
+const unmarked = (line: string): string =>
+  line
+    .split(/(`+[^`]*`+)/)
+    .map((part, index) =>
+      index % 2 === 1
+        ? part.replace(/^`+|`+$/g, "")
+        : part.replace(/[*`]+|(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, ""),
+    )
+    .join("");
+
 /** A message's headline: its first line with text, without markdown markers, cut at a word. */
 export function headlineOf(text: string): string {
   const line =
     text
       .split("\n")
-      .map((each) =>
-        each
-          .replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")
-          .replace(/[*_`]+/g, "")
-          .trim(),
-      )
+      .map((each) => unmarked(each.replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")).trim())
       .find((each) => each !== "") ?? "";
   if (line.length <= 140) return line;
   const cut = line.slice(0, 140);

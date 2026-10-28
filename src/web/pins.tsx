@@ -69,6 +69,13 @@ export function PinsSheet({ open }: { open: Sheet }) {
       spec={PINS}
       label="pins"
       class="pinsMenu"
+      empty={
+        rows.length > 0
+          ? undefined
+          : pins.value.length === 0
+            ? "nothing pinned yet: tap ☆ on a message"
+            : "nothing matches"
+      }
       detail={
         whole.value && pin !== undefined ? (
           <div class="whole assistant">
@@ -100,11 +107,6 @@ export function PinsSheet({ open }: { open: Sheet }) {
         </>
       }
     >
-      {rows.length === 0 ? (
-        <li class="help empty">
-          {pins.value.length === 0 ? "nothing pinned yet: tap ☆ on a message" : "nothing matches"}
-        </li>
-      ) : null}
       {rows.map((each) => (
         <li
           key={each.code}

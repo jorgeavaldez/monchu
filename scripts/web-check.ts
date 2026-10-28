@@ -1920,6 +1920,14 @@ async function journeys(
       check((await rows()) === 1, `/pins doesn't list the pin: ${String(await rows())}`);
       await browser("fill", "textarea", "nothing like it");
       await browser("wait", "--fn", `${pins}.textContent.includes("nothing matches")`);
+      // The empty notice sits outside the list, which holds only options.
+      const faults = list((await browser("a11y")).violations).flatMap((item) =>
+        isData(item) && typeof item.id === "string" ? [item.id] : [],
+      );
+      check(
+        !faults.includes("aria-required-children") && !faults.includes("listitem"),
+        `an empty menu's list holds more than options: ${faults.join(", ")}`,
+      );
       await page(`document.querySelector(".editor [aria-label=back]").click()`);
       await browser("wait", "--fn", `!${pins}`);
       // `/pins <words>` opens it with the filter filled.

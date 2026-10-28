@@ -179,6 +179,7 @@ export function WorkersSheet({ open }: { open: Sheet }) {
       spec={WORKERS}
       label="workers"
       class="rootsMenu workersMenu"
+      empty={rows.length > 0 ? undefined : open.query ? "nothing matches" : "none working"}
       actions={
         <>
           <Key
@@ -218,9 +219,6 @@ export function WorkersSheet({ open }: { open: Sheet }) {
         </>
       }
     >
-      {rows.length === 0 ? (
-        <li class="help empty">{open.query ? "nothing matches" : "none working"}</li>
-      ) : null}
       {rows.map((one) => (
         <Row key={keyOf(one)} each={one} selected={one === each} query={open.query} />
       ))}

@@ -176,6 +176,8 @@ export function SheetView(props: {
   actions: ComponentChildren;
   /** Under the rows, over the bar: what the selection shows in full, if anything. */
   detail?: ComponentChildren;
+  /** Said in the rows' place when there are none; outside the list, which holds only options. */
+  empty: string | undefined;
   children: ComponentChildren;
 }) {
   const { open, spec } = props;
@@ -211,6 +213,11 @@ export function SheetView(props: {
       >
         {props.children}
       </ul>
+      {props.empty === undefined ? null : (
+        <p class="help empty" role="status">
+          {props.empty}
+        </p>
+      )}
       {props.detail}
       <div class="bar" role="toolbar" aria-label="actions">
         {props.actions}

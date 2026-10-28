@@ -205,6 +205,9 @@ describe("inbox", () => {
     });
     expect(() => parseInput("/reply kx")).toThrow(/Usage/);
     expect(headlineOf("\n## **Done:** inbox shipped\nmore")).toBe("Done: inbox shipped");
+    expect(headlineOf("_new_: `start_worker` and run_now, `__init__` __bold__")).toBe(
+      "new: start_worker and run_now, __init__ bold",
+    );
     expect(markOf("done · monchu: inbox shipped")).toEqual({
       kind: "milestone",
       goal: "monchu",

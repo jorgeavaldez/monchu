@@ -577,6 +577,7 @@ pre {
   border-bottom: 1px solid var(--line);
 }
 .menu .empty {
+  margin: 0;
   padding: var(--s0) var(--s1);
 }
 /* A row: the label in a column that fits the longest, then its colored tags and muted detail, two lines at most. */
@@ -1160,7 +1161,7 @@ p.offer {
 }
 /* A root: status, id, name, workers, jobs, age; the counts line up in columns. */
 .rootsMenu .enter {
-  grid-template-columns: 1.5ch auto minmax(0, 1fr) 6ch 3ch 3ch;
+  grid-template-columns: 1.5ch auto minmax(0, 1fr) 6ch 5ch 3ch;
   gap: var(--s1);
 }
 .rootsMenu .id {
@@ -1175,9 +1176,6 @@ p.offer {
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-}
-.rootsMenu .count.busy {
-  color: var(--accent);
 }
 .rootsMenu .selected .enter,
 .rootsMenu .selected .enter * {

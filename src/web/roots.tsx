@@ -122,10 +122,23 @@ export const ROOTS: SheetSpec = {
 
 /** A root's workers as the top bar counts them: busy ● and idle ○, each only when there are some. */
 function Workers({ open, busy }: RootSummary["workers"]) {
+  const said = open ? `${busy} of ${open} workers busy` : "no workers";
   return (
-    <span class="count" title={open ? `${busy} of ${open} workers busy` : "no workers"}>
+    <span class="count" title={said} role="img" aria-label={said}>
       {busy ? <span class="dot working">●{busy}</span> : null}
       {open - busy ? <span class="dot idle">○{open - busy}</span> : null}
+    </span>
+  );
+}
+
+/** A root's jobs: ⚙, then running ● and scheduled ○ as the workers count them, each only when there are some. */
+function Jobs({ running, scheduled }: RootSummary["jobs"]) {
+  const said = running + scheduled ? `${running} running, ${scheduled} scheduled` : "no jobs";
+  return (
+    <span class="count" title={said} role="img" aria-label={said}>
+      {running + scheduled ? JOBS : null}
+      {running ? <span class="dot working">●{running}</span> : null}
+      {scheduled ? <span class="dot idle">○{scheduled}</span> : null}
     </span>
   );
 }
@@ -139,7 +152,6 @@ function Row(props: {
   const { root } = props;
   const { unique, rest } = props.ids(root.id);
   const here = root.id === rootId.value;
-  const jobs = root.jobs.running + root.jobs.scheduled;
   return (
     <li
       role="option"
@@ -163,14 +175,7 @@ function Row(props: {
           <Marked text={rootLabel(root)} query={props.query} />
         </span>
         <Workers {...root.workers} />
-        <span
-          class={`count${root.jobs.running > 0 ? " busy" : ""}`}
-          title={
-            jobs ? `${root.jobs.running} running, ${root.jobs.scheduled} scheduled` : "no jobs"
-          }
-        >
-          {jobs ? `${JOBS}${jobs}` : ""}
-        </span>
+        <Jobs {...root.jobs} />
         <span class="age" title="since its newest message">
           {age(root.lastInputAt ?? root.createdAt)}
         </span>
@@ -197,6 +202,7 @@ export function RootsSheet({ open }: { open: Sheet }) {
       spec={ROOTS}
       label={filter === "archived" ? "archived roots" : "roots"}
       class="rootsMenu"
+      empty={rows.length > 0 ? undefined : open.query ? "nothing matches" : "none"}
       actions={
         <>
           <Key
@@ -234,9 +240,6 @@ export function RootsSheet({ open }: { open: Sheet }) {
         </>
       }
     >
-      {rows.length === 0 ? (
-        <li class="help empty">{open.query ? "nothing matches" : "none"}</li>
-      ) : null}
       {rows.map((each) => (
         <Row key={each.id} root={each} ids={ids} selected={each === root} query={open.query} />
       ))}

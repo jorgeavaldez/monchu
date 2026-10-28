@@ -113,9 +113,6 @@ export function Menu(props: {
         // The label column fits the longest shown, up to half the row.
         style={{ "--label": `min(${longest + 1}ch, 50%)` }}
       >
-        {props.items.length === 0 && props.empty !== undefined ? (
-          <li class="help empty">{props.empty}</li>
-        ) : null}
         {props.items.map((item, index) => (
           <li
             key={item.id}
@@ -143,6 +140,11 @@ export function Menu(props: {
           </li>
         ))}
       </ul>
+      {props.items.length === 0 && props.empty !== undefined ? (
+        <p class="help empty" role="status">
+          {props.empty}
+        </p>
+      ) : null}
     </div>
   );
 }
