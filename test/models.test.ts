@@ -1,4 +1,8 @@
-import { createProvider, type OAuthCredential } from "@earendil-works/pi-ai";
+import {
+  createProvider,
+  getSupportedThinkingLevels,
+  type OAuthCredential,
+} from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -246,6 +250,50 @@ describe("Monchu models", () => {
     );
     expect(models.getModelOfType("classifier", "opencode", "jev-1.13-free")).toBeDefined();
     expect(models.getModelOfType("classifier", "openrouter", "~typesafe/jev-latest")).toBeDefined();
+  });
+
+  it("serves OpenCode Go models newer than the bundled catalog at the levels they take", async () => {
+    const value = await setup();
+    const models = await openModels(value.directory);
+    const requests: { url: string; body: string }[] = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+      request.on("end", () => {
+        requests.push({ url: request.url ?? "", body });
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end('{"error":{"message":"captured"}}');
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no port");
+      const base = `http://127.0.0.1:${address.port}/v1`;
+      const ask = async (id: string, reasoning: "max" | "high") => {
+        const model = models.getModel("opencode-go", id);
+        if (model === undefined) throw new Error(`opencode-go has no ${id}`);
+        const reply = await models.completeSimple(
+          { ...model, baseUrl: base },
+          { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+          { apiKey: "test-provider-key", reasoning, maxRetries: 0 },
+        );
+        expect(reply.errorMessage).toContain("captured");
+        return model;
+      };
+      const kimi = await ask("kimi-k3.1-pro", "max");
+      expect(getSupportedThinkingLevels(kimi)).toEqual(["low", "high", "max"]);
+      expect(JSON.parse(requests[0]?.body ?? "{}")).toMatchObject({
+        model: "kimi-k3.1-pro",
+        reasoning_effort: "max",
+      });
+      const argon = await ask("gemini-4-argon", "high");
+      expect(getSupportedThinkingLevels(argon)).toEqual(["low", "medium", "high"]);
+      expect(requests[1]?.url).toContain("/models/gemini-4-argon:");
+    } finally {
+      server.close();
+    }
   });
 
   it.each([
