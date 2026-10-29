@@ -1,6 +1,8 @@
 import { createProvider, type OAuthCredential } from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig, loadConfig } from "../src/core/config.ts";
@@ -161,6 +163,59 @@ describe("Monchu models", () => {
       });
       expect(JSON.stringify(reopened.getAllModels())).not.toContain("test-provider-key");
       expect(reopened.getModels(provider).length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(["opencode-go", "opencode"])(
+    "declares tools loaded mid-conversation up front to %s's kimi-k3",
+    async (provider) => {
+      const value = await setup();
+      const models = await openModels(value.directory);
+      const bodies: string[] = [];
+      const server = createServer((request, response) => {
+        let body = "";
+        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        request.on("end", () => {
+          bodies.push(body);
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end('{"error":{"message":"captured"}}');
+        });
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      try {
+        const model = models.getModel(provider, "kimi-k3");
+        const address = server.address();
+        if (model === undefined || address === null || typeof address === "string")
+          throw new Error(`${provider} has no kimi-k3, or the server no port`);
+        const tool = (name: string) => ({
+          name,
+          description: name,
+          parameters: { type: "object" as const, properties: {} },
+        });
+        const reply = await models.completeSimple(
+          { ...model, baseUrl: `http://127.0.0.1:${address.port}/v1` },
+          {
+            messages: [
+              { role: "system", content: "be brief", toolsAdded: [tool("get_time")], timestamp: 1 },
+              { role: "user", content: "what time is it", timestamp: 2 },
+              { role: "system", content: "", toolsAdded: [tool("get_date")], timestamp: 3 },
+              { role: "user", content: "and the date", timestamp: 4 },
+            ],
+          },
+          { apiKey: "test-provider-key", maxRetries: 0 },
+        );
+        expect(reply.errorMessage).toContain("captured");
+        // OpenCode's gateway rejects a mid-conversation `{ role: "system", tools }` message and never calls its tools.
+        const sent: unknown = JSON.parse(bodies[0] ?? "{}");
+        expect(sent).toMatchObject({
+          tools: [{ function: { name: "get_time" } }, { function: { name: "get_date" } }],
+        });
+        // The top-level declaration is the only `tools` field: no message carries one.
+        expect(bodies[0]?.match(/"tools":/g)).toHaveLength(1);
+      } finally {
+        server.close();
+      }
     },
   );
 
