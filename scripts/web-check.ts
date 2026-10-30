@@ -2880,8 +2880,8 @@ async function journeys(
 
   await journey("job events: a command's events fold in the transcript", async () => {
     await menuSend("job");
-    const box = `document.querySelector(".transcript .job")`;
-    await browser("wait", ".transcript .job");
+    const box = `[...document.querySelectorAll(".transcript .job")].find((item) => item.textContent.includes("smoke-job"))`;
+    await browser("wait", "--fn", `!!(${box})`);
     check(
       (await page(
         `!${box}.querySelector('pre') && ${box}.textContent.includes('smoke-job') && ${box}.textContent.includes('▸')`,
