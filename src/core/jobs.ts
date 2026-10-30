@@ -1,4 +1,4 @@
-import { withCancel } from "@earendil-works/chord/context";
+import { withCancel, type Context } from "@earendil-works/chord/context";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
   defineDoc,
@@ -263,6 +263,22 @@ const COMMAND_TIMEOUT_S = 300;
 
 /** Finished `bg` jobs, and their logs, are kept this long. */
 const ENDED_KEPT_MS = 24 * 60 * 60_000;
+
+/**
+ * Timers run on a monotonic clock, which stops while the device sleeps (a phone suspends for hours), so one timer armed
+ * hours ahead fires that much late. Long waits sleep in steps of this, rechecking the wall clock after each.
+ */
+const CLOCK_STEP_MS = 60_000;
+
+/** Sleep until the wall clock reaches `until`, at most one step late after the device wakes. */
+async function sleepUntil(
+  runtime: { now(): number; sleep(until: number, context: Context): Promise<void> },
+  until: number,
+  context: Context,
+): Promise<void> {
+  while (runtime.now() < until)
+    await runtime.sleep(Math.min(until, runtime.now() + CLOCK_STEP_MS), context);
+}
 
 type RunOutcome = { ok: true; output: string } | { ok: false; error: string };
 
@@ -610,7 +626,7 @@ export function createJobs(
                 if (changed(value)) resolve();
               });
             });
-            await Promise.race([runtime.sleep(nextAt, sleep.context), woken]);
+            await Promise.race([sleepUntil(runtime, nextAt, sleep.context), woken]);
           }
         } finally {
           sleep.cancel();
@@ -796,7 +812,7 @@ export function createJobs(
         check(watch?.value ?? null);
         watch?.start(async (value) => check(value));
         if (job.timeout !== undefined)
-          runtime.sleep(job.createdAt + job.timeout * 60_000, run.context).then(
+          sleepUntil(runtime, job.createdAt + job.timeout * 60_000, run.context).then(
             () => halt("timed out"),
             () => undefined,
           );
