@@ -2762,7 +2762,7 @@ async function journeys(
       try {
         await menuCommand("/jobs", "jobs");
         await selectRow("jobs", "menu-scheduled");
-        await menuLayout("jobs", true, ["pause", "run now"]);
+        await menuLayout("jobs", true, ["pause"]);
         await segments([
           ["running", 1, true],
           ["scheduled", 1, true],
@@ -2806,23 +2806,11 @@ async function journeys(
           )) === true,
           "job details lack schedule, clocks, runs or command",
         );
+        // Run now returns with the core runner fix.
         await browser("click", lineButton("pause"));
         await browser("wait", lineButton("resume"));
-        check(
-          (await page(`document.querySelector('${lineButton("run now")}').disabled`)) === true,
-          "paused job can run now",
-        );
         await browser("click", lineButton("resume"));
         await browser("wait", lineButton("pause"));
-        check(
-          (await page(`document.querySelector('${lineButton("run now")}').disabled`)) === false,
-          "active scheduled job can't run now",
-        );
-        const runs = `(() => { const body = document.querySelector('${menuList("jobs")} li.open').textContent; const count = /(\\d+)\\s+runs?\\b|\\bruns?\\s*[:·]?\\s*(\\d+)/i.exec(body); return count ? Number(count[1] ?? count[2]) : -1; })()`;
-        const ran = Number(await page(runs));
-        check(ran >= 1, "job details lack a run count after the command baseline");
-        await browser("click", lineButton("run now"));
-        await browser("wait", "--fn", `${runs} > ${ran}`);
         await selectRow("jobs", "menu-paused");
         check(
           (await page(
@@ -2833,7 +2821,7 @@ async function journeys(
         await selectRow("jobs", "menu-running");
         check(
           (await page(
-            `!document.querySelector('${lineButton("pause")}') && !document.querySelector('${lineButton("resume")}') && (!document.querySelector('${lineButton("run now")}') || document.querySelector('${lineButton("run now")}').disabled)`,
+            `!document.querySelector('${lineButton("pause")}') && !document.querySelector('${lineButton("resume")}')`,
           )) === true,
           "background job has scheduling actions",
         );
@@ -2886,7 +2874,7 @@ async function journeys(
           await menuTool("job", { action: "delete", name });
         await menuTool("close_workers", { names: ["menu-jobs"] });
       }
-      return "five states, next-run and elapsed time, filters and sort, persisted details, pause/resume/run now, worker conversation";
+      return "five states, next-run and elapsed time, filters and sort, persisted details, pause/resume, worker conversation";
     },
   );
 
