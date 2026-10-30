@@ -81,7 +81,7 @@ function suggestions(text: string, core: Client | undefined): { items: MenuItem[
   return { items, query: text.slice(1) };
 }
 
-type Part = (props: { open: Sheet }) => JSX.Element;
+type Part = (props: { open: Sheet }) => JSX.Element | null;
 
 /**
  * Each kind of sheet: its rows, its keys, the actions on its selection right of the box, and its view bar under the

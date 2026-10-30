@@ -107,6 +107,7 @@ export function Menu(props: {
   const marked = props.items.some((item) => item.mark !== undefined);
   return (
     <div class={`menu ${props.class ?? ""}${marked ? " marked" : ""}`}>
+      <h1 class="hidden">{props.label}</h1>
       <ul
         role="listbox"
         aria-label={props.label}

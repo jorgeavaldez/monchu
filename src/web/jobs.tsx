@@ -274,23 +274,20 @@ export function JobsSheet({ open }: { open: Sheet }) {
   );
 }
 
-/** Right of the box: pause or resume the selection. */
+/** Right of the box: pause or resume the selection, when it is a schedule; a `bg` command has neither. */
 export function JobsActions({ open }: { open: Sheet }) {
   const job = chosen(open, jobRows(open));
-  const paused = job?.status === "paused";
-  const schedule = job !== undefined && job.type !== "bg";
+  if (job === undefined || job.type === "bg") return null;
+  const paused = job.status === "paused";
   return (
-    <>
-      <Key
-        class="icon"
-        label={paused ? "resume" : "pause"}
-        title={schedule ? `${paused ? "resume" : "pause"} (spc p)` : "only a schedule pauses"}
-        disabled={!schedule}
-        onPress={() => pause(job)}
-      >
-        {paused ? "▶\uFE0E" : "‖"}
-      </Key>
-    </>
+    <Key
+      class="icon"
+      label={paused ? "resume" : "pause"}
+      title={`${paused ? "resume" : "pause"} (spc p)`}
+      onPress={() => pause(job)}
+    >
+      {paused ? "▶\uFE0E" : "‖"}
+    </Key>
   );
 }
 
