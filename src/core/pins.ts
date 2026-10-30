@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { parseShortId, shortId } from "../api/ids.ts";
 import { addressable, messageOf, sentAt } from "../api/messages.ts";
-import { headlineOf, markOf } from "./inbox.ts";
+import { headlineOf, labelOf } from "./inbox.ts";
 
 export type PinnedMessage = {
   /** The message's short id: unique store-wide, the key. */
@@ -101,14 +101,13 @@ export async function pinMessage(
   if (known !== undefined) return { pin: { ...known }, existed: true };
   const message = messageOf(entry, where.worker);
   if (message === undefined) throw new Error(`${code} is not a message`);
-  const line = headlineOf(message.text);
   const pin: PinnedMessage = {
     code,
     root: shortId(where.root),
     rootLabel: where.rootLabel,
     from: message.from,
     ...(where.worker === undefined ? {} : { worker: where.worker }),
-    headline: markOf(line)?.headline ?? line,
+    headline: labelOf(message.text).headline,
     text: message.text,
     sentAt: sentAt(entry) ?? Date.now(),
     pinnedAt: Date.now(),

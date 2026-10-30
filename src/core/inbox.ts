@@ -114,12 +114,16 @@ const unmarked = (line: string): string =>
     )
     .join("");
 
+/** A line as a headline shows it: without its list or heading marker and markdown markers. */
+const plain = (line: string): string =>
+  unmarked(line.replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")).trim();
+
 /** A message's headline: its first line with text, without markdown markers, cut at a word. */
 export function headlineOf(text: string): string {
   const line =
     text
       .split("\n")
-      .map((each) => unmarked(each.replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")).trim())
+      .map(plain)
       .find((each) => each !== "") ?? "";
   if (line.length <= 140) return line;
   const cut = line.slice(0, 140);
@@ -138,15 +142,32 @@ const MARKS: Record<string, InboxKind> = {
  * kind (`ask`, `done`, `update`, `reply`), an optional goal, and the headline after it. `undefined` without one. A
  * model names the goal loosely (`ask · web push: `), so any short topic is taken, as a goal id with dashes for spaces.
  */
-export function markOf(
+function markOf(
   headline: string,
 ): { kind: InboxKind; goal: string | undefined; headline: string } | undefined {
-  const match = /^(ask|done|update|reply)(?:\s*·\s*([^\s:·][^:·]{0,47}?))?\s*:\s+(\S.*)$/i.exec(
-    headline,
-  );
+  const match =
+    /^(ask|done|update|reply)(?:\s*·\s*([^\s:·][^:·]{0,47}?))?\s*:(?:\s+(\S.*))?$/i.exec(headline);
   const kind = MARKS[match?.[1]?.toLowerCase() ?? ""];
   if (match === null || kind === undefined) return undefined;
   return { kind, goal: match[2]?.toLowerCase().replace(/\s+/g, "-"), headline: match[3] ?? "" };
+}
+
+/**
+ * A message's label, if it starts with one, and its headline. A label alone on its line (`reply:` over a list) labels
+ * the message, and the next line with text is the headline.
+ */
+export function labelOf(text: string): {
+  kind?: InboxKind;
+  goal: string | undefined;
+  headline: string;
+} {
+  const lines = text.split("\n");
+  const first = lines.findIndex((line) => plain(line) !== "");
+  const headline = headlineOf(text);
+  const mark = markOf(headline);
+  if (mark === undefined) return { goal: undefined, headline };
+  if (mark.headline !== "") return mark;
+  return { ...mark, headline: headlineOf(lines.slice(first + 1).join("\n")) };
 }
 
 /**
@@ -162,12 +183,11 @@ export async function noteReplies(tx: Tx, front: ConversationId): Promise<InboxI
     const message = entry.model?.[0];
     if (text === "" || message?.role !== "assistant") return;
     const at = message.timestamp + (message.durationMs ?? 0);
-    const headline = headlineOf(text);
     // The front's own label is final, so the routing helper is never asked about it.
-    const mark = markOf(headline);
+    const mark = labelOf(text);
     fresh.push(
-      mark === undefined
-        ? { entry: entry.id, at, headline }
+      mark.kind === undefined
+        ? { entry: entry.id, at, headline: mark.headline }
         : {
             entry: entry.id,
             at,
