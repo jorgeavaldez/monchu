@@ -1,8 +1,9 @@
 /**
  * The front's stream as an inbox: a bar that filters it to asks, milestones or updates, and to one goal, with that
- * goal's briefer on top, so the person catches up on one workstream without the rest.
+ * goal's card on top (`goals.tsx`), so the person catches up on one workstream without the rest.
  */
 import { run } from "./commands.ts";
+import { GOAL_GLYPH, GOAL_TONE } from "./goals.tsx";
 import { secretRequests } from "./secrets.tsx";
 import { filter, goalList, inbox, sheet, type Filter } from "./state.ts";
 
@@ -16,10 +17,12 @@ const KINDS: [NonNullable<Filter["kind"]>, string, string][] = [
 /**
  * The bar under the top bar: lenses on the front's stream. The kinds as glyphs (asks with the open count, secret
  * requests included), then at
- * the right ★ for the pins and ◎ for a goal, its id once one is picked.
+ * the right ★ for the pins and ◎ for the goals, the followed one's state and id once one is.
  */
 export function FilterBar() {
   const current = filter.value;
+  const followed = current.goal;
+  const goal = goalList.value.find((each) => each.id === followed);
   // A pending secret request is an ask too.
   const open =
     inbox.value.filter((item) => item.state === "open").length + secretRequests.value.length;
@@ -62,37 +65,20 @@ export function FilterBar() {
       <button
         type="button"
         class="goal"
-        aria-label={current.goal === undefined ? "goal" : `goal: ${current.goal}`}
-        title="goal (spc g)"
-        aria-pressed={current.goal !== undefined}
+        aria-label={followed === undefined ? "goal…" : `goal: ${followed}`}
+        title="goals (spc g)"
+        aria-pressed={followed !== undefined}
+        aria-expanded={sheet.value?.kind === "goals"}
         onClick={() => run("feed.goal")}
       >
-        <span aria-hidden="true" class="glyph">
-          ◎
+        <span
+          aria-hidden="true"
+          class={`glyph ${goal === undefined ? "" : GOAL_TONE[goal.status]}`}
+        >
+          {goal === undefined ? "◎" : GOAL_GLYPH[goal.status]}
         </span>
-        {current.goal === undefined ? "" : ` ${current.goal}`} ▾
+        {followed === undefined ? "" : ` ${followed}`} ▾
       </button>
     </nav>
-  );
-}
-
-/** The picked goal at a glance: what it is, where it stands, what comes next. */
-export function Briefer({ id }: { id: string }) {
-  const goal = goalList.value.find((each) => each.id === id);
-  if (goal === undefined) return null;
-  return (
-    <section class="card brief">
-      <header>
-        <b>{goal.title}</b> · {goal.status}
-      </header>
-      <div class="body">
-        <div>now: {goal.workstream}</div>
-        <div>next: {goal.next}</div>
-        {goal.workers.length > 0 ? (
-          <div class="help">workers: {goal.workers.join(", ")}</div>
-        ) : null}
-        {goal.vault === undefined ? null : <div class="help">vault: {goal.vault}</div>}
-      </div>
-    </section>
   );
 }

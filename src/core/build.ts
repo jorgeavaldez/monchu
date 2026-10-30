@@ -5,10 +5,11 @@
  */
 import { defineRegistry, local, opaque, type Resource } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import type { Extension } from "@earendil-works/pi-durable";
+import type { Extension, Tx } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
 import type { HomeCheck } from "./home-check.ts";
+import type { JobControl } from "./jobs.ts";
 import type { BudgetLevel } from "./identity.ts";
 import type { McpClients } from "./mcp/index.ts";
 import type { PluginBuild, Plugins } from "./plugins.ts";
@@ -59,6 +60,8 @@ export type Build = {
   /** Home and bundled skills, which the editor offers as `/skill:name`. */
   skills: Skill[];
   config: MonchuConfig;
+  /** A client's pause, resume or run now of a job, in a commit; what happened in a line. */
+  controlJob: (tx: Tx, name: string, action: JobControl) => Promise<string>;
   /** What the plugins added; their extensions and groups are also in `extensions`. */
   plugins: PluginBuild;
   /** Names of the installed extensions the plugins own, which a later build without them uninstalls. */

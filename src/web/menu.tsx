@@ -3,7 +3,6 @@
  * `/login`'s providers). Typing filters it, arrows move, Enter or Tab or a tap takes a row, Esc leaves; it opens above
  * the editor, which stays where it is.
  */
-import type { ComponentChildren } from "preact";
 
 /** A status color from the stylesheet's tokens. */
 type Tone = "accent" | "green" | "yellow" | "red" | "muted";
@@ -16,6 +15,8 @@ export type MenuItem = {
   /** A command's arguments, before its detail. */
   usage?: string;
   tags?: readonly { text: string; tone?: Tone }[];
+  /** A state drawn before the label, such as ● the current pick and ⌂ the default, named by its word. */
+  mark?: { glyph: string; tone?: Tone; word: string };
 };
 
 const words = (query: string) => query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -90,11 +91,10 @@ export function Marked({
   );
 }
 
-/** The list over the editor, its optional header (a pick's title and ✕) above the rows. */
+/** The list over the editor: a pick's rows, named by its title; its ✕ and ✓ sit beside the box under it. */
 export function Menu(props: {
   label: string;
   class?: string;
-  header?: ComponentChildren;
   items: readonly MenuItem[];
   query: string;
   selected: number;
@@ -104,9 +104,9 @@ export function Menu(props: {
   onTake: (item: MenuItem) => void;
 }) {
   const longest = Math.max(1, ...props.items.map((item) => item.label.length));
+  const marked = props.items.some((item) => item.mark !== undefined);
   return (
-    <div class={`menu ${props.class ?? ""}`}>
-      {props.header}
+    <div class={`menu ${props.class ?? ""}${marked ? " marked" : ""}`}>
       <ul
         role="listbox"
         aria-label={props.label}
@@ -124,6 +124,16 @@ export function Menu(props: {
             onClick={() => props.onTake(item)}
           >
             <span class="enter">
+              {marked ? (
+                <span
+                  class={`mark ${item.mark?.tone ?? ""}`}
+                  {...(item.mark === undefined
+                    ? { "aria-hidden": true }
+                    : { role: "img", "aria-label": item.mark.word, title: item.mark.word })}
+                >
+                  {item.mark?.glyph ?? ""}
+                </span>
+              ) : null}
               <b>
                 <Marked text={item.label} query={props.query} marks={props.marks ?? firstPlaces} />
               </b>

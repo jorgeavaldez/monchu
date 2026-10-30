@@ -6,7 +6,6 @@ import { TopBar } from "./bar.tsx";
 import { ClientPanel, InstallOffer } from "./client.tsx";
 import { Editor } from "./editor.tsx";
 import { MODE } from "./keys.tsx";
-import { GoalsPanel, JobsPanel } from "./lists.tsx";
 import { Close } from "./panel.tsx";
 import {
   entering,
@@ -319,10 +318,6 @@ export function App() {
         <ClientPanel />
       ) : panel.value === "secrets" ? (
         <SecretsPanel />
-      ) : panel.value === "goals" ? (
-        <GoalsPanel />
-      ) : panel.value === "jobs" ? (
-        <JobsPanel />
       ) : state === undefined ? (
         <main class="transcript">connecting…{linkError.value ? ` ${linkError.value}` : ""}</main>
       ) : (

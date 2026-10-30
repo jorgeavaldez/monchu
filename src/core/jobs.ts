@@ -117,6 +117,9 @@ export type JobEvent = {
   rootId?: ConversationId;
 };
 
+/** What a client may do to a job: pause or resume a schedule, or run it now. */
+export type JobControl = "pause" | "resume" | "run_now";
+
 export type JobsState = { jobs: Job[]; events: JobEvent[]; nextEvent: number };
 
 const EVENTS_KEPT = 200;
@@ -931,7 +934,52 @@ export function createJobs(
   const text = (maxLength: number, description: string) =>
     Type.String({ minLength: 1, maxLength, pattern: "\\S", description });
 
-  return defineExtension({
+  /**
+   * Pause, resume, run now, kill or delete a job, in `tx`: what happened in a line, and the log a delete leaves to
+   * remove once the commit lands. The `job` tool and clients both come here.
+   */
+  async function control(
+    tx: Tx,
+    name: string,
+    action: Exclude<(typeof ACTIONS)[number], "create" | "list" | "output">,
+  ): Promise<{ text: string; removed?: string }> {
+    const state = await tx.doc(JobsDoc);
+    const index = state.jobs.findIndex((item) => item.name === name);
+    const job = state.jobs[index];
+    if (job === undefined) throw new Error(`No job named ${name}`);
+    const at = Date.now();
+    if (job.type === "bg" && action !== "kill" && action !== "delete")
+      throw new Error(`${action} is not for bg jobs; use output, kill or delete`);
+    switch (action) {
+      case "kill":
+        if (job.type !== "bg") throw new Error(`${name} is not a bg job; use pause or delete`);
+        if (job.status !== "active") return { text: `${name} already ended` };
+        job.kill = true;
+        return { text: `Killing ${name}; ${job.worker.name} gets the usual message when it ends` };
+      case "pause":
+        if (job.status === "paused") return { text: `${name} is already paused` };
+        job.status = "paused";
+        delete job.nextAt;
+        addEvent(state, job, { at, kind: "paused", text: "paused" });
+        return { text: `Paused ${name}` };
+      case "resume":
+        if (job.status === "active") return { text: `${name} is already active` };
+        job.status = "active";
+        job.taskId = await startRunner(tx, job);
+        addEvent(state, job, { at, kind: "resumed", text: "resumed" });
+        return { text: `Resumed ${name}` };
+      case "run_now":
+        if (job.status !== "active") throw new Error(`${name} is paused; resume it first`);
+        job.runNow = true;
+        return { text: `${name} runs now` };
+      case "delete":
+        state.jobs.splice(index, 1);
+        addEvent(state, job, { at, kind: "deleted", text: "deleted" });
+        return { text: `Deleted ${name}`, ...(job.log === undefined ? {} : { removed: job.log }) };
+    }
+  }
+
+  const extension = defineExtension({
     name: "monchu.jobs",
     tasks: [Runner, BgRunner, NotifyFront],
     tools: [
@@ -1104,55 +1152,22 @@ export function createJobs(
                 : `Created: ${formatJob(job, roots)}`,
             );
           }
-          let removed: string | undefined;
-          const result = await api.commit(async (tx) => {
-            const state = await tx.doc(JobsDoc);
-            const index = state.jobs.findIndex((item) => item.name === name);
-            const job = state.jobs[index];
-            if (job === undefined) throw new Error(`No job named ${name}`);
-            const at = Date.now();
-            if (job.type === "bg" && args.action !== "kill" && args.action !== "delete")
-              throw new Error(`${args.action} is not for bg jobs; use output, kill or delete`);
-            switch (args.action) {
-              case "kill":
-                if (job.type !== "bg")
-                  throw new Error(`${name} is not a bg job; use pause or delete`);
-                if (job.status !== "active") return `${name} already ended`;
-                job.kill = true;
-                return `Killing ${name}; ${job.worker.name} gets the usual message when it ends`;
-              case "pause":
-                if (job.status === "paused") return `${name} is already paused`;
-                job.status = "paused";
-                delete job.nextAt;
-                addEvent(state, job, { at, kind: "paused", text: "paused" });
-                return `Paused ${name}`;
-              case "resume":
-                if (job.status === "active") return `${name} is already active`;
-                job.status = "active";
-                job.taskId = await startRunner(tx, job);
-                addEvent(state, job, { at, kind: "resumed", text: "resumed" });
-                return `Resumed ${name}`;
-              case "run_now":
-                if (job.status !== "active") throw new Error(`${name} is paused; resume it first`);
-                job.runNow = true;
-                return `${name} runs now`;
-              case "delete":
-                state.jobs.splice(index, 1);
-                removed = job.log;
-                addEvent(state, job, { at, kind: "deleted", text: "deleted" });
-                return `Deleted ${name}`;
-              case "create":
-              case "list":
-              case "output":
-                throw new Error(`${args.action} is handled before this commit`);
-            }
-          }, context);
+          const action = args.action;
+          const { text: result, removed } = await api.commit(
+            (tx) => control(tx, name, action),
+            context,
+          );
           if (removed !== undefined) await removeLog(removed);
           return reply(result);
         },
       }),
     ],
   });
+
+  /** The client's way to pause, resume or run a job now. */
+  const controlJob = async (tx: Tx, name: string, action: JobControl) =>
+    (await control(tx, name, action)).text;
+  return { extension, controlJob };
 }
 
 /**

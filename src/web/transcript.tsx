@@ -24,7 +24,7 @@ import { UserAttachments } from "./attachments.tsx";
 import { ranges } from "./fuzzy.ts";
 import { Markdown } from "./markdown.tsx";
 import type { InboxItem } from "../api/client.ts";
-import { Briefer } from "./inbox.tsx";
+import { GoalCard } from "./goals.tsx";
 import { run } from "./commands.ts";
 import { type FeedRow, jumpTo, offerRows, offerScroll, type ScrollKind } from "./feed.ts";
 import {
@@ -279,24 +279,53 @@ function Stamp(props: { entry: EntryRecord; ids: ShortIds; reply: boolean }) {
   );
 }
 
-const KIND_LABELS = { ask: "ask", milestone: "done", update: "update", reply: "reply" };
+/** A message's kind as the filter bar draws it: asks ?, done ✓, updates …; a plain reply has none. */
+const KIND_MARKS = {
+  ask: { glyph: "?", tone: "yellow", word: "ask" },
+  milestone: { glyph: "✓", tone: "green", word: "done" },
+  update: { glyph: "…", tone: "muted", word: "update" },
+};
 
-/** An inbox item's label after its stamp: kind, goal and an ask's state, with a way to reply to an open ask. */
+/**
+ * An inbox item's label after its stamp: its kind as a glyph, faded once an ask is answered or closed, and its goal
+ * while the stream isn't that goal's; an open ask takes a reply. It reads the filter itself, as rows are kept.
+ */
 function Label({ item, code }: { item: InboxItem; code: string }) {
   if (item.kind === undefined) return null;
+  const mark = item.kind === "reply" ? undefined : KIND_MARKS[item.kind];
+  const settled =
+    item.state === "answered" ? "replied" : item.state === "closed" ? "closed" : undefined;
+  const goal = item.goal && filter.value.goal !== item.goal ? item.goal : undefined;
   return (
     <>
-      <span class={`label k-${item.kind}`}>
-        {" · "}
-        {KIND_LABELS[item.kind]}
-        {item.goal ? ` · ${item.goal}` : ""}
-        {item.state === undefined || item.state === "open"
-          ? ""
-          : ` · ${item.state === "answered" ? "replied" : item.state}`}
-      </span>
+      {mark === undefined && goal === undefined ? null : (
+        <span class="label">
+          {mark === undefined ? null : (
+            <span
+              class={`kind ${settled === undefined ? mark.tone : "muted"}`}
+              role="img"
+              aria-label={mark.word}
+              title={settled ?? mark.word}
+            >
+              {mark.glyph}
+            </span>
+          )}
+          {goal === undefined ? null : (
+            <span class="goal" title={`goal: ${goal}`}>
+              ◎{goal}
+            </span>
+          )}
+        </span>
+      )}
       {item.kind === "ask" && item.state === "open" ? (
-        <button type="button" class="reply" onClick={() => run("reply", code)}>
-          reply
+        <button
+          type="button"
+          class="reply icon"
+          aria-label="reply"
+          title="reply"
+          onClick={() => run("reply", code)}
+        >
+          ↩
         </button>
       ) : null}
     </>
@@ -743,7 +772,8 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
   const nodes: ComponentChildren[] = [];
   // Where each item sits in the stream, by the entry it is or follows: what the reader hasn't seen yet is newer.
   const order: number[] = [];
-  if (shownFilter.goal !== undefined) nodes.push(<Briefer key="brief" id={shownFilter.goal} />);
+  if (shownFilter.goal !== undefined)
+    nodes.push(<GoalCard key={`goal:${shownFilter.goal}`} id={shownFilter.goal} />);
   const flush = (before: number) => {
     while (pending[0] !== undefined && pending[0].after < before) {
       const { item, after } = pending[0];
@@ -1087,9 +1117,11 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
           />
         ))}
       {filtered && kept === 0 ? (
-        <div class="status">
-          nothing here yet · the front labels a message by starting it with ask, done or update;
-          /classifier labels the rest
+        <div
+          class="status"
+          title="the front labels a message by starting it with ask, done or update; /classifier labels the rest"
+        >
+          nothing here yet
         </div>
       ) : null}
       {live.status && !filtered ? <div class="status">{live.status}</div> : null}

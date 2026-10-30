@@ -511,6 +511,10 @@ pre {
   background: var(--fg);
   color: var(--bg);
 }
+.keys.spacer {
+  min-height: var(--tap);
+  border-top: none;
+}
 .keys .mode {
   padding: 0;
 }
@@ -537,24 +541,16 @@ pre {
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
-.menu header,
 .panel header {
   display: flex;
   align-items: center;
   gap: var(--s1);
   padding-left: var(--s1);
 }
-.menu header {
-  border-bottom: 1px solid var(--line);
-}
-.menu .title,
 .panel h1 {
   flex: 1;
   margin: 0;
   font-size: inherit;
-}
-.menu .title {
-  font-weight: inherit;
 }
 .menu ul {
   min-height: 0;
@@ -594,6 +590,23 @@ pre {
   text-align: left;
   border: none;
   background: transparent;
+}
+/* A row's state before its label (● current, ⌂ default); a model pick gives the id the row and its name the end. */
+.menu.marked .enter {
+  grid-template-columns: 1.5ch var(--label, 10ch) 1fr;
+}
+.menu.model .enter {
+  grid-template-columns: 1.5ch minmax(0, max-content) minmax(0, 1fr);
+}
+.menu.model .enter b {
+  font-weight: normal;
+}
+.menu.model .more {
+  display: block;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* A page plugin's passing hint, such as the keys after a leader, over the editor's right edge. */
 .pagehint {
@@ -671,7 +684,6 @@ pre {
   background: transparent;
 }
 /* An action cell, in a menu's header or at a row's end: one pattern, a glyph when one is clear, else a short word. */
-.menu header button,
 .panel header button,
 .panel .actions button,
 .queue li button:not(.text) {
@@ -979,12 +991,6 @@ p.offer {
   margin: 0;
   padding: var(--s0) var(--s1);
 }
-@media (pointer: coarse) {
-  /* Desktop key hints mean nothing on a touch screen. */
-  .pick .hint {
-    display: none;
-  }
-}
 /* Shown while the reader is scrolled back and more arrived; a tap returns to the end. */
 .transcript > .unread {
   position: sticky;
@@ -994,67 +1000,6 @@ p.offer {
   padding: 0 var(--s2);
   border: 1px solid var(--line);
   background: var(--bg);
-}
-/* /goals and /jobs: a row per item, a tap opens its fields under it. */
-.listPanel li.row {
-  flex-direction: column;
-}
-.listPanel h1 .help {
-  font-weight: normal;
-}
-.listPanel .mark {
-  color: var(--muted);
-}
-.listPanel .active .mark {
-  color: var(--accent);
-}
-.listPanel .waiting .mark,
-.listPanel .waiting .name,
-.listPanel .paused .mark {
-  color: var(--yellow);
-}
-.listPanel .done .mark {
-  color: var(--green);
-}
-.listPanel .failed .mark {
-  color: var(--red);
-}
-.listPanel .fresh {
-  color: var(--accent);
-}
-.listPanel .detail {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0 var(--s1);
-  margin: 0;
-  padding: 0 var(--s1) var(--s0) calc(var(--s1) + 2ch);
-}
-.listPanel dt {
-  color: var(--muted);
-}
-.listPanel dd {
-  margin: 0;
-  min-width: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.listPanel h2 {
-  margin: 0;
-  padding: var(--s1) var(--s1) var(--s0);
-  font-size: inherit;
-}
-.listPanel .events {
-  list-style: none;
-  margin: 0;
-  padding: 0 var(--s1) var(--s1);
-}
-.listPanel .events li {
-  display: block;
-  border: none;
-  overflow-wrap: anywhere;
-}
-.listPanel .events .time {
-  color: var(--muted);
 }
 /* A job's event or wake message: grey, in a dotted box, folded to one line like a tool row. */
 .job {
@@ -1129,24 +1074,96 @@ p.offer {
   border: 1px dashed var(--muted);
   padding: var(--s1);
 }
+/* A message's label after its stamp: its kind as a glyph, its goal muted, a reply cell for an open ask. */
 .label {
+  margin-left: var(--s1);
   color: var(--muted);
 }
-.label.k-ask,
-.label.k-milestone {
-  color: var(--yellow);
+.label .kind {
   font-weight: bold;
+}
+.label .kind + .goal {
+  margin-left: var(--s1);
 }
 .meta .reply {
   margin-left: var(--s1);
-  padding: 0 var(--s1);
+  min-width: var(--tap);
+  min-height: 0;
+  height: 1.4em;
+  font-size: 1em;
 }
-.brief .body > * {
+.green {
+  color: var(--green);
+}
+.accent {
+  color: var(--accent);
+}
+.muted {
+  color: var(--muted);
+}
+/* The followed goal over its stream: an accent bar, its head and a strip of counts; a tap opens its fields. */
+.brief {
+  border-left: 6px solid var(--accent);
+  background: transparent;
+}
+.brief.waiting {
+  border-left-color: var(--yellow);
+}
+.brief:is(.done, .dropped) {
+  border-left-color: var(--muted);
+}
+.brief .head {
+  display: grid;
+  grid-template-columns: 1.5ch minmax(0, 1fr) auto 1.5ch;
+  gap: var(--s1);
+  width: 100%;
+  padding: var(--s0) var(--s1);
+  border: none;
+  border-bottom: 1px solid var(--card);
+  background: transparent;
+  text-align: left;
+}
+.brief .head b {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.brief .age {
+  color: var(--muted);
+}
+.brief .strip {
+  display: flex;
+  gap: var(--s2);
+  padding: var(--s0) var(--s1);
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+.brief .crew,
+.field .who + .who {
+  margin-left: var(--s1);
+}
+.brief .fields {
+  padding: 0 var(--s1) var(--s0);
+  border-top: 1px solid var(--card);
+}
+/* A field of a goal or job: its glyph in the left column, the value wrapping beside it. */
+.field {
+  display: grid;
+  grid-template-columns: 1.5ch minmax(0, 1fr);
+  gap: var(--s1);
+}
+.field .v {
+  min-width: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.brief .crew .who + .who {
+  margin-left: var(--s1);
 }
 
-/* A sheet over the editor (the roots menu): one --row line per row, the action bar over the filter, ✕ and the
-   primary cell beside it. Every cell is a --tap square. */
+/* A sheet over the editor (roots, workers, pins, goals, jobs, drafts): one --row line per row; under it the box between
+   ✕ and the actions on the selection, then the view bar in the key bar's place. Every cell is a square. */
 .sheet {
   max-height: 60vh;
 }
@@ -1185,39 +1202,96 @@ p.offer {
 .editor textarea.sheetFilter.normal {
   color: var(--muted);
 }
-/* The action bar: actions on the selection and the filter on the left, › on the right; its bottom line tops the
-   filter's row, which the sheet covers. */
-.sheet .bar {
-  display: flex;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+/* The view bar: each status a toggle with its count from the left edge, the details and the order at the right, the
+   orders opening over it. */
+.view {
+  position: relative;
 }
-.sheet .bar button {
-  min-height: var(--tap);
-  min-width: var(--tap);
-  border: none;
-  border-right: 1px solid var(--line);
+.view button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--s0);
   font-variant-numeric: tabular-nums;
 }
-.sheet .bar button[aria-pressed="true"],
-.sheet .bar button[aria-pressed="true"] .dot {
+.view .segment {
+  gap: 2px;
+  padding: 0 var(--s0);
+}
+.view .n {
+  font-weight: bold;
+}
+.view [aria-pressed="true"] .dot {
+  color: inherit;
+}
+.view .segment[aria-pressed="false"] {
+  color: var(--muted);
+}
+.view .details {
+  margin-left: auto;
+  border-left: 1px solid var(--line);
+}
+.view .sort {
+  min-width: var(--tap);
+  padding: 0;
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+.view .details + .sort {
+  border-left: none;
+}
+.view .sort:first-child,
+.view .segment + .sort {
+  margin-left: auto;
+}
+.view .sort[aria-expanded="true"] {
   background: var(--fg);
   color: var(--bg);
 }
-.sheet .bar .go {
-  margin-left: auto;
+.view .orders {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
   border-right: none;
-  border-left: 1px solid var(--line);
+  background: var(--bg);
+}
+.view .orders li {
+  display: flex;
+  gap: var(--s1);
+  align-items: center;
+  min-height: var(--row);
+  padding: 0 var(--s1);
+  cursor: pointer;
+}
+.view .orders b {
+  min-width: 4ch;
+}
+.view .orders .selected {
+  background: var(--fg);
+  color: var(--bg);
+}
+/* A row's details, open under it: its fields indented to the text, an inverted rule down the side. */
+.sheet li.open {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s0) var(--s1) var(--s0) calc(var(--s1) - 3px);
+  border-left: 3px solid var(--fg);
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+.sheet li.open.here {
+  border-left-color: var(--accent);
 }
 /* The keys a chord waits for, over the list's right edge. */
 .sheet .whichkey {
   position: absolute;
   right: 0;
-  bottom: calc(var(--tap) + 2px);
+  bottom: 2px;
   padding: var(--s0) var(--s1);
   border: 1px solid var(--line);
   border-right: none;
@@ -1227,10 +1301,17 @@ p.offer {
 .sheet .whichkey b {
   color: var(--yellow);
 }
-/* A root: status, id, name, workers, jobs, age; the counts line up in columns. */
+/* A root: status, id, name, busy and idle workers, jobs, age; every count in its own column, so they line up. */
 .rootsMenu .enter {
-  grid-template-columns: 1.5ch auto minmax(0, 1fr) 6ch 5ch 3ch;
+  grid-template-columns: 1.5ch 5ch minmax(0, 1fr) 3ch 3ch 3ch 3.5ch;
   gap: var(--s1);
+}
+.sheet .count {
+  display: block;
+  text-align: right;
+}
+.sheet .count.working {
+  color: var(--accent);
 }
 .rootsMenu .id {
   overflow: visible;
@@ -1239,22 +1320,80 @@ p.offer {
 .rootsMenu .id b {
   color: var(--yellow);
 }
-.rootsMenu .count,
-.rootsMenu .age {
+.sheet .count,
+.sheet .age,
+.sheet .who {
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
-.rootsMenu .selected .enter,
-.rootsMenu .selected .enter * {
+.sheet .selected .enter,
+.sheet .selected .enter * {
   color: var(--bg);
+}
+/* What is typed, over the drafts: what save would keep. */
+.draftsMenu .typed {
+  margin: 0;
+  padding: 0 var(--s1);
+  min-height: var(--row);
+  line-height: var(--row);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  border-bottom: 1px solid var(--card);
+}
+.sheet .age.fresh {
+  color: var(--accent);
+  font-weight: bold;
+}
+.sheet .selected .age.fresh,
+.sheet .selected .count.yellow {
+  color: var(--bg);
+}
+.sheet .count.yellow {
+  color: var(--yellow);
+  font-weight: bold;
+}
+.dot.accent {
+  color: var(--accent);
+}
+.dot.green {
+  color: var(--green);
+}
+.dot.yellow {
+  color: var(--yellow);
+}
+.dot.red {
+  color: var(--red);
+}
+.dot.muted {
+  color: var(--muted);
 }
 .dot.idle {
   color: var(--muted);
 }
 /* A worker: status, name, context used, idle time. */
 .workersMenu .enter {
-  grid-template-columns: 1.5ch minmax(0, 1fr) 4ch 3ch;
+  grid-template-columns: 1.5ch minmax(0, 1fr) 4ch 3.5ch;
+}
+/* A goal: status, title, open asks, age. */
+.goalsMenu .enter {
+  grid-template-columns: 1.5ch minmax(0, 1fr) 3ch 4.5ch;
+  gap: var(--s1);
+}
+/* A job: state, name, who it wakes, when. */
+.jobsMenu .enter {
+  grid-template-columns: 1.5ch minmax(0, 1fr) fit-content(40%) 4.5ch;
+  gap: var(--s1);
+}
+/* A draft: its text on one line, its age. */
+.draftsMenu .enter {
+  grid-template-columns: minmax(0, 1fr) 4ch;
+  gap: var(--s1);
+}
+.age {
+  text-align: right;
 }
 .workersMenu .count.yellow {
   color: var(--yellow);
@@ -1273,9 +1412,6 @@ p.offer {
 .pinsMenu .age {
   color: var(--muted);
 }
-.pinsMenu .selected .enter * {
-  color: var(--bg);
-}
 .pinsMenu .whole {
   min-height: 0;
   overflow-y: auto;
@@ -1287,6 +1423,10 @@ p.offer {
   display: flex;
   align-items: stretch;
 }
+/* A menu covers the editor's top border, so the box under it draws its own: a line always parts the rows from it. */
+.editor .line.under {
+  border-top: 1px solid var(--line);
+}
 .editor .line textarea {
   flex: 1;
   min-width: 0;
@@ -1296,9 +1436,15 @@ p.offer {
   min-width: calc(1.4rem + 2 * var(--s1));
   border: none;
 }
+.editor .line > button {
+  border-left: 1px solid var(--line);
+}
 .editor .line > button:first-child {
+  border-left: none;
   border-right: 1px solid var(--line);
 }
-.editor .line > button:last-child {
-  border-left: 1px solid var(--line);
+.glyph {
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
 }

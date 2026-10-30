@@ -12,7 +12,6 @@ import type {
   JobEvent,
   PinnedMessage,
   RootClient,
-  RootStatus,
   RootSummary,
 } from "../api/client.ts";
 import type { WhenBusy } from "../api/notices.ts";
@@ -47,7 +46,7 @@ export type Choice = {
   query?: string;
   choose(id: string, alternate: boolean): void;
   cancel(): void;
-  /** The alternate action's label (Shift+Enter or the toggle), such as saving a model as the default. */
+  /** The alternate action's label (Shift+Enter or the ⌂ toggle): saving the pick as a default. */
   alternate?: string;
   /** The rows a filter shows, in place of the menu's own matching: search ranks its own. */
   rows?: (query: string) => MenuItem[];
@@ -61,23 +60,61 @@ export type Choice = {
   requested?: boolean;
 };
 
-export type RootsFilter = "all" | RootStatus | "archived";
+/** The menus that open from the bottom over the editor. */
+export type SheetKind = "roots" | "workers" | "pins" | "goals" | "jobs" | "drafts";
 
 /**
- * A menu that opens from the bottom over the editor, whose box filters it while the draft waits: its filter, the row
- * Enter takes, whether it is in normal mode (keys move and act rather than type), and the keys typed
- * after the leader (undefined when none is pending). `back` puts focus where it was.
+ * How a kind of sheet shows its list: the statuses it hides, its order, and whether the selection shows its details.
+ * Each kind keeps its own on the device, across openings.
+ */
+export type SheetLook = { off: readonly string[]; sort: string; details: boolean };
+
+/** What each kind shows first: every open thing, newest first. */
+const LOOKS: Record<SheetKind, SheetLook> = {
+  roots: { off: ["archived"], sort: "new", details: false },
+  workers: { off: [], sort: "recent", details: false },
+  pins: { off: [], sort: "new", details: false },
+  goals: { off: ["done", "dropped"], sort: "new", details: false },
+  jobs: { off: ["ok"], sort: "next", details: false },
+  drafts: { off: [], sort: "new", details: false },
+};
+
+const lookKey = (kind: SheetKind) => `sheet.${kind}`;
+
+/** The look this device keeps for `kind`, or its first one; what isn't one (an older page's, a hand edit) is ignored. */
+function savedLook(kind: SheetKind): SheetLook {
+  const first = LOOKS[kind];
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(lookKey(kind)) ?? "null");
+    if (typeof kept !== "object" || kept === null) return first;
+    const off = "off" in kept && Array.isArray(kept.off) ? kept.off : undefined;
+    return {
+      off: off?.every((each) => typeof each === "string") === true ? off : first.off,
+      sort: "sort" in kept && typeof kept.sort === "string" ? kept.sort : first.sort,
+      details:
+        "details" in kept && typeof kept.details === "boolean" ? kept.details : first.details,
+    };
+  } catch {
+    return first;
+  }
+}
+
+/**
+ * A menu that opens from the bottom over the editor, whose box filters it while the draft waits: its look, its filter,
+ * the row Enter takes, whether it is in normal mode (keys move and act rather than type), whether its orders are open,
+ * and the keys typed after the leader (undefined when none is pending). `back` puts focus where it was.
  */
 export type Sheet = {
-  kind: "roots" | "workers" | "pins";
-  /** What the list shows: every row, one status of them, or (roots) the archived ones. */
-  filter: RootsFilter;
+  kind: SheetKind;
+  look: SheetLook;
   query: string;
   /** Where the selection is (-1 for none), and its row's key: it follows its row as rows move, and a row that leaves
    * hands it to the one in its place. */
   selected: number;
   key: string | undefined;
   normal: boolean;
+  /** Whether the list of orders is open over the bar. */
+  sorting: boolean;
   chord: readonly string[] | undefined;
   back: () => void;
 };
@@ -105,7 +142,7 @@ export const page = {
   /** Every root, archived ones included, as the core reports them. */
   roots: signal<readonly RootSummary[]>([]),
   /** The panel open in place of the transcript, one at a time; Esc or ✕ closes it. */
-  panel: signal<"client" | "secrets" | "goals" | "jobs" | undefined>(undefined),
+  panel: signal<"client" | "secrets" | undefined>(undefined),
   /** The menu open over the editor, if one is. */
   sheet: signal<Sheet | undefined>(undefined),
   notices: signal<readonly Notice[]>([]),
@@ -132,8 +169,6 @@ export const page = {
   ),
   /** What a login shows while it waits: its message, a link to open, a code to read. */
   loginStatus: signal<{ message: string; url?: string; code?: string } | undefined>(undefined),
-  /** The newest job event this page heard, so the jobs panel lists them afresh. */
-  jobEvent: signal(0),
   /** Bumped when the user sends a message, so the transcript goes back to its end and follows it. */
   following: signal(0),
   /** The editor's text, so a stopped front's queued messages can come back into it. Kept through a reload of the tab. */
@@ -162,7 +197,6 @@ export const {
   promptDrafts,
   pins,
   loginStatus,
-  jobEvent,
   following,
   draft,
   editing,
@@ -235,20 +269,30 @@ export function setLinkError(error: string | undefined): void {
  * Open a sheet in place of whatever menu is open, every row shown and `query` in its filter; one already open takes a
  * query given. A sign-in waiting in the editor's place keeps it.
  */
-export function openSheet(kind: Sheet["kind"], query = ""): void {
+export function openSheet(kind: SheetKind, query = "", key?: string): void {
   if (page.sheet.value?.kind === kind) return query === "" ? undefined : filterSheet(query);
   if (!claim(false)) return notice("finish the sign-in first", "warning");
   page.sheet.value?.back();
   page.sheet.value = {
     kind,
-    filter: "all",
+    look: savedLook(kind),
     query,
     selected: 0,
-    key: undefined,
+    key,
     normal: false,
+    sorting: false,
     chord: undefined,
     back: focusReturn(),
   };
+}
+
+/** Change how the open sheet shows its list, kept for its kind; the selection stays on its row. */
+export function changeLook(change: Partial<SheetLook>): void {
+  const open = page.sheet.value;
+  if (open === undefined) return;
+  const look = { ...open.look, ...change };
+  localStorage.setItem(lookKey(open.kind), JSON.stringify(look));
+  page.sheet.value = { ...open, look, sorting: false };
 }
 
 /** Close the sheet, focus back where it was when it opened. */
@@ -306,7 +350,7 @@ export function showing(): Showing {
 }
 
 /** The shown root's client, for a component's one call (read it as the call starts, never after an await). */
-export function root(): RootClient {
+function root(): RootClient {
   return showing().root;
 }
 
@@ -437,6 +481,8 @@ export async function openRoot(id: string, push = false): Promise<void> {
         if (newest === lastEntry) return;
         lastEntry = newest;
         void at.refreshWorkers().catch(() => {});
+        // A goal changes by a tool call or a worker's report, each a new entry here.
+        void at.refreshGoals().catch(() => {});
       }),
     );
   at.own(
@@ -496,7 +542,6 @@ export async function start(connected: Client): Promise<void> {
       (oldest, each) => (oldest === undefined || each.createdAt < oldest.createdAt ? each : oldest),
       undefined,
     );
-    page.jobEvent.value = Math.max(jobEvent.value, ...events.map((event) => event.id));
     for (const event of events)
       rootNotice(
         formatJobEvent(event),

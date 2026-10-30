@@ -1,7 +1,8 @@
 /**
- * A menu that opens from the bottom over the editor (`/roots`): one line per row, an action bar over the filter, and
- * the filter between ✕ back and the menu's primary cell. The editor's box filters it while the draft waits, so the box
- * never moves and a touch keyboard stays up. A tap selects a row, a tap on the selected row or › takes it.
+ * A menu that opens from the bottom over the editor (`/roots`): one line per row, then the editor's box between ✕ back
+ * and the actions on the selection, then the view bar in the key bar's place: the statuses it shows as toggles, its
+ * details and its order. The editor's box filters it while the draft waits, so the box never moves and a touch keyboard
+ * stays up. A tap selects a row, a tap on the selected row takes it.
  *
  * Typing filters, arrows move, Enter takes the selection. With a key plugin that leaves the prompt on Esc, the menu is
  * modal like the page: Esc goes to normal mode, where j/k move, Enter or l takes, i or / types again, and Space (or
@@ -11,7 +12,15 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { Key } from "./keys.tsx";
-import { closeSheet, escapeLeaves, sheet, updateSheet, type Sheet } from "./state.ts";
+import {
+  changeLook,
+  closeSheet,
+  escapeLeaves,
+  sheet,
+  updateSheet,
+  type Sheet,
+  type SheetLook,
+} from "./state.ts";
 
 /** A key after the leader: it runs, or leads to more keys. */
 export type Chord = {
@@ -27,7 +36,25 @@ export type SheetSpec = {
   keys(): readonly string[];
   take(index: number): void;
   chords(): readonly Chord[];
+  /** The orders its view bar offers, which arrows step through while they are open. */
+  orders?: readonly Order[];
 };
+
+/** While the orders are open, arrows sort by the next or previous one and Enter closes them. */
+function orderKey(open: Sheet, spec: SheetSpec, key: string): boolean {
+  if (!open.sorting) return false;
+  const orders = spec.orders ?? [];
+  if (key === "Enter") updateSheet({ sorting: false });
+  else if (key === "ArrowDown" || key === "ArrowUp" || key === "j" || key === "k") {
+    const at = orders.findIndex((order) => order.key === orderOf(open.look, orders));
+    const by = key === "ArrowDown" || key === "j" ? 1 : -1;
+    const next = orders[(at + by + orders.length) % orders.length];
+    if (next === undefined) return true;
+    changeLook({ sort: next.key });
+    updateSheet({ sorting: true });
+  } else return false;
+  return true;
+}
 
 /**
  * The selected row's index among `keys`: its own row wherever the rows moved, else (it left) the one now in its place
@@ -39,7 +66,7 @@ export function selectedRow(open: Sheet, keys: readonly string[]): number {
 }
 
 function select(keys: readonly string[], index: number): void {
-  updateSheet({ selected: index, key: keys[index], chord: undefined });
+  updateSheet({ selected: index, key: keys[index], chord: undefined, sorting: false });
 }
 
 function move(open: Sheet, spec: SheetSpec, by: number): void {
@@ -87,6 +114,7 @@ export function filterKey(event: KeyboardEvent, spec: SheetSpec): boolean {
     updateSheet({ chord: [] });
     return true;
   }
+  if (orderKey(open, spec, event.key)) return true;
   switch (event.key) {
     case "ArrowDown":
     case "ArrowUp":
@@ -98,7 +126,8 @@ export function filterKey(event: KeyboardEvent, spec: SheetSpec): boolean {
       take(open, spec);
       return true;
     case "Escape":
-      if (!escapeLeaves.value) closeSheet();
+      if (open.sorting) updateSheet({ sorting: false });
+      else if (!escapeLeaves.value) closeSheet();
       else {
         updateSheet({ normal: true });
         // Now, not on the next paint: a key right after this one is the list's.
@@ -122,6 +151,7 @@ function listKey(event: KeyboardEvent, spec: SheetSpec): boolean {
     return true;
   }
   if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  if (orderKey(open, spec, event.key)) return true;
   switch (event.key) {
     case "j":
     case "ArrowDown":
@@ -148,7 +178,8 @@ function listKey(event: KeyboardEvent, spec: SheetSpec): boolean {
       updateSheet({ normal: false });
       return true;
     case "Escape":
-      if (selectedRow(open, spec.keys()) >= 0) updateSheet({ selected: -1, key: undefined });
+      if (open.sorting) updateSheet({ sorting: false });
+      else if (selectedRow(open, spec.keys()) >= 0) updateSheet({ selected: -1, key: undefined });
       else closeSheet();
       return true;
   }
@@ -165,16 +196,15 @@ export function SheetBack() {
 }
 
 /**
- * The sheet: its rows (each `li` marks itself selected), the action bar (`actions` on the left, then › taking the
- * selection on the right), and the chords' keys while one waits. Normal mode focuses the list, so keys don't type.
+ * The sheet: its rows (each `li` marks itself selected), and the chords' keys while one waits. Normal mode focuses the
+ * list, so keys don't type.
  */
 export function SheetView(props: {
   open: Sheet;
   spec: SheetSpec;
   label: string;
   class: string;
-  actions: ComponentChildren;
-  /** Under the rows, over the bar: what the selection shows in full, if anything. */
+  /** Under the rows: what the selection shows in full, if anything. */
   detail?: ComponentChildren;
   /** Said in the rows' place when there are none; outside the list, which holds only options. */
   empty: string | undefined;
@@ -187,12 +217,14 @@ export function SheetView(props: {
   }, [open.normal]);
   const keys = spec.keys();
   const at = selectedRow(open, keys);
-  // The row selected by place (on opening, after a filter) becomes the one selected: it stays so as rows move. Before
-  // the paint, so no change to the rows can come between.
+  // The row selected by place (on opening, after a filter) becomes the one selected: it stays so as rows move, and its
+  // place follows it, so a row that leaves hands the selection to its neighbour where it is now. Before the paint, so
+  // no change to the rows can come between.
   const key = at < 0 ? undefined : keys[at];
   useLayoutEffect(() => {
-    if (open.key === undefined && key !== undefined) updateSheet({ key });
-  }, [open.key, key]);
+    if (key !== undefined && (open.key !== key || open.selected !== at))
+      updateSheet({ key, selected: at });
+  }, [open.key, open.selected, key, at]);
   useEffect(() => {
     list.current?.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
   }, [at, open.query]);
@@ -219,18 +251,6 @@ export function SheetView(props: {
         </p>
       )}
       {props.detail}
-      <div class="bar" role="toolbar" aria-label="actions">
-        {props.actions}
-        <Key
-          class="icon go"
-          label="go to the selected"
-          title="go (Enter)"
-          disabled={at < 0}
-          onPress={() => spec.take(at)}
-        >
-          ›
-        </Key>
-      </div>
       {chords === undefined ? null : (
         <div class="whichkey" role="status" aria-label="keys">
           {chords.map((chord) => (
@@ -242,6 +262,190 @@ export function SheetView(props: {
       )}
     </div>
   );
+}
+
+/** A status color from the stylesheet's tokens, or none. */
+export type Tone = "accent" | "green" | "yellow" | "red" | "muted" | "";
+
+/**
+ * A status a sheet can show or hide: its key, glyph and word, how many rows have it, and the letter that shows only it
+ * after the leader's f.
+ */
+export type Segment = {
+  key: string;
+  glyph: string;
+  tone: Tone;
+  word: string;
+  count: number;
+  letter: string;
+};
+
+/** An order a sheet can list in: its key, a glyph for it, and its word. */
+export type Order = { key: string; glyph: string; word: string };
+
+/** The order the open sheet lists in: its own, or the first when the one kept isn't one of `orders`. */
+export function orderOf(look: SheetLook, orders: readonly Order[]): string {
+  return orders.some((order) => order.key === look.sort) ? look.sort : (orders[0]?.key ?? "");
+}
+
+/** Whether rows with status `key` show. */
+export const showsStatus = (look: SheetLook, key: string) => !look.off.includes(key);
+
+/** Show or hide a status's rows; the selection goes back to the top. */
+function toggleStatus(look: SheetLook, key: string): void {
+  changeLook({
+    off: look.off.includes(key) ? look.off.filter((each) => each !== key) : [...look.off, key],
+  });
+  updateSheet({ selected: 0, key: undefined });
+}
+
+/** Show only rows with status `key`, or every status; the selection goes back to the top. */
+function showOnly(key: string | undefined, segments: readonly Segment[]): void {
+  changeLook({
+    off: segments.flatMap((each) => (key === undefined || each.key === key ? [] : [each.key])),
+  });
+  updateSheet({ selected: 0, key: undefined });
+}
+
+/**
+ * The chords that change the view: f, then a for every status or a status's letter for only that one; o, then an
+ * order's number; v the details.
+ */
+export function lookChords(
+  look: SheetLook,
+  segments: readonly Segment[],
+  orders: readonly Order[],
+  details: boolean,
+): Chord[] {
+  return [
+    ...(segments.length === 0
+      ? []
+      : [
+          {
+            key: "f",
+            glyph: "∗",
+            label: "show…",
+            more: [
+              { key: "a", glyph: "∗", label: "all", run: () => showOnly(undefined, segments) },
+              ...segments.map((segment) => ({
+                key: segment.letter,
+                glyph: segment.glyph,
+                label: `${segment.word} only`,
+                run: () => showOnly(segment.key, segments),
+              })),
+            ],
+          },
+        ]),
+    ...(orders.length < 2
+      ? []
+      : [
+          {
+            key: "o",
+            glyph: "⇅",
+            label: "order…",
+            more: orders.map((order, index) => ({
+              key: String(index + 1),
+              glyph: order.glyph,
+              label: order.word,
+              run: () => changeLook({ sort: order.key }),
+            })),
+          },
+        ]),
+    ...(details
+      ? [
+          {
+            key: "v",
+            glyph: "⊞",
+            label: "details",
+            run: () => changeLook({ details: !look.details }),
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * The view bar under the box, in the key bar's place: each status as a toggle with its count on the left, flush with
+ * the edge; the details toggle and the order at the right, the orders opening over the bar.
+ */
+export function SheetBar(props: {
+  open: Sheet;
+  segments: readonly Segment[];
+  orders: readonly Order[];
+  /** What the details toggle shows, if the sheet has details: "details", "whole text". */
+  details?: string;
+}) {
+  const { open, segments, orders } = props;
+  const look = open.look;
+  const now = orderOf(look, orders);
+  const order = orders.find((each) => each.key === now);
+  return (
+    <div class="keys view" role="toolbar" aria-label="view">
+      {segments.map((segment) => (
+        <Key
+          key={segment.key}
+          class="segment"
+          label={`${segment.word}: ${segment.count}`}
+          title={`${segment.word} · tap to ${showsStatus(look, segment.key) ? "hide" : "show"}`}
+          pressed={showsStatus(look, segment.key)}
+          onPress={() => toggleStatus(look, segment.key)}
+        >
+          <span class={`dot ${segment.tone}`}>{segment.glyph}</span>
+          <span class="n">{segment.count}</span>
+        </Key>
+      ))}
+      {props.details === undefined ? null : (
+        <Key
+          class="icon details"
+          label={props.details}
+          title={`${props.details} (spc v)`}
+          pressed={look.details}
+          onPress={() => changeLook({ details: !look.details })}
+        >
+          {look.details ? "⊟" : "⊞"}
+        </Key>
+      )}
+      {order === undefined || orders.length < 2 ? null : (
+        <button
+          type="button"
+          class="icon sort"
+          aria-label={`sort: ${order.word}`}
+          title={`sorted by ${order.word} · tap to change (spc o)`}
+          aria-expanded={open.sorting}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => updateSheet({ sorting: !open.sorting })}
+        >
+          ⇅
+        </button>
+      )}
+      {open.sorting ? (
+        <ul class="orders" role="listbox" aria-label="sort">
+          {orders.map((each) => (
+            <li
+              key={each.key}
+              role="option"
+              aria-selected={each.key === now}
+              class={each.key === now ? "selected" : ""}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => changeLook({ sort: each.key })}
+            >
+              <b>{each.glyph}</b> {each.word}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** Rows in `order` by `compare` for each key, newest or most first; ties keep their place. */
+export function sortRows<T>(
+  rows: readonly T[],
+  order: string,
+  compare: Record<string, (x: T, y: T) => number>,
+): T[] {
+  const by = compare[order];
+  return by === undefined ? [...rows] : rows.toSorted(by);
 }
 
 /** A click on the row `key`: the first selects it, one on the selected row takes it. */

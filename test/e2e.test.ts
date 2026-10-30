@@ -413,6 +413,22 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     expect(await ok("job", { action: "output", name: "e2e-bg" })).toContain("job-done");
   });
 
+  it("pauses and resumes a scheduled job from a client", async () => {
+    await ok("job", {
+      action: "create",
+      type: "command",
+      name: "e2e-cmd",
+      schedule: "@daily",
+      command: "echo scheduled",
+    });
+    expect(await monchu.client.controlJob("e2e-cmd", "pause")).toBe("Paused e2e-cmd");
+    expect((await monchu.client.jobs()).jobs.find((job) => job.name === "e2e-cmd")?.status).toBe(
+      "paused",
+    );
+    expect(await monchu.client.controlJob("e2e-cmd", "resume")).toBe("Resumed e2e-cmd");
+    await ok("job", { action: "delete", name: "e2e-cmd" });
+  });
+
   it("starts workers that report to the front, and messages, closes a batch or one from a client, reopens and stops them", async () => {
     const reports = count("Faux front: result received.");
     await ask("work reader inspect", "Faux front: result received.");

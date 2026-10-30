@@ -1,23 +1,26 @@
 /**
- * The workers menu, a sheet over the editor: the root, then this root's workers, working ones first, one line each
- * (status, name, context used, idle time). Its bar stops or closes the selection and shows only the working ones or
- * all; a tap or › shows the conversation.
+ * The workers menu, a sheet over the editor: the root, then this root's workers in the order picked, one line each
+ * (status, name, context used, idle time). Right of the box: stop or close the selection. Its view bar shows or hides
+ * the working and idle ones and orders them; a tap on the selected row shows the conversation.
  */
 import { age, contextUsage, lastActive, presentation } from "../ui/state.ts";
 import { run } from "./commands.ts";
 import { Key } from "./keys.tsx";
 import { Marked, matching } from "./menu.tsx";
-import { selectedRow, SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
 import {
-  client,
-  closeSheet,
-  sheet,
-  shown,
-  updateSheet,
-  view,
-  workers,
-  type Sheet,
-} from "./state.ts";
+  lookChords,
+  orderOf,
+  selectedRow,
+  SheetBar,
+  SheetView,
+  showsStatus,
+  sortRows,
+  tapRow,
+  type Order,
+  type Segment,
+  type SheetSpec,
+} from "./sheet.tsx";
+import { client, closeSheet, sheet, shown, view, workers, type Sheet } from "./state.ts";
 
 /** A conversation as a row: undefined names the root's front. */
 type Crew = {
@@ -39,21 +42,52 @@ function crew(): Crew[] {
       context: front === undefined ? undefined : contextUsage(front).context,
       model: live?.provider === undefined ? undefined : `${live.provider}/${live.model}`,
     },
-    ...workers.value
-      .toSorted((x, y) => Number(y.busy) - Number(x.busy))
-      .map((worker) => ({
-        name: worker.name,
-        busy: worker.busy,
-        activeAt: worker.activeAt,
-        context: worker.contextTokens,
-        model: worker.model,
-      })),
+    ...workers.value.map((worker) => ({
+      name: worker.name,
+      busy: worker.busy,
+      activeAt: worker.activeAt,
+      context: worker.contextTokens,
+      model: worker.model,
+    })),
   ];
 }
 
-/** The rows shown: every one or the working ones, matched by every typed word. */
+const statusOf = (each: Crew) => (each.busy ? "working" : "idle");
+
+const ORDERS: readonly Order[] = [
+  { key: "recent", glyph: "◷↓", word: "recent" },
+  { key: "name", glyph: "a→z", word: "name" },
+  { key: "context", glyph: "%↓", word: "context" },
+];
+/** Working ones count as active now. */
+const lastWorked = (each: Crew) => (each.busy ? Infinity : (each.activeAt ?? 0));
+const COMPARE: Record<string, (x: Crew, y: Crew) => number> = {
+  recent: (x, y) => lastWorked(y) - lastWorked(x),
+  name: (x, y) => (x.name ?? "").localeCompare(y.name ?? ""),
+  context: (x, y) => (y.context ?? 0) - (x.context ?? 0),
+};
+
+function segments(): Segment[] {
+  const all = crew();
+  const busy = all.filter((each) => each.busy).length;
+  return [
+    { key: "working", glyph: "●", tone: "accent", word: "working", count: busy, letter: "w" },
+    { key: "idle", glyph: "○", tone: "muted", word: "idle", count: all.length - busy, letter: "i" },
+  ];
+}
+
+/** The rows shown: the root first, then its workers in the order picked, of the statuses shown, matched by every typed
+ * word. */
 function crewRows(open: Sheet): Crew[] {
-  const listed = crew().filter((each) => open.filter !== "working" || each.busy);
+  const all = crew().filter((each) => showsStatus(open.look, statusOf(each)));
+  const listed = [
+    ...all.filter((each) => each.name === undefined),
+    ...sortRows(
+      all.filter((each) => each.name !== undefined),
+      orderOf(open.look, ORDERS),
+      COMPARE,
+    ),
+  ];
   const byId = new Map(listed.map((each) => [each.name ?? "", each]));
   return matching(
     listed.map((each) => ({ id: each.name ?? "", label: each.name ?? "root" })),
@@ -94,25 +128,14 @@ function close(each: Crew | undefined): void {
   run("worker.close", each.name);
 }
 
-function filterTo(filter: Sheet["filter"]): void {
-  updateSheet({ filter, selected: 0, key: undefined });
-}
-
 export const WORKERS: SheetSpec = {
+  orders: ORDERS,
   keys: () => (sheet.value === undefined ? [] : crewRows(sheet.value).map(keyOf)),
   take: (index) => take(sheet.value === undefined ? undefined : crewRows(sheet.value)[index]),
   chords: () => [
     { key: "s", glyph: "■", label: "stop", run: () => stop(selected()) },
     { key: "x", glyph: CLOSE, label: "close", run: () => close(selected()) },
-    {
-      key: "f",
-      glyph: "●",
-      label: "filter…",
-      more: [
-        { key: "a", glyph: "∗", label: "all", run: () => filterTo("all") },
-        { key: "w", glyph: "●", label: "working", run: () => filterTo("working") },
-      ],
-    },
+    ...(sheet.value === undefined ? [] : lookChords(sheet.value.look, segments(), ORDERS, false)),
   ],
 };
 
@@ -171,57 +194,48 @@ function Row(props: { each: Crew; selected: boolean; query: string }) {
 export function WorkersSheet({ open }: { open: Sheet }) {
   const rows = crewRows(open);
   const each = chosen(open, rows);
-  const working = open.filter === "working";
-  const busy = crew().filter((one) => one.busy).length;
   return (
     <SheetView
       open={open}
       spec={WORKERS}
       label="workers"
       class="rootsMenu workersMenu"
-      empty={rows.length > 0 ? undefined : open.query ? "nothing matches" : "none working"}
-      actions={
-        <>
-          <Key
-            class="icon"
-            label="stop"
-            title="stop (spc s)"
-            disabled={each?.busy !== true}
-            onPress={() => stop(each)}
-          >
-            ■
-          </Key>
-          <Key
-            class="icon"
-            label="close"
-            title={each?.busy === true ? "a working worker can't be closed" : "close (spc x)"}
-            disabled={each?.name === undefined || each.busy}
-            onPress={() => close(each)}
-          >
-            {CLOSE}
-          </Key>
-          <Key
-            class="filter"
-            label={working ? "filter: working" : "filter: all"}
-            title={`${working ? "working only" : "all"} · tap for ${working ? "all" : "working only"} (spc f)`}
-            pressed={working}
-            onPress={() => filterTo(working ? "all" : "working")}
-          >
-            {working ? (
-              <>
-                <span class="dot working">●</span>
-                {busy}
-              </>
-            ) : (
-              "∗"
-            )}
-          </Key>
-        </>
-      }
+      empty={rows.length > 0 ? undefined : open.query ? "nothing matches" : "none"}
     >
       {rows.map((one) => (
         <Row key={keyOf(one)} each={one} selected={one === each} query={open.query} />
       ))}
     </SheetView>
   );
+}
+
+/** Right of the box: stop or close the selection. */
+export function WorkersActions({ open }: { open: Sheet }) {
+  const each = chosen(open, crewRows(open));
+  return (
+    <>
+      <Key
+        class="icon"
+        label="stop"
+        title="stop (spc s)"
+        disabled={each?.busy !== true}
+        onPress={() => stop(each)}
+      >
+        ■
+      </Key>
+      <Key
+        class="icon"
+        label="close"
+        title={each?.busy === true ? "a working worker can't be closed" : "close (spc x)"}
+        disabled={each?.name === undefined || each.busy}
+        onPress={() => close(each)}
+      >
+        {CLOSE}
+      </Key>
+    </>
+  );
+}
+
+export function WorkersBar({ open }: { open: Sheet }) {
+  return <SheetBar open={open} segments={segments()} orders={ORDERS} />;
 }

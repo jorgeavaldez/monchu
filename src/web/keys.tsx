@@ -116,34 +116,3 @@ export function Keys({ send, children }: { send: () => void; children?: Componen
     </div>
   );
 }
-
-/**
- * The bar under a pick's filter, the key bar's height so the box above stays put: the pick's alternate as a toggle
- * (Shift+Enter takes the row with it), and choose in send's place.
- */
-export function PickKeys(props: {
-  alternate: string | undefined;
-  on: boolean;
-  toggle: () => void;
-  choose: () => void;
-}) {
-  return (
-    <div class="keys" role="toolbar" aria-label="keys">
-      {props.alternate === undefined ? null : (
-        <Key
-          class="alternate"
-          label={props.alternate}
-          title={`${props.alternate} with the pick · tap to switch (Shift+Enter takes a row with it)`}
-          pressed={props.on}
-          onPress={props.toggle}
-        >
-          {props.on ? "✓ " : ""}
-          {props.alternate}
-        </Key>
-      )}
-      <Key class="icon send" label="choose" title="choose (Enter)" onPress={props.choose}>
-        ✓
-      </Key>
-    </div>
-  );
-}

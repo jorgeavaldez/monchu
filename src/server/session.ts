@@ -440,6 +440,7 @@ export default defineFacet<Principal>(
         renameRoot: ({ root, label }) => monchu().renameRoot(root, label),
         archiveRoot: ({ root, archived }) => monchu().archiveRoot(root, archived),
         jobs: () => monchu().jobs(),
+        controlJob: ({ name, action }) => monchu().controlJob(name, action),
         roleChoice: ({ role }) => monchu().roleChoice(role),
         saveDefault: ({ role, pick }) => monchu().saveDefault(role, pick),
         loginNeeds: () => monchu().loginNeeds(),

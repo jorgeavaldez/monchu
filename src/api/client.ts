@@ -15,7 +15,7 @@ import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { listWorkersWithActivity } from "../core/agents/workers.ts";
 import type { ModelRole, Settings } from "../core/config.ts";
-import type { JobEvent, JobsState } from "../core/jobs.ts";
+import type { JobControl, JobEvent, JobsState } from "../core/jobs.ts";
 import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { PushSubscription } from "../core/push.ts";
@@ -33,6 +33,7 @@ export type {
   Goal,
   InboxItem,
   InboxKind,
+  JobControl,
   JobEvent,
   PinnedMessage,
   SecretInput,
@@ -239,6 +240,10 @@ export interface Client {
 
   /** Every job, the recent events, and the jobs as the job tool lists them. */
   jobs(): Promise<Readonly<JobsState> & { listing: string }>;
+  /** Every job and the recent events, now and on every change (a run included); returns a stop function. */
+  watchJobs(listener: (state: Readonly<JobsState>) => void): Promise<() => void>;
+  /** Pauses or resumes a scheduled job, or runs it now; what happened in a line. */
+  controlJob(name: string, action: JobControl): Promise<string>;
   /** Job events with ids above `after`, in order, then each new batch; returns a stop function. */
   watchJobEvents(
     after: number,

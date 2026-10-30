@@ -22,7 +22,7 @@ import {
   type Attachment,
 } from "./attachments.ts";
 import { randomId } from "./ids.ts";
-import type { Client, LoginEntry, RootClient, RootSummary, Watched } from "./client.ts";
+import type { Client, JobControl, LoginEntry, RootClient, RootSummary, Watched } from "./client.ts";
 import {
   Conversation,
   Root,
@@ -475,6 +475,12 @@ export class RemoteClient implements Client {
   }
   jobs() {
     return this.run(() => this.session.ref.jobs());
+  }
+  controlJob(name: string, action: JobControl) {
+    return this.run(() => this.session.ref.controlJob({ name, action }));
+  }
+  async watchJobs(listener: Parameters<Client["watchJobs"]>[0]) {
+    return this.followState((ref) => ref.jobsState, listener);
   }
   async watchJobEvents(after: number, listener: Parameters<Client["watchJobEvents"]>[1]) {
     let seen = after;

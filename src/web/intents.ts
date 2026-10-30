@@ -7,15 +7,15 @@
 import { batch } from "@preact/signals";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Attachment } from "../api/attachments.ts";
-import type { ModelPick, PinnedMessage, QueueChange } from "../api/client.ts";
+import type { JobControl, ModelPick, PinnedMessage, QueueChange } from "../api/client.ts";
 import { parseWorkerNotice, type WhenBusy } from "../api/notices.ts";
 import { randomId } from "../api/ids.ts";
 import { formatReports } from "../api/reports.ts";
 import { helpText, loginProviders, parseInput } from "../ui/commands.ts";
 import { formatRecord, logQuery } from "../ui/logs.ts";
-import { LOGIN_FAILED, loginHints, pickTargets } from "../ui/login.ts";
+import { LOGIN_FAILED, loginHints } from "../ui/login.ts";
 import { parseRootsCommand, rootLabel, type RootsCommand } from "../ui/roots.ts";
-import { age, presentation, type QueuedItem } from "../ui/state.ts";
+import { presentation, type QueuedItem } from "../ui/state.ts";
 import {
   clearPending,
   hasPending,
@@ -26,6 +26,7 @@ import {
   uploaded,
 } from "./attachments.tsx";
 import { jumpTo } from "./feed.ts";
+import type { MenuItem } from "./menu.tsx";
 import { sendInOrder } from "./sending.tsx";
 import type { Showing } from "./showing.ts";
 import {
@@ -46,7 +47,6 @@ import {
   pick,
   pins,
   prompted,
-  promptDrafts,
   rootId,
   roots,
   sheet,
@@ -145,27 +145,30 @@ export function toggleExpandAll(): void {
 
 const failure = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-function reportFailure(error: unknown): void {
-  notice(failure(error), "warning");
+/** Open the goals menu on the goal followed, its list read afresh; or close it. */
+export function toggleGoals(open = sheet.value?.kind !== "goals"): void {
+  if (!open) return closeSheet();
+  const at = showing();
+  openSheet("goals", "", at.filter.value.goal);
+  void at.refreshGoals().catch((error: unknown) => at.notice(failure(error), "warning"));
 }
 
-/** Filter the stream to one goal's messages, picked from the root's goals; none shows every goal's. */
-export async function pickGoal(): Promise<void> {
+/** Follow one goal's stream, from the goals menu: the menu closes, and the goal counts as seen. */
+export function followGoal(id: string): void {
   const at = showing();
-  try {
-    await at.refreshGoals();
-  } catch (error) {
-    return at.notice(failure(error), "warning");
-  }
-  // A pick opens on the page shown, so it opens only while the root it is about is.
-  if (!at.open) return;
-  const picked = await pick("Goal", [
-    { id: "", label: "every goal" },
-    ...at.goals.value.map((goal) => ({ id: goal.id, label: goal.title, detail: goal.status })),
-  ]);
-  if (picked === undefined) return;
+  closeSheet();
   const { goal: _goal, ...rest } = at.filter.value;
-  at.filter.value = picked.id ? { ...rest, goal: picked.id } : rest;
+  at.filter.value = { ...rest, goal: id };
+  const goal = at.goals.value.find((each) => each.id === id);
+  if (goal?.changed !== true) return;
+  at.goals.value = at.goals.value.map((each) =>
+    each.id === id ? { ...each, changed: false } : each,
+  );
+  // Read again once seen, so a read that started before can't bring its • back.
+  void at.root
+    .seeGoal(id, goal.updatedAt)
+    .then(() => at.refreshGoals())
+    .catch(() => {});
 }
 
 /** Show only one kind of the front's messages, or every kind; the goal filter stays. */
@@ -209,61 +212,48 @@ export async function unpin(code: string): Promise<void> {
   }
 }
 
-/** A prompt on one line: its whitespace and line breaks as single spaces, cut at a word with … past `width`. */
-function oneLine(text: string, width = 60): string {
-  const line = text.replace(/\s+/g, " ").trim();
-  if (line.length <= width) return line;
-  const cut = line.slice(0, width);
-  const space = cut.lastIndexOf(" ");
-  return `${space > width / 2 ? cut.slice(0, space) : cut}…`;
+/** Open the jobs menu or close it. */
+export function toggleJobs(open = sheet.value?.kind !== "jobs"): void {
+  if (open) openSheet("jobs");
+  else closeSheet();
 }
 
-/** The draft key: save what is typed, or restore one; with nothing typed it goes straight to restore. */
-export async function openDrafts(): Promise<void> {
+/** Pause, resume or run a job now, from the jobs menu; the menu reads it again on the event it makes. */
+export async function controlJob(name: string, action: JobControl): Promise<void> {
   try {
-    const text = draft.value;
-    if (text.trim() !== "") {
-      const count = promptDrafts.value.length;
-      const picked = await pick("Draft", [
-        { id: "save", label: "save", detail: oneLine(text) },
-        { id: "restore", label: "restore", detail: `${count} saved` },
-      ]);
-      if (picked === undefined) return;
-      if (picked.id === "save") {
-        await client().saveDraft(text);
-        if (draft.value === text) page.draft.value = "";
-        notice("draft saved");
-        return;
-      }
-    }
-    await restoreDraft();
+    notice(`jobs · ${await client().controlJob(name, action)}`);
   } catch (error) {
-    reportFailure(error);
+    notice(failure(error), "warning");
   }
 }
 
-/** Pick a draft, newest first, typing to filter; it fills the editor and leaves the list. Esc keeps what was typed. */
-async function restoreDraft(): Promise<void> {
-  if (promptDrafts.value.length === 0) return notice("no drafts", "warning");
-  const picked = await pick(
-    "Restore a draft",
-    promptDrafts.value.toReversed().map((each) => ({
-      id: String(each.id),
-      // The label column is half the editor's width: a 14 px monospace character is about 8.4 px.
-      label: oneLine(
-        each.text,
-        Math.floor((document.querySelector("textarea")?.clientWidth ?? 0) / 17) - 2,
-      ),
-      detail: `${age(each.at)} ago`,
-    })),
-  );
-  if (picked === undefined) return;
+/** Open the drafts menu (newest first) or close it: the draft key. */
+export function toggleDrafts(open = sheet.value?.kind !== "drafts"): void {
+  if (open) openSheet("drafts");
+  else closeSheet();
+}
+
+/** Set what is typed aside as a draft, from the drafts menu; the editor empties and the menu lists it. */
+export async function saveDraft(): Promise<void> {
+  const text = draft.value;
+  if (text.trim() === "") return;
+  await client().saveDraft(text);
+  if (draft.value === text) page.draft.value = "";
+}
+
+/** Restore a draft: it fills the editor and leaves the list; what was typed is set aside in its place, never lost. */
+export async function restoreDraft(id: number): Promise<void> {
+  closeSheet();
   const typed = draft.value;
-  const text = await client().takeDraft(Number(picked.id));
-  // What was typed is set aside in its place, never lost.
+  const text = await client().takeDraft(id);
   if (typed.trim() !== "") await client().saveDraft(typed);
   page.draft.value = text;
   typeInEditor();
+}
+
+/** Delete a draft: taken out of the list, its text dropped. */
+export async function deleteDraft(id: number): Promise<void> {
+  await client().takeDraft(id);
 }
 
 /** Show the front (undefined) or a worker's conversation of the shown root. */
@@ -450,61 +440,40 @@ async function runMcp(text: string): Promise<void> {
   }
 }
 
-/** `/model` and `/thinking`: first what to change, as the terminal asks, then the pick; Shift+Enter or the toggle saves a role default. */
+/** A model's or level's state in its pick: ● the current one, ⌂ the role default. */
+function mark(current: boolean, fallback: boolean): Pick<MenuItem, "mark"> {
+  if (current)
+    return {
+      mark: { glyph: "●", tone: "accent", word: fallback ? "current, the default" : "current" },
+    };
+  return fallback ? { mark: { glyph: "⌂", tone: "muted", word: "default" } } : {};
+}
+
+/** `/model` and `/thinking` for the conversation shown; Shift+Enter or the ⌂ toggle also saves its role's default. */
 async function runModel(thinking: boolean, search: string): Promise<void> {
   const at = showing();
-  await at.refreshWorkers();
+  const shownName = at.shown.value;
+  const name = shownName ?? "root";
+  const current = await at.root.modelChoice(shownName);
   // Each pick opens only while the root it is about is still shown.
   if (!at.open) return;
-  const targets = pickTargets(
-    at.shown.value,
-    at.workers.value.map((worker) => worker.name),
-  );
-  const which = await pick(
-    thinking ? "Pick the thinking level of" : "Pick the model of",
-    // The terminal's Ctrl+S is Shift+Enter or the toggle under the next list here.
-    targets.map(({ label, target, description }) => ({
-      id: label,
-      label,
-      detail:
-        target.kind === "conversation" ? "this conversation, or its role default" : description,
-    })),
-  );
-  const target = targets.find((each) => each.label === which?.id)?.target;
-  if (target === undefined) return;
-  const name = target.kind === "default" ? `${target.role} default` : (target.name ?? "root");
-  const current =
-    target.kind === "default"
-      ? await client().roleChoice(target.role)
-      : await at.root.modelChoice(target.name);
-  if (!at.open) return;
-  // A role default saves on Enter, so it has no separate save.
-  const role = target.kind === "conversation" && target.name !== undefined ? "worker" : "front";
-  const alternate = target.kind === "conversation" ? `save as ${role} default` : undefined;
+  const role = shownName === undefined ? "front" : "worker";
+  const alternate = `save as ${role} default`;
   const apply = async (change: ModelPick, save: boolean, value: string) => {
-    if (target.kind === "default") {
-      await client().saveDefault(target.role, change);
-      return at.notice(`${name} ${value} · saved`);
-    }
-    await at.root.pickModel(change, save, target.name);
+    await at.root.pickModel(change, save, shownName);
     at.notice(`${name} ${value} · ${save ? `saved as ${role} default` : "this conversation only"}`);
   };
   if (thinking) {
     const picked = await pick(
-      `Thinking level · ${name} (now ${current.thinkingLevel}, default ${current.defaults.thinkingLevel})`,
+      `thinking · ${name}`,
       current.thinkingLevels.map((level) => ({
         id: level,
         label: level,
-        tags: [
-          ...(level === current.thinkingLevel
-            ? [{ text: "current", tone: "accent" as const }]
-            : []),
-          ...(level === current.defaults.thinkingLevel
-            ? [{ text: "default", tone: "green" as const }]
-            : []),
-        ],
+        ...mark(level === current.thinkingLevel, level === current.defaults.thinkingLevel),
       })),
       alternate,
+      undefined,
+      { class: "model" },
     );
     const level = current.thinkingLevels.find((each) => each === picked?.id);
     if (picked === undefined || level === undefined) return;
@@ -527,22 +496,16 @@ async function runModel(thinking: boolean, search: string): Promise<void> {
     return rank(x) - rank(y);
   });
   const picked = await pick(
-    `Model · ${name}`,
+    `model · ${name}`,
     models.map((model) => ({
       id: key(model.provider, model.id),
       label: key(model.provider, model.id),
       detail: model.name,
-      tags: [
-        ...(key(model.provider, model.id) === now
-          ? [{ text: "current", tone: "accent" as const }]
-          : []),
-        ...(key(model.provider, model.id) === fallback
-          ? [{ text: "default", tone: "green" as const }]
-          : []),
-      ],
+      ...mark(key(model.provider, model.id) === now, key(model.provider, model.id) === fallback),
     })),
     alternate,
     search.trim(),
+    { class: "model" },
   );
   const model = models.find((each) => key(each.provider, each.id) === picked?.id);
   if (picked === undefined || model === undefined) return;
@@ -612,7 +575,7 @@ async function runRoots(command: RootsCommand): Promise<void> {
 
 /** Open the roots menu (every open root, the shown one selected) or close it. */
 export function toggleRoots(open = sheet.value?.kind !== "roots"): void {
-  if (open) openSheet("roots");
+  if (open) openSheet("roots", "", rootId.value);
   else closeSheet();
 }
 
@@ -720,6 +683,8 @@ export async function stopOne(name: string | undefined): Promise<void> {
     return at.notice(failure(error), "warning");
   }
   at.notice(`stopped · ${name}`);
+  // The workers menu shows it idle now, not at the front's next entry.
+  await at.refreshWorkers().catch(() => {});
 }
 
 /** ⏏ or `/close`: retire an idle worker; the page goes back to the root if it showed it. */
@@ -861,11 +826,9 @@ async function runInput(
         `installing ${input.text} · reconnects when Monchu is back, on it or on this version if npm fails`,
       );
     case "/jobs":
-      page.panel.value = "jobs";
-      return;
+      return toggleJobs(true);
     case "/goals":
-      page.panel.value = "goals";
-      return;
+      return toggleGoals(true);
     case "/pin": {
       const { pin, existed } = await at.root.pinMessage(input.id, name);
       return at.notice(`${existed ? "already pinned" : "pinned"} · ${pin.code} · ${pin.headline}`);

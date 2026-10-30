@@ -205,6 +205,13 @@ const sessionMethods = {
   renameRoot: method(Type.Object({ root: id, label: text })),
   archiveRoot: method(Type.Object({ root: id, archived: Type.Boolean() })),
   jobs: method(undefined, trusted<JobsState & { listing: string }>()),
+  controlJob: method(
+    Type.Object({
+      name: text,
+      action: Type.Union([Type.Literal("pause"), Type.Literal("resume"), Type.Literal("run_now")]),
+    }),
+    trusted<string>(),
+  ),
   roleChoice: method(Type.Object({ role }), trusted<ModelChoice>()),
   saveDefault: method(Type.Object({ role, pick })),
   loginNeeds: method(undefined, trusted<LoginNeeds>()),

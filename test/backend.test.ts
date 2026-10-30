@@ -1097,4 +1097,54 @@ export default () => {
       await backend.close();
     }
   });
+
+  it("lets a client pause, resume and run a scheduled job now, as the job tool does", async () => {
+    const value = await setup();
+    route(value.faux, (request) =>
+      textOf(lastMessage(request.messages)) === "schedule"
+        ? fauxAssistantMessage(
+            [
+              fauxToolCall("job", {
+                action: "create",
+                name: "brief",
+                type: "agent",
+                schedule: "@daily",
+                prompt: "write the brief",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          )
+        : fauxAssistantMessage("ok"),
+    );
+    const { backend } = await openBackend(value);
+    const events: string[] = [];
+    const stop = await backend.watchJobEvents(0, (batch) =>
+      events.push(...batch.map((event) => `${event.kind}:${event.worker ?? ""}`)),
+    );
+    const status = async () =>
+      (await backend.jobs()).jobs.find((job) => job.name === "brief")?.status;
+    // A client following the jobs sees every change, a run's count included.
+    let runs = -1;
+    const stopJobs = await backend.watchJobs((state) => {
+      runs = state.jobs.find((job) => job.name === "brief")?.runs ?? -1;
+    });
+    try {
+      await (await front(backend)).submit("schedule", "schedule", "followUp");
+      await waitFor(() => events.length === 1);
+      expect(await backend.controlJob("brief", "pause")).toBe("Paused brief");
+      expect(await status()).toBe("paused");
+      await expect(backend.controlJob("brief", "run_now")).rejects.toThrow("resume it first");
+      expect(await backend.controlJob("brief", "resume")).toBe("Resumed brief");
+      expect(await status()).toBe("active");
+      expect(await backend.controlJob("brief", "run_now")).toBe("brief runs now");
+      await waitFor(() => events.includes("fired:job-brief"));
+      await waitFor(() => runs === 1);
+      expect(events).toEqual(["created:", "paused:", "resumed:", "fired:job-brief"]);
+      await expect(backend.controlJob("nope", "pause")).rejects.toThrow("No job named nope");
+    } finally {
+      stop();
+      stopJobs();
+      await backend.close();
+    }
+  });
 });

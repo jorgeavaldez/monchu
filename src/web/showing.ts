@@ -66,8 +66,8 @@ export class Showing {
   /** The front's messages with their labels. */
   readonly inbox = signal<readonly InboxItem[]>([]);
   readonly filter = signal<Filter>({});
-  /** The root's goals, for the goal filter and its briefer. */
-  readonly goals = signal<readonly Goal[]>([]);
+  /** The root's goals, each with whether it changed since the person last looked: the goals menu and the goal card. */
+  readonly goals = signal<readonly (Goal & { changed: boolean })[]>([]);
   /** Attached views by conversation; a signal itself, so a view attached later re-renders whoever asked for it. */
   readonly views = signal<ReadonlyMap<string, Attached>>(new Map());
   #open = true;
@@ -219,7 +219,11 @@ export class Showing {
     this.workers.value = await this.root.workers();
   }
 
+  /** Read the goals again; a read that a newer one overtook changes nothing. */
   async refreshGoals(): Promise<void> {
-    this.goals.value = await this.root.goals();
+    const read = ++this.#goalsRead;
+    const goals = await this.root.goals();
+    if (read === this.#goalsRead) this.goals.value = goals;
   }
+  #goalsRead = 0;
 }

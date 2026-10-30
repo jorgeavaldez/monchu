@@ -6,12 +6,13 @@
  * it while the draft waits, so the box never moves and a touch keyboard stays up.
  */
 import { useComputed, useSignal } from "@preact/signals";
+import type { JSX } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { Client } from "../api/client.ts";
 import { addFiles, AttachButton, AttachmentTray, PasteButton } from "./attachments.tsx";
 import { run, runWebCommand, slashCommands } from "./commands.ts";
 import { argumentRows } from "./completions.ts";
-import { Keys, PickKeys } from "./keys.tsx";
+import { Key, Keys } from "./keys.tsx";
 import { matching, Menu, type MenuItem } from "./menu.tsx";
 import {
   attachFile,
@@ -35,12 +36,17 @@ import {
   setMenuOpen,
   takeCommandLine,
   workers,
+  type Sheet,
+  type SheetKind,
 } from "./state.ts";
 import { openAsks } from "./transcript.tsx";
-import { PinsSheet, PINS } from "./pins.tsx";
-import { RootsNew, RootsSheet, ROOTS } from "./roots.tsx";
-import { WorkersSheet, WORKERS } from "./workers.tsx";
-import { filterKey, SheetBack } from "./sheet.tsx";
+import { DraftsActions, DraftsSheet, DRAFTS } from "./drafts.tsx";
+import { GoalsBar, GoalsSheet, GOALS } from "./goals.tsx";
+import { JobsActions, JobsBar, JobsSheet, JOBS } from "./jobs.tsx";
+import { PinsActions, PinsBar, PinsSheet, PINS } from "./pins.tsx";
+import { RootsActions, RootsBar, RootsSheet, ROOTS } from "./roots.tsx";
+import { WorkersActions, WorkersBar, WorkersSheet, WORKERS } from "./workers.tsx";
+import { filterKey, SheetBack, type SheetSpec } from "./sheet.tsx";
 import { feedRows } from "./feed.ts";
 
 const SIZES_ITSELF = CSS.supports("field-sizing", "content");
@@ -75,11 +81,19 @@ function suggestions(text: string, core: Client | undefined): { items: MenuItem[
   return { items, query: text.slice(1) };
 }
 
-/** Each kind of sheet: its view, its keys, and the primary cell right of the filter, if it has one. */
-const SHEETS = {
-  roots: { View: RootsSheet, spec: ROOTS, Primary: RootsNew },
-  workers: { View: WorkersSheet, spec: WORKERS, Primary: undefined },
-  pins: { View: PinsSheet, spec: PINS, Primary: undefined },
+type Part = (props: { open: Sheet }) => JSX.Element;
+
+/**
+ * Each kind of sheet: its rows, its keys, the actions on its selection right of the box, and its view bar under the
+ * box, in the key bar's place; a kind without a bar leaves that place empty.
+ */
+const SHEETS: Record<SheetKind, { View: Part; spec: SheetSpec; Actions?: Part; Bar?: Part }> = {
+  roots: { View: RootsSheet, spec: ROOTS, Actions: RootsActions, Bar: RootsBar },
+  workers: { View: WorkersSheet, spec: WORKERS, Actions: WorkersActions, Bar: WorkersBar },
+  pins: { View: PinsSheet, spec: PINS, Actions: PinsActions, Bar: PinsBar },
+  goals: { View: GoalsSheet, spec: GOALS, Bar: GoalsBar },
+  jobs: { View: JobsSheet, spec: JOBS, Actions: JobsActions, Bar: JobsBar },
+  drafts: { View: DraftsSheet, spec: DRAFTS, Actions: DraftsActions },
 };
 
 export function Editor() {
@@ -219,27 +233,6 @@ export function Editor() {
           empty={picking.empty ?? "nothing matches"}
           marks={picking.marks}
           onTake={(item) => take(item)}
-          header={
-            <header>
-              <h1 class="title">
-                {picking.title}
-                <span class="hint">
-                  {picking.alternate === undefined ? "" : ` · Shift+Enter ${picking.alternate}`} ·
-                  Esc cancels
-                </span>
-              </h1>
-              <button
-                type="button"
-                class="icon"
-                aria-label="cancel"
-                title="cancel (Esc)"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => picking.cancel()}
-              >
-                ✕
-              </button>
-            </header>
-          }
         />
       ) : items.length > 0 ? (
         <Menu
@@ -257,8 +250,14 @@ export function Editor() {
       )}
       <AttachmentTray />
       {/* One line, so the box keeps its element when a menu adds its back and primary cells around it. */}
-      <div class="line">
-        {sheetOpen !== undefined ? <SheetBack /> : null}
+      <div class={`line${menu || picking !== undefined ? " under" : ""}`}>
+        {sheetOpen !== undefined ? (
+          <SheetBack />
+        ) : picking !== undefined ? (
+          <Key class="icon" label="cancel" title="cancel (Esc)" onPress={() => picking.cancel()}>
+            ✕
+          </Key>
+        ) : null}
         <textarea
           ref={area}
           class={
@@ -290,7 +289,7 @@ export function Editor() {
             sheetOpen !== undefined
               ? sheetOpen.kind
               : picking !== undefined
-                ? "type to filter"
+                ? picking.title
                 : linkError.value !== undefined
                   ? `not connected · ${linkError.value}`
                   : connection.value === "gone"
@@ -378,15 +377,38 @@ export function Editor() {
             }
           }}
         />
-        {kind?.Primary === undefined ? null : <kind.Primary />}
+        {sheetOpen !== undefined && kind?.Actions !== undefined ? (
+          <kind.Actions open={sheetOpen} />
+        ) : null}
+        {picking !== undefined && sheetOpen === undefined ? (
+          <>
+            {picking.alternate === undefined ? null : (
+              <Key
+                class="icon"
+                label={picking.alternate}
+                title={`${picking.alternate} with the pick · tap to switch (Shift+Enter takes a row with it)`}
+                pressed={second.value}
+                onPress={() => (second.value = !second.value)}
+              >
+                ⌂
+              </Key>
+            )}
+            <Key
+              class="icon"
+              label="choose"
+              title="choose (Enter)"
+              onPress={() => take(items[selected.value])}
+            >
+              ✓
+            </Key>
+          </>
+        ) : null}
       </div>
-      {sheetOpen !== undefined ? null : picking !== undefined ? (
-        <PickKeys
-          alternate={picking.alternate}
-          on={second.value}
-          toggle={() => (second.value = !second.value)}
-          choose={() => take(items[selected.value])}
-        />
+      {sheetOpen !== undefined && kind?.Bar !== undefined ? (
+        <kind.Bar open={sheetOpen} />
+      ) : sheetOpen !== undefined || picking !== undefined ? (
+        // Nothing to show under a pick or the drafts, but the key bar's place stays, so the box never moves.
+        <div class="keys spacer" aria-hidden="true" />
       ) : (
         <Keys send={send}>
           <AttachButton onFiles={attach} />

@@ -55,7 +55,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
     context.extension,
     tools.extension,
     workers([]),
-    jobs([]),
+    jobs([]).extension,
     Roots,
     Codemode,
     Goals,
@@ -72,11 +72,12 @@ async function build(inputs: BuildInputs): Promise<Build> {
     tasks: reservedTasks(own),
   });
   const search = createToolSearch([...mcp.groups, ...plugins.groups]);
+  const jobsNow = jobs(search.preload);
   const extensions = [
     context.extension,
     tools.extension,
     workers(search.preload),
-    jobs(search.preload),
+    jobsNow.extension,
     Roots,
     Codemode,
     Goals,
@@ -107,6 +108,7 @@ async function build(inputs: BuildInputs): Promise<Build> {
     skills: context.skills,
     config,
     plugins,
+    controlJob: jobsNow.controlJob,
     owned: [
       ...[...plugins.bundled, ...plugins.attached].map((extension) => extension.name),
       ...plugins.groups.map(groupExtensionName),

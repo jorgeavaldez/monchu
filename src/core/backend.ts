@@ -55,7 +55,14 @@ import { parentOf, WorkersDoc } from "./agents/workers.ts";
 import { harnessSettings } from "./context.ts";
 import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
-import { formatJobs, JobsDoc, rootIds, type JobEvent, type JobsState } from "./jobs.ts";
+import {
+  formatJobs,
+  JobsDoc,
+  rootIds,
+  type JobControl,
+  type JobEvent,
+  type JobsState,
+} from "./jobs.ts";
 import { InboxItemsDoc, noteReplies, replyText, type InboxKind } from "./inbox.ts";
 import { Pusher, type PushSubscription } from "./push.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";
@@ -891,6 +898,10 @@ export class Monchu implements Client {
     return this.harness.commit((tx) => unpinMessage(tx, code), context);
   }
 
+  controlJob(name: string, action: JobControl): Promise<string> {
+    return this.harness.commit((tx) => this.extensions.controlJob(tx, name, action), context);
+  }
+
   async jobs(): Promise<Readonly<JobsState> & { listing: string }> {
     const state = (await this.harness.snapshot(JobsDoc, context)) ?? {
       jobs: [],
@@ -906,6 +917,23 @@ export class Monchu implements Client {
    * starting with those already stored. Pass the last id a client saw to resume without repeats; ids only grow.
    * Returns a stop function.
    */
+  async watchJobs(listener: (state: Readonly<JobsState>) => void): Promise<() => void> {
+    // Observation needs a stored document; reading it in a commit creates it on a fresh home.
+    await this.harness.commit(async (tx) => {
+      await tx.doc(JobsDoc);
+    }, context);
+    const state = await this.harness.documentState(JobsDoc, context);
+    if (state === undefined) throw new Error("Jobs document is missing");
+    const emit = (value: JobsState | null) =>
+      listener(value ?? { jobs: [], events: [], nextEvent: 1 });
+    emit(state.value);
+    const unsubscribe = state.subscribe(emit);
+    return () => {
+      unsubscribe();
+      state.dispose();
+    };
+  }
+
   async watchJobEvents(
     after: number,
     listener: (events: readonly JobEvent[]) => void,

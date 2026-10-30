@@ -1,10 +1,9 @@
 /**
  * The pins menu, a sheet over the editor: the device's pinned messages, newest pinned first, one line each (headline,
- * who, root, age), filtered by every word typed over the whole text. › goes to the message, ☆ unpins it, ⊞ shows its
- * whole text over the bar. Pins follow the device's pinned messages as every client changes them.
+ * who, root, age), filtered by every word typed over the whole text. Taking one goes to the message, ☆ unpins it, ⊞ in
+ * the view bar shows its whole text under the rows. Pins follow the device's pinned messages as every client changes
+ * them.
  */
-import { signal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
 import type { PinnedMessage } from "../api/client.ts";
 import { findPins, pinRoot } from "../ui/pins.ts";
 import { age } from "../ui/state.ts";
@@ -12,13 +11,28 @@ import { run } from "./commands.ts";
 import { Key } from "./keys.tsx";
 import { Markdown } from "./markdown.tsx";
 import { Marked } from "./menu.tsx";
-import { selectedRow, SheetView, tapRow, type SheetSpec } from "./sheet.tsx";
+import {
+  lookChords,
+  orderOf,
+  selectedRow,
+  SheetBar,
+  SheetView,
+  tapRow,
+  type Order,
+  type SheetSpec,
+} from "./sheet.tsx";
 import { closeSheet, pins, roots, sheet, type Sheet } from "./state.ts";
 
-/** Whether the selection's whole text shows. */
-const whole = signal(false);
+const ORDERS: readonly Order[] = [
+  { key: "new", glyph: "◷↓", word: "newest" },
+  { key: "old", glyph: "◷↑", word: "oldest" },
+];
 
-const pinRows = (open: Sheet): PinnedMessage[] => findPins(pins.value, open.query, roots.value);
+/** The pins the filter finds, newest pinned first, or oldest first when asked. */
+function pinRows(open: Sheet): PinnedMessage[] {
+  const found = findPins(pins.value, open.query, roots.value);
+  return orderOf(open.look, ORDERS) === "old" ? found.toReversed() : found;
+}
 
 /** The selected row of `rows`. */
 const chosen = (open: Sheet, rows: readonly PinnedMessage[]): PinnedMessage | undefined =>
@@ -45,24 +59,18 @@ function unpin(pin: PinnedMessage | undefined): void {
 }
 
 export const PINS: SheetSpec = {
+  orders: ORDERS,
   keys: () => (sheet.value === undefined ? [] : pinRows(sheet.value).map((pin) => pin.code)),
   take: (index) => take(sheet.value === undefined ? undefined : pinRows(sheet.value)[index]),
   chords: () => [
     { key: "x", glyph: "☆", label: "unpin", run: () => unpin(selected()) },
-    { key: "o", glyph: "⊞", label: "whole text", run: () => (whole.value = !whole.value) },
+    ...(sheet.value === undefined ? [] : lookChords(sheet.value.look, [], ORDERS, true)),
   ],
 };
 
 export function PinsSheet({ open }: { open: Sheet }) {
   const rows = pinRows(open);
   const pin = chosen(open, rows);
-  // Each opening starts on the headlines.
-  useEffect(
-    () => () => {
-      whole.value = false;
-    },
-    [],
-  );
   return (
     <SheetView
       open={open}
@@ -77,34 +85,11 @@ export function PinsSheet({ open }: { open: Sheet }) {
             : "nothing matches"
       }
       detail={
-        whole.value && pin !== undefined ? (
+        open.look.details && pin !== undefined ? (
           <div class="whole assistant">
             <Markdown text={pin.text} />
           </div>
         ) : null
-      }
-      actions={
-        <>
-          <Key
-            class="icon"
-            label="unpin"
-            title="unpin (spc x)"
-            disabled={pin === undefined}
-            onPress={() => unpin(pin)}
-          >
-            ☆
-          </Key>
-          <Key
-            class="icon"
-            label="whole text"
-            title="whole text (spc o)"
-            pressed={whole.value}
-            disabled={pin === undefined}
-            onPress={() => (whole.value = !whole.value)}
-          >
-            {whole.value ? "⊟" : "⊞"}
-          </Key>
-        </>
       }
     >
       {rows.map((each) => (
@@ -132,4 +117,24 @@ export function PinsSheet({ open }: { open: Sheet }) {
       ))}
     </SheetView>
   );
+}
+
+/** Right of the box: unpin the selection. */
+export function PinsActions({ open }: { open: Sheet }) {
+  const pin = chosen(open, pinRows(open));
+  return (
+    <Key
+      class="icon"
+      label="unpin"
+      title="unpin (spc x)"
+      disabled={pin === undefined}
+      onPress={() => unpin(pin)}
+    >
+      ☆
+    </Key>
+  );
+}
+
+export function PinsBar({ open }: { open: Sheet }) {
+  return <SheetBar open={open} segments={[]} orders={ORDERS} details="whole text" />;
 }

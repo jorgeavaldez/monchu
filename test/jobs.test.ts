@@ -163,7 +163,7 @@ const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
 
 async function withJobs() {
   const value = await setup();
-  value.registry.install(createJobs(() => fauxRole, value.directory, value.vault));
+  value.registry.install(createJobs(() => fauxRole, value.directory, value.vault).extension);
   await writeFile(join(value.directory, "state.txt"), "pending\n");
   /** What a job's worker answers; the front's requests follow `FRONT_CALLS`. */
   let answer = "ok";

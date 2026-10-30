@@ -25,7 +25,8 @@ import type { ClaudeTools } from "./tools/tool-search.ts";
 import { HomeCheck } from "./home-check.ts";
 import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, Tx } from "@earendil-works/pi-durable";
+import type { JobControl } from "./jobs.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports, mcpSetEnabled } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";
@@ -391,6 +392,11 @@ export class Extensions {
     } finally {
       this.saving = undefined;
     }
+  }
+
+  /** A client's pause, resume or run now of a job, by the jobs of the running build. */
+  controlJob(tx: Tx, name: string, action: JobControl): Promise<string> {
+    return this.current.controlJob(tx, name, action);
   }
 
   /** The loaded run settings. */
