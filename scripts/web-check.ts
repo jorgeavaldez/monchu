@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { attachSocket, socketPath } from "../src/server/socket.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SESSION = `monchu-web-check-${process.pid}`;
@@ -620,6 +621,304 @@ async function journey(name: string, steps: () => Promise<string>): Promise<void
     gate(`journey ${name}`, true, await steps());
   } catch (error) {
     gate(`journey ${name}`, false, error instanceof Error ? error.message : String(error));
+    await frontView();
+    await browser("reload");
+    await readyEditor();
+  }
+}
+
+/** Public menu surfaces, shared by the sheet journeys. No component state or CSS hooks. */
+const menuList = (kind: string) => `ul[role=listbox][aria-label=${JSON.stringify(kind)}]`;
+const menuRows = (kind: string) => `${menuList(kind)} li[role=option]`;
+const viewBar = "[role=toolbar][aria-label=view]";
+const lineButton = (name: string) => `.editor .line button[aria-label=${JSON.stringify(name)}]`;
+const namedRow = (kind: string, name: string) =>
+  `[...document.querySelectorAll(${JSON.stringify(menuRows(kind))})].find((row) => row.textContent.includes(${JSON.stringify(name)}))`;
+
+async function tap(expression: string): Promise<void> {
+  check((await page(`!!(${expression})`)) === true, `nothing to tap: ${expression}`);
+  await page(`(${expression}).click()`);
+}
+
+async function selectRow(kind: string, name: string): Promise<void> {
+  const row = namedRow(kind, name);
+  if ((await page(`(${row})?.getAttribute('aria-selected')`)) !== "true") await tap(row);
+}
+
+async function menuCommand(command: string, kind: string): Promise<void> {
+  await browser("fill", "textarea", command);
+  await browser("press", "Enter");
+  if ((await page(`!!document.querySelector(${JSON.stringify(menuList(kind))})`)) !== true)
+    await browser("press", "Enter");
+  await browser("wait", "--fn", `!!document.querySelector(${JSON.stringify(menuList(kind))})`);
+}
+
+async function pickCommand(command: string): Promise<void> {
+  await browser("fill", "textarea", command);
+  await browser("press", "Enter");
+  await browser("wait", lineButton("cancel"));
+  await browser("wait", "--fn", `!!document.querySelector('[role=listbox]')`);
+}
+
+async function leaveMenu(): Promise<void> {
+  // Core picks survive reconnects. Cancel before reloading, or a failed pick contaminates later journeys.
+  for (let at = 0; at < 3; at++) {
+    await browser("press", "Escape");
+    if (
+      (await page(
+        `!!document.querySelector('ul[role=listbox], .editor .line [aria-label=back], .editor .line [aria-label=cancel]')`,
+      )) !== true
+    )
+      break;
+  }
+  for (const name of ["back", "cancel"]) {
+    const button = lineButton(name);
+    if ((await page(`!!document.querySelector(${JSON.stringify(button)})`)) === true)
+      await browser("click", button);
+  }
+}
+
+async function readyEditor(): Promise<void> {
+  await browser("wait", "textarea");
+  await browser("wait", ".link[data-state=live]");
+  await browser("wait", "nav[aria-label=conversations] button[aria-expanded]");
+}
+
+/** A plain faux front turn; tool calls use the correlated result watcher below. */
+async function menuSend(message: string): Promise<void> {
+  const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+  const before = Number(await page(replies));
+  await browser("fill", "textarea", message);
+  await browser("press", "Enter");
+  await browser(
+    "wait",
+    "--fn",
+    `${replies} > ${before} && !document.querySelector(".live, .tool.running")`,
+  );
+}
+
+/** Observe each browser-submitted call through the public client, even when a stream filter hides its tool row. */
+function menuToolCalls(home: string): (name: string, params: Data) => Promise<void> {
+  return async (name, params) => {
+    const attached = await attachSocket(socketPath(home), (error) => console.error(error.message));
+    if (attached === undefined) throw new Error("the tool-result observer couldn't connect");
+    try {
+      const id = text(await page(`new URLSearchParams(location.search).get("root")`));
+      check(id !== "", "the tool call's browser has no root");
+      const root = attached.client.root(await attached.client.findRoot(id));
+      const view = await root.viewState();
+      const known = new Set(
+        view.value.entries
+          .flatMap((entry) => entry.model ?? [])
+          .flatMap((message) =>
+            message.role === "assistant"
+              ? message.content.flatMap((part) => (part.type === "toolCall" ? [part.id] : []))
+              : [],
+          ),
+      );
+      const args = JSON.stringify(params);
+      const result = Promise.withResolvers<void>();
+      const timer = setTimeout(
+        () => result.reject(new Error(`no result for ${name} ${args}`)),
+        25_000,
+      );
+      const stop = view.subscribe((state) => {
+        const messages = state.entries.flatMap((entry) => entry.model ?? []);
+        const call = messages
+          .flatMap((message) => (message.role === "assistant" ? message.content : []))
+          .find(
+            (part) =>
+              part.type === "toolCall" &&
+              !known.has(part.id) &&
+              part.name === name &&
+              JSON.stringify(part.arguments) === args,
+          );
+        if (call?.type !== "toolCall") return;
+        const returned = messages.findIndex(
+          (message) => message.role === "toolResult" && message.toolCallId === call.id,
+        );
+        // Finish this faux turn too, so its trailing reply cannot satisfy the next plain-message wait.
+        if (
+          returned >= 0 &&
+          messages
+            .slice(returned + 1)
+            .some(
+              (message) =>
+                message.role === "assistant" &&
+                message.content.some(
+                  (part) => part.type === "text" && part.text.startsWith("Faux tool finished."),
+                ),
+            )
+        )
+          result.resolve();
+      });
+      try {
+        await Promise.all([
+          result.promise,
+          (async () => {
+            await browser("fill", "textarea", `call ${name} ${args}`);
+            await browser("press", "Enter");
+          })(),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        stop();
+        view.dispose();
+      }
+    } finally {
+      await attached.close();
+    }
+  };
+}
+
+async function frontView(): Promise<void> {
+  await leaveMenu();
+  await browser("fill", "textarea", "/agents root");
+  await browser("press", "Enter");
+  await browser(
+    "wait",
+    "--fn",
+    `document.querySelector('nav[aria-label=conversations] button')?.getAttribute('aria-label')?.startsWith('root,')`,
+  );
+}
+
+async function rowTexts(kind: string): Promise<string[]> {
+  return list(
+    await page(
+      `[...document.querySelectorAll(${JSON.stringify(menuRows(kind))})].map((row) => row.textContent)`,
+    ),
+  ).map(text);
+}
+
+/** Geometry promised by the menus: rows, bordered input, view; square controls, no go cell. */
+async function menuLayout(kind: string, hasView: boolean, actions: string[]): Promise<void> {
+  const faults = await page(`(() => {
+    const faults = [];
+    const line = document.querySelector(".editor .line"), box = line.querySelector("textarea");
+    const rows = document.querySelector(${JSON.stringify(menuList(kind))});
+    const view = document.querySelector(${JSON.stringify(viewBar)});
+    const rect = (item) => item.getBoundingClientRect();
+    if (box.placeholder !== ${JSON.stringify(kind)} || box.getAttribute("aria-label") !== ${JSON.stringify(`filter: ${kind}`)}) faults.push("filter name/placeholder");
+    if (getComputedStyle(line).borderTopWidth !== "1px" || getComputedStyle(line).borderTopStyle === "none") faults.push("input's 1px top border");
+    if (rect(rows).bottom > rect(line).top + 1) faults.push("rows not above input");
+    if (!!view !== ${hasView}) faults.push("wrong view bar presence");
+    if (document.querySelector('[role=toolbar][aria-label=keys]')) faults.push("key bar wasn't replaced");
+    if (view && rect(view).top < rect(line).bottom - 1) faults.push("view bar not below input");
+    const back = line.querySelector('[aria-label="back"]');
+    if (!back || rect(back).right > rect(box).left + 1) faults.push("back not left of input");
+    for (const name of ${JSON.stringify(actions)}) {
+      const action = line.querySelector('button[aria-label="' + name + '"]');
+      if (!action || rect(action).left < rect(box).right - 1) faults.push(name + " not right of input");
+      if (view?.querySelector('button[aria-label="' + name + '"]')) faults.push(name + " in view bar");
+    }
+    const cells = [...line.querySelectorAll("button"), ...(view?.querySelectorAll("button") ?? [])];
+    for (const cell of cells) {
+      const r = rect(cell);
+      if (Math.abs(r.width - r.height) >= 1) faults.push((cell.getAttribute("aria-label") ?? cell.textContent) + " not square");
+      if (!cell.getAttribute("aria-label") || /[a-z]/i.test(cell.textContent)) faults.push("cell not a named icon");
+    }
+    if ([...document.querySelectorAll("button")].some((cell) => cell.textContent.trim() === "›" && cell.getClientRects().length)) faults.push("go cell remains");
+    if (view) {
+      const segment = view.querySelector('button[aria-pressed]:not([aria-label="details"]):not([aria-label="whole text"])');
+      if (segment && Math.abs(rect(segment).left - rect(view).left) > 1) faults.push("spacer before segments");
+      const sort = view.querySelector('button[aria-label^="sort: "]');
+      if (!sort || Math.abs(rect(sort).right - rect(view).right) > 1) faults.push("sort not at right edge");
+    }
+    return faults;
+  })()`);
+  check(list(faults).length === 0, `${kind}: ${JSON.stringify(faults)}`);
+}
+
+async function segments(expected: [string, number, boolean][]): Promise<void> {
+  for (const [word, count, pressed] of expected)
+    check(
+      (await page(
+        `document.querySelector('${viewBar} button[aria-label="${word}: ${count}"]')?.getAttribute("aria-pressed")`,
+      )) === String(pressed),
+      `${word}: ${count} isn't ${pressed ? "on" : "off"}`,
+    );
+}
+
+async function segment(word: string): Promise<void> {
+  await tap(`document.querySelector('${viewBar} button[aria-label^="${word}: "]')`);
+}
+
+async function sortMenu(order: string, orders: string[]): Promise<void> {
+  const sort = `document.querySelector('${viewBar} button[aria-label^="sort: "]')`;
+  const before = text(await page(`${sort}.getAttribute("aria-label")`)).slice(6);
+  await tap(sort);
+  await browser("wait", "[role=listbox][aria-label=sort]");
+  check((await page(`${sort}.getAttribute("aria-expanded")`)) === "true", "sort isn't expanded");
+  const rows = "[role=listbox][aria-label=sort] [role=option]";
+  const found = list(
+    await page(`[...document.querySelectorAll('${rows}')].map((row) => row.textContent.trim())`),
+  ).map(text);
+  check(
+    found.length === orders.length &&
+      orders.every((word, at) => found[at]?.endsWith(word) && found[at] !== word),
+    `wrong sort choices: ${found.join(", ")}`,
+  );
+  check(
+    (await page(
+      `document.querySelector('${rows}[aria-selected=true]')?.textContent.trim().endsWith(${JSON.stringify(before)})`,
+    )) === true,
+    "current sort isn't selected",
+  );
+  check(
+    (await page(
+      `(() => { const list = document.querySelector('[role=listbox][aria-label=sort]').getBoundingClientRect(), bar = document.querySelector('${viewBar}').getBoundingClientRect(); return list.bottom <= bar.top + 1 && Math.abs(list.right - bar.right) < 2; })()`,
+    )) === true,
+    "sort choices aren't above the bar's right end",
+  );
+  await tap(
+    `[...document.querySelectorAll('${rows}')].find((row) => row.textContent.trim().endsWith(${JSON.stringify(order)}))`,
+  );
+  await browser("wait", "--fn", `!document.querySelector('[role=listbox][aria-label=sort]')`);
+  check(
+    (await page(`${sort}.getAttribute("aria-label")`)) === `sort: ${order}` &&
+      (await page(`${sort}.getAttribute("aria-expanded")`)) === "false",
+    "choosing sort didn't close and apply it",
+  );
+}
+
+async function pickLayout(word: string, alternate?: string): Promise<void> {
+  const faults = await page(`(() => {
+    const faults = [], line = document.querySelector(".editor .line"), box = line.querySelector("textarea");
+    const list = document.querySelector('[role=listbox]');
+    if (!list || !box.placeholder.toLowerCase().includes(${JSON.stringify(word)}) || list.getAttribute("aria-label") !== box.placeholder) faults.push("title not shared by box and listbox");
+    if (list?.querySelector("header") || list?.parentElement.querySelector("header")) faults.push("pick header remains");
+    if (document.querySelector('${viewBar}, [role=toolbar][aria-label=keys]')) faults.push("pick has a bar under the line");
+    if (getComputedStyle(line).borderTopWidth !== "1px" || getComputedStyle(line).borderTopStyle === "none") faults.push("pick lacks top border");
+    const cancel = line.querySelector('[aria-label="cancel"]'), choose = line.querySelector('[aria-label="choose"]');
+    if (!cancel || !choose || cancel.textContent.trim() !== "✕" || choose.textContent.trim() !== "✓") faults.push("cancel/choose missing");
+    else if (cancel.getBoundingClientRect().right > box.getBoundingClientRect().left + 1 || choose.getBoundingClientRect().left < box.getBoundingClientRect().right - 1) faults.push("cancel/choose not beside input");
+    for (const cell of line.querySelectorAll("button")) { const r = cell.getBoundingClientRect(); if (Math.abs(r.width - r.height) >= 1) faults.push("non-square pick cell"); }
+    return faults;
+  })()`);
+  check(list(faults).length === 0, `${word}: ${JSON.stringify(faults)}`);
+  if (alternate !== undefined) {
+    const button = `document.querySelector(${JSON.stringify(lineButton(alternate))})`;
+    check((await page(`${button}?.textContent.trim()`)) === "⌂", "role default toggle lacks ⌂");
+    check(
+      (await page(
+        `(() => { const toggle = ${button}.getBoundingClientRect(), box = document.querySelector('.editor .line textarea').getBoundingClientRect(), choose = document.querySelector('${lineButton("choose")}').getBoundingClientRect(); return toggle.left >= box.right - 1 && toggle.right <= choose.left + 1; })()`,
+      )) === true,
+      "alternate isn't between box and choose",
+    );
+    check(
+      (await page(`${button}?.getAttribute("aria-pressed")`)) === "false",
+      "default toggle starts pressed",
+    );
+    await tap(button);
+    check(
+      (await page(`${button}.getAttribute("aria-pressed")`)) === "true",
+      "default toggle didn't press",
+    );
+    await tap(button);
+    check(
+      (await page(`${button}.getAttribute("aria-pressed")`)) === "false",
+      "default toggle didn't release",
+    );
   }
 }
 
@@ -867,6 +1166,7 @@ async function journeys(
   origin: string,
   server: ServerControl,
 ): Promise<void> {
+  const menuTool = menuToolCalls(home);
   await browser("set", "viewport", String(WIDTH), String(HEIGHT));
   await browser("set", "media", "light", "reduced-motion");
 
@@ -1475,17 +1775,16 @@ async function journeys(
       (await page(`document.querySelector("textarea").value`)) === "/model ",
       "Enter didn't take the suggestion",
     );
-    const box = `Math.round(document.querySelector("textarea").getBoundingClientRect().top)`;
-    const top = await page(box);
     const opened = performance.now();
     await browser("press", "Enter");
     await browser("wait", ".pick li");
     report.metrics["model.pickerMs"] = ms(opened);
-    check((await page(box)) === top, "the editor's box moved when the picker opened");
+    await pickLayout("model", "save as front default");
     check(
-      (await page(`document.querySelector(".pick header").textContent.includes("Esc cancels")`)) ===
-        true,
-      "the picker has no header",
+      (await page(
+        `[...document.querySelectorAll('ul[role=listbox] [role=option]')].some((row) => row.textContent.includes("●"))`,
+      )) === true,
+      "current model has no ● mark",
     );
     await capture("model", home, origin);
     // The editor's box filters the pick in place, and the draft waits under it.
@@ -1501,8 +1800,35 @@ async function journeys(
       (await page(`document.querySelector("textarea").value`)) === "",
       "the draft didn't come back after the picker",
     );
-    return "picker opened over a still box, filtered, and closed";
+    return "picker opened without a key bar, filtered, and closed";
   });
+
+  await journey(
+    "picks: thinking, mcp and palette share the headerless line; choose is a tap",
+    async () => {
+      try {
+        await pickCommand("/thinking");
+        await pickLayout("thinking", "save as front default");
+        check(
+          (await page(
+            `[...document.querySelectorAll('ul[role=listbox] [role=option]')].some((row) => row.textContent.includes('●'))`,
+          )) === true,
+          "current thinking level has no mark",
+        );
+        await browser("click", lineButton("choose"));
+        await browser("wait", "--fn", `!document.querySelector('ul[role=listbox]')`);
+        await pickCommand("/mcp login");
+        await pickLayout("mcp");
+        await leaveMenu();
+        await pickCommand("/palette");
+        await pickLayout("palette");
+        await leaveMenu();
+        return "thinking has current mark and role-default toggle; choose takes it; mcp and palette have no headers or view bars";
+      } finally {
+        await leaveMenu();
+      }
+    },
+  );
 
   await journey(
     "commands: an argument completes, /search jumps to a message, /palette runs an action",
@@ -1524,6 +1850,7 @@ async function journeys(
       await browser("press", "Enter");
       await browser("wait", ".search [role=option]");
       report.metrics["search.openMs"] = ms(searched);
+      await pickLayout("search");
       const first = text(
         await page(
           `document.querySelector(".search [role=option][aria-selected=true]").textContent`,
@@ -1550,6 +1877,7 @@ async function journeys(
       await browser("fill", "textarea", "/palette");
       await browser("press", "Enter");
       await browser("wait", ".pick [role=option]");
+      await pickLayout("palette");
       await browser("fill", "textarea", "expand all");
       await browser("press", "Enter");
       const expand = `document.querySelector("[aria-label='expand all']").getAttribute("aria-pressed")`;
@@ -1571,6 +1899,7 @@ async function journeys(
       check((await page(focused)) === false, "Esc didn't leave the prompt");
       await browser("press", "?");
       await browser("wait", ".pick [role=option]");
+      await pickLayout("keys");
       const keys = text(await page(`document.querySelector(".pick").textContent`));
       check(
         keys.includes("spc spc") && keys.includes("Ctrl+/"),
@@ -1628,7 +1957,7 @@ async function journeys(
       await browser(
         "wait",
         "--fn",
-        `document.querySelector(".pick header")?.textContent.includes("Palette")`,
+        `document.querySelector("ul[role=listbox]")?.getAttribute("aria-label") === document.querySelector("textarea")?.placeholder && document.querySelector("textarea")?.placeholder.toLowerCase().includes("palette")`,
       );
       await browser("press", "Escape");
       await browser("wait", "--fn", `!document.querySelector(".pick")`);
@@ -1651,11 +1980,11 @@ async function journeys(
   );
 
   await journey(
-    "roots: the menu from the bottom; start one, the dots follow it, tap to select then go, keys archive and filter",
+    "roots: the menu from the bottom; start one, the dots follow it, tap to select then take, keys archive and filter",
     async () => {
       const shownRoot = async () =>
         new URL(text((await browser("get", "url")).url)).searchParams.get("root") ?? "";
-      const rows = `document.querySelectorAll(".rootsMenu li[role=option]")`;
+      const rows = `document.querySelectorAll('ul[role=listbox] li[role=option]')`;
       const first = await shownRoot();
       check(first !== "", "the address doesn't name the shown root");
       await browser("fill", "textarea", "/roots");
@@ -1700,29 +2029,13 @@ async function journeys(
         "the menu's filter didn't start empty",
       );
       await capture("roots", home, origin);
-      // Every cell a square: the bar's and the two beside the filter.
-      check(
-        (await page(
-          `[...document.querySelectorAll(".rootsMenu .bar button, .editor .line > button")].every((cell) => { const box = cell.getBoundingClientRect(); return Math.abs(box.width - box.height) < 1; })`,
-        )) === true,
-        "a roots menu cell isn't square",
-      );
-      // And every glyph cell on the page square, its glyph in the middle: the filter row's, the menu's, the editor's.
-      const off = text(await page(`JSON.stringify(${OFF_CENTRE})`));
-      check(off === "[]", `glyph cells off square or centre: ${off}`);
-      // One line a row, never stacked.
-      check(
-        (await page(
-          `[...${rows}].every((row) => row.getBoundingClientRect().height <= parseFloat(getComputedStyle(document.querySelector(".rootsMenu .enter")).lineHeight) + 10)`,
-        )) === true,
-        "a root's row takes more than one line",
-      );
       // The first tap selects, the second goes.
-      const other = `document.querySelector(".rootsMenu li:not(.here) .enter")`;
+      const other = `[...document.querySelectorAll('ul[role=listbox] li[role=option]')].find((row) => !row.title.startsWith(${JSON.stringify(first)}))`;
       await page(`${other}.click()`);
       check(
-        (await page(`document.querySelector(".rootsMenu li:not(.here)").matches(".selected")`)) ===
-          true && (await shownRoot()) === first,
+        (await page(
+          `[...document.querySelectorAll('ul[role=listbox] li[role=option]')].find((row) => !row.title.startsWith(${JSON.stringify(first)})).getAttribute("aria-selected") === "true"`,
+        )) === true && (await shownRoot()) === first,
         "a tap on a row didn't just select it",
       );
       await page(`${other}.click()`);
@@ -1739,6 +2052,24 @@ async function journeys(
         `document.querySelector(".transcript")?.textContent.includes("second root")`,
       );
       check((await shownRoot()) === second, "the reload didn't come back to the same root");
+      await menuCommand("/roots", "roots");
+      await menuLayout("roots", true, ["archive", "rename", "new root"]);
+      await segments([
+        ["working", 0, true],
+        ["done", 0, true],
+        ["idle", 2, true],
+        ["archived", 0, false],
+      ]);
+      const orders = ["newest", "oldest", "name", "status"];
+      for (const order of orders) await sortMenu(order, orders);
+      await sortMenu("newest", orders);
+      check(
+        (await page(
+          `[...${rows}].every((row) => row.getBoundingClientRect().height <= parseFloat(getComputedStyle(row).lineHeight) + 10)`,
+        )) === true,
+        "a root's row takes more than one line",
+      );
+      await leaveMenu();
       // Keys: Esc to normal mode, j to the other root, Space then a archives it.
       await browser("fill", "textarea", "/roots");
       await browser("press", "Enter");
@@ -1762,12 +2093,16 @@ async function journeys(
         `${rows}.length === 1 && document.querySelector(".rootsMenu li[role=option]").title.startsWith(${JSON.stringify(first)})`,
       );
       check(
-        (await page(`!!document.querySelector(".rootsMenu .bar [aria-label=unarchive]")`)) === true,
-        "the archived root can't be unarchived from the bar",
+        (await page(`!!document.querySelector('.editor .line [aria-label=unarchive]')`)) === true,
+        "the archived root can't be unarchived from the input line",
       );
       // Esc clears the selection, Esc again closes and the draft comes back.
       await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".rootsMenu .selected")`);
+      await browser(
+        "wait",
+        "--fn",
+        `!document.querySelector('${menuRows("roots")}[aria-selected=true]')`,
+      );
       await browser("press", "Escape");
       await browser("wait", "--fn", `!document.querySelector(".rootsMenu")`);
       return "started a root from +, saw it working then done, a tap selected and a second switched, reloaded into it, archived the other by keys and found it under archived";
@@ -1775,85 +2110,170 @@ async function journeys(
   );
 
   await journey(
-    "drafts: save what is typed, restore it after a reload by typing to filter, Esc keeps the editor",
+    "root views: renamed rows, working archive guard, persistent status and order",
+    async () => {
+      await menuCommand("/roots", "roots");
+      for (const word of ["working", "done", "idle", "archived"]) {
+        const button = `document.querySelector('${viewBar} [aria-label^="${word}: "]')`;
+        if ((await page(`${button}.getAttribute('aria-pressed')`)) === "false") await tap(button);
+      }
+      if (
+        (await page(
+          `document.querySelector('${menuRows("roots")}[aria-current=true]').getAttribute('aria-selected')`,
+        )) !== "true"
+      )
+        await tap(`document.querySelector('${menuRows("roots")}[aria-current=true]')`);
+      await menuLayout("roots", true, ["archive", "rename", "new root"]);
+      await browser("click", lineButton("rename"));
+      await browser("wait", "form input");
+      await browser("fill", "form input", "second root renamed");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!(${namedRow("roots", "second root renamed")})`);
+      await sortMenu("oldest", ["newest", "oldest", "name", "status"]);
+      await segment("archived");
+      const settings = await page(
+        `[...document.querySelectorAll('${viewBar} button')].map((button) => [button.getAttribute('aria-label'), button.getAttribute('aria-pressed')])`,
+      );
+      await leaveMenu();
+      await browser("reload");
+      await readyEditor();
+      await menuCommand("/roots", "roots");
+      check(
+        JSON.stringify(
+          await page(
+            `[...document.querySelectorAll('${viewBar} button')].map((button) => [button.getAttribute('aria-label'), button.getAttribute('aria-pressed')])`,
+          ),
+        ) === JSON.stringify(settings),
+        "root view didn't persist",
+      );
+      await leaveMenu();
+      await browser("fill", "textarea", "stream " + "z ".repeat(3000));
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!document.querySelector('.live')`);
+      try {
+        await menuCommand("/roots", "roots");
+        if (
+          (await page(
+            `document.querySelector('${menuRows("roots")}[aria-current=true]').getAttribute('aria-selected')`,
+          )) !== "true"
+        )
+          await tap(`document.querySelector('${menuRows("roots")}[aria-current=true]')`);
+        check(
+          (await page(`document.querySelector('${lineButton("archive")}').disabled`)) === true,
+          "working root can be archived",
+        );
+      } finally {
+        await leaveMenu();
+        await browser("press", "Escape");
+        await browser("press", "X");
+        await browser("wait", "--fn", `!document.querySelector('.live')`);
+        await browser("fill", "textarea", "");
+      }
+      return "rename changes row, root status and order survive reload, archive disabled while working";
+    },
+  );
+
+  await journey(
+    "drafts: a sheet saves, filters, deletes and restores without losing typed text",
     async () => {
       const value = () => page(`document.querySelector("textarea").value`);
-      const drafts = `document.querySelector(".keys button[aria-label=drafts]")`;
-      const rows = async () =>
-        text(
-          await page(
-            `[...document.querySelectorAll(".pick li")].map((li) => li.textContent).join("|")`,
-          ),
-        );
-      const choose = async (label: string) => {
-        const at = Number(
-          await page(
-            `[...document.querySelectorAll(".pick li")].findIndex((li) => li.textContent.includes(${JSON.stringify(label)})) + 1`,
-          ),
-        );
-        check(at > 0, `no ${label} row: ${await rows()}`);
-        await browser("click", `.pick li:nth-child(${at}) .enter`);
+      const open = async () => {
+        await browser("click", "button[aria-label=drafts]");
+        await browser("wait", "--fn", `!!document.querySelector('${menuList("drafts")}')`);
       };
       const saved = "finish the plan\nfor   the drafts";
       await browser("fill", "textarea", saved);
-      await page(`(${drafts}).click()`);
-      await browser("wait", ".pick li");
+      await open();
+      await menuLayout("drafts", false, ["save", "delete", "restore"]);
       check(
-        /save.*finish the plan for the drafts/.test(await rows()),
-        `the menu doesn't offer save: ${await rows()}`,
+        (await page(`document.querySelector('${lineButton("save")}').disabled`)) === false,
+        "save disabled with text waiting",
       );
-      await choose("save");
-      await browser("wait", "--fn", `document.querySelector("textarea").value === ""`);
-      // The draft is the core's: a new connection restores it.
+      await browser("click", lineButton("save"));
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector('textarea').value === "" && !!(${namedRow("drafts", "finish the plan")})`,
+      );
+      check(
+        (await page(`document.querySelector('${lineButton("save")}').disabled`)) === true,
+        "empty text can be saved",
+      );
+      check(
+        (await page(
+          `(${namedRow("drafts", "finish the plan")}).getBoundingClientRect().height <= parseFloat(getComputedStyle((${namedRow("drafts", "finish the plan")})).lineHeight) + 10`,
+        )) === true,
+        "draft wraps into multiple lines",
+      );
+      await leaveMenu();
       await browser("reload");
-      await browser("wait", "--fn", `!!(${drafts})?.title.includes("1 saved")`);
+      await readyEditor();
       await browser("fill", "textarea", "typed now");
-      await page(`(${drafts}).click()`);
-      await browser("wait", ".pick li");
-      await choose("restore");
-      await browser(
-        "wait",
-        "--fn",
-        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
-      );
+      await open();
       await browser("fill", "textarea", "plan finish");
-      check((await rows()).includes("finish the plan"), `typing didn't find it: ${await rows()}`);
-      await capture("drafts", home, origin);
-      await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".pick")`);
-      check((await value()) === "typed now", "Esc lost what was typed");
-      await page(`(${drafts}).click()`);
-      await browser("wait", ".pick li");
-      await choose("restore");
-      await browser(
-        "wait",
-        "--fn",
-        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
-      );
-      await choose("finish the plan");
-      // Restoring takes the draft from the core first.
-      await browser(
-        "wait",
-        "--fn",
-        `document.querySelector("textarea").value === ${JSON.stringify(saved)}`,
-      );
-      // With nothing typed the key goes straight to restore, where the typed text waits in its place.
-      await browser("fill", "textarea", "");
-      await page(`(${drafts}).click()`);
-      await browser(
-        "wait",
-        "--fn",
-        `document.querySelector(".pick header")?.textContent.includes("Restore")`,
-      );
-      const left = await rows();
       check(
-        left.includes("typed now") && !left.includes("finish the plan"),
-        `restore list is wrong: ${left}`,
+        (await rowTexts("drafts")).length === 1,
+        "every typed word didn't filter the saved draft",
       );
-      await choose("typed now");
-      await browser("wait", "--fn", `document.querySelector("textarea").value === "typed now"`);
+      await capture("drafts", home, origin);
+      for (
+        let at = 0;
+        at < 3 && (await page(`!!document.querySelector('${menuList("drafts")}')`)) === true;
+        at++
+      )
+        await browser("press", "Escape");
+      check(
+        (await page(`!document.querySelector('${menuList("drafts")}')`)) === true,
+        "Esc didn't close drafts",
+      );
+      check((await value()) === "typed now", "Esc lost the waiting text");
+      await open();
+      await selectRow("drafts", "finish the plan");
+      await browser("click", lineButton("restore"));
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector('textarea').value === ${JSON.stringify(saved)} && !document.querySelector('${menuList("drafts")}')`,
+      );
       await browser("fill", "textarea", "");
-      return "saved, reloaded, filtered and left with Esc keeping the editor, restored; what was typed came back from the list";
+      await open();
+      let left = await rowTexts("drafts");
+      check(
+        left.some((row) => row.includes("typed now")) &&
+          !left.some((row) => row.includes("finish the plan")),
+        `restoring didn't exchange the drafts: ${left.join("|")}`,
+      );
+      await selectRow("drafts", "typed now");
+      await browser("click", lineButton("delete"));
+      await browser("wait", "--fn", `!(${namedRow("drafts", "typed now")})`);
+      check((await value()) === "", "deleting restored the draft");
+      await leaveMenu();
+      await browser("fill", "textarea", "new saved draft");
+      await open();
+      await browser("click", lineButton("save"));
+      await browser("wait", "--fn", `!!(${namedRow("drafts", "new saved draft")})`);
+      await leaveMenu();
+      await browser("fill", "textarea", "newer draft");
+      await open();
+      await browser("click", lineButton("save"));
+      await browser("wait", "--fn", `!!(${namedRow("drafts", "newer draft")})`);
+      left = await rowTexts("drafts");
+      check(left[0]?.includes("newer draft") === true, "drafts aren't newest first");
+      await selectRow("drafts", "new saved draft");
+      check((await value()) === "", "first tap took an unselected draft");
+      await tap(namedRow("drafts", "new saved draft"));
+      await browser(
+        "wait",
+        "--fn",
+        `document.querySelector('textarea').value === "new saved draft"`,
+      );
+      await browser("fill", "textarea", "");
+      await pickCommand("/palette");
+      await browser("fill", "textarea", "drafts");
+      await browser("press", "Enter");
+      await browser("wait", "--fn", `!!document.querySelector('${menuList("drafts")}')`);
+      await leaveMenu();
+      return "one sheet; save clears input, word filter, Esc keeps text, restore exchanges, delete removes, newest first; palette opens it too";
     },
   );
 
@@ -1908,6 +2328,13 @@ async function journeys(
         "a new pin doesn't list first",
       );
       check((await page(chosen)) === first, "the selection didn't follow its pin");
+      await sortMenu("oldest", ["newest", "oldest"]);
+      check(
+        (await page(`${pins}.querySelector('li[role=option] .name').textContent`)) === first,
+        "oldest pin isn't first",
+      );
+      await sortMenu("newest", ["newest", "oldest"]);
+      check((await page(chosen)) === first, "sort lost the selected pin");
       await page(`${other}.click()`);
       await browser("wait", "--fn", `${pins}.querySelectorAll("li[role=option]").length === 1`);
       check(
@@ -1936,15 +2363,33 @@ async function journeys(
         (await page(`document.querySelector(".editor textarea").value`)) === "outreach",
         "/pins <words> doesn't fill the filter",
       );
-      await page(`${pins}.querySelector("[aria-label='whole text']").click()`);
+      await browser("click", `${viewBar} button[aria-label="whole text"]`);
       await browser("wait", ".pinsMenu .whole .md");
       await capture("pins", home, origin);
-      // › goes to the message in its conversation, marked as a search finds it.
-      await page(`${pins}.querySelector(".go").click()`);
+      await menuLayout("pins", true, ["unpin"]);
+      await sortMenu("oldest", ["newest", "oldest"]);
+      await leaveMenu();
+      await browser("reload");
+      await readyEditor();
+      await command("/pins", `${pins}?.querySelector("li[role=option]")`);
+      check(
+        (await page(
+          `document.querySelector('${viewBar} [aria-label="sort: oldest"]') !== null`,
+        )) === true,
+        "pins sort wasn't kept",
+      );
+      check(
+        (await page(
+          `document.querySelector('${viewBar} [aria-label="whole text"]').getAttribute("aria-pressed")`,
+        )) === "true",
+        "whole text wasn't kept",
+      );
+      // Enter takes the selected pin to its message, marked as a search finds it.
+      await browser("press", "Enter");
       await browser("wait", "--fn", `!${pins} && !!document.querySelector(".stamp.found")`);
       await page(`${tab}.click()`);
       await browser("wait", "--fn", `${pins}?.querySelector("li[role=option]")`);
-      await page(`${pins}.querySelector("[aria-label=unpin]").click()`);
+      await browser("click", lineButton("unpin"));
       await browser("wait", "--fn", `${pins}.textContent.includes("nothing pinned yet")`);
       await page(`document.querySelector(".editor [aria-label=back]").click()`);
       await browser("wait", "--fn", `!${pins}`);
@@ -2069,81 +2514,398 @@ async function journeys(
   );
 
   await journey(
-    "lists: /goals and /jobs open as panels, a row opens its fields; job events fold",
+    "goals: status counts, sorts, details and seen state persist; taking opens the goal thread",
     async () => {
-      for (const ask of ["goal", "job"]) {
-        const before = await page(`document.querySelectorAll(".assistant:not(.live)").length`);
-        await browser("fill", "textarea", ask);
+      const goalAskIds: string[] = [];
+      try {
+        const fixtures = [
+          ["menu-zeta", "Zeta launch", "active"],
+          ["menu-beta", "Beta review", "waiting"],
+          ["menu-alpha", "Alpha plan", "active"],
+          ["menu-delta", "Delta shipped", "done"],
+          ["menu-gamma", "Gamma stopped", "dropped"],
+        ];
+        for (const [id, title, status] of fixtures)
+          await menuTool("update_goal", {
+            id,
+            title,
+            status,
+            kind: "endeavor",
+            workstream: "checking the menu",
+            next: "read the thread",
+            vault: "projects/menu",
+            workers: [],
+          });
+        await menuTool("update_goal", { id: "menu-zeta", workstream: "latest menu change" });
+        // Give the oldest active goal two open asks, not just the newest goal.
+        for (let at = 0; at < 2; at++) {
+          await menuSend("menu ask " + at);
+          const id = text(
+            await page(`[...document.querySelectorAll('[id^="m-"]')].at(-1)?.id.slice(2)`),
+          );
+          check(id.length > 0, "front reply has no id to label");
+          goalAskIds.push(id);
+          await menuTool("inbox", { id, kind: "ask", goal: "menu-alpha" });
+        }
+        await menuCommand("/goals", "goals");
+        await menuLayout("goals", true, []);
+        check(
+          (await page(`document.querySelectorAll('.editor .line button').length`)) === 1,
+          "goals has line actions beyond back",
+        );
+        await segments([
+          ["active", 2, true],
+          ["waiting", 1, true],
+          ["done", 1, false],
+          ["dropped", 1, false],
+        ]);
+        check(
+          (await rowTexts("goals"))
+            .map(
+              (row) =>
+                fixtures.find(([, title]) => title !== undefined && row.includes(title))?.[0],
+            )
+            .join(",") === "menu-zeta,menu-alpha,menu-beta",
+          "default goal order isn't newest change, or inactive goals leaked in",
+        );
+        check(
+          (await page(`(${namedRow("goals", "Alpha plan")}).textContent.includes("?2")`)) === true,
+          "goal lacks its two open asks",
+        );
+        check(
+          (await page(`(${namedRow("goals", "Zeta launch")}).textContent.includes("?0")`)) ===
+            false,
+          "zero asks aren't omitted",
+        );
+        check(
+          (await page(
+            `(${namedRow("goals", "Zeta launch")}).textContent.includes("•") && /\\d+[smhd]/.test((${namedRow("goals", "Zeta launch")}).textContent)`,
+          )) === true,
+          "unseen goal lacks changed age",
+        );
+        check(
+          (await page(
+            `(() => { const row = (${namedRow("goals", "Alpha plan")}); const age = [...row.querySelectorAll('*')].find((item) => /^•\\d+[smhd]$/.test(item.textContent.trim())); return age && Number(getComputedStyle(age).fontWeight) >= 600 && getComputedStyle(age).color !== getComputedStyle(row).color; })()`,
+          )) === true,
+          "changed age isn't bold accent",
+        );
+        await browser("fill", "textarea", "plan alpha");
+        check(
+          (await rowTexts("goals")).length === 1 &&
+            (await rowTexts("goals"))[0]?.includes("Alpha plan") === true,
+          "goals don't match every typed word",
+        );
+        await segments([
+          ["active", 2, true],
+          ["waiting", 1, true],
+          ["done", 1, false],
+          ["dropped", 1, false],
+        ]);
+        await browser("fill", "textarea", "");
+        const orders = ["newest change", "oldest change", "most asks", "title", "status"];
+        const expected = ["Zeta launch", "Beta review", "Alpha plan", "Alpha plan"];
+        for (const [at, order] of orders.entries()) {
+          await sortMenu(order, orders);
+          if (at < expected.length)
+            check(
+              (await rowTexts("goals"))[0]?.includes(expected[at] ?? "") === true,
+              `wrong first goal for ${order}`,
+            );
+          else {
+            const glyphs = (await rowTexts("goals")).map((row) => row.trim()[0]);
+            check(
+              new Set(glyphs).size ===
+                glyphs.filter((glyph, at) => glyph !== glyphs[at - 1]).length,
+              "status sort splits a group",
+            );
+          }
+        }
+        await segment("done");
+        await segment("dropped");
+        for (const [title, glyph] of [
+          ["Zeta launch", "●"],
+          ["Beta review", "◐"],
+          ["Delta shipped", "✓"],
+          ["Gamma stopped", "✗"],
+        ])
+          check(
+            (await page(
+              `(${namedRow("goals", title ?? "")}).textContent.trim().startsWith(${JSON.stringify(glyph)})`,
+            )) === true,
+            `${title} has wrong status glyph`,
+          );
+        await selectRow("goals", "Alpha plan");
+        await browser("click", `${viewBar} [aria-label=details]`);
+        await browser("wait", `${menuList("goals")} li.open`);
+        check(
+          (await page(
+            `document.querySelector('${menuList("goals")} li.open').textContent.includes("↻") && document.querySelector('${menuList("goals")} li.open').textContent.includes("checking the menu") && document.querySelector('${menuList("goals")} li.open').textContent.includes("→") && document.querySelector('${menuList("goals")} li.open').textContent.includes("read the thread") && document.querySelector('${menuList("goals")} li.open').textContent.includes("▤") && document.querySelector('${menuList("goals")} li.open').textContent.includes("projects/menu")`,
+          )) === true,
+          "goal details omit fields or their symbols",
+        );
+        await sortMenu("title", orders);
+        await segment("waiting");
+        await capture("goals", home, origin);
+        await leaveMenu();
+        await browser("reload");
+        await readyEditor();
+        await menuCommand("/goals", "goals");
+        await segments([
+          ["active", 2, true],
+          ["waiting", 1, false],
+          ["done", 1, true],
+          ["dropped", 1, true],
+        ]);
+        check(
+          (await page(
+            `document.querySelector('${viewBar} [aria-label="sort: title"]') !== null && document.querySelector('${viewBar} [aria-label=details]').getAttribute('aria-pressed') === 'true'`,
+          )) === true,
+          "goal view wasn't kept over reload",
+        );
+        await selectRow("goals", "Zeta launch");
+        check(
+          (await page(`(${namedRow("goals", "Zeta launch")}).getAttribute('aria-selected')`)) ===
+            "true",
+          "tap doesn't select a goal",
+        );
+        await browser("press", "Enter");
+        await browser("wait", 'section.brief[aria-label="goal: Zeta launch"]');
+        check(
+          (await page(
+            `document.querySelector('button[aria-label="goal: menu-zeta"]').textContent.includes('●')`,
+          )) === true,
+          "picked goal button doesn't show glyph and id",
+        );
+        await browser("click", 'button[aria-label="goal: menu-zeta"]');
+        await browser("wait", "--fn", `!!document.querySelector('${menuList("goals")}')`);
+        check(
+          (await page(`(${namedRow("goals", "Zeta launch")}).getAttribute('aria-current')`)) ===
+            "true",
+          "shown goal isn't current",
+        );
+        check(
+          (await page(`(${namedRow("goals", "Zeta launch")}).textContent.includes('•')`)) === false,
+          "taking didn't mark the goal seen",
+        );
+        await leaveMenu();
+        await tap(
+          `[...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === 'all' || ['∗', '*'].includes(button.textContent.trim()))`,
+        );
+        check(
+          (await page(
+            `!document.querySelector('section.brief') && !!document.querySelector('button[aria-label="goal…"]')`,
+          )) === true,
+          "all didn't clear goal and kind filters",
+        );
+        await browser("fill", "textarea", "");
+        await browser("press", "Control+/");
+        await browser("press", "g");
+        await browser("wait", "--fn", `!!document.querySelector('${menuList("goals")}')`);
+        await leaveMenu();
+        return "goal rows, every status, count-before-filter, all sorts, details and persistent per-kind view, goal taken and marked seen, all and leader";
+      } finally {
+        await leaveMenu();
+        await tap(
+          `[...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === 'all' || ['∗', '*'].includes(button.textContent.trim()))`,
+        );
+        // Relabelling removes the ask; combining it with an ask-only state change rejects the whole update.
+        for (const id of goalAskIds) await menuTool("inbox", { id, kind: "reply", goal: "" });
+        for (const id of ["menu-zeta", "menu-beta", "menu-alpha", "menu-delta", "menu-gamma"])
+          await menuTool("update_goal", { id, status: "done" });
+      }
+    },
+  );
+
+  await journey(
+    "jobs: states, scheduling actions, details, sorts and worker navigation in one sheet",
+    async () => {
+      await menuSend("work menu-jobs inspect the scheduled work");
+      const command = "node -e \"console.log('menu job')\"";
+      await menuTool("job", {
+        action: "create",
+        type: "command",
+        name: "menu-scheduled",
+        schedule: "@monthly",
+        command,
+        worker: "menu-jobs",
+      });
+      await menuTool("job", {
+        action: "create",
+        type: "agent",
+        name: "menu-paused",
+        schedule: "@monthly",
+        prompt: "menu prompt",
+        worker: "menu-jobs",
+      });
+      await menuTool("job", { action: "pause", name: "menu-paused" });
+      await menuTool("job", {
+        action: "create",
+        type: "bg",
+        name: "menu-ok",
+        command: 'node -e "process.exit(0)"',
+        worker: "menu-jobs",
+      });
+      await menuTool("job", {
+        action: "create",
+        type: "bg",
+        name: "menu-failed",
+        command: 'node -e "process.exit(1)"',
+        worker: "menu-jobs",
+      });
+      await menuTool("job", {
+        action: "create",
+        type: "bg",
+        name: "menu-running",
+        command: 'node -e "setTimeout(() => {}, 300000)"',
+        worker: "menu-jobs",
+      });
+      try {
+        await menuCommand("/jobs", "jobs");
+        await selectRow("jobs", "menu-scheduled");
+        await menuLayout("jobs", true, ["pause", "run now"]);
+        await segments([
+          ["running", 1, true],
+          ["scheduled", 1, true],
+          ["paused", 1, true],
+          ["ended ok", 1, false],
+          ["failed", 1, true],
+        ]);
+        const scheduled = namedRow("jobs", "menu-scheduled");
+        check(
+          (await page(
+            `(${scheduled}).textContent.includes('○') && (${scheduled}).textContent.includes('→') && (${scheduled}).textContent.includes('menu-jobs') && /▸\\d+[smhd]/.test((${scheduled}).textContent)`,
+          )) === true,
+          "scheduled row lacks worker or next-run time",
+        );
+        await segment("ended ok");
+        for (const [name, glyph] of [
+          ["menu-running", "●"],
+          ["menu-paused", "‖"],
+          ["menu-ok", "✓"],
+          ["menu-failed", "✗"],
+        ])
+          check(
+            (await page(
+              `(${namedRow("jobs", name ?? "")}).textContent.trim().startsWith(${JSON.stringify(glyph)})`,
+            )) === true,
+            `${name} has wrong state glyph`,
+          );
+        const orders = ["next run", "last ran", "name"];
+        for (const order of orders) await sortMenu(order, orders);
+        check(
+          (await rowTexts("jobs")).map((row) => /menu-[a-z]+/.exec(row)?.[0]).join(",") ===
+            "menu-failed,menu-ok,menu-paused,menu-running,menu-scheduled",
+          "jobs aren't sorted by name",
+        );
+        await selectRow("jobs", "menu-scheduled");
+        await browser("click", `${viewBar} [aria-label=details]`);
+        await browser("wait", `${menuList("jobs")} li.open`);
+        check(
+          (await page(
+            `(() => { const details = document.querySelector('${menuList("jobs")} li.open').textContent; return details.includes('◷') && (/@monthly|month|0 0 1 [*]/i.test(details)) && details.includes('next') && details.includes('last') && details.includes('runs') && details.includes('$') && details.includes(${JSON.stringify(command)}); })()`,
+          )) === true,
+          "job details lack schedule, clocks, runs or command",
+        );
+        await browser("click", lineButton("pause"));
+        await browser("wait", lineButton("resume"));
+        check(
+          (await page(`document.querySelector('${lineButton("run now")}').disabled`)) === true,
+          "paused job can run now",
+        );
+        await browser("click", lineButton("resume"));
+        await browser("wait", lineButton("pause"));
+        check(
+          (await page(`document.querySelector('${lineButton("run now")}').disabled`)) === false,
+          "active scheduled job can't run now",
+        );
+        const runs = `(() => { const body = document.querySelector('${menuList("jobs")} li.open').textContent; const count = /(\\d+)\\s+runs?\\b|\\bruns?\\s*[:·]?\\s*(\\d+)/i.exec(body); return count ? Number(count[1] ?? count[2]) : -1; })()`;
+        const ran = Number(await page(runs));
+        check(ran >= 1, "job details lack a run count after the command baseline");
+        await browser("click", lineButton("run now"));
+        await browser("wait", "--fn", `${runs} > ${ran}`);
+        await selectRow("jobs", "menu-paused");
+        check(
+          (await page(
+            `document.querySelector('${menuList("jobs")} li.open').textContent.includes('menu prompt')`,
+          )) === true,
+          "agent job doesn't show its prompt",
+        );
+        await selectRow("jobs", "menu-running");
+        check(
+          (await page(
+            `!document.querySelector('${lineButton("pause")}') && !document.querySelector('${lineButton("resume")}') && (!document.querySelector('${lineButton("run now")}') || document.querySelector('${lineButton("run now")}').disabled)`,
+          )) === true,
+          "background job has scheduling actions",
+        );
+        await capture("jobs", home, origin);
+        await leaveMenu();
+        await browser("reload");
+        await readyEditor();
+        await menuCommand("/jobs", "jobs");
+        await segments([
+          ["running", 1, true],
+          ["scheduled", 1, true],
+          ["paused", 1, true],
+          ["ended ok", 1, true],
+          ["failed", 1, true],
+        ]);
+        check(
+          (await page(
+            `!!document.querySelector('${viewBar} [aria-label="sort: name"]') && document.querySelector('${viewBar} [aria-label=details]').getAttribute('aria-pressed') === 'true'`,
+          )) === true,
+          "job view wasn't persisted independently",
+        );
+        await selectRow("jobs", "menu-scheduled");
         await browser("press", "Enter");
         await browser(
           "wait",
           "--fn",
-          `document.querySelectorAll(".assistant:not(.live)").length > ${String(before)} && !document.querySelector(".tool.running")`,
+          `!document.querySelector('${menuList("jobs")}') && document.querySelector('textarea')`,
         );
-      }
-      const open = async (command: string, selector: string) => {
-        await browser("fill", "textarea", command);
+        check(
+          (await page(`document.body.textContent.includes('inspect the scheduled work')`)) === true,
+          "taking job didn't show its worker conversation",
+        );
+      } finally {
+        await leaveMenu();
+        await browser("fill", "textarea", "/agents root");
         await browser("press", "Enter");
-        // The first Enter may take the typeahead's suggestion.
-        if ((await page(`!!document.querySelector("${selector}")`)) !== true)
-          await browser("press", "Enter");
-        await browser("wait", `${selector} li.row`);
-      };
-      await open("/goals", ".goalsPanel");
-      const goal = `document.querySelector(".goalsPanel li.row")`;
-      check(
-        (await page(`${goal}.textContent.includes("Smoke goal")`)) === true,
-        "/goals doesn't list the goal",
-      );
-      await page(`${goal}.querySelector("button.open").click()`);
-      await browser("wait", ".goalsPanel dl");
-      check(
-        (await page(
-          `${goal}.querySelector("dl").textContent.includes("second step") && !${goal}.querySelector(".fresh")`,
-        )) === true,
-        "an opened goal doesn't show its next steps, or still shows as changed",
-      );
-      await capture("goals", home, origin);
-      await browser("press", "Escape");
-      await browser("wait", "--fn", `!document.querySelector(".goalsPanel")`);
-      await open("/jobs", ".jobsPanel");
-      const job = `document.querySelector(".jobsPanel li.row")`;
-      check(
-        (await page(
-          `${job}.textContent.includes("smoke-job") && ${job}.textContent.includes("@daily")`,
-        )) === true,
-        "/jobs doesn't list the job with its schedule",
-      );
-      await page(`${job}.querySelector("button.open").click()`);
-      await browser("wait", ".jobsPanel dl");
-      check(
-        (await page(
-          `${job}.querySelector("dl").textContent.includes("echo smoke") && document.querySelector(".jobsPanel .events").textContent.includes("smoke-job")`,
-        )) === true,
-        "an opened job doesn't show its command, or no recent events",
-      );
-      await capture("jobs", home, origin);
-      await page(`document.querySelector(".jobsPanel header [aria-label=close]").click()`);
-      await browser("wait", "--fn", `!document.querySelector(".jobsPanel")`);
-      // Its events sit in the transcript as grey boxes folded to one line; a tap opens one.
-      const box = `document.querySelector(".transcript .job")`;
-      await browser("wait", ".transcript .job");
-      check(
-        (await page(
-          `!${box}.querySelector("pre") && ${box}.textContent.includes("smoke-job") && ${box}.textContent.includes("▸")`,
-        )) === true,
-        "a job's event isn't a folded box",
-      );
-      await capture("job-events", home, origin);
-      await page(`${box}.querySelector(".row").click()`);
-      check(
-        (await page(`!!${box}.querySelector("pre")`)) === true,
-        "a tap doesn't open the job box",
-      );
-      await page(`${box}.querySelector(".row").click()`);
-      return "listed the goal and the job, opened each, closed by Esc and ✕; its events fold in the transcript";
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelector('nav[aria-label=conversations] button')?.getAttribute('aria-label')?.startsWith('root,')`,
+        );
+        await menuTool("job", { action: "kill", name: "menu-running" });
+        for (const name of [
+          "menu-scheduled",
+          "menu-paused",
+          "menu-ok",
+          "menu-failed",
+          "menu-running",
+        ])
+          await menuTool("job", { action: "delete", name });
+        await menuTool("close_workers", { names: ["menu-jobs"] });
+      }
+      return "five states, next-run and elapsed time, filters and sort, persisted details, pause/resume/run now, worker conversation";
     },
   );
+
+  await journey("job events: a command's events fold in the transcript", async () => {
+    await menuSend("job");
+    const box = `document.querySelector(".transcript .job")`;
+    await browser("wait", ".transcript .job");
+    check(
+      (await page(
+        `!${box}.querySelector('pre') && ${box}.textContent.includes('smoke-job') && ${box}.textContent.includes('▸')`,
+      )) === true,
+      "job event isn't folded",
+    );
+    await tap(`${box}.querySelector('.row')`);
+    check((await page(`!!${box}.querySelector('pre')`)) === true, "tap doesn't open job event");
+    await capture("job-events", home, origin);
+    await tap(`${box}.querySelector('.row')`);
+    return "job events still fold and open in the transcript";
+  });
 
   await journey(
     "touch: a phone with no Esc, Alt or Ctrl reaches every key by tapping",
@@ -2207,13 +2969,9 @@ async function journeys(
         check((await value()) === "/model ", "tapping the suggestion didn't take it");
         await tap(key("send"));
         await browser("wait", ".pick li");
-        check(
-          (await page(`getComputedStyle(document.querySelector(".pick .hint")).display`)) ===
-            "none",
-          "the picker shows desktop key hints",
-        );
+        await pickLayout("model", "save as front default");
         await capture("touch-pick", home, origin);
-        await tap(`document.querySelector(".pick header .icon")`);
+        await tap(`document.querySelector('.editor .line [aria-label="cancel"]')`);
         await browser("wait", "--fn", `!document.querySelector(".pick")`);
 
         // The mode key shows the mode it's in, and a tap switches it.
@@ -2376,7 +3134,7 @@ async function journeys(
       );
       report.metrics["worker.viewMs"] = ms(opened);
       await capture("worker-view", home, origin);
-      // /agents opens the same menu on the root; › takes it.
+      // /agents opens the same menu on the root; Enter takes it.
       await browser("fill", "textarea", "/agents");
       await browser("press", "Enter");
       await browser("wait", "--fn", `!!(${row("root")})`);
@@ -2384,7 +3142,7 @@ async function journeys(
         (await page(`(${row("root")}).getAttribute("aria-selected")`)) === "true",
         "the workers menu doesn't open on the root",
       );
-      await page(`document.querySelector(".workersMenu .go").click()`);
+      await browser("press", "Enter");
       await browser(
         "wait",
         "--fn",
@@ -2393,15 +3151,38 @@ async function journeys(
       // ⏏ closes the selected idle worker: its row and the bar's count go; the root's own row has no ⏏.
       await page(`${crew}.click()`);
       await browser("wait", "--fn", `!!(${row("reader")})`);
+      await menuLayout("workers", true, ["stop", "close"]);
+      await segments([
+        ["working", 0, true],
+        ["idle", 2, true],
+      ]);
+      check(
+        (await page(`document.querySelector('${lineButton("stop")}').disabled`)) === true,
+        "idle front can be stopped",
+      );
       check(
         (await page(
-          `[...document.querySelectorAll(".workersMenu .bar button")].every((cell) => { const box = cell.getBoundingClientRect(); return Math.abs(box.width - box.height) < 1; })`,
+          `document.querySelector('${menuRows("workers")}[aria-current=true]').textContent.includes('root')`,
         )) === true,
-        "a workers menu cell isn't square",
+        "front row isn't current",
       );
-      const off = text(await page(`JSON.stringify(${OFF_CENTRE})`));
-      check(off === "[]", `workers menu glyph cells off square or centre: ${off}`);
-      const close = `document.querySelector(".workersMenu [aria-label=close]")`;
+      const orders = ["recent", "name", "context"];
+      for (const order of orders) {
+        await sortMenu(order, orders);
+        check(
+          (await page(
+            `document.querySelector('${menuRows("workers")}').textContent.includes("root")`,
+          )) === true,
+          "front isn't first under " + order,
+        );
+      }
+      await segment("idle");
+      check(
+        (await rowTexts("workers")).every((row) => row.includes("root")),
+        "idle workers survived their status filter",
+      );
+      await segment("idle");
+      const close = `document.querySelector('${lineButton("close")}')`;
       check((await page(`${close}.disabled`)) === true, "⏏ would close the root");
       await page(`(${row("reader")}).click()`);
       await page(`${close}.click()`);
@@ -2424,11 +3205,7 @@ async function journeys(
       if ((await page(`!!document.querySelector(".pick li")`)) !== true)
         await browser("press", "Enter");
       await browser("wait", ".pick li");
-      check(
-        (await page(`document.querySelector(".pick header").textContent.includes("provider")`)) ===
-          true,
-        "the picker doesn't ask for a provider",
-      );
+      await pickLayout("provider");
       const providers = Number(await page(`document.querySelectorAll(".pick li").length`));
       check(providers > 1, `only ${providers} provider to pick`);
       await capture("login", home, origin);
@@ -2601,9 +3378,10 @@ async function journeys(
       );
       await browser("click", ".filters button:nth-child(3)");
       await browser("click", ".filters .goal");
-      await browser("wait", "--fn", `!!document.querySelector(".pick")`);
-      await browser("click", ".pick li:nth-child(2) .enter");
-      await browser("wait", "--fn", `!!document.querySelector(".brief")`);
+      await browser("wait", "--fn", `!!document.querySelector('${menuList("goals")}')`);
+      await selectRow("goals", "Smoke goal");
+      await browser("press", "Enter");
+      await browser("wait", 'section.brief[aria-label="goal: Smoke goal"]');
       check(
         (await page(`document.querySelector(".brief").textContent.includes("Smoke goal")`)) ===
           true,
@@ -2619,11 +3397,256 @@ async function journeys(
       await browser("fill", "textarea", `/reply ${id} yes, ship it`);
       await browser("press", "Enter");
       await browser("wait", "--fn", `!!document.querySelector(".askCard.answered")`);
+      check(
+        (await page(
+          `document.getElementById('m-${id}').parentElement.querySelector('[aria-label=ask]')?.title`,
+        )) === "replied",
+        "answered ask lacks replied title",
+      );
+      check(
+        (await page(
+          `!document.getElementById('m-${id}').parentElement.querySelector('button[aria-label=reply]')`,
+        )) === true,
+        "answered ask still has reply action",
+      );
       await send(`see #${id}`);
       await browser("wait", "--fn", `!!document.querySelector(".assistant a.ref")`);
       await browser("click", ".assistant a.ref");
       await capture("inbox-replied", home, origin);
       return `ask ${id} boxed, filtered, replied to by its id and linked`;
+    },
+  );
+
+  await journey(
+    "labels: glyphs, goal ids and reply controls; a goal thread has counted, folding details",
+    async () => {
+      const ids: string[] = [];
+      try {
+        await menuSend("work menu-idle inspect the labels");
+        await menuCommand("/agents", "workers");
+        await selectRow("workers", "menu-idle");
+        await browser("press", "Enter");
+        await pickCommand("/model");
+        await pickLayout("model", "save as worker default");
+        await browser("click", lineButton("choose"));
+        await browser("wait", "--fn", `!document.querySelector('ul[role=listbox]')`);
+        await pickCommand("/thinking");
+        await pickLayout("thinking", "save as worker default");
+        await leaveMenu();
+        await frontView();
+        await menuTool("start_worker", {
+          name: "menu-busy",
+          model: "faux/front",
+          task: "stream " + "z ".repeat(4000),
+        });
+        await menuCommand("/agents", "workers");
+        await menuLayout("workers", true, ["stop", "close"]);
+        await selectRow("workers", "menu-busy");
+        check(
+          (await page(`document.querySelector('${lineButton("stop")}').disabled`)) === false,
+          "busy worker can't be stopped",
+        );
+        check(
+          (await page(`document.querySelector('${lineButton("close")}').disabled`)) === true,
+          "busy worker can be closed",
+        );
+        await segment("working");
+        check(
+          (await page(`!(${namedRow("workers", "menu-busy")})`)) === true,
+          "working filter didn't hide busy worker",
+        );
+        await segment("working");
+        await sortMenu("name", ["recent", "name", "context"]);
+        await leaveMenu();
+        await browser("reload");
+        await readyEditor();
+        await menuCommand("/agents", "workers");
+        check(
+          (await page(`!!document.querySelector('${viewBar} [aria-label="sort: name"]')`)) === true,
+          "workers sort wasn't kept over reload",
+        );
+        await leaveMenu();
+        await menuTool("update_goal", {
+          id: "menu-thread",
+          title: "Menu thread",
+          kind: "endeavor",
+          workstream: "read the labels",
+          next: "answer the question",
+          vault: "projects/menu-thread",
+          workers: ["menu-busy", "menu-idle"],
+        });
+        for (const [kind, message] of [
+          ["ask", "thread question"],
+          ["milestone", "thread delivered"],
+          ["update", "thread progress"],
+          ["reply", "thread plain reply"],
+        ]) {
+          await menuSend(message ?? "");
+          const id = text(
+            await page(`[...document.querySelectorAll('[id^="m-"]')].at(-1)?.id.slice(2)`),
+          );
+          ids.push(id);
+          await menuTool("inbox", { id, kind, goal: "menu-thread" });
+        }
+        // A stamp is the public link target for a message, independent of the transcript's wrapper markup.
+        const stamp = (id: string | undefined) =>
+          `document.getElementById(${JSON.stringify("m-" + id)})`;
+        const meta = (id: string | undefined) => `${stamp(id)}.parentElement`;
+        for (const [at, word, glyph] of [
+          [0, "ask", "?"],
+          [1, "done", "✓"],
+          [2, "update", "…"],
+        ] as const) {
+          check(
+            (await page(
+              `${meta(ids[at])}.querySelector('[aria-label="${word}"]')?.textContent.trim()`,
+            )) === glyph,
+            `${word} isn't its named glyph`,
+          );
+          check(
+            (await page(
+              `${meta(ids[at])}.querySelector('.label')?.textContent.includes('menu-thread')`,
+            )) === true,
+            "unfiltered stamp lacks goal id",
+          );
+        }
+        check(
+          (await page(
+            `${meta(ids[3])}.querySelector('[aria-label=ask], [aria-label=done], [aria-label=update]') === null`,
+          )) === true,
+          "plain reply got a kind glyph",
+        );
+        check(
+          (await page(
+            `${meta(ids[0])}.querySelector('button[aria-label=reply]')?.textContent.trim()`,
+          )) === "↩",
+          "open ask lacks icon reply",
+        );
+        // Yellow ask, green done, muted update: meanings must not be color-identical.
+        const colors = list(
+          await page(
+            `[${meta(ids[0])}.querySelector('[aria-label=ask]'), ${meta(ids[1])}.querySelector('[aria-label=done]'), ${meta(ids[2])}.querySelector('[aria-label=update]')].map((item) => getComputedStyle(item).color)`,
+          ),
+        ).map(text);
+        check(new Set(colors).size === 3, "ask, done and update share a color");
+        check(
+          (await page(
+            `(() => { const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d'); const rgb = (color) => { ctx.clearRect(0,0,1,1); ctx.fillStyle = color; ctx.fillRect(0,0,1,1); return ctx.getImageData(0,0,1,1).data; }; const [ask, done] = ${JSON.stringify(colors)}.map(rgb); return ask[0] > ask[2] + 30 && ask[1] > ask[2] + 30 && done[1] > done[0] + 10 && done[1] > done[2] + 10; })()`,
+          )) === true,
+          "ask isn't yellow or done isn't green",
+        );
+        await tap(`${meta(ids[0])}.querySelector('button[aria-label=reply]')`);
+        check(
+          (await page(`document.querySelector('textarea').value`)) === `/reply ${ids[0]} `,
+          "reply icon didn't address the ask",
+        );
+        await browser("fill", "textarea", "");
+        await menuCommand("/goals", "goals");
+        await selectRow("goals", "Menu thread");
+        const toggle = `document.querySelector('${viewBar} [aria-label=details]')`;
+        if ((await page(`${toggle}.getAttribute('aria-pressed')`)) === "false") await tap(toggle);
+        check(
+          (await page(
+            `(() => { const details = document.querySelector('${menuList("goals")} li.open').textContent.replace(/\\s/g, ''); return details.includes('⚒') && details.includes('●menu-busy') && details.includes('○menu-idle'); })()`,
+          )) === true,
+          "goal details omit busy/idle workers",
+        );
+        await browser("press", "Enter");
+        const brief = `document.querySelector('section.brief[aria-label="goal: Menu thread"]')`;
+        await browser("wait", 'section.brief[aria-label="goal: Menu thread"]');
+        check(
+          (await page(`${brief}.parentElement.firstElementChild === ${brief}`)) === true,
+          "goal thread card isn't first",
+        );
+        const header = `${brief}.querySelector('button[aria-expanded]')`;
+        check(
+          (await page(
+            `${brief}.textContent.replace(/\\s/g, '').includes('⚒') && ${brief}.textContent.replace(/\\s/g, '').includes('●menu-busy') && ${brief}.textContent.replace(/\\s/g, '').includes('○menu-idle')`,
+          )) === true,
+          "thread omits workers and busy/idle glyphs",
+        );
+        check(
+          (await page(`${header}.getAttribute('aria-expanded')`)) === "false",
+          "goal thread starts unfolded",
+        );
+        check(
+          (await page(
+            `${header}.textContent.includes('●') && ${header}.textContent.includes('Menu thread') && ${header}.textContent.includes('▸') && /\\d+[smhd]/.test(${header}.textContent)`,
+          )) === true,
+          "thread header lacks status, title, age or fold glyph",
+        );
+        check(
+          (await page(
+            `${brief}.textContent.includes('?1') && ${brief}.textContent.includes('✓1') && ${brief}.textContent.includes('…1')`,
+          )) === true,
+          "thread counts don't match labeled messages",
+        );
+        check(
+          (await page(
+            `[...document.querySelectorAll('.label')].filter((item) => item.getClientRects().length).every((item) => !item.textContent.includes('menu-thread'))`,
+          )) === true,
+          "goal id repeats while filtered to it",
+        );
+        check(
+          (await page(`!${brief}.textContent.includes('read the labels')`)) === true,
+          "folded thread exposes details",
+        );
+        await tap(header);
+        check(
+          (await page(
+            `${header}.getAttribute('aria-expanded') === 'true' && ${header}.textContent.includes('▾') && ${brief}.textContent.includes('↻') && ${brief}.textContent.includes('read the labels') && ${brief}.textContent.includes('→') && ${brief}.textContent.includes('answer the question') && ${brief}.textContent.includes('▤') && ${brief}.textContent.includes('projects/menu-thread')`,
+          )) === true,
+          "expanded thread omits its details",
+        );
+        await capture("goal-thread", home, origin);
+        await tap(header);
+        check(
+          (await page(
+            `${header}.getAttribute('aria-expanded') === 'false' && !${brief}.textContent.includes('read the labels')`,
+          )) === true,
+          "thread didn't fold again",
+        );
+        await menuTool("inbox", { id: ids[0], state: "closed" });
+        check(
+          (await page(`${meta(ids[0])}.querySelector('[aria-label=ask]')?.title`)) === "closed",
+          "closed ask lacks title",
+        );
+        check(
+          (await page(
+            `getComputedStyle(${meta(ids[0])}.querySelector('[aria-label=ask]')).color === getComputedStyle(${meta(ids[2])}.querySelector('[aria-label=update]')).color`,
+          )) === true,
+          "closed ask glyph isn't muted",
+        );
+        check(
+          (await page(`!${meta(ids[0])}.querySelector('button[aria-label=reply]')`)) === true,
+          "closed ask still offers reply",
+        );
+        check(
+          (await page(`${brief}.textContent.includes('?0')`)) === false,
+          "zero open asks isn't omitted",
+        );
+        await menuCommand("/agents", "workers");
+        await selectRow("workers", "menu-busy");
+        await browser("click", lineButton("stop"));
+        await browser(
+          "wait",
+          "--fn",
+          `document.querySelector('${lineButton("stop")}').disabled && !document.querySelector('${lineButton("close")}').disabled`,
+        );
+        await browser("click", lineButton("close"));
+        await browser("wait", "--fn", `!(${namedRow("workers", "menu-busy")})`);
+        await leaveMenu();
+      } finally {
+        await frontView();
+        await tap(
+          `[...document.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === 'all' || ['∗', '*'].includes(button.textContent.trim()))`,
+        );
+        if (ids[0] !== undefined) await menuTool("inbox", { id: ids[0], state: "closed" });
+        await menuTool("stop_worker", { name: "menu-busy" });
+        await menuTool("close_workers", { names: ["menu-busy", "menu-idle"] });
+        await menuTool("update_goal", { id: "menu-thread", status: "done" });
+      }
+      return "named kind glyphs, omitted plain reply, goal id only outside its stream, reply tap; first folding thread card and exact goal counts";
     },
   );
 
@@ -2679,6 +3702,7 @@ async function journeys(
       await browser("fill", "textarea", `/reply ${id} yes`);
       await browser("press", "Enter");
       await browser("wait", "--fn", `!!document.querySelector(".askCard.answered")`);
+
       return `after a reload past a compaction, the asks filter loaded ask ${id} back from history`;
     },
   );
