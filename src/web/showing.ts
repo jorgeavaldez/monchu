@@ -8,8 +8,11 @@ import { computed, signal, type ReadonlySignal, type Signal } from "@preact/sign
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import type { Goal, InboxItem, RootClient, WorkerSummary } from "../api/client.ts";
 
-/** What the front's stream shows: every message, or only one kind, one goal's, or both. */
-export type Filter = { kind?: "ask" | "milestone" | "update"; goal?: string };
+/**
+ * What the front's stream shows: every message, or only one kind, one goal's, or both. `reply` keeps the front's replies
+ * with the person's messages they answer.
+ */
+export type Filter = { kind?: "ask" | "milestone" | "update" | "reply"; goal?: string };
 
 /** How a notice shows: a plain line, a warning, or something that happened. */
 export type NoticeKind = "system" | "warning" | "event";

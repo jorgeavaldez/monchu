@@ -1,5 +1,6 @@
 /**
- * The front's stream as an inbox: a bar that filters it to asks, milestones or updates, and to one goal, with that
+ * The front's stream as an inbox: a bar that filters it to asks, milestones, updates or the replies (each under the
+ * person's message it answers), and to one goal, with that
  * goal's card on top (`goals.tsx`), so the person catches up on one workstream without the rest.
  */
 import { run } from "./commands.ts";
@@ -7,11 +8,12 @@ import { GOAL_GLYPH, GOAL_TONE } from "./goals.tsx";
 import { secretRequests } from "./secrets.tsx";
 import { filter, goalList, inbox, sheet, type Filter } from "./state.ts";
 
-/** Each kind as a glyph, the same as the leader's filter keys: asks ?, done ✓, updates …; all is ∗. */
+/** Each kind as a glyph, the same as the leader's filter keys: asks ?, done ✓, updates …, replies ⇄; all is ∗. */
 const KINDS: [NonNullable<Filter["kind"]>, string, string][] = [
   ["ask", "?", "asks"],
   ["milestone", "✓", "done"],
   ["update", "…", "updates"],
+  ["reply", "⇄", "replies"],
 ];
 
 /**

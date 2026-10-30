@@ -156,7 +156,7 @@ function nextRoot(step: 1 | -1): Promise<void> | void {
   if (next !== undefined) return switchRoot(next.id);
 }
 
-const FEEDS = [undefined, "ask", "milestone", "update"] as const;
+const FEEDS = [undefined, "ask", "milestone", "update", "reply"] as const;
 
 /** The next or previous feed tab, wrapping around. */
 function cycleFeed(step: 1 | -1): void {
@@ -214,8 +214,13 @@ const ACTIONS = {
   palette: listed("palette", "/palette", () => openPalette()),
   "search.next": listed("next search hit", "the last /search", () => nextHit(1)),
   "search.previous": listed("previous search hit", "the last /search", () => nextHit(-1)),
-  "feed.next": listed("next feed", "all, asks, done, updates", () => cycleFeed(1), front),
-  "feed.previous": listed("previous feed", "all, asks, done, updates", () => cycleFeed(-1), front),
+  "feed.next": listed("next feed", "all, asks, done, updates, replies", () => cycleFeed(1), front),
+  "feed.previous": listed(
+    "previous feed",
+    "all, asks, done, updates, replies",
+    () => cycleFeed(-1),
+    front,
+  ),
   "scroll.down": scroll("scroll down", "line", 1),
   "scroll.up": scroll("scroll up", "line", -1),
   "scroll.halfDown": scroll("half a page down", "half", 1),
@@ -232,6 +237,7 @@ const ACTIONS = {
   "feed.ask": feed("ask", "asks"),
   "feed.milestone": feed("milestone", "done"),
   "feed.update": feed("update", "updates"),
+  "feed.reply": feed("reply", "replies"),
   "feed.goal": listed("goals", "find a goal, follow its stream", () => toggleGoals(), front),
   "root.next": listed("next root", "the next older root", () => nextRoot(1)),
   "root.previous": listed("previous root", "the next newer root", () => nextRoot(-1)),

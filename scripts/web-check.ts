@@ -3418,6 +3418,55 @@ async function journeys(
   );
 
   await journey(
+    "replies: ⇄ keeps the front's replies under the messages they answer, not its updates",
+    async () => {
+      const replies = `document.querySelectorAll(".assistant:not(.live)").length`;
+      const send = async (text: string) => {
+        const before = Number(await page(replies));
+        await browser("fill", "textarea", text);
+        await browser("press", "Enter");
+        await browser("wait", "--fn", `${replies} > ${before} && !document.querySelector(".live")`);
+      };
+      const newest = async () =>
+        text(await page(`[...document.querySelectorAll(".meta .stamp[id]")].at(-1)?.id.slice(2)`));
+      await send("which port does it use");
+      const answer = await newest();
+      await send(`label ${answer} reply`);
+      await send("keep going on the check");
+      const progress = await newest();
+      await send(`label ${progress} update`);
+      await browser("click", ".filters [aria-label=replies]");
+      await browser("wait", "--fn", `!document.getElementById('m-${progress}')`);
+      check(
+        (await page(
+          `document.querySelector(".filters [aria-label=replies]").getAttribute("aria-pressed")`,
+        )) === "true",
+        "the replies filter isn't shown as on",
+      );
+      check(
+        (await page(`!!document.getElementById('m-${answer}')`)) === true,
+        "the replies filter hides the front's reply",
+      );
+      check(
+        (await page(
+          `[...document.querySelectorAll(".transcript .user")].some((node) => node.textContent.includes("which port does it use"))`,
+        )) === true,
+        "the replies filter hides the question the reply answers",
+      );
+      check(
+        (await page(
+          `[...document.querySelectorAll(".transcript .user")].some((node) => node.textContent.includes("keep going on the check"))`,
+        )) === false,
+        "the replies filter shows a message the front answered with an update",
+      );
+      await capture("inbox-replies", home, origin);
+      await browser("click", ".filters [aria-label=all]");
+      await browser("wait", `#m-${progress}`);
+      return `reply ${answer} under its question, update ${progress} left out`;
+    },
+  );
+
+  await journey(
     "labels: glyphs, goal ids and reply controls; a goal thread has counted, folding details",
     async () => {
       const ids: string[] = [];

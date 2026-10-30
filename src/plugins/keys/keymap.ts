@@ -59,6 +59,7 @@ const FILTERS: Readonly<Record<string, [string, string, string]>> = {
   "?": ["feed.ask", "?", "asks"],
   d: ["feed.milestone", "✓", "done"],
   u: ["feed.update", "…", "updates"],
+  r: ["feed.reply", "⇄", "replies"],
 };
 
 const lines = (table: Readonly<Record<string, [string, string, string]>>) =>

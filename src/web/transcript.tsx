@@ -568,9 +568,56 @@ function anchor(item: Notice, view: ConversationView): number {
   return found;
 }
 
-/** Whether an entry with this inbox label shows under `shown`, the feed's filter. */
-function inFeed(shown: Filter, item: InboxItem | undefined): boolean {
+/** Whether an entry is something the person wrote: not a worker's notice, a job's ping or a system line. */
+function typed(entry: EntryRecord): boolean {
+  const message = entry.model?.[0];
+  if (entry.kind !== "pi.user" || message?.role !== "user" || workerNotice(entry) !== undefined)
+    return false;
+  const { text } = messageParts(message.content);
+  return systemNoticeSummary(text) === undefined && parseJobNotice(text) === undefined;
+}
+
+/**
+ * Under the replies lens, the person's messages that a kept reply answers: the ones typed since the front last spoke
+ * before it, so each reply reads under its question and a message answered otherwise stays out.
+ */
+function questions(
+  shown: Filter,
+  entries: readonly EntryRecord[],
+  items: ReadonlyMap<number, InboxItem>,
+): ReadonlySet<number> {
+  const asked = new Set<number>();
+  if (shown.kind !== "reply") return asked;
+  let open: number[] = [];
+  let spoke = false;
+  for (const entry of entries) {
+    if (typed(entry)) {
+      if (spoke) open = [];
+      spoke = false;
+      open.push(entry.id);
+      continue;
+    }
+    const item = items.get(entry.id);
+    if (item === undefined) continue;
+    spoke = true;
+    if (labeled(shown, item)) for (const id of open) asked.add(id);
+  }
+  return asked;
+}
+
+/** Whether an entry with this inbox label shows under `shown`, the feed's filter; `asked` from `questions`. */
+function inFeed(
+  shown: Filter,
+  entry: EntryRecord,
+  item: InboxItem | undefined,
+  asked: ReadonlySet<number>,
+): boolean {
   if (shown.kind === undefined && shown.goal === undefined) return true;
+  return asked.has(entry.id) || labeled(shown, item);
+}
+
+/** Whether a labeled message is one the filter keeps. */
+function labeled(shown: Filter, item: InboxItem | undefined): boolean {
   return (
     item !== undefined &&
     (shown.kind === undefined || item.kind === shown.kind) &&
@@ -706,8 +753,9 @@ function feedRows(): FeedRow[] {
   const ids = shortIds.get(state.conversation.id);
   if (ids === undefined) return [];
   const rows: FeedRow[] = [];
+  const asked = questions(shownFilter, state.entries, items);
   for (const entry of state.entries) {
-    if (!addressable(entry) || !inFeed(shownFilter, items.get(entry.id))) continue;
+    if (!addressable(entry) || !inFeed(shownFilter, entry, items.get(entry.id), asked)) continue;
     const { who, text, lower } = searchText(entry);
     if (text.trim() === "") continue;
     rows.push({ code: ids.split(entry.id).code, who, at: sentAt(entry) ?? 0, text, lower });
@@ -754,7 +802,8 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
   const items = new Map(front ? inbox.value.map((item) => [item.entry, item]) : []);
   const shownFilter = front ? filter.value : {};
   const filtered = shownFilter.kind !== undefined || shownFilter.goal !== undefined;
-  const keep = (entry: EntryRecord) => inFeed(shownFilter, items.get(entry.id));
+  const asked = questions(shownFilter, view.entries, items);
+  const keep = (entry: EntryRecord) => inFeed(shownFilter, entry, items.get(entry.id), asked);
   const results = new Map<string, ToolResultMessage>();
   for (const entry of view.entries)
     for (const message of entry.model ?? [])
@@ -977,7 +1026,9 @@ export function Transcript({ view, front }: { view: ConversationView; front: boo
   }, [history?.entries]);
   // The front's filter shows every message it counts: history is loaded back to the oldest of them.
   const wanted = filtered
-    ? Math.min(...inbox.value.filter((item) => inFeed(shownFilter, item)).map((item) => item.entry))
+    ? Math.min(
+        ...inbox.value.filter((item) => labeled(shownFilter, item)).map((item) => item.entry),
+      )
     : Infinity;
   useEffect(() => {
     if (Number.isFinite(wanted)) void loadEarlier(name, wanted);
