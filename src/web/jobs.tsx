@@ -1,7 +1,7 @@
 /**
  * The jobs menu (`/jobs`), a sheet over the editor: every job, one line each (state, name, the worker it wakes, and
  * when it runs next or ran), followed while it is open. Right of the box: pause or resume the
- * selection. Its view bar shows or hides each state, opens the selection's details, and orders them.
+ * selection, or run it now. Its view bar shows or hides each state, opens the selection's details, and orders them.
  */
 import { signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
@@ -123,12 +123,18 @@ function pause(job: Job | undefined): void {
   run("job.control", job.name, job.status === "paused" ? "resume" : "pause");
 }
 
+function runNow(job: Job | undefined): void {
+  if (job === undefined || job.type === "bg" || job.status !== "active") return;
+  run("job.control", job.name, "run_now");
+}
+
 export const JOBS: SheetSpec = {
   orders: ORDERS,
   keys: () => (sheet.value === undefined ? [] : jobRows(sheet.value).map((job) => job.name)),
   take: (index) => take(sheet.value === undefined ? undefined : jobRows(sheet.value)[index]),
   chords: () => [
     { key: "p", glyph: "‖", label: "pause or resume", run: () => pause(selected()) },
+    { key: "r", glyph: "↻", label: "run now", run: () => runNow(selected()) },
     ...(sheet.value === undefined ? [] : lookChords(sheet.value.look, segments(), ORDERS, true)),
   ],
 };
@@ -274,20 +280,31 @@ export function JobsSheet({ open }: { open: Sheet }) {
   );
 }
 
-/** Right of the box: pause or resume the selection, when it is a schedule; a `bg` command has neither. */
+/** Right of the box: pause or resume the selection, or run it now, when it is a schedule; a `bg` command has neither. */
 export function JobsActions({ open }: { open: Sheet }) {
   const job = chosen(open, jobRows(open));
   if (job === undefined || job.type === "bg") return null;
   const paused = job.status === "paused";
   return (
-    <Key
-      class="icon"
-      label={paused ? "resume" : "pause"}
-      title={`${paused ? "resume" : "pause"} (spc p)`}
-      onPress={() => pause(job)}
-    >
-      {paused ? "▶\uFE0E" : "‖"}
-    </Key>
+    <>
+      <Key
+        class="icon"
+        label={paused ? "resume" : "pause"}
+        title={`${paused ? "resume" : "pause"} (spc p)`}
+        onPress={() => pause(job)}
+      >
+        {paused ? "▶\uFE0E" : "‖"}
+      </Key>
+      <Key
+        class="icon"
+        label="run now"
+        title={paused ? "only an active schedule runs now" : "run now (spc r)"}
+        disabled={paused}
+        onPress={() => runNow(job)}
+      >
+        ↻
+      </Key>
+    </>
   );
 }
 

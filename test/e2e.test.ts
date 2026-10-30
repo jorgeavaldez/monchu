@@ -413,20 +413,37 @@ describe("Monchu end to end", { timeout: 120_000 }, () => {
     expect(await ok("job", { action: "output", name: "e2e-bg" })).toContain("job-done");
   });
 
-  it("pauses and resumes a scheduled job from a client", async () => {
-    await ok("job", {
-      action: "create",
-      type: "command",
-      name: "e2e-cmd",
-      schedule: "@daily",
-      command: "echo scheduled",
+  it("pauses, resumes and runs a scheduled job now from a client that follows its runs", async () => {
+    let runs = -1;
+    const stop = await monchu.client.watchJobs((state) => {
+      runs = state.jobs.find((job) => job.name === "e2e-cmd")?.runs ?? -1;
     });
-    expect(await monchu.client.controlJob("e2e-cmd", "pause")).toBe("Paused e2e-cmd");
-    expect((await monchu.client.jobs()).jobs.find((job) => job.name === "e2e-cmd")?.status).toBe(
-      "paused",
-    );
-    expect(await monchu.client.controlJob("e2e-cmd", "resume")).toBe("Resumed e2e-cmd");
-    await ok("job", { action: "delete", name: "e2e-cmd" });
+    try {
+      await ok("job", {
+        action: "create",
+        type: "command",
+        name: "e2e-cmd",
+        schedule: "@daily",
+        command: "echo scheduled",
+      });
+      await waitFor(() => runs === 1);
+      // Waiting for its next slot, it runs at once; the output didn't change, so only the count shows it.
+      expect(await monchu.client.controlJob("e2e-cmd", "run_now")).toBe("e2e-cmd runs now");
+      await waitFor(() => runs === 2);
+      expect(await monchu.client.controlJob("e2e-cmd", "pause")).toBe("Paused e2e-cmd");
+      expect((await monchu.client.jobs()).jobs.find((job) => job.name === "e2e-cmd")?.status).toBe(
+        "paused",
+      );
+      await expect(monchu.client.controlJob("e2e-cmd", "run_now")).rejects.toThrow(
+        "resume it first",
+      );
+      expect(await monchu.client.controlJob("e2e-cmd", "resume")).toBe("Resumed e2e-cmd");
+      expect(await monchu.client.controlJob("e2e-cmd", "run_now")).toBe("e2e-cmd runs now");
+      await waitFor(() => runs === 3);
+    } finally {
+      stop();
+      await ok("job", { action: "delete", name: "e2e-cmd" });
+    }
   });
 
   it("starts workers that report to the front, and messages, closes a batch or one from a client, reopens and stops them", async () => {

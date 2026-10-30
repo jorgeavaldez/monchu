@@ -358,16 +358,12 @@ export default defineFacet<Principal>(
         events,
         nextEvent,
       });
+      // Every change, not only events: a run whose output didn't change moves only the counts.
       const jobsState = fed(
         self,
         "jobsState",
         async () => jobState(await monchu().jobs()),
-        (set, first) =>
-          monchu().watchJobEvents(first.nextEvent - 1, () => {
-            void monchu()
-              .jobs()
-              .then((next) => set(jobState(next)));
-          }),
+        (set) => monchu().watchJobs((next) => set(jobState(next))),
       );
       const secrets = fed<SecretsState>(
         self,
