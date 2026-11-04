@@ -714,6 +714,36 @@ describe("Claude Code subscription provider", () => {
     expect(script.requests[7]?.path).toBe(firstPath);
   });
 
+  it("sends a compacted history, shorter than the session it had, instead of a clean start", async () => {
+    const value = await setup();
+    const script = scriptedClaude(value.directory, config, async function* () {
+      yield* claudeResponse([{ type: "text", text: "answer" }]);
+    });
+    const models = await openClaudeModels(value.directory, script.provider, token);
+    const model = models.getModel("claude-code", role.modelId);
+    assert(model);
+    const options = { sessionId: "compacted-conversation" };
+    const messages: Message[] = [];
+    for (const [index, text] of ["one", "two", "three"].entries()) {
+      messages.push({ role: "user", content: text, timestamp: index + 1 });
+      messages.push(await models.completeSimple(model, { messages }, options));
+    }
+    // Durable's compaction: a summary and the newest exchange, fewer messages than the session holds.
+    const compacted: Message[] = [
+      { role: "user", content: "summary of one and two", timestamp: 7 },
+      ...messages.slice(4),
+      { role: "user", content: "four", timestamp: 8 },
+    ];
+    await models.completeSimple(model, { messages: compacted }, options);
+    const request = script.requests[3];
+    expect(request?.input.options?.resume).toBeDefined();
+    expect(request?.history.map((entry) => entry.message.content)).toEqual([
+      "summary of one and two",
+      "three",
+      expect.anything(),
+    ]);
+  });
+
   it("pins Claude Code's cache TTL by retention, 1h on overage too, and reports overage on the reply", async () => {
     const value = await setup();
     const script = scriptedClaude(value.directory, config, async function* () {

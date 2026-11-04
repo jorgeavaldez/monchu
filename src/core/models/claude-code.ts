@@ -602,14 +602,16 @@ export function createClaudeCodeProvider(
         if (live === undefined) {
           const state = sessions.get(key);
           const priorKeys = claudeHistoryKeys(turn.prior);
+          // A compaction shortens the history as it rewrites it: the session holds what the model no longer sees.
           if (
             state !== undefined &&
-            priorKeys.length >= state.cursor &&
             state.history
               .slice(0, priorKeys.length)
               .some((value, index) => priorKeys[index] !== value)
           )
             state.rebuild ??= "history";
+          if (state !== undefined && priorKeys.length > 0 && priorKeys.length < state.cursor)
+            state.rebuild ??= "shorter";
           // Without a live query, a tool-result continuation must import the actual results before resuming.
           if (state !== undefined && turn.history.at(-1)?.role === "toolResult")
             state.rebuild ??= "tool results";
@@ -629,9 +631,11 @@ export function createClaudeCodeProvider(
             if (
               state !== undefined &&
               state.rebuild === undefined &&
-              turn.prior.length < state.cursor
+              turn.prior.length === 0 &&
+              state.cursor > 0
             ) {
-              // The bridge's shorter-context clean start must not overwrite the shared mirror.
+              // The bridge's clean start for a lone prompt must not overwrite the shared mirror. A shorter history that
+              // isn't empty is rebuilt above: a clean start would send none of it.
               preserveSharedSession = true;
               cachePath = "ephemeral";
             } else if (turn.prior.length) {
