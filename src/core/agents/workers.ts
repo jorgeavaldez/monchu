@@ -496,8 +496,44 @@ async function expiredHandoff(
   );
 }
 
-/** Delivery of one message to a worker; with `cacheWindow`, a worker idle past it starts the message fresh. */
-function deliveryTask(cacheWindow?: CacheWindow) {
+/** The share of a `window`-token context window a conversation is capped at; `undefined` for no cap. */
+export type ContextCapPercent = (window: number) => number | undefined;
+
+/** A worker's context against its cap: the size its newest reply reported, and the cap its model's window gives. */
+async function contextLoad(
+  tx: Tx,
+  models: Pick<Models, "getModel">,
+  conversationId: ConversationId,
+  contextCap: ContextCapPercent,
+): Promise<{ tokens: number; cap: number } | undefined> {
+  const { contextTokens } = await lastActivity(tx, conversationId);
+  const model = (await tx.doc(AgentDoc, conversationId)).model;
+  const window =
+    model === undefined ? undefined : models.getModel(model.provider, model.modelId)?.contextWindow;
+  const percent = window === undefined ? undefined : contextCap(window);
+  if (contextTokens === undefined || window === undefined || percent === undefined)
+    return undefined;
+  return { tokens: contextTokens, cap: Math.floor((window * percent) / 100) };
+}
+
+/** What the parent hears of a worker past its context cap; `undefined` within it. */
+function pastCap(
+  name: string,
+  load: { tokens: number; cap: number } | undefined,
+): string | undefined {
+  if (load === undefined || load.tokens <= load.cap) return undefined;
+  const k = (tokens: number) => `${Math.round(tokens / 1000)}k`;
+  return `${name} is past its context cap (${k(load.tokens)} of ${k(load.cap)})`;
+}
+
+const HAND_OFF =
+  "hand its next ask to a fresh worker with start_worker and a handoff: intent, state, goal, vault note, workspace and artifacts";
+
+/**
+ * Delivery of one message to a worker; with `cacheWindow`, a worker idle past it starts the message fresh, and with
+ * `contextCap`, a report from a worker past its cap says so.
+ */
+function deliveryTask(cacheWindow?: CacheWindow, contextCap?: ContextCapPercent) {
   return defineTask<
     DeliveryInput,
     { phase: "deliver" } | { phase: "report"; result: WorkerResult | null; whenBusy: WhenBusy },
@@ -578,7 +614,19 @@ function deliveryTask(cacheWindow?: CacheWindow) {
               if (entry === undefined) throw new Error("Worker answer is missing");
               if (text.trim() !== "" && (task.input.quiet !== true || needsUser(text))) {
                 record.reported.push(settled.answer);
-                result = { ...base, status: "completed", answerId: settled.answer, text };
+                const past =
+                  contextCap === undefined
+                    ? undefined
+                    : pastCap(
+                        task.input.name,
+                        await contextLoad(tx, runtime.models, runtime.conversationId, contextCap),
+                      );
+                result = {
+                  ...base,
+                  status: "completed",
+                  answerId: settled.answer,
+                  text: past === undefined ? text : `${text}\n\n[${past}: ${HAND_OFF}.]`,
+                };
               }
             }
           }
@@ -988,11 +1036,12 @@ export function createWorkerTools(
   profiles: Record<string, WorkerProfile> = {},
   preload: readonly string[] = [],
   cacheWindow?: CacheWindow,
+  contextCap?: ContextCapPercent,
 ) {
   const profilesText = profileList(profiles);
   return defineExtension({
     name: "monchu.workers",
-    tasks: [Anchor, deliveryTask(cacheWindow)],
+    tasks: [Anchor, deliveryTask(cacheWindow, contextCap)],
     tools: [
       defineTool({
         name: "start_worker",
@@ -1043,6 +1092,21 @@ export function createWorkerTools(
         }),
         replay: "safe",
         execute: async (args, api, context) => {
+          if (contextCap !== undefined) {
+            const workerId = await workerConversationId(
+              api,
+              api.conversationId,
+              args.name,
+              context,
+            );
+            const past = await api.commit(
+              async (tx) =>
+                pastCap(args.name, await contextLoad(tx, api.models, workerId, contextCap)),
+              context,
+            );
+            if (past !== undefined)
+              throw new Error(`${past}: ${HAND_OFF}; stop_worker it first if it is still running`);
+          }
           await api.commit(
             (tx) =>
               messageWorker(
@@ -1061,7 +1125,7 @@ export function createWorkerTools(
       defineTool({
         name: "worker_status",
         description:
-          "List this conversation's persistent background workers: directory, model, whether they have pending work, minutes since each last did something (idleMinutes), and its context size in tokens. Closed workers are listed only with include_closed.",
+          "List this conversation's persistent background workers: directory, model, whether they have pending work, minutes since each last did something (idleMinutes), its context size in tokens and its cap (pastCap when over it: hand its next ask to a fresh worker). Closed workers are listed only with include_closed.",
         parameters: Type.Object({ include_closed: Type.Optional(Type.Boolean()) }),
         replay: "safe",
         execute: async (args, api, context) => {
@@ -1072,12 +1136,33 @@ export function createWorkerTools(
             args.include_closed === true,
           );
           const now = Date.now();
+          // The cap its model's window gives, for a worker on a known model.
+          const capOf = (model: string | undefined) => {
+            const slash = model?.indexOf("/") ?? -1;
+            if (model === undefined || slash < 0 || contextCap === undefined) return undefined;
+            const window = api.models.getModel(
+              model.slice(0, slash),
+              model.slice(slash + 1),
+            )?.contextWindow;
+            const percent = window === undefined ? undefined : contextCap(window);
+            return window === undefined || percent === undefined
+              ? undefined
+              : Math.floor((window * percent) / 100);
+          };
           return {
             output: [
               {
                 type: "text",
                 text: JSON.stringify(
-                  workers.map(({ activeAt, running, ...worker }) => {
+                  workers.map(({ activeAt, running, ...listed }) => {
+                    const cap = capOf(listed.model);
+                    const worker = {
+                      ...listed,
+                      ...(cap === undefined ? {} : { contextCap: cap }),
+                      ...(cap !== undefined && (listed.contextTokens ?? 0) > cap
+                        ? { pastCap: true }
+                        : {}),
+                    };
                     const minutes =
                       activeAt === undefined
                         ? undefined
@@ -1154,8 +1239,23 @@ export function createWorkerTools(
             if (!state.queued.includes(requestId)) state.queued.push(requestId);
             return reportWhenBusy(tx, parentId);
           }, context);
+          const past =
+            contextCap === undefined
+              ? undefined
+              : await api.commit(
+                  async (tx) =>
+                    pastCap(
+                      record.name,
+                      await contextLoad(tx, api.models, api.conversationId, contextCap),
+                    ),
+                  context,
+                );
           const content = noticeText(
-            { name: record.name, status: "update", text: args.text },
+            {
+              name: record.name,
+              status: "update",
+              text: past === undefined ? args.text : `${args.text}\n\n[${past}: ${HAND_OFF}.]`,
+            },
             whenBusy === "steer",
           );
           await parent.submit({ type: "input", content, whenBusy, requestId }, context);

@@ -1284,6 +1284,56 @@ describe("worker lifecycle", () => {
     await harness.close(context);
   });
 
+  it("flags a worker past its context cap in its report and status, and refuses it new asks", async () => {
+    const value = await setup();
+    // A cap of 1% of the faux model's 128000-token window: any worker is past it after one answer.
+    value.registry.install(
+      createWorkerTools(
+        () => fauxRole,
+        {},
+        [],
+        undefined,
+        () => 1,
+      ),
+    );
+    route(
+      value.faux,
+      callTools({
+        more: { tool: "message_worker", args: { name: "w", message: "more" } },
+        status: { tool: "worker_status", args: {} },
+      }),
+    );
+    const { harness, root } = await open(value);
+    await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "work", value.directory, "cap:0", fauxRole),
+      context,
+    );
+    await settle(harness, root);
+    const [report] = await reports(root);
+    assert(report !== undefined);
+    expect(workerNotice(report)?.text).toMatch(
+      /^ok\n\n\[w is past its context cap \(\d+k of 1k\): hand its next ask to a fresh worker with start_worker and a handoff: intent, state, goal, vault note, workspace and artifacts\.\]$/,
+    );
+    let asked = 0;
+    const ask = async (content: string) => {
+      await (
+        await root.submit({ type: "input", content, requestId: `${content}:${++asked}` }, context)
+      ).wait(context);
+      return (await toolResults(root)).at(-1);
+    };
+    const refused = await ask("more");
+    expect(refused?.isError).toBe(true);
+    expect(textOf(refused)).toContain("w is past its context cap");
+    expect(textOf(refused)).toContain("stop_worker it first if it is still running");
+    expect(JSON.parse(textOf(await ask("status")))).toMatchObject([
+      { name: "w", contextCap: 1280, pastCap: true },
+    ]);
+    // Nothing reached the worker: its only ask is the first.
+    expect(await harness.snapshot(WorkersDoc, root.id, context)).toMatchObject({ started: 1 });
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
   it("closes workers in a batch as soon as their reports arrive, reporting each name", async () => {
     const value = await setup();
     let release!: () => void;

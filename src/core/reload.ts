@@ -23,6 +23,8 @@ import { BUILD, BuildHost, Builds, type Build, type BuildInputs } from "./build.
 import { FffFinders } from "./tools/fff.ts";
 import type { ClaudeTools } from "./tools/tool-search.ts";
 import { HomeCheck } from "./home-check.ts";
+import { autoCompactCommand } from "./context-cap.ts";
+import { describeContextCap } from "./config.ts";
 import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
@@ -429,9 +431,15 @@ export class Extensions {
     return this.current.plugins.attached;
   }
 
-  /** Plugins' slash commands as of the last build. */
+  /** Monchu's own slash commands, then the plugins' as of the last build. */
   get commands(): readonly PluginCommandEntry[] {
-    return this.current.plugins.commands;
+    return [
+      autoCompactCommand(
+        () => this.current.settings.autoCompact,
+        () => describeContextCap(this.current.settings),
+      ),
+      ...this.current.plugins.commands,
+    ];
   }
 
   /** What the last build's plugins add to the front, `/login` and the clients. */

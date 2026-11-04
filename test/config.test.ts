@@ -334,8 +334,8 @@ describe("config", () => {
   it("caps context by window size and finds each model's cache window, by default and as configured", async () => {
     const defaults = resolveSettings((await loadConfig(await home({}))).settings);
     expect(
-      [1_000_000, 272_000, 200_000].map((window) => contextCapPercent(defaults, window)),
-    ).toEqual([40, 70, 70]);
+      [1_000_000, 500_000, 272_000, 200_000].map((window) => contextCapPercent(defaults, window)),
+    ).toEqual([40, 38, 70, 70]);
     expect(cacheWindowMs(defaults, { provider: "claude-code", modelId: "claude-opus-5-5" })).toBe(
       3_600_000,
     );

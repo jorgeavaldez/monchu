@@ -96,7 +96,7 @@ export function createBrowserTool(monchu: Pick<PluginApi, "secrets" | "agents">)
       ),
       namespace: {
         description:
-          "drive a real browser with agent-browser: open pages, snapshot, click, fill, screenshot. For pages that need interaction or JavaScript; use web search and scrape for reading. Stop at explicit boundaries; ask before purchases, account or security changes and destructive actions; never bypass CAPTCHAs or drive public search-engine forms",
+          "drive a real browser with agent-browser: open pages, snapshot, click, fill, screenshot. For pages that need interaction or JavaScript; use web search and scrape for reading. Stop at explicit boundaries; ask before purchases, account or security changes and destructive actions; solve a CAPTCHA in the course of approved work as a person would, never with solving services or exploits; never drive public search-engine forms",
         instructions: ({ durable: { api, context } }) =>
           capture(api, ["skills", "get", "core"], context),
         preload: true,

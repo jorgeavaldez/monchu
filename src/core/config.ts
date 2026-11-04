@@ -56,6 +56,8 @@ export type RunSettings = {
      * percent for every model, or percents by the smallest window they apply to, such as `{ "0": 70, "1000000": 40 }`.
      */
     maxContextPercent?: number | Record<string, number>;
+    /** Whether the cap compacts on its own; `/autocompact` changes it on a device, everywhere or per conversation. */
+    auto?: boolean;
   };
   /**
    * Prompt cache lifetimes in minutes, by provider or `provider/modelId` (which wins): a worker idle past its model's
@@ -78,8 +80,11 @@ export type RunSettings = {
 
 export type Settings = ReturnType<typeof resolveSettings>;
 
-/** 40% of a 1M window, 70% of anything smaller. */
-const DEFAULT_CONTEXT_CAP: Record<string, number> = { 0: 70, 1000000: 40 };
+/**
+ * 40% of a 1M window; 38% of a 500k one (about 190k, as GPT-6.1 Sol's price doubles past 272k); 70% of anything
+ * smaller.
+ */
+const DEFAULT_CONTEXT_CAP: Record<string, number> = { 0: 70, 500000: 38, 1000000: 40 };
 
 /**
  * The prompt cache lifetimes Monchu gets, as it asks for the longest retention each offers: Anthropic's 1h TTL
@@ -91,6 +96,19 @@ const DEFAULT_CACHE_WINDOWS: Record<string, number> = {
   openai: 30,
   "openai-codex": 30,
 };
+
+/** The cap's tiers for people: "40% of 1M windows, 38% of 500k, 70% of smaller". */
+export function describeContextCap(settings: Settings): string {
+  const size = (tokens: number) =>
+    tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${Math.round(tokens / 1000)}k`;
+  return settings.contextCap
+    .map(({ window, percent }, index) =>
+      window === 0
+        ? `${percent}% of ${index === 0 ? "every window" : "smaller"}`
+        : `${percent}% of ${size(window)}${index === 0 ? " windows" : ""}`,
+    )
+    .join(", ");
+}
 
 /** The share of a `window`-token context window past which a conversation compacts; `undefined` for none. */
 export function contextCapPercent(settings: Settings, window: number): number | undefined {
@@ -156,6 +174,7 @@ export function resolveSettings(settings: RunSettings) {
       .map(([window, percent]) => ({ window: Number(window), percent }))
       .toSorted((a, b) => b.window - a.window),
     cacheWindowMinutes: { ...DEFAULT_CACHE_WINDOWS, ...settings.cacheWindowMinutes },
+    autoCompact: settings.compaction?.auto ?? true,
     providerRetry: {
       timeoutMs: settings.retry?.provider?.timeoutMs,
       maxRetries: settings.retry?.provider?.maxRetries,
@@ -520,6 +539,7 @@ function runSettings(value: unknown): RunSettings {
       "reserveTokens",
       "keepRecentTokens",
       "maxContextPercent",
+      "auto",
     ]);
     settings.compaction = {};
     if (value.compaction.enabled !== undefined)
@@ -527,6 +547,8 @@ function runSettings(value: unknown): RunSettings {
         value.compaction.enabled,
         "settings.compaction.enabled",
       );
+    if (value.compaction.auto !== undefined)
+      settings.compaction.auto = boolean(value.compaction.auto, "settings.compaction.auto");
     for (const key of ["reserveTokens", "keepRecentTokens"] as const)
       if (value.compaction[key] !== undefined)
         settings.compaction[key] = integer(value.compaction[key], `settings.compaction.${key}`, 1);

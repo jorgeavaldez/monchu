@@ -13,7 +13,7 @@ import { createMemory } from "./agents/memory.ts";
 import { Roots } from "./agents/roots.ts";
 import { createWorkerTools } from "./agents/workers.ts";
 import { BUILD, BuildHost, Builds, RELOAD_TOOLS, type Build, type BuildInputs } from "./build.ts";
-import { cacheWindowMs } from "./config.ts";
+import { cacheWindowMs, contextCapPercent } from "./config.ts";
 import { createContext } from "./context.ts";
 import { createHomeCheck } from "./home-check.ts";
 import { createIdentity } from "./identity.ts";
@@ -48,8 +48,12 @@ async function build(inputs: BuildInputs): Promise<Build> {
   const mcp = await createMcpTools(mcpConfig.servers, inputs.clients);
   const secrets = createSecrets(inputs.vault);
   const workers = (preload: readonly string[]) =>
-    createWorkerTools(inputs.workerRole, config.profiles, preload, (model) =>
-      cacheWindowMs(context.settings, model),
+    createWorkerTools(
+      inputs.workerRole,
+      config.profiles,
+      preload,
+      (model) => cacheWindowMs(context.settings, model),
+      (window) => contextCapPercent(context.settings, window),
     );
   const jobs = (preload: readonly string[]) =>
     createJobs(inputs.workerRole, inputs.home, inputs.vault, config.profiles, preload);

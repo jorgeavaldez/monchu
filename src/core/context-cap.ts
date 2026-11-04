@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
+  defineDoc,
   InboxDoc,
   LiveDoc,
   type CommitPublication,
@@ -10,6 +11,72 @@ import {
 } from "@earendil-works/pi-durable";
 import { GOALS_COMPACTION_FOCUS } from "./agents/goals.ts";
 import { rootRecord, RootsDoc } from "./agents/root-records.ts";
+import { WorkersDoc } from "./agents/workers.ts";
+import type { PluginCommandEntry } from "./plugins.ts";
+
+/**
+ * Whether the cap compacts on its own on this device, as `/autocompact` set it: everywhere (`all`), and for single
+ * conversations, which win. Unset follows `settings.compaction.auto`.
+ */
+const AutoCompactDoc = defineDoc<{ all?: boolean; conversations: Record<string, boolean> }>({
+  kind: "monchu.autocompact",
+  version: 1,
+  scope: "session",
+  initial: () => ({ conversations: {} }),
+});
+
+/** Whether the cap compacts conversation `id` on its own. */
+function autoCompacts(
+  state:
+    | { readonly all?: boolean; readonly conversations: Readonly<Record<string, boolean>> }
+    | undefined,
+  id: ConversationId,
+  configured: boolean,
+): boolean {
+  return state?.conversations[String(id)] ?? state?.all ?? configured;
+}
+
+/**
+ * `/autocompact [on|off] [here|<worker>]`: show or set whether the cap compacts on its own, everywhere on this device,
+ * in the conversation the client shows (`here`), or in one of the root's workers by name.
+ */
+export function autoCompactCommand(
+  configured: () => boolean,
+  caps: () => string,
+): PluginCommandEntry {
+  return {
+    name: "autocompact",
+    plugin: "monchu",
+    usage: "[on|off] [here|<worker>]",
+    description:
+      "automatic compaction at the context cap: show it, or turn it on or off everywhere, here or for a worker",
+    handler: async (args, ctx) => {
+      const [action, target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+      if (extra.length > 0 || (action !== undefined && action !== "on" && action !== "off"))
+        throw new Error("Usage: /autocompact [on|off] [here|<worker>]");
+      const line = await ctx.commit(async (tx) => {
+        const state = await tx.doc(AutoCompactDoc);
+        let id: ConversationId | undefined;
+        if (target === "here") id = ctx.conversationId;
+        else if (target !== undefined) {
+          id = (await tx.doc(WorkersDoc, ctx.root)).workers.find(
+            (worker) => worker.name === target,
+          )?.conversationId;
+          if (id === undefined) throw new Error(`No worker named ${target}`);
+        }
+        const where =
+          target === undefined ? "everywhere" : target === "here" ? "here" : `for ${target}`;
+        if (action !== undefined) {
+          if (id === undefined) state.all = action === "on";
+          else state.conversations[String(id)] = action === "on";
+        }
+        const on = autoCompacts(state, id ?? ctx.conversationId, configured());
+        return `automatic compaction ${on ? "on" : "off"} ${action === undefined ? "here" : where} · ${caps()}`;
+      });
+      ctx.ui.notify(line);
+    },
+  };
+}
 
 /**
  * Leads the instructions of a compaction the cap starts, so the compaction hook can decline it when a run started
@@ -32,6 +99,7 @@ export class ContextCap {
   private readonly harness: Harness;
   private readonly models: Pick<Models, "getModel">;
   private readonly percent: (window: number) => number | undefined;
+  private readonly auto: () => boolean;
   private readonly report: (error: unknown) => void;
   private readonly context: Context;
 
@@ -39,12 +107,14 @@ export class ContextCap {
     harness: Harness,
     models: Pick<Models, "getModel">,
     percent: (window: number) => number | undefined,
+    auto: () => boolean,
     report: (error: unknown) => void,
     context: Context,
   ) {
     this.harness = harness;
     this.models = models;
     this.percent = percent;
+    this.auto = auto;
     this.report = report;
     this.context = context;
   }
@@ -67,6 +137,8 @@ export class ContextCap {
   }
 
   private async compact(id: ConversationId, tokens: number): Promise<void> {
+    const toggled = await this.harness.snapshot(AutoCompactDoc, this.context);
+    if (!autoCompacts(toggled, id, this.auto())) return;
     const conversation = await this.harness.conversation(id, this.context);
     if (conversation === undefined) return;
     const { model } = await conversation.agent(this.context);

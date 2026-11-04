@@ -196,6 +196,7 @@ export class Monchu implements Client {
       harness,
       models,
       (window) => contextCapPercent(this.extensions.settings, window),
+      () => this.extensions.settings.autoCompact,
       (error) => {
         if (this.closing === undefined)
           this.reports.report(
