@@ -47,7 +47,21 @@ export type RunSettings = {
     maxAgentDelayMs?: number;
     provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number };
   };
-  compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+  compaction?: {
+    enabled?: boolean;
+    reserveTokens?: number;
+    keepRecentTokens?: number;
+    /**
+     * Compact a conversation once a final answer leaves its context above this share of its model's window: one
+     * percent for every model, or percents by the smallest window they apply to, such as `{ "0": 70, "1000000": 40 }`.
+     */
+    maxContextPercent?: number | Record<string, number>;
+  };
+  /**
+   * Prompt cache lifetimes in minutes, by provider or `provider/modelId` (which wins): a worker idle past its model's
+   * starts its next message on a fresh context with a handoff instead of sending the expired one again. 0 turns it off.
+   */
+  cacheWindowMinutes?: Record<string, number>;
   httpIdleTimeoutMs?: number;
   shellPath?: string;
   shellCommandPrefix?: string;
@@ -63,6 +77,36 @@ export type RunSettings = {
 };
 
 export type Settings = ReturnType<typeof resolveSettings>;
+
+/** 40% of a 1M window, 70% of anything smaller. */
+const DEFAULT_CONTEXT_CAP: Record<string, number> = { 0: 70, 1000000: 40 };
+
+/**
+ * The prompt cache lifetimes Monchu gets, as it asks for the longest retention each offers: Anthropic's 1h TTL
+ * (Claude Code included), and OpenAI's 30 minute minimum, refreshed on each read.
+ */
+const DEFAULT_CACHE_WINDOWS: Record<string, number> = {
+  anthropic: 60,
+  "claude-code": 60,
+  openai: 30,
+  "openai-codex": 30,
+};
+
+/** The share of a `window`-token context window past which a conversation compacts; `undefined` for none. */
+export function contextCapPercent(settings: Settings, window: number): number | undefined {
+  return settings.contextCap.find((tier) => window >= tier.window)?.percent;
+}
+
+/** A model's prompt cache lifetime in milliseconds; `undefined` when unknown or turned off. */
+export function cacheWindowMs(
+  settings: Settings,
+  model: { provider: string; modelId: string },
+): number | undefined {
+  const minutes =
+    settings.cacheWindowMinutes[`${model.provider}/${model.modelId}`] ??
+    settings.cacheWindowMinutes[model.provider];
+  return minutes === undefined || minutes === 0 ? undefined : minutes * 60_000;
+}
 
 /** Resolve the validated config into one in-memory snapshot; no settings-file I/O. */
 export function resolveSettings(settings: RunSettings) {
@@ -103,6 +147,15 @@ export function resolveSettings(settings: RunSettings) {
       reserveTokens: settings.compaction?.reserveTokens ?? 16384,
       keepRecentTokens: settings.compaction?.keepRecentTokens ?? 20000,
     },
+    // Largest window first, so the first tier a window reaches is its own.
+    contextCap: Object.entries(
+      typeof settings.compaction?.maxContextPercent === "number"
+        ? { 0: settings.compaction.maxContextPercent }
+        : (settings.compaction?.maxContextPercent ?? DEFAULT_CONTEXT_CAP),
+    )
+      .map(([window, percent]) => ({ window: Number(window), percent }))
+      .toSorted((a, b) => b.window - a.window),
+    cacheWindowMinutes: { ...DEFAULT_CACHE_WINDOWS, ...settings.cacheWindowMinutes },
     providerRetry: {
       timeoutMs: settings.retry?.provider?.timeoutMs,
       maxRetries: settings.retry?.provider?.maxRetries,
@@ -295,6 +348,12 @@ function object(
   for (const key of unknown) ignoring.add(`${field}.${key}`);
 }
 
+function percent(value: unknown, field: string): number {
+  const result = integer(value, field, 1);
+  if (result > 100) throw new Error(`${field} must be at most 100`);
+  return result;
+}
+
 function integer(value: unknown, field: string, min = 0): number {
   if (
     typeof value !== "number" ||
@@ -415,6 +474,7 @@ function runSettings(value: unknown): RunSettings {
     "theme",
     "retry",
     "compaction",
+    "cacheWindowMinutes",
     "httpIdleTimeoutMs",
     "shellPath",
     "shellCommandPrefix",
@@ -459,6 +519,7 @@ function runSettings(value: unknown): RunSettings {
       "enabled",
       "reserveTokens",
       "keepRecentTokens",
+      "maxContextPercent",
     ]);
     settings.compaction = {};
     if (value.compaction.enabled !== undefined)
@@ -469,6 +530,33 @@ function runSettings(value: unknown): RunSettings {
     for (const key of ["reserveTokens", "keepRecentTokens"] as const)
       if (value.compaction[key] !== undefined)
         settings.compaction[key] = integer(value.compaction[key], `settings.compaction.${key}`, 1);
+    const cap = value.compaction.maxContextPercent;
+    const field = "settings.compaction.maxContextPercent";
+    if (typeof cap === "number") settings.compaction.maxContextPercent = percent(cap, field);
+    else if (cap !== undefined) {
+      if (typeof cap !== "object" || cap === null || Array.isArray(cap))
+        throw new Error(`${field} must be a percent or an object of percents by window`);
+      settings.compaction.maxContextPercent = Object.fromEntries(
+        Object.entries(cap).map(([window, value]) => {
+          if (!/^\d+$/.test(window))
+            throw new Error(`${field} keys must be window sizes in tokens, such as "1000000"`);
+          return [window, percent(value, `${field}.${window}`)];
+        }),
+      );
+    }
+  }
+  if (value.cacheWindowMinutes !== undefined) {
+    const windows = value.cacheWindowMinutes;
+    if (typeof windows !== "object" || windows === null || Array.isArray(windows))
+      throw new Error(
+        "settings.cacheWindowMinutes must be an object of minutes by provider or model",
+      );
+    settings.cacheWindowMinutes = Object.fromEntries(
+      Object.entries(windows).map(([key, minutes]) => [
+        key,
+        integer(minutes, `settings.cacheWindowMinutes.${key}`),
+      ]),
+    );
   }
   if (value.retry !== undefined) {
     object(value.retry, "settings.retry", [

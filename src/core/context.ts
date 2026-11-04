@@ -3,6 +3,7 @@ import {
   CompactionTask,
   defineExtension,
   hook,
+  LiveDoc,
   ProviderDoc,
   section,
   type Extension,
@@ -12,6 +13,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveSettings, type RunSettings, type Settings } from "./config.ts";
+import { CAP_COMPACTION } from "./context-cap.ts";
 import { formatSkillsForPrompt, loadSkills, type ResourceDiagnostic } from "./skills/index.ts";
 
 /** Durable's run policy, resolving the latest loaded settings and default extensions on every read. */
@@ -88,7 +90,13 @@ export function createContext(
       name: "monchu.context",
       hooks: [
         hook(CompactionTask, {
-          beforeCompact: async (_compaction, api, context) => {
+          beforeCompact: async (compaction, api, context) => {
+            // Never cut a running turn short to compact: it keeps its request, and its provider notices the shorter
+            // context once the summary is placed. The cap waits for the run's final answer instead.
+            if ((await api.snapshot(LiveDoc, api.conversationId, context))?.run !== undefined)
+              return compaction.instructions?.startsWith(CAP_COMPACTION)
+                ? { decline: true }
+                : undefined;
             const provider = await api.snapshot(ProviderDoc, api.conversationId, context);
             if (provider !== undefined) cleanupSessionResources(provider.sessionId);
           },

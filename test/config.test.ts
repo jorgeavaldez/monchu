@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  cacheWindowMs,
+  contextCapPercent,
   defaultConfig,
   loadConfig,
   loadStartupConfig,
@@ -329,6 +331,40 @@ describe("config", () => {
     expect((await loadConfig(await home({ settings }))).settings).toEqual(settings);
   });
 
+  it("caps context by window size and finds each model's cache window, by default and as configured", async () => {
+    const defaults = resolveSettings((await loadConfig(await home({}))).settings);
+    expect(
+      [1_000_000, 272_000, 200_000].map((window) => contextCapPercent(defaults, window)),
+    ).toEqual([40, 70, 70]);
+    expect(cacheWindowMs(defaults, { provider: "claude-code", modelId: "claude-opus-5-5" })).toBe(
+      3_600_000,
+    );
+    expect(cacheWindowMs(defaults, { provider: "openai-codex", modelId: "gpt-6.1-sol" })).toBe(
+      1_800_000,
+    );
+    expect(cacheWindowMs(defaults, { provider: "unknown", modelId: "m" })).toBeUndefined();
+
+    const settings = {
+      compaction: { maxContextPercent: { 0: 80, 500000: 50 } },
+      cacheWindowMinutes: { "openai-codex": 0, "claude-code/claude-haiku-5-5": 5 },
+    };
+    const configured = resolveSettings((await loadConfig(await home({ settings }))).settings);
+    expect(
+      [1_000_000, 500_000, 272_000].map((window) => contextCapPercent(configured, window)),
+    ).toEqual([50, 50, 80]);
+    expect(
+      cacheWindowMs(configured, { provider: "openai-codex", modelId: "gpt-6.1-sol" }),
+    ).toBeUndefined();
+    expect(
+      cacheWindowMs(configured, { provider: "claude-code", modelId: "claude-haiku-5-5" }),
+    ).toBe(300_000);
+    expect(cacheWindowMs(configured, { provider: "claude-code", modelId: "claude-opus-5-5" })).toBe(
+      3_600_000,
+    );
+    const flat = resolveSettings({ compaction: { maxContextPercent: 60 } });
+    expect([1_000_000, 200_000].map((window) => contextCapPercent(flat, window))).toEqual([60, 60]);
+  });
+
   it.each([
     [{ front: { provider: "p", modelId: "m", thinkingLevel: "huge" } }, "front.thinkingLevel"],
     [{ plugins: [] }, "plugins must be a JSON object"],
@@ -336,6 +372,14 @@ describe("config", () => {
     [{ settings: { retry: { enabled: "yes" } } }, "settings.retry.enabled"],
     [{ settings: { retry: { provider: { timeoutMs: 0 } } } }, "settings.retry.provider.timeoutMs"],
     [{ settings: { compaction: { reserveTokens: -1 } } }, "settings.compaction.reserveTokens"],
+    [{ settings: { compaction: { maxContextPercent: 101 } } }, "at most 100"],
+    [{ settings: { compaction: { maxContextPercent: { "1m": 40 } } } }, "window sizes in tokens"],
+    [{ settings: { compaction: { maxContextPercent: { 0: 0 } } } }, "maxContextPercent.0"],
+    [
+      { settings: { cacheWindowMinutes: { anthropic: -1 } } },
+      "settings.cacheWindowMinutes.anthropic",
+    ],
+    [{ settings: { cacheWindowMinutes: 60 } }, "settings.cacheWindowMinutes must be an object"],
     [{ settings: { httpIdleTimeoutMs: 0.5 } }, "settings.httpIdleTimeoutMs"],
     [{ settings: { shellTimeout: -1 } }, "settings.shellTimeout"],
     [{ settings: { defaultTools: ["bash", "-edit"] } }, "must not mix"],

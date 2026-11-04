@@ -17,6 +17,7 @@ import {
   InboxDoc,
   LiveDoc,
   ProviderDoc,
+  ResetEntry,
   UserEntry,
   type ConversationId,
   type EntryId,
@@ -26,7 +27,7 @@ import {
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
-import { noticeText, type WhenBusy } from "../../api/notices.ts";
+import { noticeText, systemNoticeText, type WhenBusy } from "../../api/notices.ts";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "../config.ts";
 import { preloadGroups, unloadGroups } from "../tools/tool-search.ts";
 import { resolveDirectory } from "../workdir.ts";
@@ -440,146 +441,225 @@ function needsUser(text: string): boolean {
   return /^\s*NEEDS USER\b/.test(text);
 }
 
-const Delivery = defineTask<
-  DeliveryInput,
-  { phase: "deliver" } | { phase: "report"; result: WorkerResult | null; whenBusy: WhenBusy },
-  null
->({
-  name: "monchu.worker-delivery",
-  version: 1,
-  initial: () => ({ phase: "deliver" }),
-  phases: {
-    deliver: async (task, runtime, context) => {
-      const worker = await runtime.conversation(runtime.conversationId, context);
-      if (worker === undefined) throw new Error("Worker conversation is missing");
-      // An awaited input is already admitted, so submitting its request ID again returns it.
-      const submission = await worker.submit(
-        {
-          type: "input",
-          content: task.input.message,
-          whenBusy: task.input.whenBusy,
-          requestId: awaitedRequest(task.id, task.input.awaits),
-        },
-        context,
-      );
-      const settled = await submission.wait(context);
-      await runtime.commit(async (tx) => {
-        let result: WorkerResult | null = null;
-        const base = {
-          name: task.input.name,
-          conversationId: runtime.conversationId,
-          requestId: task.input.requestId,
-          submissionId: submission.id,
-        };
-        // A sub-worker's notice withdrawn unread (a newer update, a stopped sub-worker) asked the worker nothing.
-        const withdrawn = task.input.awaits !== undefined && settled.entry === undefined;
-        if (settled.status === "unanswered" && !withdrawn) {
-          // Messages queued into one run all go unanswered when it fails: report that failure once, with its error.
-          const state = await tx.doc(WorkersDoc, task.input.parentId);
-          const record = state.workers.find(
-            (item) => item.conversationId === runtime.conversationId,
-          );
-          if (record === undefined) throw new Error("Worker record is missing");
-          const error = await latestError(tx, runtime.conversationId);
-          if (error === undefined) result = { ...base, status: "failed", text: settled.reason };
-          else if (!record.reported.includes(error.id)) {
-            record.reported.push(error.id);
-            result = { ...base, status: "failed", text: `${settled.reason}: ${error.message}` };
-          }
-        } else if (settled.type === "input" && settled.status === "done") {
-          const entry = await tx.entry(AssistantEntry, settled.answer);
-          const text = (entry?.model ?? [])
-            .flatMap((message) => (message.role === "assistant" ? message.content : []))
-            .flatMap((part) => (part.type === "text" ? [part.text] : []))
-            .join("\n");
-          const state = await tx.doc(WorkersDoc, task.input.parentId);
-          const record = state.workers.find(
-            (item) => item.conversationId === runtime.conversationId,
-          );
-          if (record === undefined) throw new Error("Worker record is missing");
-          // Inputs that joined one run share its answer, so the first delivery that reports it claims it. A quiet one that
-          // stays quiet claims nothing: an ask answered in the same run still reports it.
-          if (!record.reported.includes(settled.answer)) {
-            if (entry === undefined) throw new Error("Worker answer is missing");
-            if (text.trim() !== "" && (task.input.quiet !== true || needsUser(text))) {
-              record.reported.push(settled.answer);
-              result = { ...base, status: "completed", answerId: settled.answer, text };
+/** A model's prompt cache lifetime in milliseconds; `undefined` when unknown, which never starts a worker fresh. */
+export type CacheWindow = (model: { provider: string; modelId: string }) => number | undefined;
+
+/**
+ * The handoff that starts an idle worker's next message on a fresh context once its prompt cache has expired:
+ * continuing would send its whole context again uncached, and compacting it would read it all again too. A cache lives
+ * from the start of the request that last read or wrote it, so this counts from the worker's newest request, and starts
+ * fresh a tenth of the window early: a message arriving at the very end would miss by the time its request starts.
+ * `undefined` while the worker is busy, still within the window, or holds no reply since its last reset or compaction.
+ */
+async function expiredHandoff(
+  tx: Tx,
+  parentId: ConversationId,
+  conversationId: ConversationId,
+  cacheWindow: CacheWindow,
+  now: number,
+): Promise<string | undefined> {
+  const live = await tx.doc(LiveDoc, conversationId);
+  const inbox = await tx.doc(InboxDoc, conversationId);
+  if (live.run !== undefined || inbox.items.length > 0) return undefined;
+  const model = (await tx.doc(AgentDoc, conversationId)).model;
+  const windowMs = model === undefined ? undefined : cacheWindow(model);
+  if (windowMs === undefined) return undefined;
+  const { items } = await tx.scanEntries({ conversationId }, 50);
+  let requestAt: number | undefined;
+  let answer = "";
+  for (const entry of items) {
+    if (entry.head !== undefined) break;
+    const message = entry.model?.[0];
+    if (!AssistantEntry.is(entry) || message?.role !== "assistant") continue;
+    requestAt ??= message.timestamp;
+    if (message.stopReason !== "stop") continue;
+    answer = message.content
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("\n")
+      .trim();
+    if (answer !== "") break;
+  }
+  if (requestAt === undefined || now - requestAt < windowMs * 0.9) return undefined;
+  const worker = (await tx.doc(WorkersDoc, parentId)).workers.find(
+    (item) => item.conversationId === conversationId,
+  );
+  if (worker === undefined) return undefined;
+  const report = answer.length > 8000 ? `${answer.slice(0, 8000)}…` : answer;
+  return systemNoticeText(
+    "fresh context",
+    [
+      `Your earlier context sat idle past its prompt cache window, so it was cleared instead of being sent again in full. You are still ${worker.name}, on the same line.`,
+      ...(worker.brief === undefined ? [] : [`Your first brief began: ${worker.brief}`]),
+      ...(report === "" ? [] : [`Your last answer:\n${report}`]),
+      "Rebuild only what the next message needs from your goal, the vault, your repo and workspaces, and the user's own words (user_messages), then carry on.",
+    ].join("\n\n"),
+  );
+}
+
+/** Delivery of one message to a worker; with `cacheWindow`, a worker idle past it starts the message fresh. */
+function deliveryTask(cacheWindow?: CacheWindow) {
+  return defineTask<
+    DeliveryInput,
+    { phase: "deliver" } | { phase: "report"; result: WorkerResult | null; whenBusy: WhenBusy },
+    null
+  >({
+    name: "monchu.worker-delivery",
+    version: 1,
+    initial: () => ({ phase: "deliver" }),
+    phases: {
+      deliver: async (task, runtime, context) => {
+        const worker = await runtime.conversation(runtime.conversationId, context);
+        if (worker === undefined) throw new Error("Worker conversation is missing");
+        if (cacheWindow !== undefined)
+          await runtime.commit(async (tx) => {
+            const handoff = await expiredHandoff(
+              tx,
+              task.input.parentId,
+              runtime.conversationId,
+              cacheWindow,
+              runtime.now(),
+            );
+            if (handoff !== undefined)
+              await tx.appendEntry(runtime.conversationId, {
+                kind: ResetEntry.kind,
+                head: "self",
+                model: [{ role: "user", content: handoff, timestamp: runtime.now() }],
+              });
+            return undefined;
+          }, context);
+        // An awaited input is already admitted, so submitting its request ID again returns it.
+        const submission = await worker.submit(
+          {
+            type: "input",
+            content: task.input.message,
+            whenBusy: task.input.whenBusy,
+            requestId: awaitedRequest(task.id, task.input.awaits),
+          },
+          context,
+        );
+        const settled = await submission.wait(context);
+        await runtime.commit(async (tx) => {
+          let result: WorkerResult | null = null;
+          const base = {
+            name: task.input.name,
+            conversationId: runtime.conversationId,
+            requestId: task.input.requestId,
+            submissionId: submission.id,
+          };
+          // A sub-worker's notice withdrawn unread (a newer update, a stopped sub-worker) asked the worker nothing.
+          const withdrawn = task.input.awaits !== undefined && settled.entry === undefined;
+          if (settled.status === "unanswered" && !withdrawn) {
+            // Messages queued into one run all go unanswered when it fails: report that failure once, with its error.
+            const state = await tx.doc(WorkersDoc, task.input.parentId);
+            const record = state.workers.find(
+              (item) => item.conversationId === runtime.conversationId,
+            );
+            if (record === undefined) throw new Error("Worker record is missing");
+            const error = await latestError(tx, runtime.conversationId);
+            if (error === undefined) result = { ...base, status: "failed", text: settled.reason };
+            else if (!record.reported.includes(error.id)) {
+              record.reported.push(error.id);
+              result = { ...base, status: "failed", text: `${settled.reason}: ${error.message}` };
+            }
+          } else if (settled.type === "input" && settled.status === "done") {
+            const entry = await tx.entry(AssistantEntry, settled.answer);
+            const text = (entry?.model ?? [])
+              .flatMap((message) => (message.role === "assistant" ? message.content : []))
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("\n");
+            const state = await tx.doc(WorkersDoc, task.input.parentId);
+            const record = state.workers.find(
+              (item) => item.conversationId === runtime.conversationId,
+            );
+            if (record === undefined) throw new Error("Worker record is missing");
+            // Inputs that joined one run share its answer, so the first delivery that reports it claims it. A quiet one that
+            // stays quiet claims nothing: an ask answered in the same run still reports it.
+            if (!record.reported.includes(settled.answer)) {
+              if (entry === undefined) throw new Error("Worker answer is missing");
+              if (text.trim() !== "" && (task.input.quiet !== true || needsUser(text))) {
+                record.reported.push(settled.answer);
+                result = { ...base, status: "completed", answerId: settled.answer, text };
+              }
             }
           }
+          return {
+            status: "running",
+            checkpoint: {
+              phase: "report",
+              result,
+              whenBusy: await reportWhenBusy(tx, task.input.parentId),
+            },
+          };
+        }, context);
+      },
+      report: async (task, runtime, context) => {
+        const { parentId } = task.input;
+        const { result, whenBusy } = task.state.checkpoint;
+        let placed: { requestId: string; content: string } | undefined;
+        if (result !== null) {
+          const parent = await runtime.conversation(parentId, context);
+          if (parent === undefined) throw new Error("Worker parent conversation is missing");
+          // The report starts the parent's turn when idle, or joins it as `reportWhenBusy` says. Stopping the parent withdraws
+          // queued input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
+          for (let attempt = 0; ; attempt++) {
+            const content = noticeText(result, whenBusy === "steer");
+            const requestId = reportRequestId(task.id, attempt);
+            const submission = await parent.submit(
+              { type: "input", content, whenBusy, requestId },
+              context,
+            );
+            // Finish once the parent's transcript holds the report, not after its answer: the worker is idle meanwhile.
+            let record = await submission.status(context);
+            while (record.status === "queued") {
+              await runtime.sleep(runtime.now() + 250, context);
+              const idle = (await runtime.snapshot(LiveDoc, parentId, context))?.run === undefined;
+              record = await submission.status(context);
+              // An aborted run ends without placing input queued during its abort; withdraw it and post again.
+              if (idle && record.status === "queued") await submission.abort(context);
+            }
+            if (record.entry !== undefined) {
+              placed = { requestId, content };
+              break;
+            }
+            if (record.reason === DELETED_FROM_QUEUE) break;
+            // Only a withdrawn input settles without an entry.
+            if (record.reason !== "aborted")
+              throw new Error(`Worker report was not placed: ${record.reason}`);
+            // Post again after the aborted run ends, so the report starts a turn instead of queueing behind it.
+            await parent.waitForIdle(context);
+          }
         }
-        return {
-          status: "running",
-          checkpoint: {
-            phase: "report",
-            result,
-            whenBusy: await reportWhenBusy(tx, task.input.parentId),
-          },
-        };
-      }, context);
+        await runtime.commit(async (tx) => {
+          await pruneRecords(tx, parentId, task.id);
+          if (placed !== undefined)
+            await relayAnswer(tx, parentId, placed.requestId, placed.content);
+          return { status: "terminal", outcome: { status: "completed", result: null } };
+        }, context);
+      },
     },
-    report: async (task, runtime, context) => {
-      const { parentId } = task.input;
-      const { result, whenBusy } = task.state.checkpoint;
-      let placed: { requestId: string; content: string } | undefined;
-      if (result !== null) {
-        const parent = await runtime.conversation(parentId, context);
-        if (parent === undefined) throw new Error("Worker parent conversation is missing");
-        // The report starts the parent's turn when idle, or joins it as `reportWhenBusy` says. Stopping the parent withdraws
-        // queued input, so a withdrawn report is posted again; recovery replays this request ID chain without duplicates.
-        for (let attempt = 0; ; attempt++) {
-          const content = noticeText(result, whenBusy === "steer");
-          const requestId = reportRequestId(task.id, attempt);
-          const submission = await parent.submit(
-            { type: "input", content, whenBusy, requestId },
-            context,
-          );
-          // Finish once the parent's transcript holds the report, not after its answer: the worker is idle meanwhile.
-          let record = await submission.status(context);
-          while (record.status === "queued") {
-            await runtime.sleep(runtime.now() + 250, context);
-            const idle = (await runtime.snapshot(LiveDoc, parentId, context))?.run === undefined;
-            record = await submission.status(context);
-            // An aborted run ends without placing input queued during its abort; withdraw it and post again.
-            if (idle && record.status === "queued") await submission.abort(context);
-          }
-          if (record.entry !== undefined) {
-            placed = { requestId, content };
-            break;
-          }
-          if (record.reason === DELETED_FROM_QUEUE) break;
-          // Only a withdrawn input settles without an entry.
-          if (record.reason !== "aborted")
-            throw new Error(`Worker report was not placed: ${record.reason}`);
-          // Post again after the aborted run ends, so the report starts a turn instead of queueing behind it.
-          await parent.waitForIdle(context);
-        }
-      }
-      await runtime.commit(async (tx) => {
+    abort: (task, runtime, context) =>
+      runtime.commit(async (tx) => {
+        const { parentId } = task.input;
         await pruneRecords(tx, parentId, task.id);
-        if (placed !== undefined) await relayAnswer(tx, parentId, placed.requestId, placed.content);
-        return { status: "terminal", outcome: { status: "completed", result: null } };
-      }, context);
-    },
-  },
-  abort: (task, runtime, context) =>
-    runtime.commit(async (tx) => {
-      const { parentId } = task.input;
-      await pruneRecords(tx, parentId, task.id);
-      // Stopping a worker also withdraws what it posted that the parent has not placed yet.
-      const reports: string[] = [];
-      for (let attempt = 0; ; attempt++) {
-        const requestId = reportRequestId(task.id, attempt);
-        if ((await tx.submissionByRequest(parentId, requestId)) === undefined) break;
-        reports.push(requestId);
-      }
-      const updates = await tx.doc(WorkerUpdatesDoc, runtime.conversationId);
-      await withdrawQueued(tx, parentId, [...reports, ...updates.queued], false);
-      // The stop's abort mark came first: a registered update not admitted yet never will be, as admission commits
-      // reject once its tool call is marked.
-      updates.queued = [];
-      return { status: "terminal", outcome: { status: "aborted" } };
-    }, context),
-});
+        // Stopping a worker also withdraws what it posted that the parent has not placed yet.
+        const reports: string[] = [];
+        for (let attempt = 0; ; attempt++) {
+          const requestId = reportRequestId(task.id, attempt);
+          if ((await tx.submissionByRequest(parentId, requestId)) === undefined) break;
+          reports.push(requestId);
+        }
+        const updates = await tx.doc(WorkerUpdatesDoc, runtime.conversationId);
+        await withdrawQueued(tx, parentId, [...reports, ...updates.queued], false);
+        // The stop's abort mark came first: a registered update not admitted yet never will be, as admission commits
+        // reject once its tool call is marked.
+        updates.queued = [];
+        return { status: "terminal", outcome: { status: "aborted" } };
+      }, context),
+  });
+}
+
+/** The token deliveries are created with; each build registers its own under the same name. */
+const Delivery = deliveryTask();
 
 /**
  * Watch the worker's answer to its helper's notice (`requestId`) for failures or explicit escalation. The notice wakes
@@ -907,11 +987,12 @@ export function createWorkerTools(
   role: () => ModelRole,
   profiles: Record<string, WorkerProfile> = {},
   preload: readonly string[] = [],
+  cacheWindow?: CacheWindow,
 ) {
   const profilesText = profileList(profiles);
   return defineExtension({
     name: "monchu.workers",
-    tasks: [Anchor, Delivery],
+    tasks: [Anchor, deliveryTask(cacheWindow)],
     tools: [
       defineTool({
         name: "start_worker",
@@ -1015,7 +1096,7 @@ export function createWorkerTools(
       defineTool({
         name: "close_workers",
         description:
-          "Retire idle workers, any number in one call: a worker whose line of work is done, the user asks, or that has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A reused worker past the cache window pays to rewrite its whole context either way. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. A worker closes once it has answered, even while its report is still arriving; one that is running, has queued messages, or has busy sub-workers stays open. Each name is closed or refused on its own. Tell the user in one line which workers you closed.",
+          "Retire idle workers, any number in one call: a worker whose line of work is done, the user asks, or that has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A worker messaged past the cache window starts on a fresh context with a handoff of its brief and last answer, open or reopened. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. A worker closes once it has answered, even while its report is still arriving; one that is running, has queued messages, or has busy sub-workers stays open. Each name is closed or refused on its own. Tell the user in one line which workers you closed.",
         parameters: Type.Object({
           names: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
         }),

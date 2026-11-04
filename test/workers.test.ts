@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   closeWorker,
+  createWorkerTools,
   listWorkers,
   messageWorker,
   reopenWorker,
@@ -1218,6 +1219,67 @@ describe("worker lifecycle", () => {
     expect(await listWorkers(harness, root.id, context)).toMatchObject([
       { name: "w", closed: false },
     ]);
+    expect(value.reports).toEqual([]);
+    await harness.close(context);
+  });
+
+  it("starts an idle worker's message on a fresh context with a handoff once its prompt cache expired", async () => {
+    const value = await setup();
+    const hour = 60 * 60_000;
+    value.registry.install(
+      createWorkerTools(
+        () => fauxRole,
+        {},
+        [],
+        () => hour,
+      ),
+    );
+    const seen: Record<string, string[]> = {};
+    route(value.faux, (request) => {
+      const text = textOf(lastMessage(request.messages));
+      seen[text] = request.messages.flatMap((message) =>
+        message.role === "system" ? [] : [textOf(message)],
+      );
+      // The second answer dates from before the cache window, as if the worker had idled since.
+      const timestamp = text === "second ask" ? Date.now() - hour : undefined;
+      return fauxAssistantMessage(
+        [fauxText(`answered ${text.split("\n", 1)[0]}`)],
+        timestamp === undefined ? {} : { timestamp },
+      );
+    });
+    const { harness, root } = await open(value);
+    const workerId = await root.commit(
+      (tx) => startWorker(tx, root.id, "w", "first ask", value.directory, "m:0", fauxRole),
+      context,
+    );
+    await settle(harness, root);
+    // Within the window the worker keeps its context.
+    await root.commit(
+      (tx) => messageWorker(tx, root.id, "w", "second ask", "m:1", "steer"),
+      context,
+    );
+    await settle(harness, root);
+    expect(seen["second ask"]).toEqual(["first ask", "answered first ask", "second ask"]);
+
+    await root.commit(
+      (tx) => messageWorker(tx, root.id, "w", "third ask", "m:2", "steer"),
+      context,
+    );
+    await settle(harness, root);
+    const [handoff, ask, ...rest] = seen["third ask"] ?? [];
+    expect([ask, rest]).toEqual(["third ask", []]);
+    expect(handoff).toContain("fresh context");
+    expect(handoff).toContain("You are still w");
+    expect(handoff).toContain("Your first brief began: first ask");
+    expect(handoff).toContain("Your last answer:\nanswered second ask");
+    // The handoff just written is the newest activity: another message now continues the fresh context.
+    await root.commit(
+      (tx) => messageWorker(tx, root.id, "w", "fourth ask", "m:3", "steer"),
+      context,
+    );
+    await settle(harness, root);
+    expect(seen["fourth ask"]?.slice(1)).toEqual(["third ask", "answered third ask", "fourth ask"]);
+    expect(await transcript(await conversationOf(harness, workerId))).toHaveLength(9);
     expect(value.reports).toEqual([]);
     await harness.close(context);
   });

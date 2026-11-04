@@ -44,6 +44,7 @@ import { Log } from "../telemetry/log.ts";
 import { findRoot, rootRecord, RootsDoc, type RootRecord } from "./agents/root-records.ts";
 import { currentRoot, summarize, SUMMARY_KINDS } from "./agents/roots.ts";
 import {
+  contextCapPercent,
   isThinkingLevel,
   loadStartupConfig,
   thinkingLevels,
@@ -53,6 +54,7 @@ import {
 import { GoalsDoc } from "./agents/goals.ts";
 import { parentOf, WorkersDoc } from "./agents/workers.ts";
 import { harnessSettings } from "./context.ts";
+import { ContextCap } from "./context-cap.ts";
 import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
 import {
@@ -190,8 +192,21 @@ export class Monchu implements Client {
     );
     this.telemetry = modelTelemetry(log, harness);
     const telemetry = this.telemetry;
+    const cap = new ContextCap(
+      harness,
+      models,
+      (window) => contextCapPercent(this.extensions.settings, window),
+      (error) => {
+        if (this.closing === undefined)
+          this.reports.report(
+            `Context cap: ${error instanceof Error ? error.message : String(error)}`,
+          );
+      },
+      context,
+    );
     this.stopTelemetry = harness.subscribeCommits((publication) => {
       telemetry.observe(publication);
+      cap.observe(publication);
       if (this.rootListeners.size > 0 && touchesRoots(publication)) this.refreshRoots();
       for (const change of publication.changes)
         // A reply with text joins its root's inbox, as does input carrying a plugin's ask.
