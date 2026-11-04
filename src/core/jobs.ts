@@ -511,6 +511,7 @@ const NotifyFront = defineTask<
 const ACTIONS = [
   "create",
   "list",
+  "show",
   "pause",
   "resume",
   "run_now",
@@ -941,7 +942,7 @@ export function createJobs(
   async function control(
     tx: Tx,
     name: string,
-    action: Exclude<(typeof ACTIONS)[number], "create" | "list" | "output">,
+    action: Exclude<(typeof ACTIONS)[number], "create" | "list" | "show" | "output">,
   ): Promise<{ text: string; removed?: string }> {
     const state = await tx.doc(JobsDoc);
     const index = state.jobs.findIndex((item) => item.name === name);
@@ -986,7 +987,7 @@ export function createJobs(
       defineTool({
         name: "job",
         description:
-          "Background jobs; every job is listed for everyone (list, /jobs). create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. notify (opt-in) sends what would wake the worker to these instead, with no model call in between: front (your root's front), root:<id> (another root's front), a worker's name, or <root id>/<worker>; list the worker's own name to wake it too. When a front or another root waits on what a job finishes, notify it rather than relaying the result yourself. Other actions take name: pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
+          "Background jobs; every job is listed for everyone (list, /jobs); show reads one back whole (prompt, command, schedule, worker, notify, cwd, model), so read it before changing or taking over a job. create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. notify (opt-in) sends what would wake the worker to these instead, with no model call in between: front (your root's front), root:<id> (another root's front), a worker's name, or <root id>/<worker>; list the worker's own name to wake it too. When a front or another root waits on what a job finishes, notify it rather than relaying the result yourself. Other actions take name: show for any; pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
         parameters: Type.Object(
           {
             action: StringEnum(ACTIONS),
@@ -1051,11 +1052,12 @@ export function createJobs(
           }
           const name = args.name;
           if (name === undefined) throw new Error(`${args.action} needs name`);
-          if (args.action === "output") {
+          if (args.action === "show" || args.action === "output") {
             const job = (await api.snapshot(JobsDoc, context))?.jobs.find(
               (item) => item.name === name,
             );
             if (job === undefined) throw new Error(`No job named ${name}`);
+            if (args.action === "show") return reply(showJob(job, roots));
             if (job.log === undefined) throw new Error(`${name} is not a bg job`);
             const lines = (await tail(job.log, OUTPUT_KEPT * 4))
               .trimEnd()
@@ -1213,6 +1215,30 @@ function formatJob(job: Job, roots: ReadonlySet<ConversationId>): string {
     return `${job.name} (${state}) ${describeJob(job).slice(0, 120)} · ${who} · log ${job.log ?? ""}`;
   }
   return `${job.name} (${job.status}) ${describeJob(job).slice(0, 120)} · ${who} · runs ${job.runs}, last ${time(job.lastRunAt)}, next ${job.status === "active" ? time(job.nextAt) : "-"}`;
+}
+
+/** One job's whole definition, untruncated, so whoever owns or takes over a job can check and rebuild it. */
+function showJob(job: Job, roots: ReadonlySet<ConversationId>): string {
+  const role =
+    job.role === undefined
+      ? undefined
+      : `${job.role.provider}/${job.role.modelId} (thinking ${job.role.thinkingLevel})`;
+  const lines = [
+    `${formatJob(job, roots)}`,
+    `type: ${job.type}`,
+    ...(job.schedule === undefined ? [] : [`schedule: ${job.schedule}`]),
+    `worker: ${job.worker.name}`,
+    ...(job.notify === undefined
+      ? []
+      : [`notify: ${job.notify.map((target) => targetLabel(job, target, roots)).join(", ")}`]),
+    `cwd: ${job.cwd}`,
+    ...(role === undefined ? [] : [`model: ${role}`]),
+    ...(job.timeout === undefined ? [] : [`timeout: ${job.timeout} min`]),
+    `created by ${job.createdBy} at ${time(job.createdAt)}`,
+  ];
+  const block = (label: string, text: string | undefined) =>
+    text === undefined || text === "" ? [] : [`${label}:`, text];
+  return [...lines, ...block("command", job.command), ...block("prompt", job.prompt)].join("\n");
 }
 
 export function formatJobs(jobs: readonly Job[], roots: ReadonlySet<ConversationId>): string {

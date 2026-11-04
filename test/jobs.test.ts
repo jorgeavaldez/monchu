@@ -67,6 +67,10 @@ describe("cron", () => {
 /** Never during a test: only the baseline and run_now run a command job. */
 const NEVER = "0 0 1 1 *";
 
+/** Longer than `list` shows, so only `show` reads them back whole. */
+const LONG_PROMPT = `${"say what's left for today, nothing done. ".repeat(20)}end there.`;
+const LONG_COMMAND = `${"echo checking; ".repeat(20)}cat state.txt`;
+
 const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
   watch: {
     tool: "job",
@@ -122,6 +126,32 @@ const FRONT_CALLS: Record<string, { tool: string; args: JsonObject }> = {
   },
   "run brief": { tool: "job", args: { action: "run_now", name: "brief" } },
   list: { tool: "job", args: { action: "list" } },
+  "long nudge": {
+    tool: "job",
+    args: {
+      action: "create",
+      name: "nudge",
+      type: "agent",
+      schedule: "30 7 * * 1-5",
+      prompt: LONG_PROMPT,
+      model: "faux/faux-1",
+      thinking: "off",
+    },
+  },
+  "long watch": {
+    tool: "job",
+    args: {
+      action: "create",
+      name: "sweep",
+      type: "command",
+      schedule: NEVER,
+      command: LONG_COMMAND,
+      prompt: "check the sweep",
+      notify: ["front"],
+    },
+  },
+  "show nudge": { tool: "job", args: { action: "show", name: "nudge" } },
+  "show sweep": { tool: "job", args: { action: "show", name: "sweep" } },
   build: {
     tool: "job",
     args: {
@@ -311,6 +341,25 @@ describe("jobs", () => {
       worker: "job-brief",
     });
     await waitFor(() => value.jobMessages.some((text) => text.includes("write the brief")));
+    await harness.close(context);
+  });
+
+  it("reads back a job's whole definition, a long prompt and command uncut", async () => {
+    const value = await withJobs();
+    const { harness, root } = await open(value);
+    await send(root, "long nudge");
+    await send(root, "long watch");
+    await send(root, "show nudge");
+    const nudge = textOf((await toolResults(root)).at(-1));
+    expect(nudge).toContain(`\nprompt:\n${LONG_PROMPT}`);
+    expect(nudge).toContain("schedule: 30 7 * * 1-5");
+    expect(nudge).toContain("worker: job-nudge");
+    expect(nudge).toContain("model: faux/faux-1 (thinking off)");
+    await send(root, "show sweep");
+    const sweep = textOf((await toolResults(root)).at(-1));
+    expect(sweep).toContain(`\ncommand:\n${LONG_COMMAND}\nprompt:\ncheck the sweep`);
+    expect(sweep).toContain(`cwd: ${value.directory}`);
+    expect(sweep).toContain("notify: front");
     await harness.close(context);
   });
 
