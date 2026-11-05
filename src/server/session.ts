@@ -29,7 +29,7 @@ import {
 import type { Monchu } from "../core/backend.ts";
 import { Front } from "../core/front.ts";
 import { Core, type HeldLogin, type LoginOwner } from "./core.ts";
-import type { JobsState } from "../core/jobs.ts";
+import type { JobsState } from "../core/job-records.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 import type { DraftsState } from "../core/drafts.ts";
 import type { PinsState } from "../core/pins.ts";

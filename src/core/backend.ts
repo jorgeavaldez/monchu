@@ -57,14 +57,8 @@ import { harnessSettings } from "./context.ts";
 import { ContextCap } from "./context-cap.ts";
 import { homeNotice } from "./home-check.ts";
 import { applyFrontRole, Front, prepareFront, selectAll, type FrontHost } from "./front.ts";
-import {
-  formatJobs,
-  JobsDoc,
-  rootIds,
-  type JobControl,
-  type JobEvent,
-  type JobsState,
-} from "./jobs.ts";
+import { JobsDoc, type JobControl, type JobEvent, type JobsState } from "./job-records.ts";
+import { formatJobs, rootIds } from "./jobs.ts";
 import { InboxItemsDoc, noteReplies, replyText, type InboxKind } from "./inbox.ts";
 import { Pusher, type PushSubscription } from "./push.ts";
 import { budgetNotice, HomeBudgetDoc, type BudgetLevel } from "./identity.ts";

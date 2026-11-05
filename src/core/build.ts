@@ -9,7 +9,7 @@ import type { Extension, Tx } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { MonchuConfig, ModelRole, Settings } from "./config.ts";
 import type { HomeCheck } from "./home-check.ts";
-import type { JobControl } from "./jobs.ts";
+import type { JobControl } from "./job-records.ts";
 import type { BudgetLevel } from "./identity.ts";
 import type { McpClients } from "./mcp/index.ts";
 import type { PluginBuild, Plugins } from "./plugins.ts";

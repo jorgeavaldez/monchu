@@ -29,6 +29,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { noticeText, systemNoticeText, type WhenBusy } from "../../api/notices.ts";
 import { thinkingLevels, type ModelRole, type WorkerProfile } from "../config.ts";
+import { isWorker, JobsDoc, targetsOf, type Job, type JobWorker } from "../job-records.ts";
 import { preloadGroups, unloadGroups } from "../tools/tool-search.ts";
 import { resolveDirectory } from "../workdir.ts";
 
@@ -202,21 +203,102 @@ async function releaseProviders(
   }
 }
 
-/** Cancel the worker's current work, pending deliveries, and nested background work. */
+/** The worker `name` under `parentId` and its sub-workers at any depth, as jobs name them. */
+async function subtree(tx: Tx, parentId: ConversationId, name: string): Promise<JobWorker[]> {
+  const found: JobWorker[] = [{ parentId, name }];
+  for (const item of found) {
+    const { conversationId } = named((await tx.doc(WorkersDoc, item.parentId)).workers, item.name);
+    for (const child of (await tx.doc(WorkersDoc, conversationId)).workers)
+      found.push({ parentId: conversationId, name: child.name });
+  }
+  return found;
+}
+
+/** An active job that wakes the worker `name` or a sub-worker, and the ones in that subtree it wakes. */
+type Waking = { job: Job; woken: JobWorker[] };
+
+/** The jobs that will still wake the worker `name` or a sub-worker: active schedules, and bg commands still running. */
+async function wakingJobs(tx: Tx, parentId: ConversationId, name: string): Promise<Waking[]> {
+  const workers = await subtree(tx, parentId, name);
+  return (await tx.doc(JobsDoc)).jobs.flatMap((job) => {
+    const woken = workers.filter((worker) =>
+      targetsOf(job).some((target) => isWorker(target, worker)),
+    );
+    return job.status === "active" && woken.length > 0 ? [{ job, woken }] : [];
+  });
+}
+
+/** A waking job as a stop or close names it: `name (command 0 9 * * *)`, `name (bg, running, wakes child)`. */
+function describeWaking({ job, woken }: Waking, top: JobWorker): string {
+  const kind = job.type === "bg" ? "bg, running" : `${job.type} ${job.schedule ?? ""}`;
+  const others = woken.filter((worker) => !isWorker({ kind: "worker", ...worker }, top));
+  const wakes =
+    others.length === 0 ? "" : `, wakes ${others.map((worker) => worker.name).join(", ")}`;
+  return `${job.name} (${kind}${wakes})`;
+}
+
+/** What a stop or close says about the jobs that still wake the worker, so a front knows before it hands on the line. */
+function wakingNote(name: string, jobs: Iterable<string>, closed: boolean): string {
+  const list = [...jobs];
+  if (list.length === 0) return "";
+  const who = list.some((job) => job.includes(", wakes ")) ? `${name} or its sub-workers` : name;
+  return ` Its jobs still wake ${who}${closed ? ", reopening it" : ""}: ${list.join(", ")}. Before another worker takes its line, re-create them for that worker, or pause or delete them.`;
+}
+
+/**
+ * Cancel the worker's current work, pending deliveries, nested background work, and the bg commands that would wake it
+ * or a sub-worker when they end, so nothing it started brings it back: a command only they hear is killed, one others
+ * hear too keeps running for them alone. Its scheduled jobs stay. Returns the line to report for it.
+ */
 export async function stopWorker(
-  api: Pick<ToolExecutionApi, "snapshot" | "conversation">,
+  api: Pick<ToolExecutionApi, "snapshot" | "conversation" | "commit">,
   parentId: ConversationId,
   name: string,
   context: Context,
-): Promise<void> {
+): Promise<string> {
   const worker = await api.conversation(
     await workerConversationId(api, parentId, name, context),
     context,
   );
   if (worker === undefined) throw new Error("Worker conversation is missing");
+  const top = { parentId, name };
+  const killed = new Set<string>();
+  const kept = new Set<string>();
+  const scheduled = new Set<string>();
+  const unhook = () =>
+    api.commit(async (tx) => {
+      for (const waking of await wakingJobs(tx, parentId, name)) {
+        const { job } = waking;
+        if (job.type !== "bg") scheduled.add(describeWaking(waking, top));
+        else if (job.stopped === true) continue;
+        else {
+          const others = targetsOf(job).filter(
+            (target) => !waking.woken.some((worker) => isWorker(target, worker)),
+          );
+          if (others.length > 0) {
+            job.notify = others;
+            kept.add(job.name);
+          } else {
+            job.kill = true;
+            job.stopped = true;
+            killed.add(job.name);
+          }
+        }
+      }
+    }, context);
+  // Before the abort, a command that ended first left a delivery the abort cancels, and one ending after wakes no one;
+  // again after it, for a job the worker created in between.
+  await unhook();
   await worker.abort(context, { background: true });
+  await unhook();
   // Generation signals end at each tool boundary; release parked provider resources for the stopped subtree too.
   await releaseProviders(api, worker.id, context);
+  const kills = killed.size === 0 ? "" : ` Killed its bg jobs ${[...killed].join(", ")}.`;
+  const keeps =
+    kept.size === 0
+      ? ""
+      : ` Its bg jobs ${[...kept].join(", ")} keep running for the others they notify, no longer waking it.`;
+  return `Stopped ${name}.${kills}${keeps}${wakingNote(name, scheduled, false)}`;
 }
 
 /**
@@ -953,9 +1035,18 @@ export async function closeNamed(
   // Sub-workers start only from the worker's own runs, which the closing commit rules out.
   const busy = await busySubWorkers(api, workerId, context);
   if (busy.length > 0) throw new Error(`${name} has busy sub-workers: ${busy.join(", ")}`);
-  const closed = await api.commit((tx) => closeWorker(tx, parentId, name), context);
+  const { closed, jobs } = await api.commit(
+    async (tx) => ({
+      closed: await closeWorker(tx, parentId, name),
+      // Described inside the commit: its records are not readable after it.
+      jobs: (await wakingJobs(tx, parentId, name)).map((waking) =>
+        describeWaking(waking, { parentId, name }),
+      ),
+    }),
+    context,
+  );
   await releaseProviders(api, workerId, context);
-  return closed ? `Closed ${name}.` : `${name} was already closed.`;
+  return `${closed ? `Closed ${name}.` : `${name} was already closed.`}${wakingNote(name, jobs, true)}`;
 }
 
 /** A worker's model choice as tools take it: a profile name, or a model and thinking level, each optional. */
@@ -1181,7 +1272,7 @@ export function createWorkerTools(
       defineTool({
         name: "close_workers",
         description:
-          "Retire idle workers, any number in one call: a worker whose line of work is done, the user asks, or that has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A worker messaged past the cache window starts on a fresh context with a handoff of its brief and last answer, open or reopened. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened. A worker closes once it has answered, even while its report is still arriving; one that is running, has queued messages, or has busy sub-workers stays open. Each name is closed or refused on its own. Tell the user in one line which workers you closed.",
+          "Retire idle workers, any number in one call: a worker whose line of work is done, the user asks, or that has sat idle past its prompt cache (about an hour) with no ask in its line expected soon. Closing is cheap: its conversation and history are kept, reopen_worker resumes it, and it releases the worker's parked model process. A worker messaged past the cache window starts on a fresh context with a handoff of its brief and last answer, open or reopened. Keep a worker whose line has a next step coming soon. A closed worker leaves the active roster and rejects new messages until reopened; its jobs still wake it, which reopens it, and the answer names them, so re-create, pause or delete them before another worker takes its line. A worker closes once it has answered, even while its report is still arriving; one that is running, has queued messages, or has busy sub-workers stays open. Each name is closed or refused on its own. Tell the user in one line which workers you closed.",
         parameters: Type.Object({
           names: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true }),
         }),
@@ -1330,13 +1421,14 @@ export function createWorkerTools(
       defineTool({
         name: "stop_worker",
         description:
-          "Explicitly cancel a worker's current work, queued messages, deliveries, and nested background work. Its conversation remains available. Ordinary chat abort does not stop workers.",
+          "Explicitly cancel a worker's current work, queued messages, deliveries, nested background work, and the bg jobs that would wake it when they end. Its conversation remains available. Its scheduled jobs stay and wake it again; the answer names them, so re-create, pause or delete them before another worker takes its line. Ordinary chat abort does not stop workers.",
         parameters: Type.Object({ name: Type.String({ minLength: 1 }) }),
         replay: "unsafe",
-        execute: async (args, api, context) => {
-          await stopWorker(api, api.conversationId, args.name, context);
-          return { output: [{ type: "text", text: `Stopped ${args.name}.` }] };
-        },
+        execute: async (args, api, context) => ({
+          output: [
+            { type: "text", text: await stopWorker(api, api.conversationId, args.name, context) },
+          ],
+        }),
       }),
     ],
   });

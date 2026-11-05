@@ -1,7 +1,6 @@
 import { withCancel, type Context } from "@earendil-works/chord/context";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
-  defineDoc,
   defineExtension,
   defineTask,
   defineTool,
@@ -29,109 +28,17 @@ import {
 } from "./agents/workers.ts";
 import { commandSecrets } from "./secrets/tool.ts";
 import type { Vault } from "./secrets/vault.ts";
-
-/**
- * What a job is. `agent`: on a cron schedule, wake a worker with the job's prompt. `command`: on a cron schedule, run a
- * command with no model call, and wake the worker only when its output changes or it fails anew. `bg`: run a command
- * once in the background now, and wake the worker when it ends.
- */
-type JobType = "agent" | "command" | "bg";
-
-/** The worker a job wakes: by name under `parentId`; the job starts it, on `role`, if it does not exist then. */
-type JobWorker = { parentId: ConversationId; name: string };
-
-/** Who hears a job by its `notify`: a root's front, or a worker by name under `parentId`. */
-type JobTarget = { kind: "front"; rootId: ConversationId } | ({ kind: "worker" } & JobWorker);
-
-export type Job = {
-  name: string;
-  type: JobType;
-  /** Five-field cron expression in the device's local time; `agent` and `command` jobs. */
-  schedule?: string;
-  /** `command`: run at each slot, safe to rerun. `bg`: run once. */
-  command?: string;
-  /** What the worker should do when the job wakes it; may be empty for `command` and `bg`. */
-  prompt: string;
-  cwd: string;
-  rootId: ConversationId;
-  worker: JobWorker;
-  /** Opt-in: who hears the job, instead of its worker, whenever it would wake it. */
-  notify?: JobTarget[];
-  /** The model a worker the job starts runs on; an existing worker keeps its own model for life. */
-  role?: ModelRole;
-  /** The worker or `front` that created it. */
-  createdBy: string;
-  createdAt: number;
-  /** The tool call that created it, so a replayed create returns it instead of failing. */
-  callId?: string;
-  /** `done` only for a `bg` job that ended. */
-  status: "active" | "paused" | "done";
-  /** The runner task; a runner whose ID this is not stops itself. */
-  taskId: TaskId;
-  /** Set by `run_now`; the runner clears it when it runs. */
-  runNow?: true;
-  nextAt?: number;
-  lastRunAt?: number;
-  runs: number;
-  /** `command`: hash of the last output, and of the last failure reported, so only changes wake anyone. */
-  cursor?: string;
-  failure?: string;
-  /** `bg`: the output log, the limit in minutes, a pending kill, and how it ended. */
-  log?: string;
-  timeout?: number;
-  kill?: true;
-  ended?: BgEnd;
-};
-
-/** How a `bg` job ended. `interrupted`: Monchu quit or restarted while it ran, which kills it. */
-type BgEnd = {
-  reason: "exited" | "killed" | "timed out" | "interrupted";
-  /** The exit code; `null` when it did not exit by itself or never started. */
-  code: number | null;
-  at: number;
-  /** Why it could not run, when it never started. */
-  error?: string;
-};
-
-/** One entry of the job event stream clients follow. Ids only grow, so a client resumes after the last one it saw. */
-export type JobEvent = {
-  id: number;
-  at: number;
-  job: string;
-  kind:
-    | "created"
-    | "fired"
-    | "changed"
-    | "failed"
-    | "paused"
-    | "resumed"
-    | "deleted"
-    | "started"
-    | "exited"
-    | "killed"
-    | "interrupted";
-  text: string;
-  /** The worker the event woke, if any. */
-  worker?: string;
-  /** The job's root, so a client shows the event in that root. Absent on events from before roots: the first root's. */
-  rootId?: ConversationId;
-};
-
-/** What a client may do to a job: pause or resume a schedule, or run it now. */
-export type JobControl = "pause" | "resume" | "run_now";
-
-export type JobsState = { jobs: Job[]; events: JobEvent[]; nextEvent: number };
-
-const EVENTS_KEPT = 200;
-
-/** Every job and the recent event stream, one per store, so the front, workers and clients all see the same list. */
-export const JobsDoc = defineDoc<JobsState>({
-  kind: "monchu.jobs",
-  version: 1,
-  scope: "session",
-  initial: () => ({ jobs: [], events: [], nextEvent: 1 }),
-  checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 31,
-});
+import {
+  addEvent,
+  JobsDoc,
+  type BgEnd,
+  type Job,
+  type JobControl,
+  type JobEvent,
+  type JobsState,
+  type JobTarget,
+  type JobWorker,
+} from "./job-records.ts";
 
 /**
  * After a worker was handed from `fromId` to `toId`, its jobs follow it: they wake it under its new parent, and every
@@ -153,15 +60,6 @@ export async function moveJobs(
         target.parentId = toId;
     if (job.rootId === fromRoot) job.rootId = await rootOf(tx, job.worker.parentId);
   }
-}
-
-function addEvent(
-  state: JobsState,
-  job: Pick<Job, "name" | "rootId">,
-  event: Omit<JobEvent, "id" | "job" | "rootId">,
-): void {
-  state.events.push({ id: state.nextEvent++, job: job.name, rootId: job.rootId, ...event });
-  if (state.events.length > EVENTS_KEPT) state.events.splice(0, state.events.length - EVENTS_KEPT);
 }
 
 // Cron: minute hour day-of-month month day-of-week, in local time.
@@ -522,11 +420,12 @@ const ACTIONS = [
 
 /**
  * Durable background jobs: one `job` tool for every role, and one store-wide list. Each job is a background runner task
- * on the root conversation, so stopping a worker never stops its jobs. Runners are replay-safe. A scheduled run commits
- * what it changes (the command's cursor, its event, the worker it wakes) atomically with the runner's next checkpoint,
- * so a restart never wakes anyone twice for one slot or change. A `bg` command runs as Durable runs a tool, inside its
- * runner's invocation, so quitting Monchu kills it; its replay reports it interrupted, once. A command gets the stored
- * secrets it names as `$NAME`, like a shell tool's, and its output is redacted before it is kept or sent.
+ * on the root conversation, so stopping a worker never stops its scheduled jobs; the stop kills its running `bg`
+ * commands, whose end then wakes no one. Runners are replay-safe. A scheduled run commits what it changes (the
+ * command's cursor, its event, the worker it wakes) atomically with the runner's next checkpoint, so a restart never
+ * wakes anyone twice for one slot or change. A `bg` command runs as Durable runs a tool, inside its runner's
+ * invocation, so quitting Monchu kills it; its replay reports it interrupted, once. A command gets the stored secrets it
+ * names as `$NAME`, like a shell tool's, and its output is redacted before it is kept or sent.
  */
 export function createJobs(
   workerRole: () => ModelRole,
@@ -873,7 +772,10 @@ export function createJobs(
           current.status = "done";
           current.ended = end;
           delete current.kill;
-          const summary = endText(current, end);
+          // Killed by its worker's stop: waking it would start the work the stop ended.
+          const summary = current.stopped
+            ? `${endText(current, end)}: its worker was stopped`
+            : endText(current, end);
           const why = {
             header: `bg ${summary}`,
             steer: true,
@@ -883,12 +785,9 @@ export function createJobs(
               `Full log: ${current.log ?? ""}`,
             ].join("\n"),
           };
-          const worker = await wake(
-            tx,
-            current,
-            why,
-            `job:${current.name}:${current.createdAt}:end`,
-          );
+          const worker = current.stopped
+            ? undefined
+            : await wake(tx, current, why, `job:${current.name}:${current.createdAt}:end`);
           addEvent(state, current, {
             at: end.at,
             kind:
@@ -987,7 +886,7 @@ export function createJobs(
       defineTool({
         name: "job",
         description:
-          "Background jobs; every job is listed for everyone (list, /jobs); show reads one back whole (prompt, command, schedule, worker, notify, cwd, model), so read it before changing or taking over a job. create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. notify (opt-in) sends what would wake the worker to these instead, with no model call in between: front (your root's front), root:<id> (another root's front), a worker's name, or <root id>/<worker>; list the worker's own name to wake it too. When a front or another root waits on what a job finishes, notify it rather than relaying the result yourself. Other actions take name: show for any; pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
+          "Background jobs; every job is listed for everyone (list, /jobs); show reads one back whole (prompt, command, schedule, worker, notify, cwd, model), so read it before changing or taking over a job. create takes a type. agent: on a cron schedule, wake a worker with your prompt. command: on a cron schedule, run a read-only shell command with no model call; it wakes the worker only when the output changes or the command fails anew (the first run, at once, takes a baseline). bg: run a command once in the background now (a build, tests, `gh pr checks 12 --watch`) and keep working; when it ends the worker gets one message with the exit code, output tail and log path; stopping that worker kills it, with no message. Cron is five fields in the device's local time, or @hourly/@daily/@weekly/@monthly; a slot missed while Monchu was closed runs once at startup. Jobs run only while Monchu is open: quitting or restarting kills a running bg command, and its worker hears it was interrupted. The worker: `worker` names it; default you if you are a worker, else a new job-<name>. A worker the job has to start runs on profile, or model and thinking, if given; an existing worker keeps its own model for life, so naming one with a model is an error. The worker's answer reaches the front only when it starts with NEEDS USER. notify (opt-in) sends what would wake the worker to these instead, with no model call in between: front (your root's front), root:<id> (another root's front), a worker's name, or <root id>/<worker>; list the worker's own name to wake it too. When a front or another root waits on what a job finishes, notify it rather than relaying the result yourself. Other actions take name: show for any; pause, resume and run_now for agent and command jobs; output (last lines of the log) and kill for bg jobs; delete for any (kills a running bg command and removes its log).",
         parameters: Type.Object(
           {
             action: StringEnum(ACTIONS),

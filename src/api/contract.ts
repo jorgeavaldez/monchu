@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import type { Goal } from "../core/agents/goals.ts";
 import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { Settings } from "../core/config.ts";
-import type { JobsState } from "../core/jobs.ts";
+import type { JobsState } from "../core/job-records.ts";
 import type { SecretsState } from "../core/secrets/requests.ts";
 import type { DraftsState } from "../core/drafts.ts";
 import type { PinnedMessage, PinsState } from "../core/pins.ts";

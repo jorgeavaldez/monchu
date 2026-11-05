@@ -28,7 +28,7 @@ import { describeContextCap } from "./config.ts";
 import { Vault } from "./secrets/vault.ts";
 import type { McpSignInPrompt } from "./mcp/auth.ts";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
-import type { JobControl } from "./jobs.ts";
+import type { JobControl } from "./job-records.ts";
 import type { McpServerReport } from "../api/reports.ts";
 import { mcpLogin, mcpLogout, mcpReports, mcpSetEnabled } from "./mcp/manage.ts";
 import { McpClients } from "./mcp/index.ts";

@@ -15,7 +15,8 @@ import {
 import { shortId } from "../../api/ids.ts";
 import { rootNoticeText } from "../../api/notices.ts";
 import type { RootStatus, RootSummary } from "../../api/client.ts";
-import { JobsDoc, moveJobs, type JobsState } from "../jobs.ts";
+import { JobsDoc, type JobsState } from "../job-records.ts";
+import { moveJobs } from "../jobs.ts";
 import { GoalsDoc } from "./goals.ts";
 import { findRoot, rootRecord, RootsDoc, type RootRecord } from "./root-records.ts";
 import { listWorkers, moveWorker, WorkersDoc } from "./workers.ts";

@@ -1,6 +1,7 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   configure,
+  LiveDoc,
   UserEntry,
   type Conversation,
   type Harness,
@@ -11,7 +12,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createJobs, JobsDoc, nextSlot, parseCron, type JobEvent } from "../src/core/jobs.ts";
+import { JobsDoc, type JobEvent } from "../src/core/job-records.ts";
+import { createJobs, nextSlot, parseCron } from "../src/core/jobs.ts";
 import { shortId } from "../src/api/ids.ts";
 import { parseJobNotice, workerNotice } from "../src/api/notices.ts";
 import { RootsDoc } from "../src/core/agents/root-records.ts";
@@ -731,6 +733,161 @@ describe("process jobs", () => {
     await harness.waitForIdle(context);
     expect((await events(harness)).map((event) => event.kind)).toEqual(["started", "interrupted"]);
     expect((await harness.snapshot(JobsDoc, context))?.jobs[0]?.status).toBe("done");
+    await harness.close(context);
+  });
+});
+
+describe("stopping and closing a job's worker", () => {
+  it("kills the bg command a stopped worker started, so its end does not start the worker again", async () => {
+    const value = await withJobs();
+    const front = callTools({
+      "start builder": { tool: "start_worker", args: { name: "builder", task: "build" } },
+      "stop builder": { tool: "stop_worker", args: { name: "builder" } },
+      "close builder": { tool: "close_workers", args: { names: ["builder"] } },
+    });
+    const call = (tool: string, args: JsonObject) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "build")
+        return call("job", {
+          action: "create",
+          name: "replay",
+          type: "bg",
+          // Ends by itself soon after the stop, as a long replay did.
+          command: "sleep 2 & echo $! > child.pid; wait; echo replayed",
+        });
+      if (last?.role === "toolResult" && last.toolName === "job")
+        return call("bash", { command: "sleep 30" });
+      if (last?.role === "user" && text.startsWith("[Job ")) {
+        value.jobMessages.push(text);
+        return fauxAssistantMessage("back at it");
+      }
+      return front(request);
+    });
+    const { harness, root } = await open(value);
+    await send(root, "start builder");
+    const pid = await childPid(value.directory);
+    const workerId =
+      (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.conversationId ?? root.id;
+    await waitFor(async () =>
+      ((await harness.snapshot(LiveDoc, workerId, context))?.tools ?? []).some(
+        (tool) => tool.name === "bash" && tool.status === "running",
+      ),
+    );
+
+    await send(root, "stop builder");
+    expect(textOf((await toolResults(root)).at(-1))).toBe(
+      "Stopped builder. Killed its bg jobs replay.",
+    );
+    const killed = (await waitForEvent(harness, 2))[1];
+    expect(killed).toMatchObject({ job: "replay", kind: "killed" });
+    expect(killed?.text).toMatch(/: its worker was stopped$/);
+    expect(killed?.worker).toBeUndefined();
+    // Git Bash reports its own pids, which Node cannot signal on Windows.
+    if (process.platform !== "win32") await waitFor(() => !alive(pid));
+
+    // Past the time the command would have ended by itself, nothing has woken the worker.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(value.jobMessages).toEqual([]);
+    expect((await harness.snapshot(LiveDoc, workerId, context))?.run).toBeUndefined();
+    await send(root, "close builder");
+    expect(textOf((await toolResults(root)).at(-1))).toBe("Closed builder.");
+    expect((await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.closed).toBe(true);
+    await root.waitForIdle(context);
+    await harness.close(context);
+  });
+
+  it("keeps a stopped worker's bg command running for the others it notifies, no longer waking the worker", async () => {
+    const value = await withJobs();
+    const front = callTools({
+      "start builder": { tool: "start_worker", args: { name: "builder", task: "watch ci" } },
+      "stop builder": { tool: "stop_worker", args: { name: "builder" } },
+    });
+    const call = (tool: string, args: JsonObject) =>
+      fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+    route(value.faux, (request) => {
+      const last = lastMessage(request.messages);
+      const text = textOf(last);
+      if (last?.role === "user" && text === "watch ci")
+        return call("job", {
+          action: "create",
+          name: "ci",
+          type: "bg",
+          command: "sleep 2; echo green",
+          notify: ["front", "builder"],
+        });
+      if (last?.role === "toolResult" && last.toolName === "job")
+        return call("bash", { command: "sleep 30" });
+      if (last?.role === "user" && text.startsWith("[Job ")) return fauxAssistantMessage("seen");
+      return front(request);
+    });
+    const { harness, root } = await open(value);
+    await send(root, "start builder");
+    const workerId =
+      (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.conversationId ?? root.id;
+    await waitFor(async () =>
+      ((await harness.snapshot(LiveDoc, workerId, context))?.tools ?? []).some(
+        (tool) => tool.name === "bash" && tool.status === "running",
+      ),
+    );
+
+    await send(root, "stop builder");
+    expect(textOf((await toolResults(root)).at(-1))).toBe(
+      "Stopped builder. Its bg jobs ci keep running for the others they notify, no longer waking it.",
+    );
+    const ended = (await waitForEvent(harness, 2))[1];
+    expect(ended).toMatchObject({ job: "ci", kind: "exited", worker: "front" });
+    await waitFor(async () => (await jobInputs(root)).length === 1);
+    expect((await jobInputs(root))[0]?.text).toContain("green");
+    expect(await jobInputs(await conversationOf(harness, workerId))).toEqual([]);
+    expect((await harness.snapshot(LiveDoc, workerId, context))?.run).toBeUndefined();
+    await root.waitForIdle(context);
+    await harness.close(context);
+  });
+
+  it("names the scheduled jobs that still wake a stopped or closed worker, which reopen it", async () => {
+    const value = await withJobs();
+    const front = callTools({
+      ...FRONT_CALLS,
+      "stop w": { tool: "stop_worker", args: { name: "w" } },
+      "close w": { tool: "close_workers", args: { names: ["w"] } },
+    });
+    route(value.faux, (request) => {
+      const text = textOf(lastMessage(request.messages));
+      if (text.startsWith("[Job ")) {
+        value.jobMessages.push(text);
+        return fauxAssistantMessage("ok");
+      }
+      return front(request);
+    });
+    const { harness, root } = await open(value);
+    await send(root, "start w");
+    await waitForEvent(harness, 2);
+    const workerId =
+      (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.conversationId ?? root.id;
+    await (await conversationOf(harness, workerId)).waitForIdle(context);
+
+    await send(root, "stop w");
+    const advice =
+      "Before another worker takes its line, re-create them for that worker, or pause or delete them.";
+    expect(textOf((await toolResults(root)).at(-1))).toBe(
+      `Stopped w. Its jobs still wake w: mine (command ${NEVER}). ${advice}`,
+    );
+    await send(root, "close w");
+    expect(textOf((await toolResults(root)).at(-1))).toBe(
+      `Closed w. Its jobs still wake w, reopening it: mine (command ${NEVER}). ${advice}`,
+    );
+
+    // As the close said: the job's next wake reopens the worker and runs it.
+    await writeFile(join(value.directory, "state.txt"), "done\n");
+    await send(root, "poll mine");
+    await waitFor(() => value.jobMessages.some((text) => text.includes("mine changed")));
+    expect(
+      (await harness.snapshot(WorkersDoc, root.id, context))?.workers[0]?.closed,
+    ).toBeUndefined();
+    await root.waitForIdle(context);
     await harness.close(context);
   });
 });

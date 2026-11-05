@@ -15,7 +15,7 @@ import type { Attachment } from "./attachments.ts";
 import type { Goal } from "../core/agents/goals.ts";
 import type { listWorkersWithActivity } from "../core/agents/workers.ts";
 import type { ModelRole, Settings } from "../core/config.ts";
-import type { JobControl, JobEvent, JobsState } from "../core/jobs.ts";
+import type { JobControl, JobEvent, JobsState } from "../core/job-records.ts";
 import type { InboxItem, InboxKind } from "../core/inbox.ts";
 import type { McpSignInPrompt } from "../core/mcp/auth.ts";
 import type { PushSubscription } from "../core/push.ts";
